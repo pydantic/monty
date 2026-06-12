@@ -292,7 +292,15 @@ impl<T: ResourceTracker> MontyRepl<T> {
                     }
                 };
 
-                let result = match vm.evaluate_function("MontyRepl::call_function", callable, arg_values) {
+                // Host boundary: open an execution window so the time budget
+                // advances (and accumulates) during the call. This cannot go
+                // through `VM::run_external` because `evaluate_function` must
+                // push and run a single function frame itself.
+                vm.heap.tracker().on_execution_start();
+                let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
+                vm.heap.tracker().on_execution_stop();
+
+                let result = match eval_result {
                     Ok(value) => Ok(MontyObject::new(value, vm)),
                     Err(e) => {
                         Err(e.into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)))

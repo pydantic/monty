@@ -367,7 +367,11 @@ class MontySession:
 
     @property
     def worker_pid(self) -> int | None:
-        """OS process id of this session's worker (diagnostics/tests)."""
+        """OS process id of this session's worker (diagnostics/tests).
+
+        `None` when no worker is attached or a turn is currently in flight
+        on another thread (the getter never blocks on a running turn).
+        """
 
 @final
 class AsyncMonty:
@@ -461,4 +465,8 @@ class AsyncMontySession:
 
     @property
     def worker_pid(self) -> int | None:
-        """OS process id of this session's worker (diagnostics/tests)."""
+        """OS process id of this session's worker (diagnostics/tests).
+
+        `None` when no worker is attached or a turn is currently in flight
+        on another thread (the getter never blocks on a running turn).
+        """

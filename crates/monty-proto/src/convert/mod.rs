@@ -9,9 +9,11 @@
 //!   treated as untrusted — unknown names, out-of-range numbers, and missing
 //!   oneof arms are errors, never panics.
 //!
-//! Nesting depth is implicitly bounded in both directions by prost's decode
-//! recursion limit (~100 message levels), so the recursive conversions here
-//! cannot be driven arbitrarily deep by a malicious peer.
+//! Nesting depth is bounded on the receiving side by prost's decode recursion
+//! limit (100 message levels), so the recursive conversions here cannot be
+//! driven arbitrarily deep by a malicious peer. Encoding has no such implicit
+//! limit — senders must check [`exceeds_max_value_depth`] before shipping a
+//! value, or the receiver will reject the frame as a protocol failure.
 
 mod exception;
 mod limits;
@@ -110,25 +112,51 @@ pub fn pairs_from_proto(pairs: Vec<pb::Pair>) -> Result<Vec<(MontyObject, MontyO
         .collect()
 }
 
-/// Maximum nesting depth of a value that can safely cross the wire.
-///
-/// prost's decoder enforces a recursion limit of 100 message levels, and each
-/// Python container level costs two proto levels (`MontyObject` plus its
-/// `ValueList`/`DictValue`/... payload), so anything deeper than ~49 levels
-/// fails to *decode* on the receiving side — which the receiver must treat as
-/// a fatal protocol failure. Senders check against this bound first and fail
-/// cleanly instead of shipping an undecodable frame.
-pub const MAX_VALUE_DEPTH: usize = 48;
+/// prost's decode recursion limit: the hard ceiling on nested protobuf
+/// message levels a receiver will process before rejecting the frame.
+const PROST_RECURSION_LIMIT: usize = 100;
 
-/// Whether `value` nests deeper than [`MAX_VALUE_DEPTH`].
+/// Message levels consumed by the frame around a value before the value's
+/// own `MontyObject` begins. The deepest wrapper chains are three messages:
+/// `Request` → `Feed` → `NamedValue` and `Event` → `FunctionCall` → `Pair`.
+const FRAME_WRAPPER_DEPTH: usize = 3;
+
+/// Proto message levels a value itself may consume and still decode inside
+/// any frame: prost's limit minus the deepest frame wrapper chain.
+const MAX_PROTO_VALUE_DEPTH: usize = PROST_RECURSION_LIMIT - FRAME_WRAPPER_DEPTH;
+
+/// Proto message levels per list/tuple/set/frozenset/namedtuple level
+/// (`MontyObject` plus its `ValueList`/`NamedTupleValue` payload).
+const LIST_COST: usize = 2;
+/// Proto message levels per dict level (`MontyObject` + `DictValue` + `Pair`).
+const DICT_COST: usize = 3;
+/// Proto message levels per dataclass level (`MontyObject` +
+/// `DataclassValue` + the attrs `DictValue` + `Pair`).
+const DATACLASS_COST: usize = 4;
+
+/// Maximum nesting depth of a *list-like* value that can safely cross the
+/// wire (the cheapest container shape, and so the deepest possible nesting).
 ///
-/// The walk consumes one budget level per container and bails out as soon as
-/// the budget is exhausted, so its own recursion is bounded by
-/// `MAX_VALUE_DEPTH` even for adversarially deep values (which the sandbox
-/// can build iteratively).
+/// Different containers consume different numbers of proto message levels
+/// against prost's decode recursion limit — two per list/tuple/set/namedtuple
+/// level, three per dict level, four per dataclass level — so dicts only nest
+/// to ~32 levels and dataclasses to ~24. [`exceeds_max_value_depth`] applies
+/// the exact per-shape accounting; this constant is the headline bound for
+/// docs and error messages. Receivers must treat a too-deep frame as a fatal
+/// protocol failure, so senders check first and fail cleanly instead of
+/// shipping an undecodable frame.
+pub const MAX_VALUE_DEPTH: usize = (MAX_PROTO_VALUE_DEPTH - 1) / LIST_COST;
+
+/// Whether `value` nests too deeply to decode inside a wire frame.
+///
+/// Charges each node's exact proto-level cost (scalars one, list-likes two,
+/// dicts three, dataclasses four) against [`MAX_PROTO_VALUE_DEPTH`] and bails
+/// out as soon as the budget is exhausted, so its own recursion stays bounded
+/// even for adversarially deep values (which the sandbox can build
+/// iteratively).
 #[must_use]
 pub fn exceeds_max_value_depth(value: &MontyObject) -> bool {
-    depth_exceeds(value, MAX_VALUE_DEPTH)
+    depth_exceeds(value, MAX_PROTO_VALUE_DEPTH)
 }
 
 fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
@@ -136,29 +164,28 @@ fn depth_exceeds(value: &MontyObject, budget: usize) -> bool {
         MontyObject::List(items)
         | MontyObject::Tuple(items)
         | MontyObject::Set(items)
-        | MontyObject::FrozenSet(items) => seq_exceeds(items, budget),
-        MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget),
-        MontyObject::Dict(pairs) => pairs_exceed(pairs, budget),
-        MontyObject::Dataclass { attrs, .. } => pairs_exceed(attrs, budget),
-        _ => false,
+        | MontyObject::FrozenSet(items) => seq_exceeds(items, budget, LIST_COST),
+        MontyObject::NamedTuple { values, .. } => seq_exceeds(values, budget, LIST_COST),
+        MontyObject::Dict(pairs) => pairs_exceed(pairs, budget, DICT_COST),
+        MontyObject::Dataclass { attrs, .. } => pairs_exceed(attrs, budget, DATACLASS_COST),
+        // a scalar is one `MontyObject` message level
+        _ => budget == 0,
     }
 }
 
-fn seq_exceeds(items: &[MontyObject], budget: usize) -> bool {
-    if budget == 0 {
-        // any child at all would exceed the budget — don't descend
-        !items.is_empty()
-    } else {
-        items.iter().any(|child| depth_exceeds(child, budget - 1))
+fn seq_exceeds(items: &[MontyObject], budget: usize, cost: usize) -> bool {
+    match budget.checked_sub(cost) {
+        // this container's own wrapper messages don't fit the budget
+        None => true,
+        Some(remaining) => items.iter().any(|child| depth_exceeds(child, remaining)),
     }
 }
 
-fn pairs_exceed(pairs: &DictPairs, budget: usize) -> bool {
-    if budget == 0 {
-        !pairs.is_empty()
-    } else {
-        pairs
+fn pairs_exceed(pairs: &DictPairs, budget: usize, cost: usize) -> bool {
+    match budget.checked_sub(cost) {
+        None => true,
+        Some(remaining) => pairs
             .into_iter()
-            .any(|(key, value)| depth_exceeds(key, budget - 1) || depth_exceeds(value, budget - 1))
+            .any(|(key, value)| depth_exceeds(key, remaining) || depth_exceeds(value, remaining)),
     }
 }

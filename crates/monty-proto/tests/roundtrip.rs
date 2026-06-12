@@ -4,7 +4,7 @@ use monty::{
     CodeLoc, DictPairs, ExcType, ExtFunctionResult, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
     MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, NameLookupResult, ResourceLimits, StackFrame, Type,
 };
-use monty_proto::{ProtoConvertError, WireObject, pb};
+use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
 use prost::Message;
 
@@ -370,4 +370,84 @@ fn nested_value_round_trip() {
         value = MontyObject::List(vec![value]);
     }
     assert_value_round_trip(&value);
+}
+
+/// `Int(1)` nested in `depth` levels of list (2 proto levels per level).
+fn nest_list(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::List(vec![inner]))
+}
+
+/// `Int(1)` nested in `depth` levels of single-entry dict (3 proto levels per
+/// level: `MontyObject` + `DictValue` + `Pair`).
+fn nest_dict(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| {
+        MontyObject::dict(vec![(MontyObject::String("k".to_owned()), inner)])
+    })
+}
+
+/// `Int(1)` nested in `depth` levels of single-field dataclass (4 proto
+/// levels per level: `MontyObject` + `DataclassValue` + `DictValue` + `Pair`).
+fn nest_dataclass(depth: usize) -> MontyObject {
+    (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::Dataclass {
+        name: "D".to_owned(),
+        type_id: 1,
+        field_names: vec!["f".to_owned()],
+        attrs: DictPairs::from(vec![(MontyObject::String("f".to_owned()), inner)]),
+        frozen: false,
+    })
+}
+
+/// Whether `value` decodes when shipped inside the deepest legitimate frame
+/// wrapper chain (`Request` → `ReplFeed` → `NamedValue`).
+fn decodes_in_frame(value: &MontyObject) -> bool {
+    let request = pb::Request {
+        kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+            code: String::new(),
+            inputs: vec![pb::NamedValue {
+                name: "v".to_owned(),
+                value: Some(WireObject::new(value.clone())),
+            }],
+            mounts: vec![],
+            skip_type_check: false,
+        })),
+    };
+    pb::Request::decode(request.encode_to_vec().as_slice()).is_ok()
+}
+
+/// The sender-side depth check must agree exactly with what the receiver can
+/// decode, for every container shape: dicts and dataclasses consume more of
+/// prost's recursion budget per level than lists, so a uniform per-container
+/// budget would pass values that then fail to decode (and kill the worker as
+/// a protocol failure instead of raising a clean depth error).
+#[test]
+fn depth_check_matches_frame_decodability() {
+    /// One container shape: name, nesting builder, deepest depth that must pass.
+    type DepthCase = (&'static str, fn(usize) -> MontyObject, usize);
+    let cases: [DepthCase; 3] = [
+        ("list", nest_list, MAX_VALUE_DEPTH), // 48: 2 proto levels each
+        ("dict", nest_dict, 32),              // 3 proto levels each
+        ("dataclass", nest_dataclass, 24),    // 4 proto levels each
+    ];
+    for (shape, build, max_depth) in cases {
+        let deepest = build(max_depth);
+        assert!(
+            !exceeds_max_value_depth(&deepest),
+            "{shape} nested {max_depth} deep should pass the depth check"
+        );
+        assert!(
+            decodes_in_frame(&deepest),
+            "{shape} nested {max_depth} deep should decode inside a frame"
+        );
+        let too_deep = build(max_depth + 1);
+        assert!(
+            exceeds_max_value_depth(&too_deep),
+            "{shape} nested {} deep should fail the depth check",
+            max_depth + 1
+        );
+        assert!(
+            !decodes_in_frame(&too_deep),
+            "{shape} nested {} deep should fail to decode inside a frame",
+            max_depth + 1
+        );
+    }
 }

@@ -653,8 +653,15 @@ jobs:
             python3 -m venv venv
             source venv/bin/activate
             python3 -m pip install typing_extensions
-            python3 -m pip install pydantic-monty --no-index --no-deps --find-links /dist --force-reinstall
-            python3 -c "import pydantic_monty; print(pydantic_monty.Monty('1 + 2').run())"
+            python3 -m pip install pydantic-monty pydantic-monty-cli --no-index --no-deps --find-links /dist --force-reinstall
+            python3 - <<'EOF'
+            from pydantic_monty import Monty
+
+            with Monty() as pool:
+                with pool.checkout() as session:
+                    assert session.feed_run('1 + 2') == 3
+            print('worker pool OK')
+            EOF
 
   # Test wheels on main OS platforms
   test-builds-os:

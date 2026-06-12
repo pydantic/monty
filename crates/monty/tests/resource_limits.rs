@@ -8,7 +8,8 @@ use std::{
 };
 
 use monty::{
-    ExcType, LimitedTracker, MontyObject, MontyRun, NameLookupResult, PrintWriter, ResourceLimits, RunProgress,
+    ExcType, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, PrintWriter, ResourceLimits,
+    RunProgress,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -1511,6 +1512,26 @@ fn suspension_time_does_not_count_toward_max_duration() {
         panic!("expected Complete, got another suspension");
     };
     assert_eq!(value, MontyObject::Int(4950));
+}
+
+/// `MontyRepl::call_function` is a host boundary like `feed_run`: it must
+/// open an execution window so the cumulative `max_duration` clock advances
+/// during the call. With the window left closed, `elapsed()` is frozen and an
+/// infinite loop in the called function would run forever.
+#[test]
+fn call_function_enforces_max_duration() {
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", LimitedTracker::new(limits));
+    repl.feed_run(
+        "def spin():\n    while True:\n        pass",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let exc = repl
+        .call_function("spin", vec![], PrintWriter::Stdout)
+        .expect_err("infinite loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
 
 /// Helper: builds a large object without time limit, then runs `repr()` on it

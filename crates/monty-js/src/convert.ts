@@ -48,11 +48,26 @@ const JS_SAFE_INT = 2 ** 53
 const I64_BOUND = 2 ** 63
 
 /**
- * Deepest value nesting the wire protocol accepts, re-exported from
- * monty-proto. Deeper inputs are rejected before anything is sent (the child
- * could not decode them).
+ * Deepest *list-like* value nesting the wire protocol accepts, matching
+ * monty-proto's `MAX_VALUE_DEPTH`. Other containers cost more of the decode
+ * recursion budget per level (dicts ~32 deep, dataclasses ~24); deeper inputs
+ * are rejected before anything is sent (the child could not decode them).
  */
 export const MAX_VALUE_DEPTH = 48
+
+/**
+ * Proto message levels a value may consume and still decode inside any frame:
+ * prost's decode recursion limit (100) minus the deepest frame wrapper chain
+ * (3 messages, e.g. `Request` → `Feed` → `NamedValue`). Mirrors monty-proto's
+ * `MAX_PROTO_VALUE_DEPTH`.
+ */
+const MAX_PROTO_VALUE_DEPTH = 97
+/** Proto levels per list/tuple/set/namedtuple level (`MontyObject` + list payload). */
+const LIST_COST = 2
+/** Proto levels per dict level (`MontyObject` + `DictValue` + `Pair`). */
+const DICT_COST = 3
+/** Proto levels per dataclass level (`MontyObject` + `DataclassValue` + `DictValue` + `Pair`). */
+const DATACLASS_COST = 4
 
 /** Marker object representing a Python `datetime.date`. */
 export interface MontyDate {
@@ -441,13 +456,14 @@ function dictToJs(dict: DictValue): Map<unknown, unknown> {
 }
 
 /**
- * Whether `value` nests deeper than [`MAX_VALUE_DEPTH`]. Mirrors
- * monty-proto's budget-bounded walk: one budget level per container, bailing
+ * Whether `value` nests too deeply to decode inside a wire frame. Mirrors
+ * monty-proto's budget-bounded walk: each node charges its exact proto-level
+ * cost (scalars one, list-likes two, dicts three, dataclasses four), bailing
  * out (without descending) once the budget is exhausted so the check itself
  * cannot overflow on adversarially deep values.
  */
 export function exceedsMaxValueDepth(value: MontyObject): boolean {
-  return depthExceeds(value, MAX_VALUE_DEPTH)
+  return depthExceeds(value, MAX_PROTO_VALUE_DEPTH)
 }
 
 function depthExceeds(value: MontyObject, budget: number): boolean {
@@ -457,32 +473,34 @@ function depthExceeds(value: MontyObject, budget: number): boolean {
     case 'tuple':
     case 'set':
     case 'frozenSet':
-      return seqExceeds(kind.value.items, budget)
+      return seqExceeds(kind.value.items, budget, LIST_COST)
     case 'namedTuple':
-      return seqExceeds(kind.value.values, budget)
+      return seqExceeds(kind.value.values, budget, LIST_COST)
     case 'dict':
-      return pairsExceed(kind.value.pairs, budget)
+      return pairsExceed(kind.value.pairs, budget, DICT_COST)
     case 'dataclass':
-      return pairsExceed(kind.value.attrs?.pairs ?? [], budget)
+      return pairsExceed(kind.value.attrs?.pairs ?? [], budget, DATACLASS_COST)
     default:
-      return false
+      // a scalar is one `MontyObject` message level
+      return budget === 0
   }
 }
 
-function seqExceeds(items: MontyObject[], budget: number): boolean {
-  if (budget === 0) {
-    return items.length > 0
+function seqExceeds(items: MontyObject[], budget: number, cost: number): boolean {
+  if (budget < cost) {
+    // this container's own wrapper messages don't fit the budget
+    return true
   }
-  return items.some((child) => depthExceeds(child, budget - 1))
+  return items.some((child) => depthExceeds(child, budget - cost))
 }
 
-function pairsExceed(pairs: Pair[], budget: number): boolean {
-  if (budget === 0) {
-    return pairs.length > 0
+function pairsExceed(pairs: Pair[], budget: number, cost: number): boolean {
+  if (budget < cost) {
+    return true
   }
   return pairs.some(
     (p) =>
-      (p.key !== undefined && depthExceeds(p.key, budget - 1)) ||
-      (p.value !== undefined && depthExceeds(p.value, budget - 1)),
+      (p.key !== undefined && depthExceeds(p.key, budget - cost)) ||
+      (p.value !== undefined && depthExceeds(p.value, budget - cost)),
   )
 }

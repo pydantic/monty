@@ -82,6 +82,36 @@ def test_worker_crash_raises_crashed_error_and_pool_recovers(pool: Monty):
         assert session.feed_run('1 + 1') == snapshot(2)
 
 
+def test_worker_pid_mid_turn_does_not_deadlock(pool: Monty):
+    # regression: `worker_pid` used to block on the checkout lock while
+    # holding the GIL; with the turn thread blocked in a print callback
+    # needing the GIL, both threads deadlocked. The getter is now
+    # non-blocking and returns None while a turn is in flight.
+    with pool.checkout() as session:
+        in_print = threading.Event()
+        pid_checked = threading.Event()
+        mid_turn_pid: list[int | None] = []
+
+        def on_print(stream: str, text: str) -> None:
+            in_print.set()
+            # hold the turn (and the checkout lock) until the getter has run
+            pid_checked.wait(timeout=10)
+
+        def poll_pid() -> None:
+            in_print.wait(timeout=10)
+            mid_turn_pid.append(session.worker_pid)
+            pid_checked.set()
+
+        poller = threading.Thread(target=poll_pid)
+        poller.start()
+        session.feed_run("print('x')", print_callback=on_print)
+        poller.join(timeout=10)
+        assert not poller.is_alive()
+        assert mid_turn_pid == [None]
+        # idle again: the getter sees the worker
+        assert session.worker_pid is not None
+
+
 def test_request_timeout_kills_hung_worker():
     with Monty(request_timeout=0.3) as pool:
         with pool.checkout() as session:

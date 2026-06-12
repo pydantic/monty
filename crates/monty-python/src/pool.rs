@@ -26,7 +26,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
     time::Duration,
 };
 
@@ -165,23 +165,32 @@ pub struct PyMontySession {
 impl PyMontySession {
     /// Checks a worker out of the pool (spawning one if needed) and creates
     /// the REPL session in it.
+    ///
+    /// The checkout slot is locked with the GIL released: a turn in flight on
+    /// another thread holds that lock and may block on the GIL for print
+    /// callbacks, so locking it while attached can deadlock (see
+    /// [`run_turn_blocking`]).
     fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
         let this = slf.get();
         let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
-        let checkout = py
-            .detach(|| pool.checkout(&repl_config))
-            .map_err(|e| pool_err_to_py(py, e))?;
-        *lock(&this.checkout) = Some(checkout);
+        let slot = Arc::clone(&this.checkout);
+        py.detach(|| {
+            pool.checkout(&repl_config)
+                .map(|checkout| *lock(&slot) = Some(checkout))
+        })
+        .map_err(|e| pool_err_to_py(py, e))?;
         Ok(slf)
     }
 
     /// Returns the worker to the pool (best effort — a crashed worker has
-    /// already been discarded and replaced).
+    /// already been discarded and replaced). The slot is taken with the GIL
+    /// released, like [`__enter__`](Self::__enter__).
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
-        let checkout = lock(&self.checkout).take();
-        py.detach(|| {
+        let slot = Arc::clone(&self.checkout);
+        py.detach(move || {
+            let checkout = lock(&slot).take();
             if let Some(checkout) = checkout {
                 let _ = checkout.finish();
             }
@@ -231,10 +240,14 @@ impl PyMontySession {
     }
 
     /// OS process id of this session's worker, or `None` when no worker is
-    /// attached (diagnostics/tests).
+    /// attached or a turn is in flight (diagnostics/tests).
+    ///
+    /// Must not block on the checkout lock: this getter runs with the GIL
+    /// held, and the thread driving a turn holds the lock while needing the
+    /// GIL for print callbacks — blocking here can deadlock both threads.
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
-        lock(&self.checkout).as_ref().and_then(Checkout::pid)
+        try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
     }
 }
 
@@ -369,13 +382,24 @@ impl PyAsyncMontySession {
 
     /// Returns the worker to the pool (best effort — a crashed worker has
     /// already been discarded and replaced).
+    ///
+    /// The checkout slot is taken inside `spawn_blocking`, never on the event
+    /// loop with the GIL held: a cancelled `feed_run` leaves its blocking
+    /// turn running with the lock until the worker answers (or the request
+    /// timeout fires), and that turn may itself block on the GIL for print
+    /// callbacks — taking the lock here synchronously would deadlock.
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
-        let checkout = lock(&self.checkout).take();
+        let slot = Arc::clone(&self.checkout);
         future_into_py(py, async move {
-            spawn_blocking(move || checkout.map(Checkout::finish))
-                .await
-                .map_err(join_error_to_py)?;
+            spawn_blocking(move || {
+                // take in its own statement so the lock is released before
+                // the (blocking) finish turn runs
+                let checkout = lock(&slot).take();
+                checkout.map(Checkout::finish)
+            })
+            .await
+            .map_err(join_error_to_py)?;
             Ok(())
         })
     }
@@ -427,10 +451,11 @@ impl PyAsyncMontySession {
     }
 
     /// OS process id of this session's worker, or `None` when no worker is
-    /// attached (diagnostics/tests).
+    /// attached or a turn is in flight (diagnostics/tests). Non-blocking for
+    /// the same reason as the sync getter.
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
-        lock(&self.checkout).as_ref().and_then(Checkout::pid)
+        try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
     }
 }
 
@@ -902,7 +927,20 @@ fn duration_from_secs(secs: f64) -> PyResult<Duration> {
 }
 
 /// Locks a shared slot, ignoring poisoning (a panic elsewhere must not wedge
-/// the pool).
+/// the pool). Never call while attached to the GIL: a protocol turn holds the
+/// checkout lock for its whole duration and attaches for print callbacks, so
+/// a GIL-holding waiter deadlocks both threads — detach first, or use
+/// [`try_lock`].
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Non-blocking [`lock`]: `None` when the lock is held (e.g. by a turn in
+/// flight on another thread). Safe to call with the GIL held.
+fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
+    match mutex.try_lock() {
+        Ok(guard) => Some(guard),
+        Err(TryLockError::Poisoned(err)) => Some(err.into_inner()),
+        Err(TryLockError::WouldBlock) => None,
+    }
 }
