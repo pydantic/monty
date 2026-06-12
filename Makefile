@@ -102,6 +102,7 @@ clippy-fix: ## Fix Rust code with clippy
 .PHONY: generate-proto
 generate-proto: ## Regenerate monty-proto's checked-in code from the .proto schema
 	cargo run -p monty-proto --features generate --bin generate-proto
+	cargo +nightly fmt -p monty-proto
 
 .PHONY: check-proto
 check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
