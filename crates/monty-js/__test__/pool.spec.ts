@@ -1,8 +1,11 @@
-import { readFile } from 'node:fs/promises'
+import { spawnSync } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import test from 'ava'
 
-import { Monty, MontyCrashedError } from '../src/index.js'
+import { Monty, MontyCrashedError, MountDir } from '../src/index.js'
 
 // =============================================================================
 // Pool lifecycle
@@ -141,6 +144,49 @@ test('requestTimeout kills a wedged worker', async (t) => {
   t.true(error.timedOut)
   t.is(error.message, 'RuntimeError: the worker process was killed because a request timed out')
   await session.close()
+})
+
+// Reading a FIFO blocks the worker inside the OS, where the sandbox's
+// periodic time check can never run — the host-side maxDurationSecs backstop
+// (remaining budget + durationLimitGrace) is the only thing that can end the
+// turn. Note no requestTimeout is configured. Unix-only (mkfifo).
+const testOnUnix = process.platform === 'win32' ? test.skip : test
+testOnUnix('duration backstop kills a worker blocked in a syscall', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'monty-fifo-'))
+  try {
+    t.is(spawnSync('mkfifo', [join(dir, 'pipe')]).status, 0)
+    await using pool = await Monty.create({ durationLimitGrace: 0.3 })
+    const session = await pool.checkout({ limits: { maxDurationSecs: 0.1 } })
+    const error = await t.throwsAsync(
+      () =>
+        session.feedRun("from pathlib import Path\nPath('/mnt/pipe').read_text()", {
+          mount: new MountDir('/mnt', dir, { mode: 'read-only' }),
+        }),
+      { instanceOf: MontyCrashedError },
+    )
+    t.true(error.timedOut)
+    await session.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('suspension time does not consume the duration budget', async (t) => {
+  // maxDurationSecs measures cumulative sandbox execution time; the worker
+  // reports it on every turn and its clock is paused while suspended. The
+  // host taking twice the entire budget to answer an external call must
+  // therefore not time the session out.
+  await using pool = await Monty.create()
+  await using session = await pool.checkout({ limits: { maxDurationSecs: 0.3 } })
+  const result = await session.feedRun("await fetch_data('u') + '!'", {
+    externalFunctions: {
+      fetch_data: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600))
+        return 'body'
+      },
+    },
+  })
+  t.is(result, 'body!')
 })
 
 // =============================================================================

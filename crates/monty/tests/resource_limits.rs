@@ -2,7 +2,10 @@
 ///
 /// These tests verify that the `ResourceTracker` system correctly enforces
 /// allocation limits, time limits, and triggers garbage collection.
-use std::time::{Duration, Instant};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use monty::{
     ExcType, LimitedTracker, MontyObject, MontyRun, NameLookupResult, PrintWriter, ResourceLimits, RunProgress,
@@ -1482,6 +1485,33 @@ s.splitlines()
 // Each test uses the external function "interrupt" pattern: the large object is
 // built with NO time limit, then execution pauses at `interrupt()`. A short time
 // limit is set before resuming, so only the `repr()` call is timed.
+
+/// The `max_duration` clock measures cumulative *execution* time only: time
+/// spent suspended at an external call must not consume the budget. Here the
+/// host stays away for 3× the entire budget while the sandbox is suspended,
+/// and execution still completes — under the old wall-clock-since-creation
+/// accounting this raised TimeoutError on resume.
+#[test]
+fn suspension_time_does_not_count_toward_max_duration() {
+    let code = "interrupt()\nsum(range(100))";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let progress = run
+        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+    let call = resolve_name_lookups(progress)
+        .unwrap()
+        .into_function_call()
+        .expect("interrupt call");
+
+    thread::sleep(Duration::from_millis(300));
+
+    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
+    let RunProgress::Complete(value) = progress else {
+        panic!("expected Complete, got another suspension");
+    };
+    assert_eq!(value, MontyObject::Int(4950));
+}
 
 /// Helper: builds a large object without time limit, then runs `repr()` on it
 /// with a short time limit and asserts it produces a TimeoutError promptly.

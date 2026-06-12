@@ -308,6 +308,22 @@ pub trait ResourceTracker: fmt::Debug {
     /// scheduling threshold.
     fn gc_interval(&self) -> Option<usize>;
 
+    /// Called when the VM enters its execution loop from a host boundary
+    /// (`VM::run_external`), starting one execution window.
+    ///
+    /// Paired with [`on_execution_stop`](Self::on_execution_stop) and never
+    /// nested — VM-internal re-entry (task switches, host-initiated function
+    /// evaluation) uses the raw run loop, so its time falls inside the
+    /// enclosing window. Trackers that measure execution time run their
+    /// clock between the pair; the clock is *not* running while execution is
+    /// suspended waiting on the host (external function calls) or between
+    /// feeds. Default is a no-op.
+    fn on_execution_start(&self) {}
+
+    /// Called when the VM leaves its execution loop — on completion, error,
+    /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
+    fn on_execution_stop(&self) {}
+
     /// Lowers the active recursion-depth limit to `new_limit`.
     ///
     /// Exposed under the `test-hooks` feature so `sys.setrecursionlimit` can
@@ -467,26 +483,29 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 /// errors when limits are exceeded. Also schedules garbage collection
 /// at configurable intervals.
 ///
-/// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
-/// This means time limits restart from zero after deserialization.
-/// A resource tracker that enforces configurable limits.
-///
-/// Tracks allocation count, memory usage, and execution time, returning
-/// errors when limits are exceeded. Also schedules garbage collection
-/// at configurable intervals.
-///
 /// Uses `Cell` for interior mutability to allow many methods which take
 /// `&self` (enabling `&self` on critical methods such as `Heap::allocate`).
 ///
-/// When serialized/deserialized, the `start_time` is reset to `Instant::now()`.
-/// This means time limits restart from zero after deserialization.
+/// `max_duration` limits *cumulative execution time*: the clock runs only
+/// while the VM is executing bytecode (between the outermost
+/// `on_execution_start`/`on_execution_stop` pair) and is paused while
+/// execution is suspended waiting on the host — external function calls,
+/// OS callbacks — and between REPL feeds. The accumulated time is
+/// serialized, so a deserialized session resumes its budget where it left
+/// off rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LimitedTracker {
     limits: ResourceLimits,
-    /// When execution started (for time limit checking).
-    /// Reset to `Instant::now()` on deserialization.
-    #[serde(skip, default = "Instant::now")]
-    start_time: Instant,
+    /// Execution time accumulated by completed `on_execution_start`/`stop`
+    /// windows. Serialized so time budgets survive dump/load; `#[serde(default)]`
+    /// keeps older snapshots (which had no such field) loadable.
+    #[serde(default)]
+    total_execution_time: Cell<Duration>,
+    /// When the current execution window started; `None` while suspended or
+    /// idle. Never serialized — a snapshot is by definition taken while not
+    /// executing.
+    #[serde(skip)]
+    running_since: Cell<Option<Instant>>,
     /// Total number of allocations made.
     allocation_count: Cell<usize>,
     /// Current approximate memory usage in bytes.
@@ -514,13 +533,15 @@ pub struct LimitedTracker {
 impl LimitedTracker {
     /// Creates a new LimitedTracker with the given limits.
     ///
-    /// The start time is recorded when the tracker is created, so create
-    /// it immediately before starting execution.
+    /// The execution-time clock starts at zero and only runs while the VM
+    /// executes, so the tracker can be created any amount of time before
+    /// the first run without consuming the duration budget.
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
             limits,
-            start_time: Instant::now(),
+            total_execution_time: Cell::new(Duration::ZERO),
+            running_since: Cell::new(None),
             allocation_count: Cell::new(0),
             current_memory: Cell::new(0),
             check_counter: Cell::new(0),
@@ -546,20 +567,32 @@ impl LimitedTracker {
         self.current_memory.get()
     }
 
-    /// Returns the elapsed time since tracker creation.
+    /// Returns the cumulative execution time: bytecode-execution wall time
+    /// accumulated across runs/feeds, excluding time suspended on the host
+    /// or idle between feeds. Includes the in-progress window if the VM is
+    /// currently executing.
     #[must_use]
     pub fn elapsed(&self) -> Duration {
-        self.start_time.elapsed()
+        let running = self.running_since.get().map_or(Duration::ZERO, |t| t.elapsed());
+        self.total_execution_time.get() + running
     }
 
-    /// Sets the maximum execution duration and resets the start time to now.
+    /// Returns the configured maximum cumulative execution time, if any.
+    #[must_use]
+    pub fn max_duration(&self) -> Option<Duration> {
+        self.limits.max_duration
+    }
+
+    /// Sets the maximum execution duration as a fresh budget from now,
+    /// resetting the accumulated execution time to zero.
     ///
-    /// This is useful when resuming execution after an external function call
-    /// where you want to enforce a different (typically shorter) time limit
-    /// for the resumed phase without counting the time spent in the host.
+    /// This lets a host enforce a different (typically shorter) time limit
+    /// for a resumed phase — e.g. allowing a long build phase, then giving
+    /// `repr()` of the result only a few milliseconds. Time spent suspended
+    /// in the host never counts toward the budget either way.
     pub fn set_max_duration(&mut self, duration: Duration) {
         self.limits.max_duration = Some(duration);
-        self.start_time = Instant::now();
+        self.total_execution_time.set(Duration::ZERO);
     }
 }
 
@@ -623,7 +656,7 @@ impl ResourceTracker for LimitedTracker {
             self.check_counter.update(|c| c.wrapping_add(1));
             if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
                 // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
-                let elapsed = self.start_time.elapsed();
+                let elapsed = self.elapsed();
                 if elapsed > max {
                     // Reset counter so the very next check_time call also triggers
                     // an elapsed check. This is important because some callers
@@ -666,6 +699,21 @@ impl ResourceTracker for LimitedTracker {
 
     fn gc_interval(&self) -> Option<usize> {
         self.limits.gc_interval
+    }
+
+    fn on_execution_start(&self) {
+        debug_assert!(
+            self.running_since.get().is_none(),
+            "nested on_execution_start: VM-internal re-entry must use the raw run loop, not run_external"
+        );
+        self.running_since.set(Some(Instant::now()));
+    }
+
+    fn on_execution_stop(&self) {
+        if let Some(started) = self.running_since.take() {
+            self.total_execution_time
+                .set(self.total_execution_time.get() + started.elapsed());
+        }
     }
 
     /// Lowers the live recursion ceiling to `new_limit`, refusing to raise it.

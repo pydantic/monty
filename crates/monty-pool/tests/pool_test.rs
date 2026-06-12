@@ -12,7 +12,7 @@ use std::{
 };
 
 use monty::{MontyObject, PrintStream, ResourceLimits};
-use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {
@@ -309,6 +309,122 @@ fn child_resource_limits_do_not_kill_the_worker() {
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     session.finish().unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn duration_backstop_kills_a_worker_blocked_in_a_syscall() {
+    // Reading a FIFO blocks the worker inside the OS, where the sandbox's
+    // periodic time check can never run — the parent-side `max_duration`
+    // backstop (remaining budget + grace) is the only thing that can end the
+    // turn. Note no `request_timeout` is configured here.
+    let dir = tempfile::tempdir().unwrap();
+    let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
+    assert!(status.success(), "mkfifo failed");
+
+    let mut config = config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let pool = Pool::new(config).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let err = session
+        .feed(
+            "from pathlib import Path\nPath('/mnt/pipe').read_text()",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the armed deadline was the remaining budget (≤100ms) plus the grace
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+}
+
+#[test]
+fn suspension_time_does_not_consume_the_duration_budget() {
+    // `max_duration` measures cumulative sandbox execution time; the worker
+    // reports it on every turn and its clock is paused while suspended. The
+    // host staying away for twice the entire budget must therefore not time
+    // the session out.
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(300))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let event = session
+        .feed("fetch('https://x') + '!'", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }));
+
+    thread::sleep(Duration::from_millis(600));
+
+    let event = session
+        .resume(
+            ResumeValue::Return(MontyObject::String("body".to_owned())),
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("body!".to_owned()));
+    session.finish().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
+    // The `max_duration` budget and consumed execution time travel inside the
+    // dump, and the worker stamps them onto its replies — so a session
+    // restored via `checkout_load` regains the parent-side backstop without
+    // the parent ever having seen the original `ReplConfig`.
+    let dir = tempfile::tempdir().unwrap();
+    let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
+    assert!(status.success(), "mkfifo failed");
+
+    let mut config = config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let pool = Pool::new(config).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let state = session.dump().unwrap();
+    drop(session);
+
+    let (mut restored, event) = pool.checkout_load(state).unwrap();
+    assert!(event.is_none(), "idle dump should restore without a suspension");
+    let err = restored
+        .feed(
+            "from pathlib import Path\nPath('/mnt/pipe').read_text()",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
 }
 
 // =============================================================================

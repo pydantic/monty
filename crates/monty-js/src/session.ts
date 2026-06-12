@@ -90,6 +90,18 @@ export class MontySession {
   private readonly pool: Monty
   private readonly worker: Worker
   private readonly requestTimeoutMs: number | null
+  /** The session's `maxDurationSecs` budget in ms, for the host backstop. */
+  private readonly durationBudgetMs: number | null
+  /** Grace added to the remaining budget; `null` disables the backstop. */
+  private readonly durationGraceMs: number | null
+  /**
+   * Cumulative sandbox execution time in ms as last reported by the worker —
+   * the worker's clock is the single source of truth (it runs only while the
+   * interpreter executes, never during suspensions or between feeds). It is
+   * stamped on every turn-ending event and only ever ratchets up here, so a
+   * compromised worker cannot rewind the host's view of its consumed budget.
+   */
+  private reportedExecutionMs = 0
   /** Set once the session is unusable: crashed worker or protocol error. */
   private broken: Error | null = null
   private closed = false
@@ -97,10 +109,18 @@ export class MontySession {
   private readonly futures = new Map<number, PendingFuture>()
 
   /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(pool: Monty, worker: Worker, requestTimeoutMs: number | null) {
+  constructor(
+    pool: Monty,
+    worker: Worker,
+    requestTimeoutMs: number | null,
+    durationBudgetMs: number | null,
+    durationGraceMs: number | null,
+  ) {
     this.pool = pool
     this.worker = worker
     this.requestTimeoutMs = requestTimeoutMs
+    this.durationBudgetMs = durationBudgetMs
+    this.durationGraceMs = durationGraceMs
   }
 
   /** @internal — sends `ReplCreate` and awaits the ack. */
@@ -357,19 +377,34 @@ export class MontySession {
 
   /**
    * Runs one protocol turn: sends the request, forwards streamed `Print`
-   * events, and returns the turn-ending event. The `requestTimeout` watchdog
-   * covers the whole turn; worker death is converted to
+   * events, and returns the turn-ending event. The watchdog kills the worker
+   * if the turn outlives its deadline — the tighter of `requestTimeout` and,
+   * for execution turns, the remaining `maxDurationSecs` budget plus the
+   * grace (the host backstop for a sandbox limit that cannot fire, e.g. a
+   * blocking syscall inside a mount). Worker death is converted to
    * [`MontyCrashedError`] and poisons the session.
    */
   private async turn(kind: Request['kind'], printTarget: PrintTarget | null): Promise<Event> {
     // No ensureUsable here: the public entry points check, and close() runs
     // its Reset turn after the session is already flagged as closed.
+    // Execution turns are the ones where the sandbox runs code; control
+    // turns (replCreate, dump, reset) have no sandbox budget.
+    const execution =
+      kind.case === 'replFeed' ||
+      kind.case === 'resumeCall' ||
+      kind.case === 'resumeNameLookup' ||
+      kind.case === 'resumeFutures'
+    let deadlineMs = this.requestTimeoutMs
+    if (execution && this.durationBudgetMs !== null && this.durationGraceMs !== null) {
+      const backstop = Math.max(0, this.durationBudgetMs - this.reportedExecutionMs) + this.durationGraceMs
+      deadlineMs = deadlineMs === null ? backstop : Math.min(deadlineMs, backstop)
+    }
     let watchdog: NodeJS.Timeout | null = null
-    if (this.requestTimeoutMs !== null) {
+    if (deadlineMs !== null) {
       watchdog = setTimeout(() => {
         this.worker.killedForTimeout = true
         this.worker.kill()
-      }, this.requestTimeoutMs)
+      }, deadlineMs)
     }
     try {
       await this.worker.send(kind)
@@ -379,6 +414,9 @@ export class MontySession {
           printTarget?.write(event.kind.value.stream === 2 ? 'stderr' : 'stdout', event.kind.value.text)
           continue
         }
+        // Turn-ending events are stamped with the worker's cumulative
+        // execution time; adopt it (ratcheting up only) for the backstop.
+        this.reportedExecutionMs = Math.max(this.reportedExecutionMs, Number(event.totalExecutionMicros) / 1000)
         if (event.kind.case === 'fatalError') {
           throw new ProtocolError(`worker reported a fatal error: ${event.kind.value.message}`)
         }

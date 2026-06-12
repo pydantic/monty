@@ -80,6 +80,7 @@ impl Worker {
         match worker.recv() {
             Ok(pb::Event {
                 kind: Some(pb::event::Kind::HelloReply(reply)),
+                ..
             }) => {
                 if reply.protocol_version != PROTOCOL_VERSION {
                     return Err(PoolError::Spawn(format!(

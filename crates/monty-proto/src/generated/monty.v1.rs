@@ -483,6 +483,21 @@ pub struct Reset {}
 pub struct Shutdown {}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Event {
+    /// Cumulative execution time consumed by the session's sandbox code, in
+    /// microseconds. The in-sandbox clock runs only while the interpreter is
+    /// executing bytecode — never while suspended waiting on the parent or idle
+    /// between feeds — and survives Dump/Load. Set on every turn-ending event
+    /// while a session exists (zero on Print events and outside a session) so
+    /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
+    /// backstop, without keeping a second clock.
+    #[prost(uint64, tag = "13")]
+    pub total_execution_micros: u64,
+    /// The session's `max_duration` limit in microseconds, when one is
+    /// configured. Reported alongside `total_execution_micros` so a parent that
+    /// restored a session via `Load` (where the limits travel inside the opaque
+    /// state bytes) still learns the budget.
+    #[prost(uint64, optional, tag = "14")]
+    pub max_duration_micros: ::core::option::Option<u64>,
     #[prost(oneof = "event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<event::Kind>,
 }

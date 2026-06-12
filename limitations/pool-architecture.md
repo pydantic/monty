@@ -27,6 +27,23 @@ the *host API* surface.
 - Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
   blocked on the worker; use sandbox `limits` and/or the pool's
   `request_timeout` (which kills the worker).
+- **`max_duration` measures cumulative execution time, and the worker's
+  clock is the single source of truth.** The in-sandbox clock runs only
+  while the interpreter executes — never while suspended waiting on the
+  host (external functions, OS callbacks) or between feeds — accumulates
+  across feeds, and travels inside dumps. The worker reports its total on
+  every protocol turn; the host never keeps a second clock.
+- **`max_duration` is backstopped by the host.** From the reported total the
+  host arms each execution turn's watchdog with the remaining budget plus
+  `duration_limit_grace` (default 1s) and kills the worker when it expires.
+  The in-sandbox limit normally fires first with a clean `TimeoutError`; the
+  backstop covers cases where it cannot — e.g. a blocking syscall inside a
+  mount (reading a FIFO) — and surfaces as `MontyCrashedError`, losing the
+  session. Because the budget and consumed time are also stamped onto the
+  worker's replies, sessions restored via the Rust `Pool::checkout_load`
+  regain the backstop too. A *compromised* worker could under-report its
+  total, stretching each turn to the full budget plus grace — turns stay
+  bounded, and `request_timeout` applies independently.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure

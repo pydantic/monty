@@ -30,6 +30,7 @@ fn frames_round_trip() {
     writer
         .write(&pb::Event {
             kind: Some(pb::event::Kind::Ok(pb::Ok {})),
+            ..Default::default()
         })
         .unwrap();
 

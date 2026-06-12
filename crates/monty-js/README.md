@@ -123,6 +123,15 @@ const limited = await pool.checkout({
 interpreter itself: the worker is killed and the session fails with
 `MontyCrashedError` (`timedOut: true`).
 
+`maxDurationSecs` limits cumulative _execution_ time: the sandbox clock runs
+only while the interpreter executes, never while suspended waiting on an
+external function or between feeds. Sessions with the limit also get an
+automatic backstop: the worker reports its execution time on every protocol
+turn and the host kills it `durationLimitGrace` (default 1s) after the
+remaining budget expires, covering cases where the in-sandbox limit cannot
+fire (e.g. a blocking syscall inside a mount). Set `durationLimitGrace: null`
+to disable it.
+
 ## Type Checking
 
 ```ts
@@ -166,6 +175,7 @@ const pool = await Monty.create({
   maxProcesses: 8, // cap; checkouts beyond it wait (default: CPU count)
   checkoutTimeout: 10, // seconds to wait for a free worker
   requestTimeout: 30, // hard per-turn deadline (seconds)
+  durationLimitGrace: 1, // maxDurationSecs backstop grace (seconds, null disables)
   maxCheckoutsPerWorker: 100, // recycle workers after this many sessions
   binaryPath: '/path/to/monty', // explicit binary (default: auto-resolved)
 })

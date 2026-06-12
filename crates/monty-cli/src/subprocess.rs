@@ -165,7 +165,7 @@ impl Child {
             return Ok(Turn::Exit(ExitCode::from(2)));
         }
 
-        let event = match kind {
+        let mut event = match kind {
             pb::request::Kind::Hello(_) => unreachable!("handled above"),
             pb::request::Kind::ReplCreate(create) => self.handle_repl_create(create),
             pb::request::Kind::ReplFeed(feed) => self.handle_repl_feed(feed),
@@ -183,8 +183,26 @@ impl Child {
                 return Ok(Turn::Exit(ExitCode::SUCCESS));
             }
         };
+        self.stamp_execution_time(&mut event);
         self.send(&event)?;
         Ok(Turn::Continue)
+    }
+
+    /// Stamps the session's cumulative execution time and `max_duration`
+    /// budget onto a turn-ending event, making the child the single source of
+    /// truth for timing: the parent derives its watchdog backstop from these
+    /// fields instead of keeping a second clock. Left zero/absent when no
+    /// session exists (handshake, post-`Reset`, failed create/load).
+    fn stamp_execution_time(&self, event: &mut pb::Event) {
+        let tracker = match &self.state {
+            SessionState::Ready(repl) => repl.tracker(),
+            SessionState::Suspended(progress) => progress.tracker(),
+            SessionState::Idle => return,
+        };
+        event.total_execution_micros = u64::try_from(tracker.elapsed().as_micros()).unwrap_or(u64::MAX);
+        event.max_duration_micros = tracker
+            .max_duration()
+            .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
     }
 
     fn handle_hello(&mut self, hello: &pb::Hello) -> Result<Turn, monty_proto::FrameError> {
@@ -200,12 +218,10 @@ impl Child {
             return Ok(Turn::Exit(ExitCode::from(2)));
         }
         self.helloed = true;
-        self.send(&pb::Event {
-            kind: Some(pb::event::Kind::HelloReply(pb::HelloReply {
-                protocol_version: PROTOCOL_VERSION,
-                monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-            })),
-        })?;
+        self.send(&event(pb::event::Kind::HelloReply(pb::HelloReply {
+            protocol_version: PROTOCOL_VERSION,
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        })))?;
         Ok(Turn::Continue)
     }
 
@@ -377,9 +393,7 @@ impl Child {
                     None => state.push(0),
                 }
                 state.extend_from_slice(&payload);
-                pb::Event {
-                    kind: Some(pb::event::Kind::DumpResult(pb::DumpResult { state })),
-                }
+                event(pb::event::Kind::DumpResult(pb::DumpResult { state }))
             }
             Err(err) => violation(&format!("dump failed: {err}")),
         }
@@ -498,15 +512,13 @@ impl Child {
                         continue;
                     }
                     self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
-                    return pb::Event {
-                        kind: Some(pb::event::Kind::OsCall(pb::OsCall {
-                            function_name: name.to_owned(),
-                            args: values_to_proto(&args),
-                            kwargs: pairs_to_proto(&kwargs),
-                            call_id,
-                            not_handled_error: Some((&not_handled_error).into()),
-                        })),
-                    };
+                    return event(pb::event::Kind::OsCall(pb::OsCall {
+                        function_name: name.to_owned(),
+                        args: values_to_proto(&args),
+                        kwargs: pairs_to_proto(&kwargs),
+                        call_id,
+                        not_handled_error: Some((&not_handled_error).into()),
+                    }));
                 }
                 Ok(ReplProgress::FunctionCall(call)) => {
                     // arguments too deep for the wire resume the call with a
@@ -538,11 +550,9 @@ impl Child {
                     if let Some(state) = &mut self.type_check {
                         state.pending_snippet = None;
                     }
-                    return pb::Event {
-                        kind: Some(pb::event::Kind::Error(pb::Error {
-                            exception: Some((&err.error).into()),
-                        })),
-                    };
+                    return event(pb::event::Kind::Error(pb::Error {
+                        exception: Some((&err.error).into()),
+                    }));
                 }
             }
         }
@@ -557,11 +567,9 @@ impl Child {
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         match type_check(&SourceFile::new(code, &self.script_name), stubs.as_ref()) {
             Ok(None) => None,
-            Ok(Some(diagnostics)) => Some(pb::Event {
-                kind: Some(pb::event::Kind::TypingError(pb::TypingError {
-                    diagnostics: diagnostics.to_string(),
-                })),
-            }),
+            Ok(Some(diagnostics)) => Some(event(pb::event::Kind::TypingError(pb::TypingError {
+                diagnostics: diagnostics.to_string(),
+            }))),
             Err(err) => Some(violation(&format!("type checker failed: {err}"))),
         }
     }
@@ -582,67 +590,65 @@ impl Child {
     /// unrecoverable conditions — the child exits right after.
     fn fatal(&self, message: &str) {
         eprintln!("monty --subprocess fatal error: {message}");
-        let _ = self.send(&pb::Event {
-            kind: Some(pb::event::Kind::FatalError(pb::FatalError {
-                message: message.to_owned(),
-            })),
-        });
+        let _ = self.send(&event(pb::event::Kind::FatalError(pb::FatalError {
+            message: message.to_owned(),
+        })));
+    }
+}
+
+/// Wraps an event kind into an `Event` with zeroed timing fields —
+/// `Child::handle` stamps `total_execution_micros`/`max_duration_micros`
+/// onto every turn-ending event just before it is sent.
+fn event(kind: pb::event::Kind) -> pb::Event {
+    pb::Event {
+        kind: Some(kind),
+        ..Default::default()
     }
 }
 
 /// Builds the turn-ending event for a recoverable protocol violation (wrong
 /// state, bad call id, invalid payload). The child's state is unchanged.
 fn violation(message: &str) -> pb::Event {
-    pb::Event {
-        kind: Some(pb::event::Kind::Error(pb::Error {
-            exception: Some(pb::MontyError {
-                exc_type: ExcType::RuntimeError.to_string(),
-                message: Some(format!("protocol violation: {message}")),
-                traceback: vec![],
-            }),
-        })),
-    }
+    event(pb::event::Kind::Error(pb::Error {
+        exception: Some(pb::MontyError {
+            exc_type: ExcType::RuntimeError.to_string(),
+            message: Some(format!("protocol violation: {message}")),
+            traceback: vec![],
+        }),
+    }))
 }
 
 fn ok_event() -> pb::Event {
-    pb::Event {
-        kind: Some(pb::event::Kind::Ok(pb::Ok {})),
-    }
+    event(pb::event::Kind::Ok(pb::Ok {}))
 }
 
 /// Builds a turn-ending `Error` event from an exception type and message.
 fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
-    pb::Event {
-        kind: Some(pb::event::Kind::Error(pb::Error {
-            exception: Some(pb::MontyError {
-                exc_type: exc_type.to_string(),
-                message: Some(message.to_owned()),
-                traceback: vec![],
-            }),
-        })),
-    }
+    event(pb::event::Kind::Error(pb::Error {
+        exception: Some(pb::MontyError {
+            exc_type: exc_type.to_string(),
+            message: Some(message.to_owned()),
+            traceback: vec![],
+        }),
+    }))
 }
 
 /// Builds the suspension event for a fresh `FunctionCall` (depth-checked by
 /// the caller).
 fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::Event {
-    pb::Event {
-        kind: Some(pb::event::Kind::FunctionCall(pb::FunctionCall {
-            function_name: call.function_name.clone(),
-            args: values_to_proto(&call.args),
-            kwargs: pairs_to_proto(&call.kwargs),
-            call_id: call.call_id,
-            method_call: call.method_call,
-        })),
-    }
+    event(pb::event::Kind::FunctionCall(pb::FunctionCall {
+        function_name: call.function_name.clone(),
+        args: values_to_proto(&call.args),
+        kwargs: pairs_to_proto(&call.kwargs),
+        call_id: call.call_id,
+        method_call: call.method_call,
+    }))
 }
 
 fn complete_event(value: &MontyObject) -> pb::Event {
-    pb::Event {
-        kind: Some(pb::event::Kind::Complete(pb::Complete {
-            value: Some(value.into()),
-        })),
-    }
+    event(pb::event::Kind::Complete(pb::Complete {
+        value: Some(value.into()),
+    }))
 }
 
 /// Builds the suspension event for a non-`Complete`, non-`OsCall` progress
@@ -684,7 +690,7 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
         }),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
     };
-    pb::Event { kind: Some(kind) }
+    event(kind)
 }
 
 /// Appends a `u32 LE`-length-prefixed string field to a dump envelope.
@@ -776,12 +782,10 @@ impl ProtoPrint {
         if self.buf.is_empty() {
             return Ok(());
         }
-        let event = pb::Event {
-            kind: Some(pb::event::Kind::Print(pb::Print {
-                stream: pb::PrintStream::Stdout.into(),
-                text: mem::take(&mut self.buf),
-            })),
-        };
+        let event = event(pb::event::Kind::Print(pb::Print {
+            stream: pb::PrintStream::Stdout.into(),
+            text: mem::take(&mut self.buf),
+        }));
         self.writer.borrow_mut().write(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,
@@ -829,11 +833,9 @@ fn install_panic_hook() {
         // the shared BufWriter may hold a partial frame we cannot complete —
         // a corrupt tail is fine, the parent already treats it as a crash
         let mut writer = FrameWriter::new(io::stdout());
-        let _ = writer.write(&pb::Event {
-            kind: Some(pb::event::Kind::FatalError(pb::FatalError {
-                message: format!("child panicked: {info}"),
-            })),
-        });
+        let _ = writer.write(&event(pb::event::Kind::FatalError(pb::FatalError {
+            message: format!("child panicked: {info}"),
+        })));
         default_hook(info);
     }));
 }

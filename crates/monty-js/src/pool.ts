@@ -32,6 +32,18 @@ export interface MontyOptions {
    * wedges the interpreter itself.
    */
   requestTimeout?: number
+  /**
+   * Grace period in seconds for the automatic `maxDurationSecs` backstop
+   * (default 1). For sessions checked out with a `maxDurationSecs` limit,
+   * the worker reports its cumulative execution time on every protocol turn
+   * (the sandbox clock runs only while the interpreter executes, never while
+   * suspended waiting on the host) and the host kills the worker this long
+   * after the remaining budget expires — covering cases where the in-sandbox
+   * limit cannot fire, like a blocking syscall inside a mount. Surfaces as
+   * `MontyCrashedError` (`timedOut: true`), losing the session. `null`
+   * disables the backstop; `requestTimeout` applies independently.
+   */
+  durationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
 }
@@ -73,6 +85,7 @@ export class Monty {
   private readonly maxProcesses: number
   private readonly checkoutTimeoutMs: number | null
   private readonly requestTimeoutMs: number | null
+  private readonly durationLimitGraceMs: number | null
   private readonly maxCheckoutsPerWorker: number | null
   private readonly idle: Worker[] = []
   /** Workers alive in any state (idle or checked out). */
@@ -86,6 +99,12 @@ export class Monty {
     this.maxProcesses = options.maxProcesses ?? availableParallelism()
     this.checkoutTimeoutMs = options.checkoutTimeout !== undefined ? options.checkoutTimeout * 1000 : null
     this.requestTimeoutMs = options.requestTimeout !== undefined ? options.requestTimeout * 1000 : null
+    this.durationLimitGraceMs =
+      options.durationLimitGrace === undefined
+        ? 1000
+        : options.durationLimitGrace === null
+          ? null
+          : options.durationLimitGrace * 1000
     this.maxCheckoutsPerWorker = options.maxCheckoutsPerWorker ?? null
     if (this.maxProcesses < 1) {
       throw new Error('maxProcesses must be at least 1')
@@ -122,7 +141,9 @@ export class Monty {
    */
   async checkout(options: CheckoutOptions = {}): Promise<MontySession> {
     const worker = await this.acquire()
-    const session = new MontySession(this, worker, this.requestTimeoutMs)
+    const durationBudgetMs =
+      options.limits?.maxDurationSecs !== undefined ? options.limits.maxDurationSecs * 1000 : null
+    const session = new MontySession(this, worker, this.requestTimeoutMs, durationBudgetMs, this.durationLimitGraceMs)
     try {
       await session.createRepl(buildReplCreate(options))
     } catch (err) {

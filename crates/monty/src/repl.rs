@@ -483,6 +483,21 @@ impl<T: ResourceTracker> ReplProgress<T> {
             Self::Complete { repl, .. } => repl,
         }
     }
+
+    /// Returns the session's resource tracker, whatever the progress state.
+    ///
+    /// Lets hosts read resource accounting — e.g. cumulative execution time
+    /// for `max_duration` budgeting — at any suspension point without
+    /// consuming the progress.
+    pub fn tracker(&self) -> &T {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.repl.tracker(),
+            Self::OsCall(call) => call.snapshot.repl.tracker(),
+            Self::ResolveFutures(state) => state.repl.tracker(),
+            Self::NameLookup(lookup) => lookup.snapshot.repl.tracker(),
+            Self::Complete { repl, .. } => repl.tracker(),
+        }
+    }
 }
 
 impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
@@ -691,7 +706,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                     old.drop_with_heap(&mut vm);
 
                     vm.push(value);
-                    vm.run()
+                    vm.run_external()
                 }
                 NameLookupResult::Undefined => {
                     let err: RunError = ExcType::name_error(&name).into();
@@ -930,7 +945,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
                         match vm.add_pending_call(call_id) {
-                            Ok(()) => vm.run(),
+                            Ok(()) => vm.run_external(),
                             Err(err) => vm.resume_with_exception(err),
                         }
                     }

@@ -69,6 +69,19 @@ pub struct PoolConfig {
     /// backstops the child-side `ResourceLimits` — it also catches a child
     /// that hangs in ways the sandbox limits cannot see.
     pub request_timeout: Option<Duration>,
+    /// Grace period for the automatic `max_duration` backstop.
+    ///
+    /// When a session has a `ResourceLimits::max_duration` budget, the worker
+    /// reports its cumulative execution time on every turn-ending event (the
+    /// sandbox clock is the single source of truth: it runs only while the
+    /// interpreter executes, never during suspensions waiting on the host or
+    /// between feeds), and the parent arms each execution turn's watchdog
+    /// with the remaining budget plus this grace. The child enforces the
+    /// limit itself with a clean `TimeoutError`; the backstop only fires
+    /// when that enforcement cannot (e.g. a blocking syscall inside a mount)
+    /// and surfaces as [`PoolError::Timeout`], losing the session. `None`
+    /// disables the backstop; `request_timeout` still applies independently.
+    pub duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
@@ -76,7 +89,8 @@ pub struct PoolConfig {
 
 impl PoolConfig {
     /// Creates a config with defaults: `min_processes = 1`, `max_processes =`
-    /// available parallelism, no timeouts, no recycling.
+    /// available parallelism, no timeouts, a 1s `duration_limit_grace`, no
+    /// recycling.
     pub fn new(binary_path: impl Into<PathBuf>) -> Self {
         Self {
             min_processes: 1,
@@ -85,6 +99,7 @@ impl PoolConfig {
             extra_args: vec![],
             checkout_timeout: None,
             request_timeout: None,
+            duration_limit_grace: Some(Duration::from_secs(1)),
             max_checkouts_per_worker: None,
         }
     }

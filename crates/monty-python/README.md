@@ -93,7 +93,14 @@ with Monty() as pool:
 ### Resource limits
 
 Limits are enforced inside the worker; the pool's `request_timeout` is a
-host-side backstop that kills a hung worker outright.
+host-side backstop that kills a hung worker outright. `max_duration_secs`
+limits cumulative *execution* time — the clock runs only while the
+interpreter executes, never while suspended waiting on the host, and
+accumulates across feeds. The worker reports its execution time on every
+protocol turn, and sessions with the limit are additionally killed
+`duration_limit_grace` (1s, not currently configurable from Python) after
+the remaining budget expires, covering hangs the in-sandbox limit cannot
+catch (e.g. a blocking syscall inside a mount).
 
 ```python
 from pydantic_monty import Monty, MontyRuntimeError

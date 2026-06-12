@@ -820,7 +820,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // at its exit, so they share the same address space as ordinary
         // operand values.
         self.push_frame(CallFrame::new_module(code, exc_stack_base))?;
-        self.run()
+        self.run_external()
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -857,16 +857,37 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         self.scheduler.current_task_id().is_none_or(TaskId::is_main)
     }
 
+    /// Runs the VM from a host boundary, bracketing the loop with the
+    /// tracker's execution-clock hooks so `max_duration` measures cumulative
+    /// *execution* time only — the clock stops whenever this returns
+    /// (completion, error, or suspension at an external call).
+    ///
+    /// Every host turn must enter the loop through exactly one
+    /// `run_external` call, and it must NEVER nest: VM-internal re-entry
+    /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
+    /// instead, whose time is already inside the enclosing window.
+    pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
+        self.heap.tracker().on_execution_start();
+        let result = self.run();
+        self.heap.tracker().on_execution_stop();
+        result
+    }
+
     /// Main execution loop.
     ///
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
     ///
+    /// Private: host boundaries go through [`Self::run_external`] (directly
+    /// or via `run_module`/`resume`/`resume_with_exception`/
+    /// `resume_with_resolved_futures`) so the execution clock is accounted;
+    /// only VM-internal re-entry calls this raw loop.
+    ///
     /// Uses locally cached `code` and `ip` variables to avoid repeated
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
-    pub fn run(&mut self) -> Result<FrameExit, RunError> {
+    fn run(&mut self) -> Result<FrameExit, RunError> {
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
@@ -1724,13 +1745,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             match result {
                 Ok(value) => {
                     self.push(value);
-                    self.run()
+                    self.run_external()
                 }
                 Err(err) => self.resume_with_exception(err),
             }
         } else {
             self.push(value);
-            self.run()
+            self.run_external()
         }
     }
 
@@ -1780,7 +1801,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Err(uncaught_error);
         }
         // Exception was caught, continue execution
-        self.run()
+        self.run_external()
     }
 
     // ========================================================================

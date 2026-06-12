@@ -856,7 +856,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 TaskState::Ready => {
                     self.scheduler.remove_from_ready_queue(current_task_id);
-                    return self.run();
+                    return self.run_external();
                 }
                 TaskState::Completed(_) => {
                     // Should never have suspended if the task was completed
@@ -876,7 +876,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             }
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
-            return self.run();
+            return self.run_external();
         }
 
         let pending_call_ids = self.get_pending_call_ids();

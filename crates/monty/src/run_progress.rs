@@ -370,7 +370,7 @@ impl<T: ResourceTracker> NameLookup<T> {
                         old.drop_with_heap(&mut vm);
 
                         vm.push(value);
-                        vm.run()
+                        vm.run_external()
                     }
                     NameLookupResult::Undefined => {
                         let err = ExcType::name_error(&name);
@@ -573,7 +573,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                     ExtFunctionResult::Future(raw_call_id) => {
                         let call_id = CallId::new(raw_call_id);
                         match vm.add_pending_call(call_id) {
-                            Ok(()) => vm.run(),
+                            Ok(()) => vm.run_external(),
                             Err(err) => vm.resume_with_exception(err),
                         }
                     }

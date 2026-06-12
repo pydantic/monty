@@ -126,6 +126,21 @@ pub struct Checkout {
     pool: Arc<PoolInner>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
+    /// The session's `max_duration` limit, when one was configured — the
+    /// budget for the parent-side execution-time backstop. Set from the
+    /// checkout config on `create`; for `Pool::checkout_load` restores it is
+    /// adopted from the timing fields the worker stamps on its first reply
+    /// (the limits travel inside the opaque dump).
+    duration_budget: Option<Duration>,
+    /// Cumulative sandbox execution time as last reported by the worker —
+    /// the child's clock is the single source of truth (it runs only while
+    /// the interpreter executes, never during suspensions or between feeds,
+    /// and survives dump/load). Monotonic max across turns so a compromised
+    /// worker cannot rewind the parent's view of its consumed budget.
+    reported_execution: Duration,
+    /// The deadline armed for the most recent turn, reported by
+    /// [`PoolError::Timeout`] when the watchdog fires.
+    armed_deadline: Option<Duration>,
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -147,6 +162,9 @@ impl Checkout {
             worker: Some(worker),
             pool,
             pending: None,
+            duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
+            reported_execution: Duration::ZERO,
+            armed_deadline: None,
         };
         let request = pb::Request {
             kind: Some(pb::request::Kind::ReplCreate(pb::ReplCreate {
@@ -156,7 +174,7 @@ impl Checkout {
                 type_check_stubs: repl.type_check_stubs.clone(),
             })),
         };
-        match this.request_turn(&request, &mut |_, _| {})? {
+        match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
             other => Err(this.protocol_violation(&format!("unexpected reply to ReplCreate: {other:?}"))),
         }
@@ -173,11 +191,14 @@ impl Checkout {
             worker: Some(worker),
             pool,
             pending: None,
+            duration_budget: None,
+            reported_execution: Duration::ZERO,
+            armed_deadline: None,
         };
         let request = pb::Request {
             kind: Some(pb::request::Kind::Load(pb::Load { state })),
         };
-        match this.request_turn(&request, &mut |_, _| {})? {
+        match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok((this, None)),
             ControlEvent::Turn(event) => Ok((this, Some(event))),
             other @ ControlEvent::Dump(_) => {
@@ -321,7 +342,7 @@ impl Checkout {
         let request = pb::Request {
             kind: Some(pb::request::Kind::Dump(pb::Dump {})),
         };
-        match self.request_turn(&request, &mut |_, _| {})? {
+        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
             other => Err(self.protocol_violation(&format!("unexpected reply to Dump: {other:?}"))),
         }
@@ -335,7 +356,7 @@ impl Checkout {
         let request = pb::Request {
             kind: Some(pb::request::Kind::Reset(pb::Reset {})),
         };
-        match self.request_turn(&request, &mut |_, _| {})? {
+        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => {
                 if let Some(mut worker) = self.worker.take() {
                     worker.checkouts_served += 1;
@@ -353,21 +374,60 @@ impl Checkout {
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
+    ///
+    /// This is the entry point for *execution* turns (feed/resume — the
+    /// turns where the sandbox runs code), so the watchdog deadline includes
+    /// [`Self::backstop_deadline`] on top of the configured request timeout.
     fn expect_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
-        match self.request_turn(request, on_print)? {
+        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
             other => Err(self.protocol_violation(&format!("expected a turn event, got {other:?}"))),
         }
     }
 
+    /// Parent-side kill deadline derived from the session's `max_duration`:
+    /// the execution budget remaining after the time the worker has reported
+    /// consuming so far, plus the configured grace. The child enforces the
+    /// limit itself with a clean `TimeoutError`; this deadline only fires
+    /// when that enforcement fails (e.g. a blocking syscall inside a mount
+    /// that the sandbox's periodic time check never reaches).
+    fn backstop_deadline(&self) -> Option<Duration> {
+        let budget = self.duration_budget?;
+        let grace = self.pool.config.duration_limit_grace?;
+        Some(budget.saturating_sub(self.reported_execution) + grace)
+    }
+
+    /// Adopts the timing fields the worker stamps onto every turn-ending
+    /// event. The reported total only ever ratchets up — a compromised worker
+    /// must not rewind the parent's view of its consumed budget (it can still
+    /// under-report, but each turn stays bounded by `budget + grace`). The
+    /// budget itself is only adopted when the parent doesn't already know it,
+    /// i.e. after `Pool::checkout_load`.
+    fn note_reported_time(&mut self, event: &pb::Event) {
+        self.reported_execution = self
+            .reported_execution
+            .max(Duration::from_micros(event.total_execution_micros));
+        if self.duration_budget.is_none() {
+            self.duration_budget = event.max_duration_micros.map(Duration::from_micros);
+        }
+    }
+
     /// The core protocol turn: send one request, stream prints, classify the
-    /// turn-ending event. All failure paths discard the worker except
-    /// `Runtime` / `Typing`, which are sandbox-level outcomes.
-    fn request_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
+    /// turn-ending event. The watchdog kills the worker if the turn outlives
+    /// `deadline`. All failure paths discard the worker except `Runtime` /
+    /// `Typing`, which are sandbox-level outcomes.
+    fn request_turn(
+        &mut self,
+        request: &pb::Request,
+        deadline: Option<Duration>,
+        on_print: OnPrint<'_>,
+    ) -> Result<ControlEvent, PoolError> {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        let _deadline = self.pool.watchdog.arm(worker, self.pool.config.request_timeout);
+        self.armed_deadline = deadline;
+        let _deadline = self.pool.watchdog.arm(worker, deadline);
 
         if worker.send(request).is_err() {
             return Err(self.poison("sending a request"));
@@ -376,6 +436,9 @@ impl Checkout {
             let Ok(event) = self.worker.as_mut().expect("checked above").recv() else {
                 return Err(self.poison("waiting for a reply"));
             };
+            // Print events carry no timing (the fields are zero), so this is
+            // a no-op for them thanks to the monotonic-max ratchet.
+            self.note_reported_time(&event);
             match event.kind {
                 Some(pb::event::Kind::Print(print)) => {
                     let stream = match print.stream() {
@@ -497,7 +560,7 @@ impl Checkout {
         self.pool.release_capacity();
         if timed_out {
             PoolError::Timeout {
-                timeout: self.pool.config.request_timeout.unwrap_or(Duration::ZERO),
+                timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
             }
         } else {
             PoolError::Crashed {
@@ -551,6 +614,14 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
         )))
     } else {
         Ok(())
+    }
+}
+
+/// The tighter of two optional deadlines (`None` means no deadline).
+fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (deadline, None) | (None, deadline) => deadline,
     }
 }
 
