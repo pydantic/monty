@@ -60,49 +60,32 @@ impl From<io::Error> for FrameError {
     }
 }
 
-/// Writes length-prefixed protobuf frames to a byte stream.
+/// Encodes `msg` and writes it to `writer` as one length-prefixed frame, then
+/// flushes (see the module docs for why flushing every frame is required).
 ///
-/// Flushes after every frame; see the module docs for why this is required.
-#[derive(Debug)]
-pub struct FrameWriter<W: Write> {
-    inner: W,
-}
-
-impl<W: Write> FrameWriter<W> {
-    /// Wraps a byte stream. Pass a buffered writer (e.g. `BufWriter<Stdout>`)
-    /// when the underlying stream is unbuffered.
-    pub fn new(inner: W) -> Self {
-        Self { inner }
-    }
-
-    /// Direct access to the underlying stream — for tests that need to write
-    /// raw (malformed) bytes.
-    pub fn get_mut(&mut self) -> &mut W {
-        &mut self.inner
-    }
-
-    /// Encodes `msg` and writes it as one frame, then flushes.
-    ///
-    /// Frames above [`MAX_FRAME_LEN`] fail with [`FrameError::FrameTooLarge`]
-    /// *before* anything is written: the peer's reader would reject such a
-    /// frame anyway, and failing here keeps the stream in sync so the caller
-    /// can degrade gracefully instead of desynchronizing the protocol.
-    pub fn write(&mut self, msg: &impl Message) -> Result<(), FrameError> {
-        let encoded_len = msg.encoded_len();
-        let len = u32::try_from(encoded_len)
-            .ok()
-            .filter(|&len| len <= MAX_FRAME_LEN)
-            .ok_or(FrameError::FrameTooLarge {
-                len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
-                max: MAX_FRAME_LEN,
-            })?;
-        // encode_to_vec cannot fail (Vec<u8> grows as needed)
-        let body = msg.encode_to_vec();
-        self.inner.write_all(&len.to_le_bytes())?;
-        self.inner.write_all(&body)?;
-        self.inner.flush()?;
-        Ok(())
-    }
+/// Framing carries no state between frames, so this is a plain function:
+/// callers write to whatever stream handle they have (`ChildStdin`,
+/// `io::stdout()`, a `Vec<u8>` in tests) without a wrapper object.
+///
+/// Frames above [`MAX_FRAME_LEN`] fail with [`FrameError::FrameTooLarge`]
+/// *before* anything is written: the peer's reader would reject such a
+/// frame anyway, and failing here keeps the stream in sync so the caller
+/// can degrade gracefully instead of desynchronizing the protocol.
+pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), FrameError> {
+    let encoded_len = msg.encoded_len();
+    let len = u32::try_from(encoded_len)
+        .ok()
+        .filter(|&len| len <= MAX_FRAME_LEN)
+        .ok_or(FrameError::FrameTooLarge {
+            len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
+            max: MAX_FRAME_LEN,
+        })?;
+    // encode_to_vec cannot fail (Vec<u8> grows as needed)
+    let body = msg.encode_to_vec();
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(&body)?;
+    writer.flush()?;
+    Ok(())
 }
 
 /// Reads length-prefixed protobuf frames from a byte stream.

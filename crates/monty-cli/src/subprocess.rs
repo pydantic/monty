@@ -9,25 +9,18 @@
 //! child that exits (or EOFs) *without* a `FatalError` event as crashed —
 //! stack overflows and allocator aborts produce no final frame.
 //!
-//! In this mode stdout belongs exclusively to the frame writer; diagnostics
-//! go to stderr.
+//! In this mode stdout carries only protocol frames; diagnostics go to
+//! stderr.
 
-use std::{
-    borrow::Cow,
-    cell::RefCell,
-    io::{self, BufWriter, Stdout},
-    mem, panic,
-    process::ExitCode,
-    rc::Rc,
-};
+use std::{borrow::Cow, io, mem, panic, process::ExitCode};
 
 use monty::{
     ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, FrameWriter, PROTOCOL_VERSION, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
-    pairs_to_proto, pb, values_to_proto,
+    FrameReader, PROTOCOL_VERSION, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
+    pairs_to_proto, pb, values_to_proto, write_frame,
 };
 use monty_type_checking::{SourceFile, type_check};
 
@@ -55,9 +48,8 @@ const DUMP_VERSION: u16 = 1;
 /// Runs the subprocess child loop until EOF, `Shutdown`, or a fatal error.
 pub(crate) fn run() -> ExitCode {
     install_panic_hook();
-    let writer = Rc::new(RefCell::new(FrameWriter::new(BufWriter::new(io::stdout()))));
     let mut reader = FrameReader::new(io::stdin().lock());
-    let mut child = Child::new(Rc::clone(&writer));
+    let mut child = Child::new();
 
     loop {
         match reader.read::<pb::Request>() {
@@ -81,7 +73,7 @@ pub(crate) fn run() -> ExitCode {
             // enum names), which happens during decode. The stream is still
             // in sync, so answer with a turn-ending error and keep serving.
             Err(monty_proto::FrameError::Decode(err)) => {
-                if child.send(&violation(&format!("malformed request: {err}"))).is_err() {
+                if send(&violation(&format!("malformed request: {err}"))).is_err() {
                     return ExitCode::from(3);
                 }
             }
@@ -122,9 +114,8 @@ struct TypeCheckState {
     pending_snippet: Option<String>,
 }
 
-/// All child state plus the shared frame writer.
+/// All child state.
 struct Child {
-    writer: SharedWriter,
     state: SessionState,
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
@@ -139,14 +130,9 @@ struct Child {
     helloed: bool,
 }
 
-/// The stdout frame writer, shared between turn-ending writes and the print
-/// callback that streams `Print` events mid-execution.
-type SharedWriter = Rc<RefCell<FrameWriter<BufWriter<Stdout>>>>;
-
 impl Child {
-    fn new(writer: SharedWriter) -> Self {
+    fn new() -> Self {
         Self {
-            writer,
             state: SessionState::Idle,
             script_name: String::new(),
             mounts: None,
@@ -159,7 +145,7 @@ impl Child {
     /// what the main loop should do next. `Err` means stdout is broken.
     fn handle(&mut self, request: pb::Request) -> Result<Turn, monty_proto::FrameError> {
         let Some(kind) = request.kind else {
-            self.send(&violation("request has no kind"))?;
+            send(&violation("request has no kind"))?;
             return Ok(Turn::Continue);
         };
 
@@ -186,12 +172,12 @@ impl Child {
                 ok_event()
             }
             pb::request::Kind::Shutdown(_) => {
-                self.send(&ok_event())?;
+                send(&ok_event())?;
                 return Ok(Turn::Exit(ExitCode::SUCCESS));
             }
         };
         self.stamp_execution_time(&mut event);
-        self.send(&event)?;
+        send(&event)?;
         Ok(Turn::Continue)
     }
 
@@ -214,7 +200,7 @@ impl Child {
 
     fn handle_hello(&mut self, hello: &pb::Hello) -> Result<Turn, monty_proto::FrameError> {
         if self.helloed {
-            self.send(&violation("Hello after the handshake has completed"))?;
+            send(&violation("Hello after the handshake has completed"))?;
             return Ok(Turn::Continue);
         }
         if hello.protocol_version > PROTOCOL_VERSION {
@@ -225,7 +211,7 @@ impl Child {
             return Ok(Turn::Exit(ExitCode::from(2)));
         }
         self.helloed = true;
-        self.send(&event(pb::event::Kind::HelloReply(pb::HelloReply {
+        send(&event(pb::event::Kind::HelloReply(pb::HelloReply {
             protocol_version: PROTOCOL_VERSION,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         })))?;
@@ -277,7 +263,7 @@ impl Child {
         {
             state.pending_snippet = Some(feed.code.clone());
         }
-        let mut print = ProtoPrint::new(Rc::clone(&self.writer));
+        let mut print = ProtoPrint::new();
         let result = repl.feed_start(&feed.code, inputs, PrintWriter::Callback(&mut print));
         let event = self.drive(result, &mut print);
         print.drain();
@@ -312,7 +298,7 @@ impl Child {
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Idle) else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(Rc::clone(&self.writer));
+        let mut print = ProtoPrint::new();
         let outcome = match *progress {
             ReplProgress::FunctionCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
             ReplProgress::OsCall(call) => call.resume(result, PrintWriter::Callback(&mut print)),
@@ -340,7 +326,7 @@ impl Child {
         let ReplProgress::NameLookup(lookup) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(Rc::clone(&self.writer));
+        let mut print = ProtoPrint::new();
         let outcome = lookup.resume(result, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -364,7 +350,7 @@ impl Child {
         let ReplProgress::ResolveFutures(state) = *progress else {
             unreachable!("checked above");
         };
-        let mut print = ProtoPrint::new(Rc::clone(&self.writer));
+        let mut print = ProtoPrint::new();
         let outcome = state.resume(results, PrintWriter::Callback(&mut print));
         let event = self.drive(outcome, &mut print);
         print.drain();
@@ -589,10 +575,6 @@ impl Child {
         self.script_name = String::new();
     }
 
-    fn send(&self, event: &pb::Event) -> Result<(), monty_proto::FrameError> {
-        self.writer.borrow_mut().write(event)
-    }
-
     /// Best-effort `FatalError` event, duplicated to stderr. Used only for
     /// unrecoverable conditions — the child exits right after.
     fn fatal(&self, message: &str) {
@@ -603,8 +585,16 @@ impl Child {
         // fatal paths bypass `handle`, so stamp timing here to keep the
         // "every turn-ending event carries timing" contract intact
         self.stamp_execution_time(&mut fatal_event);
-        let _ = self.send(&fatal_event);
+        let _ = send(&fatal_event);
     }
+}
+
+/// Writes one event frame to stdout.
+///
+/// Framing is stateless and `Stdout` handles share one global buffer, so a
+/// fresh handle per write is safe — no writer needs to be carried around.
+fn send(event: &pb::Event) -> Result<(), monty_proto::FrameError> {
+    write_frame(&mut io::stdout(), event)
 }
 
 /// Wraps an event kind into an `Event` with zeroed timing fields —
@@ -777,7 +767,6 @@ fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)
 /// exceeds [`Self::FLUSH_BYTES`], and [`Self::drain`] flushes any partial
 /// line before the turn-ending event so ordering is exact.
 struct ProtoPrint {
-    writer: SharedWriter,
     buf: String,
 }
 
@@ -785,11 +774,8 @@ impl ProtoPrint {
     /// Flush threshold for output that never produces a newline.
     const FLUSH_BYTES: usize = 8 * 1024;
 
-    fn new(writer: SharedWriter) -> Self {
-        Self {
-            writer,
-            buf: String::new(),
-        }
+    fn new() -> Self {
+        Self { buf: String::new() }
     }
 
     /// Writes the buffer (if any) as one `Print` event.
@@ -801,7 +787,7 @@ impl ProtoPrint {
             stream: pb::PrintStream::Stdout.into(),
             text: mem::take(&mut self.buf),
         }));
-        self.writer.borrow_mut().write(&event).map_err(|err| {
+        send(&event).map_err(|err| {
             MontyException::new(
                 ExcType::RuntimeError,
                 Some(format!("failed to stream print output: {err}")),
@@ -844,11 +830,11 @@ impl PrintWriterCallback for ProtoPrint {
 fn install_panic_hook() {
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
-        // a fresh handle: stdout's lock is reentrant on the same thread, and
-        // the shared BufWriter may hold a partial frame we cannot complete —
-        // a corrupt tail is fine, the parent already treats it as a crash
-        let mut writer = FrameWriter::new(io::stdout());
-        let _ = writer.write(&event(pb::event::Kind::FatalError(pb::FatalError {
+        // stdout's lock is reentrant on the same thread, and if the panic
+        // interrupted a write its buffer may hold a partial frame we cannot
+        // complete — a corrupt tail is fine, the parent already treats it as
+        // a crash
+        let _ = send(&event(pb::event::Kind::FatalError(pb::FatalError {
             message: format!("child panicked: {info}"),
         })));
         default_hook(info);

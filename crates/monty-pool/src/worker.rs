@@ -10,7 +10,7 @@ use std::{
     },
 };
 
-use monty_proto::{FrameError, FrameReader, FrameWriter, PROTOCOL_VERSION, pb};
+use monty_proto::{FrameError, FrameReader, PROTOCOL_VERSION, pb, write_frame};
 
 use crate::{PoolConfig, PoolError};
 
@@ -23,7 +23,8 @@ use crate::{PoolConfig, PoolError};
 pub(crate) struct Worker {
     /// Kill handle, shared with the watchdog.
     child: Arc<Mutex<Child>>,
-    writer: FrameWriter<ChildStdin>,
+    /// Child stdin; requests are written as frames via [`write_frame`].
+    writer: ChildStdin,
     reader: FrameReader<ChildStdout>,
     /// Set by the watchdog just before it kills the child, so the read
     /// failure that follows is classified as a timeout rather than a crash.
@@ -59,7 +60,7 @@ impl Worker {
             .spawn()
             .map_err(|err| PoolError::Spawn(format!("{}: {err}", config.binary_path.display())))?;
 
-        let writer = FrameWriter::new(child.stdin.take().expect("piped stdin"));
+        let writer = child.stdin.take().expect("piped stdin");
         let reader = FrameReader::new(child.stdout.take().expect("piped stdout"));
         let mut worker = Self {
             child: Arc::new(Mutex::new(child)),
@@ -96,7 +97,7 @@ impl Worker {
     }
 
     pub(crate) fn send(&mut self, request: &pb::Request) -> Result<(), FrameError> {
-        self.writer.write(request)
+        write_frame(&mut self.writer, request)
     }
 
     /// Reads one event; EOF is an error here because within a checkout the

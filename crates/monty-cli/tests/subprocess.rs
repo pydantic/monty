@@ -12,12 +12,12 @@ use std::{
 };
 
 use monty::MontyObject;
-use monty_proto::{FrameError, FrameReader, FrameWriter, PROTOCOL_VERSION, WireObject, pb};
+use monty_proto::{FrameError, FrameReader, PROTOCOL_VERSION, WireObject, pb, write_frame};
 
 /// A spawned `monty --subprocess` child with framed pipes.
 struct ChildProc {
     child: Child,
-    writer: FrameWriter<ChildStdin>,
+    writer: ChildStdin,
     reader: FrameReader<ChildStdout>,
 }
 
@@ -46,15 +46,13 @@ impl ChildProc {
             .stdout(Stdio::piped())
             .spawn()
             .expect("failed to spawn monty --subprocess");
-        let writer = FrameWriter::new(child.stdin.take().expect("child stdin"));
+        let writer = child.stdin.take().expect("child stdin");
         let reader = FrameReader::new(child.stdout.take().expect("child stdout"));
         Self { child, writer, reader }
     }
 
     fn send(&mut self, kind: pb::request::Kind) {
-        self.writer
-            .write(&pb::Request { kind: Some(kind) })
-            .expect("failed to write request");
+        write_frame(&mut self.writer, &pb::Request { kind: Some(kind) }).expect("failed to write request");
     }
 
     /// Reads a single event.
@@ -613,7 +611,7 @@ fn garbage_stdin_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
     // valid length prefix followed by a truncated stream: the child reads a
     // mangled frame and must bail out with FatalError + exit code 2
-    let raw = child.writer.get_mut();
+    let raw = &mut child.writer;
     raw.write_all(&[0xFF, 0xFF, 0xFF, 0x7F]).unwrap();
     raw.flush().unwrap();
     drop_stdin(&mut child);
@@ -697,6 +695,6 @@ fn reset_returns_child_to_idle_for_reuse() {
 
 /// Closes the child's stdin without dropping the rest of the harness.
 fn drop_stdin(_child: &mut ChildProc) {
-    // FrameWriter owns ChildStdin; nothing to do — the test just stops
+    // ChildProc owns ChildStdin; nothing to do — the test just stops
     // writing. Present for readability at call sites.
 }

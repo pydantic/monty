@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-use monty_proto::{FrameError, FrameReader, FrameWriter, pb};
+use monty_proto::{FrameError, FrameReader, pb, write_frame};
 
 /// A reader that returns at most one byte per `read` call, exercising the
 /// partial-read loop in the frame reader.
@@ -25,14 +25,15 @@ fn hello() -> pb::Request {
 #[test]
 fn frames_round_trip() {
     let mut buf = Vec::new();
-    let mut writer = FrameWriter::new(&mut buf);
-    writer.write(&hello()).unwrap();
-    writer
-        .write(&pb::Event {
+    write_frame(&mut buf, &hello()).unwrap();
+    write_frame(
+        &mut buf,
+        &pb::Event {
             kind: Some(pb::event::Kind::Ok(pb::Ok {})),
             ..Default::default()
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
     let mut reader = FrameReader::new(buf.as_slice());
     let req: pb::Request = reader.read().unwrap().expect("first frame");
@@ -46,7 +47,7 @@ fn frames_round_trip() {
 #[test]
 fn frames_round_trip_through_chunked_reads() {
     let mut buf = Vec::new();
-    FrameWriter::new(&mut buf).write(&hello()).unwrap();
+    write_frame(&mut buf, &hello()).unwrap();
     let mut reader = FrameReader::new(OneByteReader(buf.as_slice()));
     let req: pb::Request = reader.read().unwrap().expect("frame");
     assert_eq!(req, hello());
@@ -78,7 +79,7 @@ fn truncated_length_prefix_is_an_error() {
 #[test]
 fn truncated_body_is_an_error() {
     let mut buf = Vec::new();
-    FrameWriter::new(&mut buf).write(&hello()).unwrap();
+    write_frame(&mut buf, &hello()).unwrap();
     buf.truncate(buf.len() - 1); // drop the last body byte
     let mut reader = FrameReader::new(buf.as_slice());
     let err = reader.read::<pb::Request>().expect_err("truncated body");

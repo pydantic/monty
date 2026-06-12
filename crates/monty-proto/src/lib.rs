@@ -12,7 +12,7 @@
 //!
 //! - [`pb`] — prost-generated message types (checked in; regenerate with
 //!   `make generate-proto`)
-//! - [`FrameReader`] / [`FrameWriter`] — 4-byte LE length-prefixed framing
+//! - [`FrameReader`] / [`write_frame`] — 4-byte LE length-prefixed framing
 //! - conversions between [`pb`] types and monty's public types
 //!   ([`monty::MontyObject`], [`monty::MontyException`], ...)
 //!
@@ -28,7 +28,7 @@ pub use convert::{
     MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
     pairs_from_proto, pairs_to_proto, values_from_proto, values_to_proto,
 };
-pub use frame::{FrameError, FrameReader, FrameWriter, MAX_FRAME_LEN};
+pub use frame::{FrameError, FrameReader, MAX_FRAME_LEN, write_frame};
 pub use generated::pb;
 pub use wire::WireObject;
 
