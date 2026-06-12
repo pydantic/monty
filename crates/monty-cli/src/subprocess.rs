@@ -29,8 +29,6 @@ use monty_proto::{
     FrameReader, FrameWriter, PROTOCOL_VERSION, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
     pairs_to_proto, pb, values_to_proto,
 };
-// see main.rs — import style matches the existing rustfmt skip there
-#[rustfmt::skip]
 use monty_type_checking::{SourceFile, type_check};
 
 /// The child always runs with `LimitedTracker`: an absent/empty limits message
@@ -599,15 +597,19 @@ impl Child {
     /// unrecoverable conditions — the child exits right after.
     fn fatal(&self, message: &str) {
         eprintln!("monty --subprocess fatal error: {message}");
-        let _ = self.send(&event(pb::event::Kind::FatalError(pb::FatalError {
+        let mut fatal_event = event(pb::event::Kind::FatalError(pb::FatalError {
             message: message.to_owned(),
-        })));
+        }));
+        // fatal paths bypass `handle`, so stamp timing here to keep the
+        // "every turn-ending event carries timing" contract intact
+        self.stamp_execution_time(&mut fatal_event);
+        let _ = self.send(&fatal_event);
     }
 }
 
 /// Wraps an event kind into an `Event` with zeroed timing fields —
-/// `Child::handle` stamps `total_execution_micros`/`max_duration_micros`
-/// onto every turn-ending event just before it is sent.
+/// `Child::handle` (and `Child::fatal`) stamps `total_execution_micros`/
+/// `max_duration_micros` onto every turn-ending event just before it is sent.
 fn event(kind: pb::event::Kind) -> pb::Event {
     pb::Event {
         kind: Some(kind),

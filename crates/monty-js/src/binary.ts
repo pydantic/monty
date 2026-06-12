@@ -96,8 +96,16 @@ function platformPackageBinary(): string | null {
   const require = createRequire(import.meta.url)
   try {
     return require.resolve(`@pydantic/monty-${triple}/${EXE}`)
-  } catch {
-    return null
+  } catch (err) {
+    // Only not-found-style failures fall through (package not installed, or
+    // installed without the binary). Anything else — permission errors,
+    // malformed package.json — is a real problem the user must see, not a
+    // cue to silently pick a different binary.
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+      return null
+    }
+    throw err
   }
 }
 

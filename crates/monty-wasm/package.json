@@ -22,7 +22,12 @@
     "index.js",
     "wrapper.js",
     "wrapper.d.ts",
-    "browser.js"
+    "browser.js",
+    "monty.wasi.cjs",
+    "monty.wasi-browser.js",
+    "wasi-worker.mjs",
+    "wasi-worker-browser.mjs",
+    "monty.wasm32-wasi.wasm"
   ],
   "napi": {
     "binaryName": "monty",
@@ -39,19 +44,16 @@
     "access": "public"
   },
   "scripts": {
-    "artifacts": "napi artifacts",
     "build": "run-s build:napi build:ts",
     "build:debug": "run-s build:napi:debug build:ts",
     "build:napi": "napi build --platform --release --esm --target wasm32-wasip1-threads",
     "build:napi:debug": "napi build --platform --esm --target wasm32-wasip1-threads",
     "build:ts": "tsc",
-    "create-npm-dirs": "napi create-npm-dirs",
     "format": "run-p format:prettier format:rs format:toml",
     "format:prettier": "prettier . -w",
     "format:toml": "taplo format",
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
-    "prepublishOnly": "napi prepublish -t npm",
     "test": "ava",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"

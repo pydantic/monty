@@ -84,7 +84,9 @@ export class Worker {
     // The handshake involves no user code, so a fixed deadline is safe; it
     // turns a wedged/wrong binary into a clear error instead of hanging pool
     // creation forever (the per-turn requestTimeout only covers turns).
+    let handshakeTimedOut = false
     const deadline = setTimeout(() => {
+      handshakeTimedOut = true
       worker.kill()
     }, HANDSHAKE_TIMEOUT_MS)
     try {
@@ -98,7 +100,14 @@ export class Worker {
       }
     } catch (err) {
       worker.kill()
-      throw err
+      // The kill above makes the pending read fail with a generic crash
+      // error; when the deadline fired, replace it with the real cause.
+      throw handshakeTimedOut
+        ? new MontyCrashedError(
+            `the worker process was killed because its startup handshake did not complete within ${HANDSHAKE_TIMEOUT_MS / 1000}s`,
+            { timedOut: true, exitStatus: worker.exitStatus },
+          )
+        : err
     } finally {
       clearTimeout(deadline)
     }
@@ -152,7 +161,13 @@ export class Worker {
 
   /** Waits up to `ms` for the exit status (the child may still be dying). */
   private waitExitStatus(ms: number): Promise<string | null> {
-    if (this.exitStatus !== null || this.proc.exitCode !== null || this.proc.signalCode !== null) {
+    // node can know the exit code/signal before our 'exit' handler has run —
+    // derive the status from the proc fields rather than dropping it.
+    if (this.exitStatus === null && (this.proc.exitCode !== null || this.proc.signalCode !== null)) {
+      this.exitStatus =
+        this.proc.signalCode !== null ? `signal: ${this.proc.signalCode}` : `exit code: ${this.proc.exitCode}`
+    }
+    if (this.exitStatus !== null) {
       return Promise.resolve(this.exitStatus)
     }
     return new Promise((resolve) => {

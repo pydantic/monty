@@ -427,20 +427,26 @@ fn out_of_range_temporal_values_are_rejected() {
         "failed to decode Protobuf message: invalid value for DateValue.month: 4096 is outside the range 1..=12"
     );
 
-    let datetime_with_hour = |hour| {
+    let datetime = |hour, minute, second, microsecond| {
         Kind::Datetime(oracle::DateTimeValue {
             year: 2026,
             month: 1,
             day: 1,
             hour,
-            minute: 0,
-            second: 0,
-            microsecond: 0,
+            minute,
+            second,
+            microsecond,
             offset_seconds: None,
             timezone_name: None,
         })
     };
-    assert!(rejected_field(datetime_with_hour(24), "DateTimeValue.hour"));
+    assert!(rejected_field(datetime(24, 0, 0, 0), "DateTimeValue.hour"));
+    assert!(rejected_field(datetime(0, 60, 0, 0), "DateTimeValue.minute"));
+    assert!(rejected_field(datetime(0, 0, 60, 0), "DateTimeValue.second"));
+    assert!(rejected_field(
+        datetime(0, 0, 0, 1_000_000),
+        "DateTimeValue.microsecond"
+    ));
 
     let timedelta = |seconds, microseconds| {
         Kind::Timedelta(oracle::TimeDeltaValue {
