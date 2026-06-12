@@ -33,10 +33,13 @@ echo "Created: $PLATFORM_TGZ $MAIN_TGZ"
 
 echo "=== Installing in smoke-test ==="
 cd "$ROOT_DIR/smoke-test"
-rm -rf node_modules package-lock.json
+rm -rf node_modules package-lock.json dist
 
-npm install "../$PLATFORM_TGZ" --force
-npm install "../$MAIN_TGZ" --force
+# --no-save/--no-package-lock keep the tarball paths out of the checked-in
+# package.json (they're platform- and version-specific, so committing them
+# breaks the smoke test everywhere else).
+npm install "../$PLATFORM_TGZ" --force --no-save --no-package-lock
+npm install "../$MAIN_TGZ" --force --no-save --no-package-lock
 
 echo "=== Type checking ==="
 npm run type-check

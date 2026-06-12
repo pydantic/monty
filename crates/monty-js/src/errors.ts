@@ -157,7 +157,7 @@ export class MontyTypingError extends MontyError {
 export class MontyCrashedError extends MontyError {
   /** True when the worker was killed by the `requestTimeout` watchdog. */
   readonly timedOut: boolean
-  /** Worker exit description (e.g. `signal: 9 (SIGKILL)`), when known. */
+  /** Worker exit description (e.g. `signal: SIGKILL` or `exit code: 1`), when known. */
   readonly exitStatus: string | null
 
   constructor(message: string, options: { timedOut?: boolean; exitStatus?: string | null } = {}) {

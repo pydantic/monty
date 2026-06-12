@@ -4,7 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "noEmit": true,
+    "outDir": "dist",
     "skipLibCheck": true
   },
   "include": ["test.ts"]

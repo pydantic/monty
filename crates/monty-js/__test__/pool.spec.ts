@@ -100,7 +100,9 @@ test('killed worker surfaces as MontyCrashedError', async (t) => {
   process.kill(session.workerPid!, 'SIGKILL')
   const error = await t.throwsAsync(() => session.feedRun('1 + 1'), { instanceOf: MontyCrashedError })
   t.false(error.timedOut)
-  t.is(error.exitStatus, 'signal: SIGKILL')
+  // Windows has no signals: process.kill('SIGKILL') calls TerminateProcess,
+  // which node reports as a plain exit code of 1.
+  t.is(error.exitStatus, process.platform === 'win32' ? 'exit code: 1' : 'signal: SIGKILL')
 })
 
 test('session is unusable after a crash but the pool recovers', async (t) => {
