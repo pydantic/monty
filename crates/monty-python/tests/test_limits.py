@@ -114,9 +114,10 @@ def test_limits_with_inputs(monty_run: RunMonty):
     assert monty_run('x * 2', inputs={'x': 21}, limits={'max_duration_secs': 5.0}) == snapshot(42)
 
 
-def test_limits_wrong_type_raises_error(monty_run: RunMonty):
+def test_limits_wrong_type_raises_error(pool: Monty):
     with pytest.raises(TypeError):
-        monty_run('1 + 1', limits={'max_allocations': 'not an int'})
+        with pool.checkout(limits={'max_allocations': 'not an int'}):  # pyright: ignore[reportArgumentType]
+            pass
 
 
 def test_limits_none_value_allowed(monty_run: RunMonty):

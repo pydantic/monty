@@ -65,20 +65,21 @@ class ResourceLimits(TypedDict, total=False):
     """
     Configuration for resource limits during code execution.
 
-    All limits are optional. Omit a key to disable that limit.
+    All limits are optional. Omit a key — or set it to `None` explicitly —
+    to disable that limit.
     """
 
-    max_allocations: int
+    max_allocations: int | None
     """Maximum number of heap allocations allowed."""
 
-    max_duration_secs: float
+    max_duration_secs: float | None
     """Maximum execution time in seconds."""
 
-    max_memory: int
+    max_memory: int | None
     """Maximum heap memory in bytes."""
 
-    gc_interval: int
+    gc_interval: int | None
     """Run garbage collection every N allocations."""
 
-    max_recursion_depth: int
+    max_recursion_depth: int | None
     """Maximum function call stack depth (default: 1000)."""

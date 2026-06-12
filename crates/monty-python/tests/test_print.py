@@ -312,7 +312,7 @@ def test_collect_string_accumulates_across_feeds(pool: Monty) -> None:
 
 def test_collectors_are_valid_print_callback_values(monty_run: RunMonty) -> None:
     with pytest.raises(TypeError) as exc_info:
-        monty_run('None', print_callback='collect-string')
+        monty_run('None', print_callback='collect-string')  # pyright: ignore[reportArgumentType]
     assert str(exc_info.value) == snapshot(
         'print_callback must be a callable, CollectStreams(), CollectString(), or None'
     )

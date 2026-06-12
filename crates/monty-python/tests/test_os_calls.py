@@ -175,7 +175,7 @@ def test_os_not_provided_error(monty_run: RunMonty):
 def test_not_callable(monty_run: RunMonty):
     """Passing a non-callable os raises TypeError."""
     with pytest.raises(TypeError) as exc_info:
-        monty_run('from pathlib import Path; Path("/tmp/test.txt").exists()', os=123)
+        monty_run('from pathlib import Path; Path("/tmp/test.txt").exists()', os=123)  # pyright: ignore[reportArgumentType]
     assert exc_info.value.args[0] == snapshot("'int' object is not callable")
 
 
