@@ -27,6 +27,17 @@ the *host API* surface.
 - Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
   blocked on the worker; use sandbox `limits` and/or the pool's
   `request_timeout` (which kills the worker).
+- **Workers never spawn subprocesses, and the pool depends on it.** The
+  interpreter exposes no `fork`/`exec`/subprocess surface. The watchdog
+  enforces `request_timeout` (and the `max_duration` backstop) by killing the
+  single worker PID, which closes the worker's stdout and unblocks the
+  parent's blocked read. A worker that forked a grandchild inheriting that
+  pipe could hold it open past the kill and hang the parent forever, so the
+  no-subprocess property is a hard sandbox invariant, not just a missing
+  feature — and the pool deliberately does **not** add process-group / Job
+  Object teardown to defend against it. A sandbox escape that bypassed the
+  invariant is out of scope here: it is already arbitrary native code running
+  in the worker.
 - **`max_duration` measures cumulative execution time, and the worker's
   clock is the single source of truth.** The in-sandbox clock runs only
   while the interpreter executes — never while suspended waiting on the
@@ -60,6 +71,14 @@ the *host API* surface.
   value fails the protocol turn rather than crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
+- A single value whose encoded form would exceed the wire frame limit
+  (256 MiB) — a feed input, an external-function return value, or a snippet's
+  final result — cannot cross the boundary. This is a *session-preserving*
+  failure: the host call raises a catchable error and the worker stays
+  usable, rather than the oversize frame being treated as a worker crash. The
+  one exception is an external function whose *arguments* exceed the limit:
+  the worker has already suspended to ask for them and cannot be cleanly
+  resumed, so that case still loses the session (surfacing as a crash).
 - Semantic validation of wire values (date ranges, timedelta normalization,
   exception/type/builtin names) happens *while decoding* the frame. A frame
   carrying an invalid value therefore fails the whole protocol turn: a parent
@@ -73,9 +92,14 @@ the *host API* surface.
 - **Typing errors** (`checkout(type_check=True)`) raise `MontyTypingError`
   whose diagnostics were rendered in the worker with the default format —
   `display()` takes no arguments.
-- **Print callbacks** receive line-buffered chunks (one call per line or
-  8 KiB), not per-fragment writes. A callback that raises aborts the host
-  call after the current protocol turn, not mid-`print`.
+- **Print callbacks** receive buffered chunks flushed at newline boundaries
+  or once ~8 KiB accumulates — not per-fragment writes. A chunk may contain
+  more than one line, and output larger than the threshold is split into
+  ~8 KiB pieces (so a chunk is bounded, but is not guaranteed to be exactly
+  one line). A callback that raises aborts the feed after the current
+  protocol turn, not mid-`print`; and if that turn had suspended (an external
+  function, OS call, or name lookup), the session cannot be resumed and is
+  ended — a later feed on it raises rather than continuing.
 - **Mounts are worker-local.** `MountDir` objects contribute configuration
   only; `mode='overlay'` writes live in the worker for the duration of one
   feed and are discarded when it ends — the host `MountDir` object's overlay

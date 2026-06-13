@@ -15,18 +15,6 @@
 //! to the pool. A [`Checkout`] dropped without `finish` kills its worker —
 //! mid-execution state cannot be trusted back into the pool.
 //!
-//! ```no_run
-//! # fn main() -> Result<(), monty_pool::PoolError> {
-//! use monty_pool::{Pool, PoolConfig, ReplConfig, TurnEvent};
-//!
-//! let pool = Pool::new(PoolConfig::new("target/debug/monty"))?;
-//! let mut session = pool.checkout(&ReplConfig::default())?;
-//! let event = session.feed("1 + 1", vec![], vec![], false, &mut |_, _| {})?;
-//! assert!(matches!(event, TurnEvent::Complete(_)));
-//! session.finish()?;
-//! # Ok(()) }
-//! ```
-//!
 //! # Crash semantics
 //!
 //! All I/O failures on a worker are classified into [`PoolError::Crashed`]
@@ -59,8 +47,6 @@ pub struct PoolConfig {
     pub max_processes: usize,
     /// Path to the `monty` binary.
     pub binary_path: PathBuf,
-    /// Extra arguments appended after `--subprocess` (forward compatibility).
-    pub extra_args: Vec<String>,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -76,11 +62,7 @@ pub struct PoolConfig {
     /// sandbox clock is the single source of truth: it runs only while the
     /// interpreter executes, never during suspensions waiting on the host or
     /// between feeds), and the parent arms each execution turn's watchdog
-    /// with the remaining budget plus this grace. The child enforces the
-    /// limit itself with a clean `TimeoutError`; the backstop only fires
-    /// when that enforcement cannot (e.g. a blocking syscall inside a mount)
-    /// and surfaces as [`PoolError::Timeout`], losing the session. `None`
-    /// disables the backstop; `request_timeout` still applies independently.
+    /// with the remaining budget plus this grace.
     pub duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
@@ -96,7 +78,6 @@ impl PoolConfig {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
             binary_path: binary_path.into(),
-            extra_args: vec![],
             checkout_timeout: None,
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),

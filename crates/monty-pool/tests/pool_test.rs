@@ -10,6 +10,8 @@ use std::{
     thread,
     time::Duration,
 };
+#[cfg(unix)]
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 use monty::{MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
@@ -147,6 +149,100 @@ fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
         .resume_name_lookup(Some(MontyObject::Int(7)), &mut no_print)
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(7));
+    session.finish().unwrap();
+}
+
+/// A mount whose host path is not valid UTF-8 cannot cross the wire (the
+/// proto `host_path` is a UTF-8 `string`). It must fail as a
+/// session-preserving error rather than silently transcoding to a different —
+/// possibly existing — path. Unix-only: non-UTF-8 paths cannot be constructed
+/// portably.
+#[cfg(unix)]
+#[test]
+fn non_utf8_mount_path_is_rejected_cleanly() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let bad_path = PathBuf::from(OsStr::from_bytes(b"/tmp/\xff"));
+    let err = session
+        .feed(
+            "1 + 1",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt/data".to_owned(),
+                host_path: bad_path,
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert!(
+        exc.message().is_some_and(|m| m.contains("not valid UTF-8")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    // nothing was sent, so the worker is still synced and the session usable
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().unwrap();
+}
+
+/// An over-limit frame must fail as a clean, session-preserving error rather
+/// than crashing the worker: `write_frame` rejects it before writing any
+/// bytes, so the stream stays synced. Covers both directions — a request the
+/// parent cannot send (a huge input) and a result the worker cannot send
+/// back.
+///
+/// Allocates ~257 MiB (just over the 256 MiB frame limit) in the test process
+/// and again in the worker, so it is memory-heavy; disable it if it proves
+/// flaky in CI.
+#[test]
+fn oversize_frames_are_rejected_without_killing_the_worker() {
+    // just over monty_proto's 256 MiB MAX_FRAME_LEN
+    const OVERSIZE: usize = 257 * 1024 * 1024;
+
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+
+    // (1) parent -> child: an input larger than the frame limit cannot be
+    // sent. The worker never receives the request, so the session survives.
+    let huge = MontyObject::String("x".repeat(OVERSIZE));
+    let err = session
+        .feed("data", vec![("data".to_owned(), huge)], vec![], false, &mut no_print)
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize input, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("request frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+
+    // (2) child -> parent: a result larger than the frame limit cannot be sent
+    // back. The worker answers with a clean error and keeps the session.
+    let err = session
+        .feed(&format!("'x' * {OVERSIZE}"), vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize result, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+
     session.finish().unwrap();
 }
 

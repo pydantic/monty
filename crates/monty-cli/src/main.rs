@@ -32,12 +32,8 @@ const ARROW: &str = "❯";
 
 /// Monty — a sandboxed Python interpreter written in Rust.
 ///
-/// - `monty` starts an empty interactive REPL
-/// - `monty <file>` runs the file in script mode
-/// - `monty -c <cmd>` executes `<cmd>` as a Python program
-/// - `monty -i` starts an empty interactive REPL
-/// - `monty -i <file>` seeds the REPL with file contents
-/// - `monty -m host::virtual[::mode[::write_limit_bytes]]` mounts a directory into the sandbox
+/// Run `monty` to start an empty interactive REPL. Run a python file with `monty <file>`.
+/// Execute a command with `monty -c <cmd>`.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {

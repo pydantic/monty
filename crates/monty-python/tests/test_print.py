@@ -8,7 +8,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import CollectStreams, CollectString, Monty, MontyRuntimeError
+from pydantic_monty import CollectStreams, CollectString, Monty, MontyRuntimeError, MontySession
 
 PrintCallback = Callable[[Literal['stdout', 'stderr'], str], None]
 
@@ -164,6 +164,33 @@ outer()
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('nested error')
+
+
+def test_print_callback_failure_during_suspension_ends_session(session: MontySession) -> None:
+    """A print-callback failure on a turn that then suspends (here on an
+    external function call) must not wedge the session.
+
+    The feed is aborted with the callback's error, and because the worker was
+    left suspended — waiting for a resume the aborted feed will never send —
+    the session is discarded so the next feed fails cleanly, rather than with
+    a confusing "suspension awaiting an answer" protocol error.
+    """
+    code = """
+print("before call")
+fetch()
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        session.feed_run(
+            code,
+            external_functions={'fetch': lambda: 42},
+            print_callback=make_error_callback(ValueError('callback boom')),
+        )
+    assert exc_info.value.exception().args[0] == snapshot('callback boom')
+
+    # the session is cleanly ended, not wedged on the abandoned suspension
+    with pytest.raises(RuntimeError) as exc_info2:
+        session.feed_run('1 + 1')
+    assert str(exc_info2.value) == snapshot('this checkout has already been finished')
 
 
 def test_print_callback_raises_in_loop(monty_run: RunMonty) -> None:

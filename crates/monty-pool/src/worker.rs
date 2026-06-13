@@ -43,12 +43,7 @@ impl Worker {
         let mut command = Command::new(&config.binary_path);
         command
             .arg("--subprocess")
-            .args(&config.extra_args)
-            // The worker runs untrusted code, so spawn it with an empty
-            // environment: host secrets (API keys, tokens) must never be in
-            // the child's memory where a sandbox escape or memory disclosure
-            // could reach them. The worker reads no environment variables —
-            // sandbox `os.getenv` is an OsCall answered by the host.
+            // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
@@ -98,6 +93,18 @@ impl Worker {
     /// call once when classifying a read failure).
     pub(crate) fn was_killed_for_timeout(&self) -> bool {
         self.killed_for_timeout.load(Ordering::SeqCst)
+    }
+
+    /// Clears the sticky timeout flag at the start of a turn.
+    ///
+    /// The flag is set by the watchdog and never reset by the read that
+    /// observes it, so without this a kill from one turn's deadline could
+    /// still be readable on the *next* turn — if that turn's first I/O then
+    /// fails (e.g. the worker had already died), the failure would be
+    /// misclassified as a timeout of the new, unrelated deadline. Resetting
+    /// per turn scopes the flag to the deadline currently armed.
+    pub(crate) fn reset_killed_for_timeout(&self) {
+        self.killed_for_timeout.store(false, Ordering::SeqCst);
     }
 
     /// Whether the child has already exited (used to discard workers that

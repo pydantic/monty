@@ -238,7 +238,7 @@ impl Checkout {
                         value: Some(value.into()),
                     })
                     .collect(),
-                mounts: mounts.into_iter().map(pb::Mount::from).collect(),
+                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
                 skip_type_check,
             })),
         };
@@ -426,11 +426,28 @@ impl Checkout {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
+        // Scope the watchdog's sticky kill flag to this turn's deadline so a
+        // kill from a previous turn cannot misclassify this one (see
+        // `Worker::reset_killed_for_timeout`).
+        worker.reset_killed_for_timeout();
         self.armed_deadline = deadline;
         let _deadline = self.pool.watchdog.arm(worker, deadline);
 
-        if worker.send(request).is_err() {
-            return Err(self.poison("sending a request"));
+        if let Err(err) = worker.send(request) {
+            // `write_frame` rejects an oversize frame *before* writing any
+            // bytes, so the worker never saw the request and is still synced —
+            // surface a clean, catchable error instead of discarding a healthy
+            // worker as if it had crashed. Every other send failure is a real
+            // I/O break (dead worker / closed pipe).
+            return Err(match err {
+                FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
+                    ExcType::RuntimeError,
+                    Some(format!(
+                        "request frame of {len} bytes exceeds the maximum of {max} bytes"
+                    )),
+                )),
+                _ => self.poison("sending a request"),
+            });
         }
         loop {
             let event = match self.worker.as_mut().expect("checked above").recv() {
@@ -633,18 +650,36 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-impl From<MountSpec> for pb::Mount {
-    fn from(mount: MountSpec) -> Self {
-        let mode = match mount.mode {
-            MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
-            MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
-            MountSpecMode::Overlay => pb::MountMode::Overlay,
-        };
-        Self {
-            virtual_path: mount.virtual_path,
-            host_path: mount.host_path.to_string_lossy().into_owned(),
-            mode: mode.into(),
-            write_bytes_limit: mount.write_bytes_limit,
-        }
-    }
+/// Serializes a [`MountSpec`] onto the wire `Mount` message.
+///
+/// The wire `host_path` is a protobuf `string` (UTF-8 by definition), so a
+/// host path that is not valid UTF-8 cannot cross the boundary. Rather than
+/// silently lossily-transcoding it — which could resolve to a *different*
+/// existing directory in the worker and expose the wrong files — this rejects
+/// such a path up front with a catchable error, leaving the session intact.
+fn mount_to_proto(mount: MountSpec) -> Result<pb::Mount, PoolError> {
+    let mode = match mount.mode {
+        MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
+        MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
+        MountSpecMode::Overlay => pb::MountMode::Overlay,
+    };
+    let host_path = mount
+        .host_path
+        .to_str()
+        .ok_or_else(|| {
+            PoolError::Runtime(MontyException::new(
+                ExcType::ValueError,
+                Some(format!(
+                    "mount host path is not valid UTF-8: {:?}",
+                    mount.host_path.display()
+                )),
+            ))
+        })?
+        .to_owned();
+    Ok(pb::Mount {
+        virtual_path: mount.virtual_path,
+        host_path,
+        mode: mode.into(),
+        write_bytes_limit: mount.write_bytes_limit,
+    })
 }

@@ -54,8 +54,8 @@ pub(crate) fn run() -> ExitCode {
     loop {
         match reader.read::<pb::Request>() {
             Ok(Some(request)) => match child.handle(request) {
-                Ok(Turn::Continue) => {}
-                Ok(Turn::Exit(code)) => return code,
+                Ok(None) => {}
+                Ok(Some(code)) => return code,
                 // an oversize event was rejected before any bytes hit the
                 // wire, so the stream is still in sync and the parent can
                 // receive a parseable last gasp
@@ -84,12 +84,6 @@ pub(crate) fn run() -> ExitCode {
             }
         }
     }
-}
-
-/// What the main loop should do after a request has been handled.
-enum Turn {
-    Continue,
-    Exit(ExitCode),
 }
 
 /// REPL session state of the child.
@@ -140,10 +134,10 @@ impl Child {
 
     /// Handles one request: emits exactly one turn-ending event and returns
     /// what the main loop should do next. `Err` means stdout is broken.
-    fn handle(&mut self, request: pb::Request) -> Result<Turn, monty_proto::FrameError> {
+    fn handle(&mut self, request: pb::Request) -> Result<Option<ExitCode>, monty_proto::FrameError> {
         let Some(kind) = request.kind else {
             send(&violation("request has no kind"))?;
-            return Ok(Turn::Continue);
+            return Ok(None);
         };
 
         let mut event = match kind {
@@ -160,12 +154,40 @@ impl Child {
             }
             pb::request::Kind::Shutdown(_) => {
                 send(&ok_event())?;
-                return Ok(Turn::Exit(ExitCode::SUCCESS));
+                return Ok(Some(ExitCode::SUCCESS));
             }
         };
         self.stamp_execution_time(&mut event);
-        send(&event)?;
-        Ok(Turn::Continue)
+        if let Err(err) = send(&event) {
+            self.recover_send_error(err)?;
+        }
+        Ok(None)
+    }
+
+    /// Recovers from a failure to write a turn-ending event.
+    ///
+    /// `write_frame` rejects an oversize frame *before* writing any bytes, so
+    /// the stream stays synced. When the session is not mid-suspension — e.g.
+    /// a `Complete` result that is merely larger than the frame limit — we can
+    /// answer with a clean, session-preserving error and keep serving instead
+    /// of crashing the worker. An oversize *suspension* announcement is
+    /// unrecoverable (the worker is already suspended but the parent never
+    /// learned the resume point), so it propagates to the run loop's fatal
+    /// handling, as does any genuine I/O break.
+    fn recover_send_error(&mut self, err: monty_proto::FrameError) -> Result<(), monty_proto::FrameError> {
+        match err {
+            monty_proto::FrameError::FrameTooLarge { len, max }
+                if !matches!(self.state, SessionState::Suspended(_)) =>
+            {
+                let mut event = error_event(
+                    ExcType::RuntimeError,
+                    &format!("result frame of {len} bytes exceeds the maximum of {max} bytes"),
+                );
+                self.stamp_execution_time(&mut event);
+                send(&event)
+            }
+            other => Err(other),
+        }
     }
 
     /// Stamps the session's cumulative execution time and `max_duration`
@@ -777,13 +799,45 @@ impl ProtoPrint {
 
 impl PrintWriterCallback for ProtoPrint {
     fn stdout_write(&mut self, output: Cow<'_, str>) -> Result<(), MontyException> {
-        self.buf.push_str(&output);
-        self.maybe_flush()
+        // Append in pieces no larger than the flush threshold so a single huge
+        // write cannot inflate the buffer (and the untracked copy it holds)
+        // past `FLUSH_BYTES`: each filled chunk is flushed before the next is
+        // appended.
+        let mut rest = output.as_ref();
+        while !rest.is_empty() {
+            let take = floor_char_boundary(rest, Self::FLUSH_BYTES - self.buf.len());
+            if take == 0 {
+                // not even one char fits in the remaining room; flush to free
+                // the whole threshold (far larger than any single char)
+                self.flush()?;
+                continue;
+            }
+            self.buf.push_str(&rest[..take]);
+            rest = &rest[take..];
+            self.maybe_flush()?;
+        }
+        Ok(())
     }
 
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
         self.buf.push(end);
         self.maybe_flush()
+    }
+}
+
+/// Largest index `<= max` (capped at `s.len()`) that is a char boundary of
+/// `s`, so `s[..idx]` is always valid UTF-8. A stable stand-in for the
+/// unstable `str::floor_char_boundary`.
+fn floor_char_boundary(s: &str, max: usize) -> usize {
+    if max >= s.len() {
+        s.len()
+    } else {
+        let mut idx = max;
+        // index 0 is always a boundary, so this terminates
+        while !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        idx
     }
 }
 
