@@ -19,10 +19,11 @@ use monty::{
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, build_mount_table, exceeds_max_value_depth, future_results_from_proto, pairs_to_proto, pb,
-    values_to_proto, write_frame,
+    FrameReader, MAX_FRAME_LEN, build_mount_table, exceeds_max_value_depth, future_results_from_proto, pairs_to_proto,
+    pb, values_to_proto, write_frame,
 };
 use monty_type_checking::{SourceFile, type_check};
+use prost::Message;
 
 /// The child always runs with `LimitedTracker`: an absent/empty limits message
 /// behaves like `ResourceLimits::new()`, and a single tracker type keeps the
@@ -490,14 +491,18 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
-                    return event(pb::event::Kind::OsCall(pb::OsCall {
+                    let event = event(pb::event::Kind::OsCall(pb::OsCall {
                         function_name: name.to_owned(),
                         args: values_to_proto(args),
                         kwargs: pairs_to_proto(kwargs),
                         call_id,
                         not_handled_error: Some((&not_handled_error).into()),
                     }));
+                    if let Some(message) = oversize_suspension_error_message(&event) {
+                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                    }
+                    self.state = SessionState::Suspended(Box::new(ReplProgress::OsCall(call)));
+                    return event;
                 }
                 Ok(ReplProgress::FunctionCall(call)) => {
                     // arguments too deep for the wire resume the call with a
@@ -514,6 +519,9 @@ impl Child {
                         continue;
                     }
                     let event = suspension_event_function_call(&call);
+                    if let Some(message) = oversize_suspension_error_message(&event) {
+                        return self.abort_feed_with_runtime_error(call.into_repl(), &message);
+                    }
                     self.state = SessionState::Suspended(Box::new(ReplProgress::FunctionCall(call)));
                     return event;
                 }
@@ -535,6 +543,16 @@ impl Child {
                 }
             }
         }
+    }
+
+    /// Ends the current feed with a runtime error while keeping the REPL usable.
+    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::Event {
+        self.state = SessionState::Ready(Box::new(repl));
+        self.mounts = None;
+        if let Some(state) = &mut self.type_check {
+            state.pending_snippet = None;
+        }
+        error_event(ExcType::RuntimeError, message)
     }
 
     /// Type-checks a snippet against the accumulated session stubs. Returns
@@ -618,6 +636,15 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
             traceback: vec![],
         }),
     }))
+}
+
+/// Describes a suspension announcement that would exceed the wire frame limit.
+///
+/// The child turns this into a host-visible error before entering the
+/// suspension, because the parent cannot resume a call it never received.
+fn oversize_suspension_error_message(event: &pb::Event) -> Option<String> {
+    let len = u32::try_from(event.encoded_len()).unwrap_or(u32::MAX);
+    (len > MAX_FRAME_LEN).then(|| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
 
 /// Builds the suspension event for a fresh `FunctionCall` (depth-checked by

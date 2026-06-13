@@ -67,18 +67,19 @@ the *host API* surface.
 
 - Values are encoded as protobuf (`proto/monty/v1/monty.proto`); every
   `MontyObject` variant round-trips, but nesting depth is bounded by prost's
-  decode recursion limit (~50 levels of list/dict nesting). A deeper result
-  value fails the protocol turn rather than crossing the boundary.
+  decode recursion limit. The exact bound depends on container shape: roughly
+  48 nested list-like containers, 32 nested dicts, or 24 nested dataclasses.
+  Deeper values fail the protocol turn rather than crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
 - A single value whose encoded form would exceed the wire frame limit
-  (256 MiB) — a feed input, an external-function return value, or a snippet's
-  final result — cannot cross the boundary. This is a *session-preserving*
-  failure: the host call raises a catchable error and the worker stays
-  usable, rather than the oversize frame being treated as a worker crash. The
-  one exception is an external function whose *arguments* exceed the limit:
-  the worker has already suspended to ask for them and cannot be cleanly
-  resumed, so that case still loses the session (surfacing as a crash).
+  (256 MiB) — a feed input, external-function argument or return value, or a
+  snippet's final result — cannot cross the boundary. This is a
+  *session-preserving* failure: the host call raises an error and the worker
+  stays usable, rather than the oversize frame being treated as a worker crash.
+  When an external-function argument makes the suspension announcement itself
+  too large, the current feed is aborted with a host-visible `RuntimeError`;
+  Monty code cannot catch that error inside the aborted feed.
 - Semantic validation of wire values (date ranges, timedelta normalization,
   exception/type/builtin names) happens *while decoding* the frame. A frame
   carrying an invalid value therefore fails the whole protocol turn: a parent

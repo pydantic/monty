@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
 use monty_proto::{FrameError, exceeds_max_value_depth, pairs_from_proto, pb, values_from_proto};
 
-use crate::{PoolError, pool::PoolInner, worker::Worker};
+use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
 /// Arguments for the REPL session a checkout creates — mirrors
 /// `MontyRepl`'s constructor surface.
@@ -431,7 +431,7 @@ impl Checkout {
         // `Worker::reset_killed_for_timeout`).
         worker.reset_killed_for_timeout();
         self.armed_deadline = deadline;
-        let _deadline = self.pool.watchdog.arm(worker, deadline);
+        let deadline_guard = self.pool.watchdog.arm(worker, deadline);
 
         if let Err(err) = worker.send(request) {
             // `write_frame` rejects an oversize frame *before* writing any
@@ -449,7 +449,7 @@ impl Checkout {
                 _ => self.poison("sending a request"),
             });
         }
-        loop {
+        let outcome = loop {
             let event = match self.worker.as_mut().expect("checked above").recv() {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
@@ -477,7 +477,7 @@ impl Checkout {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
                     });
-                    return self.convert_turn(|| {
+                    break self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
                             function_name: call.function_name,
                             args: values_from_proto(call.args)?,
@@ -492,7 +492,7 @@ impl Checkout {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
                     });
-                    return self.convert_turn(|| {
+                    break self.convert_turn(|| {
                         Ok(TurnEvent::OsCall {
                             function_name: call.function_name,
                             args: values_from_proto(call.args)?,
@@ -504,17 +504,17 @@ impl Checkout {
                 }
                 Some(pb::event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
-                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
+                    break Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
                 }
                 Some(pb::event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);
-                    return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
+                    break Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids: futures.pending_call_ids,
                     }));
                 }
                 Some(pb::event::Kind::Complete(complete)) => {
                     self.pending = None;
-                    return self.convert_turn(|| {
+                    break self.convert_turn(|| {
                         let value = complete
                             .value
                             .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
@@ -526,20 +526,20 @@ impl Checkout {
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };
-                    return match MontyException::try_from(exception) {
+                    break match MontyException::try_from(exception) {
                         Ok(exc) => Err(PoolError::Runtime(exc)),
                         Err(err) => Err(self.protocol_violation(&format!("invalid exception payload: {err}"))),
                     };
                 }
                 Some(pb::event::Kind::TypingError(typing)) => {
                     self.pending = None;
-                    return Err(PoolError::Typing(typing.diagnostics));
+                    break Err(PoolError::Typing(typing.diagnostics));
                 }
-                Some(pb::event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
-                Some(pb::event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
+                Some(pb::event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::event::Kind::FatalError(fatal)) => {
                     self.discard_worker();
-                    return Err(PoolError::Protocol(format!(
+                    break Err(PoolError::Protocol(format!(
                         "worker reported fatal error: {}",
                         fatal.message
                     )));
@@ -548,6 +548,26 @@ impl Checkout {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }
+        };
+        self.finish_request_turn(deadline_guard, outcome)
+    }
+
+    /// Disarms the watchdog after receiving a turn-ending event and then
+    /// checks whether the deadline fired in the narrow race between reading
+    /// that event and removing the watchdog entry. If it did, the worker is
+    /// already dead (or being killed), so the apparent success must be
+    /// reported as this turn's timeout rather than returning a dead worker to
+    /// the caller.
+    fn finish_request_turn(
+        &mut self,
+        deadline_guard: Option<DeadlineGuard>,
+        outcome: Result<ControlEvent, PoolError>,
+    ) -> Result<ControlEvent, PoolError> {
+        drop(deadline_guard);
+        if self.worker.as_ref().is_some_and(Worker::was_killed_for_timeout) {
+            Err(self.poison("waiting for a reply"))
+        } else {
+            outcome
         }
     }
 

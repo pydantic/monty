@@ -243,6 +243,32 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 
+    // (3) child -> parent suspension: external-call arguments larger than the
+    // frame limit cannot be announced to the parent. The child aborts that
+    // feed before entering the suspension, so the session remains usable.
+    let err = session
+        .feed(
+            &format!(
+                "result = 'not caught'\ntry:\n    fetch('x' * {OVERSIZE})\nexcept RuntimeError:\n    result = 'caught'\nresult"
+            ),
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize external-call args, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("argument frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+
     session.finish().unwrap();
 }
 

@@ -2040,6 +2040,7 @@ dependencies = [
  "monty",
  "monty-proto",
  "monty_type_checking",
+ "prost",
  "rustyline",
  "tempfile",
 ]
