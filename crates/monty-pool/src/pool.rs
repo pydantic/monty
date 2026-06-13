@@ -175,8 +175,8 @@ impl PoolInner {
     fn shutdown_idle(&self) {
         let mut state = lock_ignore_poison(&self.state);
         for worker in &mut state.idle {
-            let _ = worker.send(&pb::Request {
-                kind: Some(pb::request::Kind::Shutdown(pb::Shutdown {})),
+            let _ = worker.send(&pb::ParentRequest {
+                kind: Some(pb::parent_request::Kind::Shutdown(pb::Shutdown {})),
             });
         }
         // dropping the workers reaps them (kill is a no-op if Shutdown won)

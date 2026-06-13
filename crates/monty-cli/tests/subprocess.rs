@@ -34,14 +34,14 @@ impl ChildProc {
         Self { child, writer, reader }
     }
 
-    fn send(&mut self, kind: pb::request::Kind) {
-        write_frame(&mut self.writer, &pb::Request { kind: Some(kind) }).expect("failed to write request");
+    fn send(&mut self, kind: pb::parent_request::Kind) {
+        write_frame(&mut self.writer, &pb::ParentRequest { kind: Some(kind) }).expect("failed to write request");
     }
 
     /// Reads a single event.
-    fn recv(&mut self) -> pb::event::Kind {
+    fn recv(&mut self) -> pb::child_event::Kind {
         self.reader
-            .read::<pb::Event>()
+            .read::<pb::ChildEvent>()
             .expect("failed to read event")
             .expect("unexpected EOF from child")
             .kind
@@ -49,11 +49,11 @@ impl ChildProc {
     }
 
     /// Reads until the turn-ending event, collecting streamed prints.
-    fn recv_turn(&mut self) -> (Vec<pb::Print>, pb::event::Kind) {
+    fn recv_turn(&mut self) -> (Vec<pb::Print>, pb::child_event::Kind) {
         let mut prints = Vec::new();
         loop {
             match self.recv() {
-                pb::event::Kind::Print(print) => prints.push(print),
+                pb::child_event::Kind::Print(print) => prints.push(print),
                 other => return (prints, other),
             }
         }
@@ -69,15 +69,15 @@ impl ChildProc {
     }
 
     fn create_repl_with(&mut self, create: pb::ReplCreate) {
-        self.send(pb::request::Kind::ReplCreate(create));
+        self.send(pb::parent_request::Kind::ReplCreate(create));
         match self.recv() {
-            pb::event::Kind::Ok(_) => {}
+            pb::child_event::Kind::Ok(_) => {}
             other => panic!("expected Ok for ReplCreate, got {other:?}"),
         }
     }
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
-    fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::event::Kind) {
+    fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
         self.feed_with(code, vec![], vec![])
     }
 
@@ -86,8 +86,8 @@ impl ChildProc {
         code: &str,
         inputs: Vec<pb::NamedValue>,
         mounts: Vec<pb::Mount>,
-    ) -> (Vec<pb::Print>, pb::event::Kind) {
-        self.send(pb::request::Kind::ReplFeed(pb::ReplFeed {
+    ) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        self.send(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
             code: code.to_owned(),
             inputs,
             mounts,
@@ -103,19 +103,23 @@ impl ChildProc {
         expect_complete(event)
     }
 
-    fn resume_call(&mut self, call_id: u32, result: pb::ext_result::Kind) -> (Vec<pb::Print>, pb::event::Kind) {
-        self.send(pb::request::Kind::ResumeCall(pb::ResumeCall {
+    fn resume_call(
+        &mut self,
+        call_id: u32,
+        result: pb::ext_function_result::Kind,
+    ) -> (Vec<pb::Print>, pb::child_event::Kind) {
+        self.send(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
             call_id,
-            result: Some(pb::ExtResult { kind: Some(result) }),
+            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
         }));
         self.recv_turn()
     }
 
     /// Tells the child to shut down and asserts a clean exit.
     fn shutdown(mut self) {
-        self.send(pb::request::Kind::Shutdown(pb::Shutdown {}));
+        self.send(pb::parent_request::Kind::Shutdown(pb::Shutdown {}));
         match self.recv() {
-            pb::event::Kind::Ok(_) => {}
+            pb::child_event::Kind::Ok(_) => {}
             other => panic!("expected Ok for Shutdown, got {other:?}"),
         }
         let status = self.child.wait().expect("failed to wait for child");
@@ -132,9 +136,9 @@ impl Drop for ChildProc {
 }
 
 #[track_caller]
-fn expect_complete(event: pb::event::Kind) -> MontyObject {
+fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
     match event {
-        pb::event::Kind::Complete(complete) => complete
+        pb::child_event::Kind::Complete(complete) => complete
             .value
             .expect("complete has no value")
             .into_object()
@@ -144,9 +148,9 @@ fn expect_complete(event: pb::event::Kind) -> MontyObject {
 }
 
 #[track_caller]
-fn expect_error(event: pb::event::Kind) -> pb::MontyError {
+fn expect_error(event: pb::child_event::Kind) -> pb::Exception {
     match event {
-        pb::event::Kind::Error(error) => error.exception.expect("error has no exception"),
+        pb::child_event::Kind::Error(error) => error.exception.expect("error has no exception"),
         other => panic!("expected Error, got {other:?}"),
     }
 }
@@ -226,7 +230,7 @@ fn external_function_round_trip() {
     // calling an unknown name suspends at FunctionCall directly (NameLookup
     // is only emitted for bare name *reads*)
     let (_, event) = child.feed("add(1, 2)");
-    let pb::event::Kind::FunctionCall(call) = event else {
+    let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "add");
@@ -234,7 +238,7 @@ fn external_function_round_trip() {
     let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
     assert_eq!(args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
-    let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::ReturnValue(int_value(3)));
+    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
     assert_eq!(expect_complete(event), MontyObject::Int(3));
     child.shutdown();
 }
@@ -245,11 +249,11 @@ fn name_lookup_round_trip() {
     child.create_repl();
     // a bare name read suspends at NameLookup; the parent supplies the value
     let (_, event) = child.feed("answer + 1");
-    let pb::event::Kind::NameLookup(lookup) = event else {
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
         panic!("expected NameLookup, got {event:?}");
     };
     assert_eq!(lookup.name, "answer");
-    child.send(pb::request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+    child.send(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
         kind: Some(pb::resume_name_lookup::Kind::Value(int_value(41))),
     }));
     let (_, event) = child.recv_turn();
@@ -262,11 +266,14 @@ fn external_function_not_found_raises_name_error() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("undefined_fn()");
-    let pb::event::Kind::FunctionCall(call) = event else {
+    let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     // the parent has no handler for this name -> Python NameError
-    let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::NotFound("undefined_fn".to_owned()));
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::NotFound("undefined_fn".to_owned()),
+    );
     let error = expect_error(event);
     assert_eq!(error.exc_type, "NameError");
     assert_eq!(error.message.as_deref(), Some("name 'undefined_fn' is not defined"));
@@ -278,14 +285,17 @@ fn os_call_bubbles_to_parent_without_mounts() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/data.txt').read_text()");
-    let pb::event::Kind::OsCall(call) = event else {
+    let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.function_name, "Path.read_text");
     let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
     assert_eq!(args, vec![MontyObject::Path("/data.txt".to_owned())]);
 
-    let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::ReturnValue(str_value("hello")));
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::ReturnValue(str_value("hello")),
+    );
     assert_eq!(expect_complete(event), MontyObject::String("hello".to_owned()));
     child.shutdown();
 }
@@ -295,15 +305,15 @@ fn os_call_error_resume_carries_exception() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     let (_, event) = child.feed("from pathlib import Path\nPath('/nope.txt').read_text()");
-    let pb::event::Kind::OsCall(call) = event else {
+    let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    let exc = pb::MontyError {
+    let exc = pb::Exception {
         exc_type: "FileNotFoundError".to_owned(),
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
         traceback: vec![],
     };
-    let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::Error(exc));
+    let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
     let error = expect_error(event);
     assert_eq!(error.exc_type, "FileNotFoundError");
     // the child's VM raised the exception inside the sandbox, so the
@@ -410,8 +420,8 @@ fn child_enforces_time_limit() {
     // exhausted) but not for the child process: Reset + ReplCreate reuses it
     let (_, event) = child.feed("1 + 1");
     assert_eq!(expect_error(event).exc_type, "TimeoutError");
-    child.send(pb::request::Kind::Reset(pb::Reset {}));
-    let pb::event::Kind::Ok(_) = child.recv() else {
+    child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+    let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
     };
     child.create_repl();
@@ -434,7 +444,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
-    let pb::event::Kind::TypingError(typing) = event else {
+    let pb::child_event::Kind::TypingError(typing) = event else {
         panic!("expected TypingError, got {event:?}");
     };
     assert!(
@@ -449,7 +459,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
 
     // ... and the rejected snippet was never committed
     let (_, event) = child.feed("x");
-    let pb::event::Kind::TypingError(_) = event else {
+    let pb::child_event::Kind::TypingError(_) = event else {
         panic!("expected TypingError for undefined x, got {event:?}");
     };
     child.shutdown();
@@ -467,14 +477,14 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // suspend at an external function call
     let (_, event) = child.feed("ext()");
-    let pb::event::Kind::FunctionCall(call) = event else {
+    let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
     assert_eq!(call.function_name, "ext");
 
     // dump the suspended state, then kill this child outright
-    child.send(pb::request::Kind::Dump(pb::Dump {}));
-    let pb::event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     assert!(!dump.state.is_empty());
@@ -482,15 +492,18 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
-    let pb::event::Kind::FunctionCall(restored) = event else {
+    let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
     };
     assert_eq!(restored.function_name, "ext");
     assert_eq!(restored.call_id, call.call_id);
 
-    let (_, event) = fresh.resume_call(restored.call_id, pb::ext_result::Kind::ReturnValue(int_value(2)));
+    let (_, event) = fresh.resume_call(
+        restored.call_id,
+        pb::ext_function_result::Kind::ReturnValue(int_value(2)),
+    );
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     // session globals survived the round trip through the dump
     assert_eq!(fresh.feed_complete("base + 2"), MontyObject::Int(42));
@@ -508,20 +521,20 @@ fn type_check_state_survives_dump_and_load() {
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
-    child.send(pb::request::Kind::Dump(pb::Dump {}));
-    let pb::event::Kind::DumpResult(dump) = child.recv() else {
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
         panic!("expected DumpResult");
     };
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::request::Kind::Load(pb::Load { state: dump.state }));
-    let pb::event::Kind::Ok(_) = fresh.recv() else {
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
     // type-check enforcement survived the dump...
     let (_, event) = fresh.feed("x: int = 'not an int'");
-    let pb::event::Kind::TypingError(_) = event else {
+    let pb::child_event::Kind::TypingError(_) = event else {
         panic!("expected TypingError after Load, got {event:?}");
     };
     // ... and so did the stubs committed before it
@@ -547,7 +560,7 @@ fn protocol_violations_keep_the_child_alive() {
     child.create_repl();
 
     // double create
-    child.send(pb::request::Kind::ReplCreate(pb::ReplCreate {
+    child.send(pb::parent_request::Kind::ReplCreate(pb::ReplCreate {
         script_name: "again.py".to_owned(),
         limits: None,
         type_check: false,
@@ -558,15 +571,21 @@ fn protocol_violations_keep_the_child_alive() {
 
     // resume with a bogus call id while suspended
     let (_, event) = child.feed("missing()");
-    let pb::event::Kind::FunctionCall(call) = event else {
+    let pb::child_event::Kind::FunctionCall(call) = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
-    let (_, event) = child.resume_call(call.call_id + 1, pb::ext_result::Kind::ReturnValue(int_value(0)));
+    let (_, event) = child.resume_call(
+        call.call_id + 1,
+        pb::ext_function_result::Kind::ReturnValue(int_value(0)),
+    );
     let error = expect_error(event);
     assert!(error.message.unwrap().starts_with("protocol violation"));
 
     // ... and the suspension is still resumable correctly
-    let (_, event) = child.resume_call(call.call_id, pb::ext_result::Kind::NotFound("missing".to_owned()));
+    let (_, event) = child.resume_call(
+        call.call_id,
+        pb::ext_function_result::Kind::NotFound("missing".to_owned()),
+    );
     assert_eq!(expect_error(event).exc_type, "NameError");
     child.shutdown();
 }
@@ -582,7 +601,7 @@ fn garbage_stdin_is_a_fatal_error() {
     drop_stdin(&mut child);
 
     match child.recv() {
-        pb::event::Kind::FatalError(fatal) => assert!(fatal.message.contains("malformed request frame")),
+        pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("malformed request frame")),
         other => panic!("expected FatalError, got {other:?}"),
     }
     let status = child.child.wait().expect("wait");
@@ -596,7 +615,7 @@ fn killed_child_is_detected_as_eof() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     // run forever (no limits), then kill the child mid-execution
-    child.send(pb::request::Kind::ReplFeed(pb::ReplFeed {
+    child.send(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         mounts: vec![],
@@ -606,7 +625,7 @@ fn killed_child_is_detected_as_eof() {
     child.child.kill().expect("kill");
 
     // the parent observes EOF (or a truncated frame), never a hang
-    match child.reader.read::<pb::Event>() {
+    match child.reader.read::<pb::ChildEvent>() {
         Ok(None) | Err(FrameError::Truncated | FrameError::Io(_)) => {}
         other => panic!("expected EOF after kill, got {other:?}"),
     }
@@ -619,14 +638,14 @@ fn reset_returns_child_to_idle_for_reuse() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     assert_eq!(child.feed_complete("x = 1"), MontyObject::None);
-    child.send(pb::request::Kind::Reset(pb::Reset {}));
-    let pb::event::Kind::Ok(_) = child.recv() else {
+    child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
+    let pb::child_event::Kind::Ok(_) = child.recv() else {
         panic!("expected Ok for Reset");
     };
     // a fresh session has none of the previous session's state
     child.create_repl();
     let (_, event) = child.feed("x");
-    let pb::event::Kind::NameLookup(lookup) = event else {
+    let pb::child_event::Kind::NameLookup(lookup) = event else {
         panic!("expected NameLookup for undefined x, got {event:?}");
     };
     assert_eq!(lookup.name, "x");

@@ -2,11 +2,11 @@
 //
 // Transport: each message is framed as a 4-byte unsigned little-endian length
 // prefix followed by the protobuf-encoded bytes, written to the child's stdin
-// (`Request`) and read from its stdout (`Event`). stderr carries free-form
+// (`ParentRequest`) and read from its stdout (`ChildEvent`). stderr carries free-form
 // diagnostics only.
 //
 // The protocol is a strict alternation: the parent writes exactly one
-// `Request`; the child replies with zero or more streamed `Print` events
+// `ParentRequest`; the child replies with zero or more streamed `Print` events
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
@@ -58,7 +58,7 @@ message MontyObject {
     TimeDeltaValue timedelta = 17;
     TimeZoneValue timezone = 18;
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
-    // variable. Errors that terminate execution use `MontyError` instead.
+    // variable. Errors that terminate execution use `Exception` instead.
     ExceptionValue exception = 19;
     // A Python type object, named by monty's `Type` Display string, e.g.
     // "int", "str", "datetime.datetime", "ValueError".
@@ -195,7 +195,7 @@ message CycleValue {
 
 // A raised Python exception with its traceback. Mirrors monty's
 // `MontyException`.
-message MontyError {
+message Exception {
   // Exception type name, e.g. "ValueError", "json.JSONDecodeError".
   string exc_type = 1;
   optional string message = 2;
@@ -266,12 +266,12 @@ message Mount {
 
 // Outcome of an external function / OS call, decided by the parent. Mirrors
 // monty's `ExtFunctionResult`.
-message ExtResult {
+message ExtFunctionResult {
   oneof kind {
     // The call returned this value.
     MontyObject return_value = 1;
     // The call raised this exception.
-    MontyError error = 2;
+    Exception error = 2;
     // The call is asynchronous: register an external future for `call_id`
     // (the id from the suspension event) and keep executing other tasks.
     uint32 future = 3;
@@ -282,7 +282,7 @@ message ExtResult {
 
 message FutureResult {
   uint32 call_id = 1;
-  ExtResult result = 2;
+  ExtFunctionResult result = 2;
 }
 
 message NamedValue {
@@ -294,7 +294,7 @@ message NamedValue {
 // Requests (parent -> child)
 // ============================================================================
 
-message Request {
+message ParentRequest {
   oneof kind {
     ReplCreate repl_create = 1;
     ReplFeed repl_feed = 2;
@@ -335,7 +335,7 @@ message ReplFeed {
 // suspension event.
 message ResumeCall {
   uint32 call_id = 1;
-  ExtResult result = 2;
+  ExtFunctionResult result = 2;
 }
 
 // Answers a `NameLookup` suspension.
@@ -377,7 +377,7 @@ message Shutdown {}
 // Events (child -> parent)
 // ============================================================================
 
-message Event {
+message ChildEvent {
   oneof kind {
     Print print = 1;
     FunctionCall function_call = 2;
@@ -449,7 +449,7 @@ message OsCall {
   // (e.g. PermissionError for filesystem calls). A parent with no handler
   // should answer `ResumeCall` with this error — only the child knows the
   // per-call semantics.
-  MontyError not_handled_error = 5;
+  Exception not_handled_error = 5;
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
@@ -459,7 +459,7 @@ message NameLookup {
 }
 
 // Suspension: every sandbox task is blocked on external futures previously
-// registered via `ExtResult.future`. Answer with `ResumeFutures`.
+// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 message ResolveFutures {
   repeated uint32 pending_call_ids = 1;
 }
@@ -473,7 +473,7 @@ message Complete {
 // Turn end: the snippet (or request) failed with a Python exception. The
 // session survives — prior globals remain available to later feeds.
 message Error {
-  MontyError exception = 1;
+  Exception exception = 1;
 }
 
 // Turn end: type checking rejected the fed snippet (only when the session

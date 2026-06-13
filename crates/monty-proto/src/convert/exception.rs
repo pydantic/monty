@@ -1,4 +1,4 @@
-//! `MontyException` ↔ `pb::MontyError` conversions, including full traceback
+//! `MontyException` ↔ `pb::Exception` conversions, including full traceback
 //! frames so an exception raised on one side of the process boundary renders
 //! identically on the other.
 
@@ -8,7 +8,7 @@ use monty::{CodeLoc, MontyException, StackFrame};
 
 use crate::{convert::ProtoConvertError, pb};
 
-impl From<&MontyException> for pb::MontyError {
+impl From<&MontyException> for pb::Exception {
     fn from(exc: &MontyException) -> Self {
         Self {
             exc_type: exc.exc_type().to_string(),
@@ -18,10 +18,10 @@ impl From<&MontyException> for pb::MontyError {
     }
 }
 
-impl TryFrom<pb::MontyError> for MontyException {
+impl TryFrom<pb::Exception> for MontyException {
     type Error = ProtoConvertError;
 
-    fn try_from(err: pb::MontyError) -> Result<Self, ProtoConvertError> {
+    fn try_from(err: pb::Exception) -> Result<Self, ProtoConvertError> {
         let exc_type = err
             .exc_type
             .parse()

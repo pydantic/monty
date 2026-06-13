@@ -69,7 +69,7 @@ pub mod monty_object {
         #[prost(message, tag = "18")]
         Timezone(super::TimeZoneValue),
         /// A simple exception VALUE (no traceback) — e.g. an exception stored in a
-        /// variable. Errors that terminate execution use `MontyError` instead.
+        /// variable. Errors that terminate execution use `Exception` instead.
         #[prost(message, tag = "19")]
         Exception(super::ExceptionValue),
         /// A Python type object, named by monty's `Type` Display string, e.g.
@@ -251,7 +251,7 @@ pub struct CycleValue {
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct MontyError {
+pub struct Exception {
     /// Exception type name, e.g. "ValueError", "json.JSONDecodeError".
     #[prost(string, tag = "1")]
     pub exc_type: ::prost::alloc::string::String,
@@ -326,12 +326,12 @@ pub struct Mount {
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ExtResult {
-    #[prost(oneof = "ext_result::Kind", tags = "1, 2, 3, 4")]
-    pub kind: ::core::option::Option<ext_result::Kind>,
+pub struct ExtFunctionResult {
+    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4")]
+    pub kind: ::core::option::Option<ext_function_result::Kind>,
 }
-/// Nested message and enum types in `ExtResult`.
-pub mod ext_result {
+/// Nested message and enum types in `ExtFunctionResult`.
+pub mod ext_function_result {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         /// The call returned this value.
@@ -339,7 +339,7 @@ pub mod ext_result {
         ReturnValue(super::MontyObject),
         /// The call raised this exception.
         #[prost(message, tag = "2")]
-        Error(super::MontyError),
+        Error(super::Exception),
         /// The call is asynchronous: register an external future for `call_id`
         /// (the id from the suspension event) and keep executing other tasks.
         #[prost(uint32, tag = "3")]
@@ -354,7 +354,7 @@ pub struct FutureResult {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
     #[prost(message, optional, tag = "2")]
-    pub result: ::core::option::Option<ExtResult>,
+    pub result: ::core::option::Option<ExtFunctionResult>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NamedValue {
@@ -364,12 +364,12 @@ pub struct NamedValue {
     pub value: ::core::option::Option<MontyObject>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Request {
-    #[prost(oneof = "request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
-    pub kind: ::core::option::Option<request::Kind>,
+pub struct ParentRequest {
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    pub kind: ::core::option::Option<parent_request::Kind>,
 }
-/// Nested message and enum types in `Request`.
-pub mod request {
+/// Nested message and enum types in `ParentRequest`.
+pub mod parent_request {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -430,7 +430,7 @@ pub struct ResumeCall {
     #[prost(uint32, tag = "1")]
     pub call_id: u32,
     #[prost(message, optional, tag = "2")]
-    pub result: ::core::option::Option<ExtResult>,
+    pub result: ::core::option::Option<ExtFunctionResult>,
 }
 /// Answers a `NameLookup` suspension.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -478,7 +478,7 @@ pub struct Reset {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Shutdown {}
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Event {
+pub struct ChildEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in
     /// microseconds. The in-sandbox clock runs only while the interpreter is
     /// executing bytecode — never while suspended waiting on the parent or idle
@@ -494,11 +494,11 @@ pub struct Event {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "13")]
     pub max_duration_micros: ::core::option::Option<u64>,
-    #[prost(oneof = "event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
-    pub kind: ::core::option::Option<event::Kind>,
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    pub kind: ::core::option::Option<child_event::Kind>,
 }
-/// Nested message and enum types in `Event`.
-pub mod event {
+/// Nested message and enum types in `ChildEvent`.
+pub mod child_event {
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Kind {
         #[prost(message, tag = "1")]
@@ -573,7 +573,7 @@ pub struct OsCall {
     /// should answer `ResumeCall` with this error — only the child knows the
     /// per-call semantics.
     #[prost(message, optional, tag = "5")]
-    pub not_handled_error: ::core::option::Option<MontyError>,
+    pub not_handled_error: ::core::option::Option<Exception>,
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
 /// the parent provides an external function. Answer with `ResumeNameLookup`.
@@ -583,7 +583,7 @@ pub struct NameLookup {
     pub name: ::prost::alloc::string::String,
 }
 /// Suspension: every sandbox task is blocked on external futures previously
-/// registered via `ExtResult.future`. Answer with `ResumeFutures`.
+/// registered via `ExtFunctionResult.future`. Answer with `ResumeFutures`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResolveFutures {
     #[prost(uint32, repeated, tag = "1")]
@@ -601,7 +601,7 @@ pub struct Complete {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Error {
     #[prost(message, optional, tag = "1")]
-    pub exception: ::core::option::Option<MontyError>,
+    pub exception: ::core::option::Option<Exception>,
 }
 /// Turn end: type checking rejected the fed snippet (only when the session
 /// was created with type_check). The snippet was not executed; the session

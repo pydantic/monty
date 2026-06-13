@@ -70,14 +70,14 @@ impl Worker {
         })
     }
 
-    pub(crate) fn send(&mut self, request: &pb::Request) -> Result<(), FrameError> {
+    pub(crate) fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
         write_frame(&mut self.writer, request)
     }
 
     /// Reads one event; EOF is an error here because within a checkout the
     /// child must never close its side first.
-    pub(crate) fn recv(&mut self) -> Result<pb::Event, FrameError> {
-        self.reader.read::<pb::Event>()?.ok_or(FrameError::Truncated)
+    pub(crate) fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
+        self.reader.read::<pb::ChildEvent>()?.ok_or(FrameError::Truncated)
     }
 
     pub(crate) fn pid(&self) -> u32 {

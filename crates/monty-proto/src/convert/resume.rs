@@ -5,28 +5,30 @@ use monty::{ExtFunctionResult, MontyException, NameLookupResult};
 
 use crate::{convert::ProtoConvertError, pb};
 
-impl From<ExtFunctionResult> for pb::ExtResult {
+impl From<ExtFunctionResult> for pb::ExtFunctionResult {
     fn from(result: ExtFunctionResult) -> Self {
         let kind = match result {
-            ExtFunctionResult::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
-            ExtFunctionResult::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
-            ExtFunctionResult::Future(call_id) => pb::ext_result::Kind::Future(call_id),
-            ExtFunctionResult::NotFound(name) => pb::ext_result::Kind::NotFound(name),
+            ExtFunctionResult::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+            ExtFunctionResult::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
+            ExtFunctionResult::Future(call_id) => pb::ext_function_result::Kind::Future(call_id),
+            ExtFunctionResult::NotFound(name) => pb::ext_function_result::Kind::NotFound(name),
         };
         Self { kind: Some(kind) }
     }
 }
 
-impl TryFrom<pb::ExtResult> for ExtFunctionResult {
+impl TryFrom<pb::ExtFunctionResult> for ExtFunctionResult {
     type Error = ProtoConvertError;
 
-    fn try_from(result: pb::ExtResult) -> Result<Self, ProtoConvertError> {
-        let kind = result.kind.ok_or(ProtoConvertError::MissingField("ExtResult.kind"))?;
+    fn try_from(result: pb::ExtFunctionResult) -> Result<Self, ProtoConvertError> {
+        let kind = result
+            .kind
+            .ok_or(ProtoConvertError::MissingField("ExtFunctionResult.kind"))?;
         match kind {
-            pb::ext_result::Kind::ReturnValue(value) => Ok(Self::Return(value.into_object()?)),
-            pb::ext_result::Kind::Error(err) => Ok(Self::Error(MontyException::try_from(err)?)),
-            pb::ext_result::Kind::Future(call_id) => Ok(Self::Future(call_id)),
-            pb::ext_result::Kind::NotFound(name) => Ok(Self::NotFound(name)),
+            pb::ext_function_result::Kind::ReturnValue(value) => Ok(Self::Return(value.into_object()?)),
+            pb::ext_function_result::Kind::Error(err) => Ok(Self::Error(MontyException::try_from(err)?)),
+            pb::ext_function_result::Kind::Future(call_id) => Ok(Self::Future(call_id)),
+            pb::ext_function_result::Kind::NotFound(name) => Ok(Self::NotFound(name)),
         }
     }
 }

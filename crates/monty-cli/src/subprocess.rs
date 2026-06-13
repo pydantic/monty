@@ -1,6 +1,6 @@
 //! `monty --subprocess`: protocol child mode.
 //!
-//! Reads framed [`pb::Request`]s from stdin and writes framed [`pb::Event`]s
+//! Reads framed [`pb::ParentRequest`]s from stdin and writes framed [`pb::ChildEvent`]s
 //! to stdout (see `monty-proto` for the schema and protocol rules). The child
 //! is strictly turn-based: one request in, zero or more streamed `Print`
 //! events out, then exactly one turn-ending event.
@@ -53,7 +53,7 @@ pub(crate) fn run() -> ExitCode {
     let mut child = Child::new();
 
     loop {
-        match reader.read::<pb::Request>() {
+        match reader.read::<pb::ParentRequest>() {
             Ok(Some(request)) => match child.handle(request) {
                 Ok(None) => {}
                 Ok(Some(code)) => return code,
@@ -135,25 +135,25 @@ impl Child {
 
     /// Handles one request: emits exactly one turn-ending event and returns
     /// what the main loop should do next. `Err` means stdout is broken.
-    fn handle(&mut self, request: pb::Request) -> Result<Option<ExitCode>, monty_proto::FrameError> {
+    fn handle(&mut self, request: pb::ParentRequest) -> Result<Option<ExitCode>, monty_proto::FrameError> {
         let Some(kind) = request.kind else {
             send(&violation("request has no kind"))?;
             return Ok(None);
         };
 
         let mut event = match kind {
-            pb::request::Kind::ReplCreate(create) => self.handle_repl_create(create),
-            pb::request::Kind::ReplFeed(feed) => self.handle_repl_feed(feed),
-            pb::request::Kind::ResumeCall(resume) => self.handle_resume_call(resume),
-            pb::request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume),
-            pb::request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume),
-            pb::request::Kind::Dump(_) => self.handle_dump(),
-            pb::request::Kind::Load(load) => self.handle_load(&load),
-            pb::request::Kind::Reset(_) => {
+            pb::parent_request::Kind::ReplCreate(create) => self.handle_repl_create(create),
+            pb::parent_request::Kind::ReplFeed(feed) => self.handle_repl_feed(feed),
+            pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume),
+            pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume),
+            pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume),
+            pb::parent_request::Kind::Dump(_) => self.handle_dump(),
+            pb::parent_request::Kind::Load(load) => self.handle_load(&load),
+            pb::parent_request::Kind::Reset(_) => {
                 self.reset();
                 ok_event()
             }
-            pb::request::Kind::Shutdown(_) => {
+            pb::parent_request::Kind::Shutdown(_) => {
                 send(&ok_event())?;
                 return Ok(Some(ExitCode::SUCCESS));
             }
@@ -195,7 +195,7 @@ impl Child {
     /// turn-ending event, making the child the single source of truth for
     /// timing (the parent's watchdog derives its backstop from these fields).
     /// Left zero/absent when no session exists.
-    fn stamp_execution_time(&self, event: &mut pb::Event) {
+    fn stamp_execution_time(&self, event: &mut pb::ChildEvent) {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
             SessionState::Suspended(progress) => progress.tracker(),
@@ -207,7 +207,7 @@ impl Child {
             .map(|max| u64::try_from(max.as_micros()).unwrap_or(u64::MAX));
     }
 
-    fn handle_repl_create(&mut self, create: pb::ReplCreate) -> pb::Event {
+    fn handle_repl_create(&mut self, create: pb::ReplCreate) -> pb::ChildEvent {
         if !matches!(self.state, SessionState::Idle) {
             return violation("ReplCreate while a session already exists");
         }
@@ -221,7 +221,7 @@ impl Child {
         ok_event()
     }
 
-    fn handle_repl_feed(&mut self, feed: pb::ReplFeed) -> pb::Event {
+    fn handle_repl_feed(&mut self, feed: pb::ReplFeed) -> pb::ChildEvent {
         let SessionState::Ready(_) = &self.state else {
             return violation("ReplFeed without a session ready for input");
         };
@@ -256,7 +256,7 @@ impl Child {
         event
     }
 
-    fn handle_resume_call(&mut self, resume: pb::ResumeCall) -> pb::Event {
+    fn handle_resume_call(&mut self, resume: pb::ResumeCall) -> pb::ChildEvent {
         let expected_call_id = match &self.state {
             SessionState::Suspended(progress) => match progress.as_ref() {
                 ReplProgress::FunctionCall(call) => Some(call.call_id),
@@ -295,7 +295,7 @@ impl Child {
         event
     }
 
-    fn handle_resume_name_lookup(&mut self, resume: pb::ResumeNameLookup) -> pb::Event {
+    fn handle_resume_name_lookup(&mut self, resume: pb::ResumeNameLookup) -> pb::ChildEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return violation("ResumeNameLookup without a suspended name lookup");
         };
@@ -319,7 +319,7 @@ impl Child {
         event
     }
 
-    fn handle_resume_futures(&mut self, resume: pb::ResumeFutures) -> pb::Event {
+    fn handle_resume_futures(&mut self, resume: pb::ResumeFutures) -> pb::ChildEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return violation("ResumeFutures without suspended futures");
         };
@@ -345,7 +345,7 @@ impl Child {
 
     /// Serializes the current session into the opaque dump envelope. The
     /// session stays live — dumping is read-only.
-    fn handle_dump(&mut self) -> pb::Event {
+    fn handle_dump(&mut self) -> pb::ChildEvent {
         let dumped = match &self.state {
             SessionState::Ready(repl) => repl.dump().map(|bytes| (0u8, bytes)),
             SessionState::Suspended(progress) => progress.dump().map(|bytes| (1u8, bytes)),
@@ -372,7 +372,7 @@ impl Child {
                     None => state.push(0),
                 }
                 state.extend_from_slice(&payload);
-                event(pb::event::Kind::DumpResult(pb::DumpResult { state }))
+                event(pb::child_event::Kind::DumpResult(pb::DumpResult { state }))
             }
             Err(err) => violation(&format!("dump failed: {err}")),
         }
@@ -381,7 +381,7 @@ impl Child {
     /// Restores a dump produced by [`Self::handle_dump`] into this (idle)
     /// child. A restored suspension re-emits its suspension event so the
     /// parent learns the resume point.
-    fn handle_load(&mut self, load: &pb::Load) -> pb::Event {
+    fn handle_load(&mut self, load: &pb::Load) -> pb::ChildEvent {
         if !matches!(self.state, SessionState::Idle) {
             return violation("Load while a session already exists");
         }
@@ -437,7 +437,7 @@ impl Child {
         &mut self,
         mut result: Result<ReplProgress<Tracker>, Box<ReplStartError<Tracker>>>,
         print: &mut ProtoPrint,
-    ) -> pb::Event {
+    ) -> pb::ChildEvent {
         loop {
             match result {
                 Ok(ReplProgress::Complete { repl, value }) => {
@@ -490,7 +490,7 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = event(pb::event::Kind::OsCall(pb::OsCall {
+                    let event = event(pb::child_event::Kind::OsCall(pb::OsCall {
                         function_name: name.to_owned(),
                         args: values_to_proto(args),
                         kwargs: pairs_to_proto(kwargs),
@@ -536,7 +536,7 @@ impl Child {
                     if let Some(state) = &mut self.type_check {
                         state.pending_snippet = None;
                     }
-                    return event(pb::event::Kind::Error(pb::Error {
+                    return event(pb::child_event::Kind::Error(pb::Error {
                         exception: Some((&err.error).into()),
                     }));
                 }
@@ -545,7 +545,7 @@ impl Child {
     }
 
     /// Ends the current feed with a runtime error while keeping the REPL usable.
-    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::Event {
+    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::ChildEvent {
         self.state = SessionState::Ready(Box::new(repl));
         self.mounts = None;
         if let Some(state) = &mut self.type_check {
@@ -557,13 +557,13 @@ impl Child {
     /// Type-checks a snippet against the accumulated session stubs. Returns
     /// the turn-ending event if the check fails (or errors), `None` to
     /// proceed with execution.
-    fn type_check_feed(&mut self, code: &str) -> Option<pb::Event> {
+    fn type_check_feed(&mut self, code: &str) -> Option<pb::ChildEvent> {
         let state = self.type_check.as_ref()?;
         let stubs =
             (!state.committed_stubs.is_empty()).then(|| SourceFile::new(&state.committed_stubs, "repl_type_stubs.pyi"));
         match type_check(&SourceFile::new(code, &self.script_name), stubs.as_ref()) {
             Ok(None) => None,
-            Ok(Some(diagnostics)) => Some(event(pb::event::Kind::TypingError(pb::TypingError {
+            Ok(Some(diagnostics)) => Some(event(pb::child_event::Kind::TypingError(pb::TypingError {
                 diagnostics: diagnostics.to_string(),
             }))),
             Err(err) => Some(violation(&format!("type checker failed: {err}"))),
@@ -582,7 +582,7 @@ impl Child {
     /// unrecoverable conditions — the child exits right after.
     fn fatal(&self, message: &str) {
         eprintln!("monty --subprocess fatal error: {message}");
-        let mut fatal_event = event(pb::event::Kind::FatalError(pb::FatalError {
+        let mut fatal_event = event(pb::child_event::Kind::FatalError(pb::FatalError {
             message: message.to_owned(),
         }));
         // fatal paths bypass `handle`, so stamp timing here to keep the
@@ -596,15 +596,15 @@ impl Child {
 ///
 /// Framing is stateless and `Stdout` handles share one global buffer, so a
 /// fresh handle per write is safe.
-fn send(event: &pb::Event) -> Result<(), monty_proto::FrameError> {
+fn send(event: &pb::ChildEvent) -> Result<(), monty_proto::FrameError> {
     write_frame(&mut io::stdout(), event)
 }
 
 /// Wraps an event kind into an `Event` with zeroed timing fields;
 /// `Child::handle` (and `Child::fatal`) stamps the timing fields onto every
 /// turn-ending event just before it is sent.
-fn event(kind: pb::event::Kind) -> pb::Event {
-    pb::Event {
+fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
+    pb::ChildEvent {
         kind: Some(kind),
         ..Default::default()
     }
@@ -612,9 +612,9 @@ fn event(kind: pb::event::Kind) -> pb::Event {
 
 /// Builds the turn-ending event for a recoverable protocol violation (wrong
 /// state, bad call id, invalid payload). The child's state is unchanged.
-fn violation(message: &str) -> pb::Event {
-    event(pb::event::Kind::Error(pb::Error {
-        exception: Some(pb::MontyError {
+fn violation(message: &str) -> pb::ChildEvent {
+    event(pb::child_event::Kind::Error(pb::Error {
+        exception: Some(pb::Exception {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
             traceback: vec![],
@@ -622,14 +622,14 @@ fn violation(message: &str) -> pb::Event {
     }))
 }
 
-fn ok_event() -> pb::Event {
-    event(pb::event::Kind::Ok(pb::Ok {}))
+fn ok_event() -> pb::ChildEvent {
+    event(pb::child_event::Kind::Ok(pb::Ok {}))
 }
 
 /// Builds a turn-ending `Error` event from an exception type and message.
-fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
-    event(pb::event::Kind::Error(pb::Error {
-        exception: Some(pb::MontyError {
+fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
+    event(pb::child_event::Kind::Error(pb::Error {
+        exception: Some(pb::Exception {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
             traceback: vec![],
@@ -641,7 +641,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::Event {
 ///
 /// The child turns this into a host-visible error before entering the
 /// suspension, because the parent cannot resume a call it never received.
-fn oversize_suspension_error_message(event: &pb::Event) -> Option<String> {
+fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
     let len = u32::try_from(event.encoded_len()).unwrap_or(u32::MAX);
     (len > MAX_FRAME_LEN).then(|| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
@@ -651,8 +651,8 @@ fn oversize_suspension_error_message(event: &pb::Event) -> Option<String> {
 ///
 /// Clones the argument payload: the suspension keeps its args so a `Dump` of
 /// the suspended state (and its replay on `Load`) stays complete.
-fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::Event {
-    event(pb::event::Kind::FunctionCall(pb::FunctionCall {
+fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::ChildEvent {
+    event(pb::child_event::Kind::FunctionCall(pb::FunctionCall {
         function_name: call.function_name.clone(),
         args: values_to_proto(call.args.clone()),
         kwargs: pairs_to_proto(call.kwargs.clone()),
@@ -661,8 +661,8 @@ fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb
     }))
 }
 
-fn complete_event(value: MontyObject) -> pb::Event {
-    event(pb::event::Kind::Complete(pb::Complete {
+fn complete_event(value: MontyObject) -> pb::ChildEvent {
+    event(pb::child_event::Kind::Complete(pb::Complete {
         value: Some(value.into()),
     }))
 }
@@ -670,9 +670,9 @@ fn complete_event(value: MontyObject) -> pb::Event {
 /// Builds the suspension event for a non-`Complete`, non-`OsCall` progress
 /// state (OS calls are special-cased in `drive` because emitting them consumes
 /// the call's argument payload).
-fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
+fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
     let kind = match progress {
-        ReplProgress::FunctionCall(call) => pb::event::Kind::FunctionCall(pb::FunctionCall {
+        ReplProgress::FunctionCall(call) => pb::child_event::Kind::FunctionCall(pb::FunctionCall {
             function_name: call.function_name.clone(),
             args: values_to_proto(call.args.clone()),
             kwargs: pairs_to_proto(call.kwargs.clone()),
@@ -686,7 +686,7 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
             // name/args from its own records; a fresh suspension goes through
             // `drive` instead
             let has_payload = !matches!(call.function_call, monty::OsFunctionCall::Used);
-            pb::event::Kind::OsCall(pb::OsCall {
+            pb::child_event::Kind::OsCall(pb::OsCall {
                 function_name: if has_payload {
                     call.function_call.name().to_owned()
                 } else {
@@ -698,10 +698,10 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::Event {
                 not_handled_error: has_payload.then(|| (&call.function_call.on_no_handler()).into()),
             })
         }
-        ReplProgress::NameLookup(lookup) => pb::event::Kind::NameLookup(pb::NameLookup {
+        ReplProgress::NameLookup(lookup) => pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
         }),
-        ReplProgress::ResolveFutures(state) => pb::event::Kind::ResolveFutures(pb::ResolveFutures {
+        ReplProgress::ResolveFutures(state) => pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec(),
         }),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
@@ -758,7 +758,7 @@ fn take_str_field(bytes: &[u8]) -> Option<(String, &[u8])> {
 }
 
 /// Converts wire named inputs into `(name, value)` pairs for `feed_start`.
-fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)>, Box<pb::Event>> {
+fn named_inputs(inputs: Vec<pb::NamedValue>) -> Result<Vec<(String, MontyObject)>, Box<pb::ChildEvent>> {
     inputs
         .into_iter()
         .map(|input| {
@@ -795,7 +795,7 @@ impl ProtoPrint {
         if self.buf.is_empty() {
             return Ok(());
         }
-        let event = event(pb::event::Kind::Print(pb::Print {
+        let event = event(pb::child_event::Kind::Print(pb::Print {
             stream: pb::PrintStream::Stdout.into(),
             text: mem::take(&mut self.buf),
         }));
@@ -878,7 +878,7 @@ fn install_panic_hook() {
         // interrupted a write its buffer may hold a partial frame we cannot
         // complete — a corrupt tail is fine, the parent already treats it as
         // a crash
-        let _ = send(&event(pb::event::Kind::FatalError(pb::FatalError {
+        let _ = send(&event(pb::child_event::Kind::FatalError(pb::FatalError {
             message: format!("child panicked: {info}"),
         })));
         default_hook(info);

@@ -279,7 +279,7 @@ fn exceptions_round_trip_with_traceback() {
         },
     ];
     let exc = MontyException::with_traceback(ExcType::ValueError, Some("oops".to_owned()), frames);
-    let proto = pb::MontyError::from(&exc);
+    let proto = pb::Exception::from(&exc);
     let back = MontyException::try_from(proto).expect("proto -> MontyException failed");
     assert_eq!(back, exc);
     // the rendered traceback (the user-visible artifact) must be identical
@@ -289,7 +289,7 @@ fn exceptions_round_trip_with_traceback() {
 #[test]
 fn exception_without_traceback_round_trips() {
     let exc = MontyException::new(ExcType::TypeError, None);
-    let back = MontyException::try_from(pb::MontyError::from(&exc)).unwrap();
+    let back = MontyException::try_from(pb::Exception::from(&exc)).unwrap();
     assert_eq!(back, exc);
 }
 
@@ -333,7 +333,7 @@ fn ext_results_round_trip() {
     ];
     for case in cases {
         let expected = format!("{case:?}");
-        let proto = pb::ExtResult::from(case);
+        let proto = pb::ExtFunctionResult::from(case);
         let back = ExtFunctionResult::try_from(proto).unwrap();
         // ExtFunctionResult has no PartialEq; compare via Debug
         assert_eq!(format!("{back:?}"), expected);
@@ -400,8 +400,8 @@ fn nest_dataclass(depth: usize) -> MontyObject {
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
 /// wrapper chain (`Request` → `ReplFeed` → `NamedValue`).
 fn decodes_in_frame(value: &MontyObject) -> bool {
-    let request = pb::Request {
-        kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+    let request = pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
             code: String::new(),
             inputs: vec![pb::NamedValue {
                 name: "v".to_owned(),
@@ -411,7 +411,7 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
             skip_type_check: false,
         })),
     };
-    pb::Request::decode(request.encode_to_vec().as_slice()).is_ok()
+    pb::ParentRequest::decode(request.encode_to_vec().as_slice()).is_ok()
 }
 
 /// The sender-side depth check must agree exactly with what the receiver can

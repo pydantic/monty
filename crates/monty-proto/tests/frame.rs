@@ -13,9 +13,9 @@ impl<R: Read> Read for OneByteReader<R> {
     }
 }
 
-fn feed() -> pb::Request {
-    pb::Request {
-        kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+fn feed() -> pb::ParentRequest {
+    pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             mounts: vec![],
@@ -30,20 +30,20 @@ fn frames_round_trip() {
     write_frame(&mut buf, &feed()).unwrap();
     write_frame(
         &mut buf,
-        &pb::Event {
-            kind: Some(pb::event::Kind::Ok(pb::Ok {})),
+        &pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
             ..Default::default()
         },
     )
     .unwrap();
 
     let mut reader = FrameReader::new(buf.as_slice());
-    let req: pb::Request = reader.read().unwrap().expect("first frame");
+    let req: pb::ParentRequest = reader.read().unwrap().expect("first frame");
     assert_eq!(req, feed());
-    let event: pb::Event = reader.read().unwrap().expect("second frame");
-    assert!(matches!(event.kind, Some(pb::event::Kind::Ok(_))));
+    let event: pb::ChildEvent = reader.read().unwrap().expect("second frame");
+    assert!(matches!(event.kind, Some(pb::child_event::Kind::Ok(_))));
     // clean EOF at the frame boundary
-    assert!(reader.read::<pb::Event>().unwrap().is_none());
+    assert!(reader.read::<pb::ChildEvent>().unwrap().is_none());
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn frames_round_trip_through_chunked_reads() {
     let mut buf = Vec::new();
     write_frame(&mut buf, &feed()).unwrap();
     let mut reader = FrameReader::new(OneByteReader(buf.as_slice()));
-    let req: pb::Request = reader.read().unwrap().expect("frame");
+    let req: pb::ParentRequest = reader.read().unwrap().expect("frame");
     assert_eq!(req, feed());
 }
 
@@ -60,7 +60,7 @@ fn oversized_frame_is_rejected_without_allocating() {
     // length prefix claims 4GiB-1; the reader must refuse before allocating
     let bytes = [0xFF, 0xFF, 0xFF, 0xFF];
     let mut reader = FrameReader::with_max_frame_len(bytes.as_slice(), 1024);
-    let err = reader.read::<pb::Request>().expect_err("oversized frame");
+    let err = reader.read::<pb::ParentRequest>().expect_err("oversized frame");
     assert!(matches!(
         err,
         FrameError::FrameTooLarge {
@@ -74,7 +74,7 @@ fn oversized_frame_is_rejected_without_allocating() {
 fn truncated_length_prefix_is_an_error() {
     let bytes = [1, 0]; // 2 of 4 length bytes, then EOF
     let mut reader = FrameReader::new(bytes.as_slice());
-    let err = reader.read::<pb::Request>().expect_err("truncated prefix");
+    let err = reader.read::<pb::ParentRequest>().expect_err("truncated prefix");
     assert!(matches!(err, FrameError::Truncated));
 }
 
@@ -84,7 +84,7 @@ fn truncated_body_is_an_error() {
     write_frame(&mut buf, &feed()).unwrap();
     buf.truncate(buf.len() - 1); // drop the last body byte
     let mut reader = FrameReader::new(buf.as_slice());
-    let err = reader.read::<pb::Request>().expect_err("truncated body");
+    let err = reader.read::<pb::ParentRequest>().expect_err("truncated body");
     assert!(matches!(err, FrameError::Truncated));
 }
 
@@ -95,6 +95,6 @@ fn garbage_body_is_a_decode_error() {
     buf.extend_from_slice(&8u32.to_le_bytes());
     buf.extend_from_slice(&body);
     let mut reader = FrameReader::new(buf.as_slice());
-    let err = reader.read::<pb::Request>().expect_err("garbage body");
+    let err = reader.read::<pb::ParentRequest>().expect_err("garbage body");
     assert!(matches!(err, FrameError::Decode(_)));
 }

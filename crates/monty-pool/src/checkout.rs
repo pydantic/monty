@@ -165,8 +165,8 @@ impl Checkout {
             reported_execution: Duration::ZERO,
             armed_deadline: None,
         };
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::ReplCreate(pb::ReplCreate {
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ReplCreate(pb::ReplCreate {
                 script_name: repl.script_name.clone(),
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
@@ -194,8 +194,8 @@ impl Checkout {
             reported_execution: Duration::ZERO,
             armed_deadline: None,
         };
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::Load(pb::Load { state })),
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok((this, None)),
@@ -227,8 +227,8 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::ReplFeed(pb::ReplFeed {
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
                 code: code.to_owned(),
                 inputs: inputs
                     .into_iter()
@@ -254,16 +254,16 @@ impl Checkout {
             ensure_sendable([obj])?;
         }
         let result = match value {
-            ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
-            ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
-            ResumeValue::Future => pb::ext_result::Kind::Future(call_id),
-            ResumeValue::NotFound => pb::ext_result::Kind::NotFound(function_name),
+            ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+            ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
+            ResumeValue::Future => pb::ext_function_result::Kind::Future(call_id),
+            ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
         };
         self.pending = None;
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::ResumeCall(pb::ResumeCall {
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
                 call_id,
-                result: Some(pb::ExtResult { kind: Some(result) }),
+                result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             })),
         };
         self.expect_turn(&request, on_print)
@@ -287,8 +287,8 @@ impl Checkout {
             Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
         };
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
                 kind: Some(kind),
             })),
         };
@@ -313,8 +313,8 @@ impl Checkout {
                     ensure_sendable([obj])?;
                 }
                 let kind = match value {
-                    ResumeValue::Return(obj) => pb::ext_result::Kind::ReturnValue(obj.into()),
-                    ResumeValue::Error(exc) => pb::ext_result::Kind::Error((&exc).into()),
+                    ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+                    ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
                     ResumeValue::Future | ResumeValue::NotFound => {
                         return Err(PoolError::Protocol(format!(
                             "future {call_id} must resolve to Return or Error"
@@ -323,13 +323,13 @@ impl Checkout {
                 };
                 Ok(pb::FutureResult {
                     call_id,
-                    result: Some(pb::ExtResult { kind: Some(kind) }),
+                    result: Some(pb::ExtFunctionResult { kind: Some(kind) }),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.pending = None;
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::ResumeFutures(pb::ResumeFutures { results })),
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
         };
         self.expect_turn(&request, on_print)
     }
@@ -338,8 +338,8 @@ impl Checkout {
     /// [`crate::Pool::checkout_load`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::Dump(pb::Dump {})),
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Dump(pb::Dump {})),
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
@@ -352,8 +352,8 @@ impl Checkout {
     /// Consumes the checkout. On error the worker is discarded (and the
     /// error reported), but the pool remains healthy either way.
     pub fn finish(mut self) -> Result<(), PoolError> {
-        let request = pb::Request {
-            kind: Some(pb::request::Kind::Reset(pb::Reset {})),
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::Reset(pb::Reset {})),
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => {
@@ -377,7 +377,7 @@ impl Checkout {
     /// This is the entry point for *execution* turns (feed/resume — the
     /// turns where the sandbox runs code), so the watchdog deadline includes
     /// [`Self::backstop_deadline`] on top of the configured request timeout.
-    fn expect_turn(&mut self, request: &pb::Request, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+    fn expect_turn(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
@@ -403,7 +403,7 @@ impl Checkout {
     /// under-report, but each turn stays bounded by `budget + grace`). The
     /// budget itself is only adopted when the parent doesn't already know it,
     /// i.e. after `Pool::checkout_load`.
-    fn note_reported_time(&mut self, event: &pb::Event) {
+    fn note_reported_time(&mut self, event: &pb::ChildEvent) {
         self.reported_execution = self
             .reported_execution
             .max(Duration::from_micros(event.total_execution_micros));
@@ -418,7 +418,7 @@ impl Checkout {
     /// `Typing`, which are sandbox-level outcomes.
     fn request_turn(
         &mut self,
-        request: &pb::Request,
+        request: &pb::ParentRequest,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
@@ -464,14 +464,14 @@ impl Checkout {
             // a no-op for them thanks to the monotonic-max ratchet.
             self.note_reported_time(&event);
             match event.kind {
-                Some(pb::event::Kind::Print(print)) => {
+                Some(pb::child_event::Kind::Print(print)) => {
                     let stream = match print.stream() {
                         pb::PrintStream::Stderr => PrintStream::Stderr,
                         pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
                     };
                     on_print(stream, &print.text);
                 }
-                Some(pb::event::Kind::FunctionCall(call)) => {
+                Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -486,7 +486,7 @@ impl Checkout {
                         })
                     });
                 }
-                Some(pb::event::Kind::OsCall(call)) => {
+                Some(pb::child_event::Kind::OsCall(call)) => {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -501,17 +501,17 @@ impl Checkout {
                         })
                     });
                 }
-                Some(pb::event::Kind::NameLookup(lookup)) => {
+                Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
                     break Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
                 }
-                Some(pb::event::Kind::ResolveFutures(futures)) => {
+                Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);
                     break Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids: futures.pending_call_ids,
                     }));
                 }
-                Some(pb::event::Kind::Complete(complete)) => {
+                Some(pb::child_event::Kind::Complete(complete)) => {
                     self.pending = None;
                     break self.convert_turn(|| {
                         let value = complete
@@ -520,7 +520,7 @@ impl Checkout {
                         Ok(TurnEvent::Complete(value.into_object()?))
                     });
                 }
-                Some(pb::event::Kind::Error(error)) => {
+                Some(pb::child_event::Kind::Error(error)) => {
                     self.pending = None;
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
@@ -530,13 +530,13 @@ impl Checkout {
                         Err(err) => Err(self.protocol_violation(&format!("invalid exception payload: {err}"))),
                     };
                 }
-                Some(pb::event::Kind::TypingError(typing)) => {
+                Some(pb::child_event::Kind::TypingError(typing)) => {
                     self.pending = None;
                     break Err(PoolError::Typing(typing.diagnostics));
                 }
-                Some(pb::event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
-                Some(pb::event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
-                Some(pb::event::Kind::FatalError(fatal)) => {
+                Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
+                Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::child_event::Kind::FatalError(fatal)) => {
                     self.discard_worker();
                     break Err(PoolError::Protocol(format!(
                         "worker reported fatal error: {}",
