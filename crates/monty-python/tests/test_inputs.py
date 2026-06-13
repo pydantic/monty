@@ -35,9 +35,10 @@ def test_input_dict(monty_run: RunMonty):
 
 def test_input_keys_must_be_strings(monty_run: RunMonty):
     bad_inputs: Any = {1: 'x'}
-    with pytest.raises(TypeError) as exc_info:
+    with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('x', inputs=bad_inputs)
-    assert str(exc_info.value) == snapshot('inputs keys must be str')
+    assert str(exc_info.value) == snapshot('TypeError: inputs keys must be str')
+    assert isinstance(exc_info.value.exception(), TypeError)
 
 
 def test_missing_input_raises(monty_run: RunMonty):
