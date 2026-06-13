@@ -4,8 +4,8 @@
 //! fully crash-proof against memory errors (stack overflow, allocator
 //! aborts). The subprocess protocol isolates those crashes: a parent drives a
 //! pool of `monty --subprocess` children over stdin/stdout, and a dead child
-//! is simply respawned. Protobuf is used (rather than monty's internal
-//! postcard format) so a parent can be implemented in any language — see
+//! is simply respawned. Protobuf (rather than monty's internal postcard
+//! format) lets a parent be implemented in any language — see
 //! `proto/monty/v1/monty.proto` for the schema and protocol rules.
 //!
 //! This crate provides everything both sides need:

@@ -18,11 +18,9 @@ use crate::{
     },
 };
 
-/// Dispatches a function call to either a dataclass method or an external function,
-/// detecting coroutines for async dispatch.
-///
-/// Acquires the GIL to call the Python function. If the result is a coroutine,
-/// returns `CallResult::Coroutine` so the caller can spawn it as a tokio task.
+/// Dispatches a function call to a dataclass method or external function,
+/// returning `CallResult::Coroutine` (for the caller to spawn) when the Python
+/// result is a coroutine.
 pub(crate) fn dispatch_function_call(
     function_name: &str,
     method_call: bool,
@@ -44,11 +42,8 @@ pub(crate) fn dispatch_function_call(
     })
 }
 
-/// Spawns a Python coroutine as a tokio task in the `JoinSet`.
-///
-/// Converts the coroutine to a Rust future via `pyo3_async_runtimes::tokio::into_future()`
-/// and spawns it. When the future completes, the result is converted to an
-/// `ExtFunctionResult`.
+/// Spawns a Python coroutine as a tokio task in the `JoinSet`, converting its
+/// eventual result to an `ExtFunctionResult`.
 pub(crate) fn spawn_coroutine_task(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     call_id: u32,
@@ -71,10 +66,8 @@ pub(crate) fn spawn_coroutine_task(
     Ok(())
 }
 
-/// Waits for at least one async task to complete from the `JoinSet`.
-///
-/// Collects the first completed result, then drains any other immediately-ready
-/// results to batch them together for the worker resume.
+/// Waits for at least one `JoinSet` task to complete, then drains any other
+/// immediately-ready results to batch them into one worker resume.
 pub(crate) async fn wait_for_futures(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
     _pending_call_ids: &[u32],

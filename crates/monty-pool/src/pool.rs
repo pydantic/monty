@@ -16,13 +16,12 @@ use crate::{
 
 /// An elastic pool of `monty --subprocess` workers.
 ///
-/// `min_processes` workers are spawned eagerly so the first checkout is
-/// fast; further workers spawn on demand up to `max_processes`.
-/// Dead workers are detected and replaced transparently. See the crate docs
-/// for the full lifecycle.
+/// `min_processes` workers spawn eagerly so the first checkout is fast;
+/// further workers spawn on demand up to `max_processes`, and dead workers
+/// are detected and replaced transparently. See the crate docs for the full
+/// lifecycle.
 ///
-/// `Pool` is cheap to clone-by-reference (`&Pool` is all a checkout needs)
-/// and safe to share across threads. Dropping the pool kills and reaps all
+/// `Pool` is safe to share across threads. Dropping it kills and reaps all
 /// idle workers; workers held by live [`Checkout`]s die when those are
 /// finished or dropped.
 pub struct Pool {

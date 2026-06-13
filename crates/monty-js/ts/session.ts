@@ -1,14 +1,13 @@
-// One checked-out worker driving one REPL session. `feedRun` implements the
-// drive loop: it runs protocol turns through the native binding (which owns
-// the worker pool, framing, watchdogs and value conversion) and answers the
-// suspension events each turn resolves to — external function calls, OS
-// callbacks, name lookups, async futures — until the turn completes,
-// mirroring pydantic_monty's AsyncMontySession.
+// One checked-out worker driving one REPL session. `feedRun` is the drive
+// loop: it runs protocol turns through the native binding (which owns the
+// pool, framing, watchdogs and value conversion) and answers the suspension
+// events each turn resolves to — external function calls, OS callbacks, name
+// lookups, async futures — until the turn completes, mirroring
+// pydantic_monty's AsyncMontySession.
 //
 // External functions may return promises: the call is registered as an
 // external future so other sandbox tasks keep executing, and results are
-// delivered when the worker reports that everything is blocked
-// (`resolveFutures`).
+// delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../index.js'
 import { MontyCrashedError, MontyError, montyErrorFromNative, MontyTypingError, ProtocolError } from './errors.js'

@@ -180,11 +180,10 @@ impl Monty {
         run_type_check_result(self.runner.code(), &self.script_name, prefix_code.as_deref())
     }
 
-    /// Executes the code and returns the result, or an exception object if execution fails.
-    ///
-    /// If runtime `externalFunctions` are provided, the start/resume loop is used
-    /// to dispatch external function calls and name lookups. Otherwise, code is
-    /// executed directly.
+    /// Executes the code, returning the last expression's result or a
+    /// MontyException on failure. With runtime `externalFunctions` or mounts,
+    /// dispatches calls/lookups via the start/resume loop; otherwise runs
+    /// directly.
     ///
     /// @param options - Execution options (inputs, limits, externalFunctions)
     /// @returns The result of the last expression, or a MontyException if execution fails
@@ -239,13 +238,10 @@ impl Monty {
         }
     }
 
-    /// Internal helper to run code with external function callbacks and/or mounts.
-    ///
-    /// Handles `FunctionCall`, `NameLookup`, and `OsCall` dispatch in a loop.
-    /// For `NameLookup`, checks the runtime external functions map: if the name
-    /// is found, resolves it as a `Function`; otherwise returns `Undefined`.
-    /// For `OsCall`, dispatches to the mount table if available, otherwise
-    /// returns `NotImplementedError`.
+    /// Runs code with external function callbacks and/or mounts, looping over
+    /// `FunctionCall`/`NameLookup`/`OsCall`. Name lookups resolve to a
+    /// `Function` when present in the external map (else `Undefined`); OS calls
+    /// dispatch to the mount table when available.
     fn run_with_dispatch_loop<'env>(
         &self,
         env: &'env Env,
@@ -260,14 +256,13 @@ impl Monty {
         // Take mounts out of their shared slots for zero-overhead execution.
         let mut mount_table: Option<MountTable> = os_handler.as_ref().map(OsHandler::take).transpose()?;
 
-        // Helper: put mounts back into shared slots.
         let put_back = |table: Option<MountTable>| {
             if let (Some(h), Some(table)) = (&os_handler, table) {
                 h.put_back(table);
             }
         };
 
-        // Helper macro to handle the execution loop for both tracker types
+        // Run the loop generically over either tracker type.
         macro_rules! run_loop {
             ($tracker:expr) => {{
                 let progress = runner.start(input_values, $tracker, print_output.reborrow());
@@ -348,11 +343,9 @@ impl Monty {
         }
     }
 
-    /// Starts execution and returns a snapshot (paused at external call or name lookup),
-    /// completion, or error.
-    ///
-    /// This method enables iterative execution where code pauses at external function
-    /// calls or name lookups, allowing the host to provide return values before resuming.
+    /// Starts iterative execution, pausing at external function calls or name
+    /// lookups so the host can supply a value before resuming. Returns a
+    /// snapshot, completion, or error.
     ///
     /// @param options - Execution options (inputs, limits)
     /// @returns MontySnapshot if paused at function call, MontyNameLookup if paused at
@@ -418,10 +411,8 @@ impl Monty {
         }
     }
 
-    /// Serializes the Monty instance to a binary format.
-    ///
-    /// The serialized data can be stored and later restored with `Monty.load()`.
-    /// This allows caching parsed code to avoid re-parsing on subsequent runs.
+    /// Serializes the Monty instance to bytes (restore with `Monty.load()`),
+    /// caching parsed code to avoid re-parsing on later runs.
     ///
     /// @returns Buffer containing the serialized Monty instance
     #[napi]
@@ -872,16 +863,13 @@ enum EitherSnapshot {
 // MontySnapshot - Paused execution at an external function call
 // =============================================================================
 
-/// Represents paused execution waiting for an external function call return value.
-///
-/// Contains information about the pending external function call and allows
-/// resuming execution with the return value or an exception.
-/// Active mount state carried across `start()`/`resume()` calls.
-///
-/// Contains the handler (with shared mount references for put-back) and the
-/// taken mount table for zero-overhead filesystem operations.
+/// Active mount state carried across `start()`/`resume()`: the handler (with
+/// shared mount references for put-back) and the taken mount table for
+/// zero-overhead filesystem operations.
 type MountState = (OsHandler, MountTable);
 
+/// Paused execution waiting for an external function call return value, with
+/// the pending call's details and the state needed to resume it.
 #[napi]
 pub struct MontySnapshot {
     /// The execution state that can be resumed.
@@ -1033,10 +1021,8 @@ impl MontySnapshot {
         }
     }
 
-    /// Serializes the MontySnapshot to a binary format.
-    ///
-    /// The serialized data can be stored and later restored with `MontySnapshot.load()`.
-    /// This allows suspending execution and resuming later, potentially in a different process.
+    /// Serializes the snapshot to bytes (restore with `MontySnapshot.load()`),
+    /// so execution can be suspended and resumed later, even in another process.
     ///
     /// @returns Buffer containing the serialized snapshot
     #[napi]
@@ -1376,12 +1362,9 @@ impl PrintWriterCallback for CallbackStringPrint<'_> {
 // Helper functions for progress conversion
 // =============================================================================
 
-/// Converts a `RunProgress` to a JS result, handling `OsCall` via the mount table.
-///
-/// Unlike [`progress_to_result`], this function loops on `OsCall` events,
-/// dispatching them to the mount table before returning to JavaScript.
-/// Mount state is carried forward into snapshots so it persists across
-/// `resume()` calls.
+/// Converts a `RunProgress` to a JS result, looping on `OsCall` events to
+/// dispatch them through the mount table before returning to JavaScript. Mount
+/// state is carried into snapshots so it persists across `resume()` calls.
 fn progress_to_result_with_mounts<T>(
     env: &Env,
     mut progress: RunProgress<T>,
@@ -1592,16 +1575,14 @@ fn call_external_function(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> Result<ExtFunctionResult> {
-    // Get the external functions dict, or error if not provided
     let functions = external_functions.ok_or_else(|| {
         Error::from_reason(format!(
             "External function '{function_name}' called but no externalFunctions provided"
         ))
     })?;
 
-    // Look up the function by name
     if !functions.has_named_property(function_name)? {
-        // Return a NameError exception — matches Python's behavior for undefined names
+        // NameError matches Python's behavior for undefined names.
         let exc = MontyException::new(
             ExcType::NameError,
             Some(format!("name '{function_name}' is not defined")),
@@ -1611,13 +1592,12 @@ fn call_external_function(
 
     let callable: Unknown = functions.get_named_property(function_name)?;
 
-    // Convert positional arguments to JS
     let mut js_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);
     for arg in args {
         js_args.push(monty_to_js(arg, env)?.raw());
     }
 
-    // If we have kwargs, add them as a final object argument
+    // kwargs (if any) cross as a final trailing object argument.
     if !kwargs.is_empty() {
         let kwargs_obj = kwargs_to_js_object(env, kwargs)?;
         js_args.push(kwargs_obj.raw());
@@ -1630,7 +1610,6 @@ fn call_external_function(
         sys::napi_get_undefined(env.raw(), &raw mut undefined_raw);
     }
 
-    // Call the function using raw napi
     let mut result_raw = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     let status = unsafe {

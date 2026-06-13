@@ -21,11 +21,8 @@ use napi_derive::napi;
 /// Shared storage for a [`Mount`] that can be temporarily taken for execution.
 pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 
-/// Wraps a `Vec<SharedMount>` for passing between functions.
-///
-/// Since napi `#[napi]` structs cannot be generic and we need to extract
-/// shared mount references from JS arguments before constructing the handler,
-/// this type bundles the extracted mounts.
+/// Bundles mount references extracted from JS arguments before the handler is
+/// built — a plain wrapper because `#[napi]` structs cannot be generic.
 pub(crate) struct ExtractedMounts(pub Vec<SharedMount>);
 
 // =============================================================================

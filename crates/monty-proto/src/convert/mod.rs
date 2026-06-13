@@ -137,14 +137,11 @@ const DATACLASS_COST: usize = 4;
 /// Maximum nesting depth of a *list-like* value that can safely cross the
 /// wire (the cheapest container shape, and so the deepest possible nesting).
 ///
-/// Different containers consume different numbers of proto message levels
-/// against prost's decode recursion limit — two per list/tuple/set/namedtuple
-/// level, three per dict level, four per dataclass level — so dicts only nest
-/// to ~32 levels and dataclasses to ~24. [`exceeds_max_value_depth`] applies
-/// the exact per-shape accounting; this constant is the headline bound for
-/// docs and error messages. Receivers must treat a too-deep frame as a fatal
-/// protocol failure, so senders check first and fail cleanly instead of
-/// shipping an undecodable frame.
+/// Containers consume differing proto message levels against prost's decode
+/// recursion limit (two per list-like, three per dict, four per dataclass), so
+/// dicts only nest to ~32 levels and dataclasses to ~24.
+/// [`exceeds_max_value_depth`] applies the exact per-shape accounting; this
+/// constant is the headline bound for docs and error messages.
 pub const MAX_VALUE_DEPTH: usize = (MAX_PROTO_VALUE_DEPTH - 1) / LIST_COST;
 
 /// Whether `value` nests too deeply to decode inside a wire frame.

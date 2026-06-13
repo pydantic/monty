@@ -32,14 +32,13 @@ export interface MontyOptions {
   requestTimeout?: number
   /**
    * Grace period in seconds for the automatic `maxDurationSecs` backstop
-   * (default 1). For sessions checked out with a `maxDurationSecs` limit,
-   * the worker reports its cumulative execution time on every protocol turn
-   * (the sandbox clock runs only while the interpreter executes, never while
-   * suspended waiting on the host) and the host kills the worker this long
-   * after the remaining budget expires — covering cases where the in-sandbox
-   * limit cannot fire, like a blocking syscall inside a mount. Surfaces as
-   * `MontyCrashedError` (`timedOut: true`), losing the session. `null`
-   * disables the backstop; `requestTimeout` applies independently.
+   * (default 1, `null` disables). For sessions with a `maxDurationSecs`
+   * limit, the worker reports cumulative execution time each turn (the
+   * sandbox clock runs only while the interpreter executes, never while
+   * suspended on the host) and the host kills the worker this long after the
+   * budget expires — covering cases the in-sandbox limit cannot catch, like a
+   * blocking syscall inside a mount. Surfaces as `MontyCrashedError`
+   * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
   durationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */

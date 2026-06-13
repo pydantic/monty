@@ -168,8 +168,7 @@ impl PyMontySession {
     ///
     /// The checkout slot is locked with the GIL released: a turn in flight on
     /// another thread holds that lock and may block on the GIL for print
-    /// callbacks, so locking it while attached can deadlock (see
-    /// [`run_turn_blocking`]).
+    /// callbacks, so locking it while attached can deadlock.
     fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
         let this = slf.get();
         let pool = active_pool(&this.pool)?;

@@ -191,11 +191,10 @@ impl Child {
         }
     }
 
-    /// Stamps the session's cumulative execution time and `max_duration`
-    /// budget onto a turn-ending event, making the child the single source of
-    /// truth for timing: the parent derives its watchdog backstop from these
-    /// fields instead of keeping a second clock. Left zero/absent when no
-    /// session exists (handshake, post-`Reset`, failed create/load).
+    /// Stamps cumulative execution time and the `max_duration` budget onto a
+    /// turn-ending event, making the child the single source of truth for
+    /// timing (the parent's watchdog derives its backstop from these fields).
+    /// Left zero/absent when no session exists.
     fn stamp_execution_time(&self, event: &mut pb::Event) {
         let tracker = match &self.state {
             SessionState::Ready(repl) => repl.tracker(),
@@ -596,14 +595,14 @@ impl Child {
 /// Writes one event frame to stdout.
 ///
 /// Framing is stateless and `Stdout` handles share one global buffer, so a
-/// fresh handle per write is safe — no writer needs to be carried around.
+/// fresh handle per write is safe.
 fn send(event: &pb::Event) -> Result<(), monty_proto::FrameError> {
     write_frame(&mut io::stdout(), event)
 }
 
-/// Wraps an event kind into an `Event` with zeroed timing fields —
-/// `Child::handle` (and `Child::fatal`) stamps `total_execution_micros`/
-/// `max_duration_micros` onto every turn-ending event just before it is sent.
+/// Wraps an event kind into an `Event` with zeroed timing fields;
+/// `Child::handle` (and `Child::fatal`) stamps the timing fields onto every
+/// turn-ending event just before it is sent.
 fn event(kind: pb::event::Kind) -> pb::Event {
     pb::Event {
         kind: Some(kind),

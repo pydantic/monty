@@ -126,11 +126,10 @@ pub struct Checkout {
     pool: Arc<PoolInner>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
-    /// The session's `max_duration` limit, when one was configured — the
-    /// budget for the parent-side execution-time backstop. Set from the
-    /// checkout config on `create`; for `Pool::checkout_load` restores it is
-    /// adopted from the timing fields the worker stamps on its first reply
-    /// (the limits travel inside the opaque dump).
+    /// The session's `max_duration` budget for the parent-side backstop, when
+    /// configured. Set from the config on `create`; for `checkout_load`
+    /// restores it is adopted from the timing fields on the worker's first
+    /// reply (the limits travel inside the opaque dump).
     duration_budget: Option<Duration>,
     /// Cumulative sandbox execution time as last reported by the worker —
     /// the child's clock is the single source of truth (it runs only while
@@ -138,7 +137,7 @@ pub struct Checkout {
     /// and survives dump/load). Monotonic max across turns so a compromised
     /// worker cannot rewind the parent's view of its consumed budget.
     reported_execution: Duration,
-    /// The deadline armed for the most recent turn, reported by
+    /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when the watchdog fires.
     armed_deadline: Option<Duration>,
 }
@@ -552,12 +551,11 @@ impl Checkout {
         self.finish_request_turn(deadline_guard, outcome)
     }
 
-    /// Disarms the watchdog after receiving a turn-ending event and then
-    /// checks whether the deadline fired in the narrow race between reading
-    /// that event and removing the watchdog entry. If it did, the worker is
-    /// already dead (or being killed), so the apparent success must be
-    /// reported as this turn's timeout rather than returning a dead worker to
-    /// the caller.
+    /// Disarms the watchdog, then guards the narrow race where the deadline
+    /// fired between reading the turn-ending event and removing the watchdog
+    /// entry: if it did, the worker is already dead, so the apparent success
+    /// is reported as this turn's timeout instead of handing back a dead
+    /// worker.
     fn finish_request_turn(
         &mut self,
         deadline_guard: Option<DeadlineGuard>,

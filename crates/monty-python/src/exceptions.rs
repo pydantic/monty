@@ -29,10 +29,8 @@ use pyo3::{
 
 use crate::dataclass::get_frozen_instance_error;
 
-/// Base exception for all Monty interpreter errors.
-///
-/// This is the parent class for both `MontySyntaxError` and `MontyRuntimeError`.
-/// Catching `MontyError` will catch any exception raised by Monty.
+/// Base exception for all Monty interpreter errors; catching it catches any
+/// exception raised by Monty.
 #[pyclass(extends=exceptions::PyException, module="pydantic_monty", subclass, skip_from_py_object)]
 #[derive(Clone)]
 pub struct MontyError {
@@ -41,14 +39,10 @@ pub struct MontyError {
 }
 
 impl MontyError {
-    /// Converts a Monty exception to a `PyErr`.
-    ///
-    /// For `SyntaxError` exceptions, creates a `MontySyntaxError`.
-    /// For all other exceptions, creates a `MontyRuntimeError` with all the exception
-    /// information preserved, including the traceback frames and display string.
+    /// Converts a Monty exception to a `PyErr`: `MontySyntaxError` for syntax
+    /// errors, `MontyRuntimeError` (preserving traceback frames) otherwise.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
-        // Syntax errors get their own exception type
         if exc.exc_type() == ExcType::SyntaxError {
             MontySyntaxError::new_err(py, exc)
         } else {
@@ -77,10 +71,8 @@ impl MontyError {
 
 #[pymethods]
 impl MontyError {
-    /// Returns the inner exception as a Python exception object.
-    ///
-    /// This recreates a native Python exception (e.g., `ValueError`, `TypeError`)
-    /// from the stored exception type and message.
+    /// Recreates the inner exception as a native Python exception object (e.g.
+    /// `ValueError`, `TypeError`) from the stored type and message.
     fn exception(&self, py: Python<'_>) -> Py<PyAny> {
         let py_err = exc_monty_to_py(py, self.exc.clone());
         py_err.into_value(py).into_any()
@@ -211,30 +203,23 @@ impl MontySyntaxError {
     }
 }
 
-/// Raised when Monty code fails during execution.
-///
-/// Inherits from `MontyError`. Additionally provides `traceback()` to access
-/// the Monty stack frames where the error occurred.
+/// Raised when Monty code fails during execution. Inherits from `MontyError`
+/// and provides `traceback()` for the Monty stack frames.
 ///
 /// `PyFrame` objects are materialized lazily on the first `traceback()` call
-/// rather than at exception-construction time. This bounds the cost of
-/// exception propagation: an attacker submitting deeply recursive code
-/// referencing a very long line cannot force the embedder to allocate
-/// `O(depth × line_len)` bytes simply by triggering the exception — the cost
-/// is paid only if the embedder explicitly walks the traceback. The result
-/// is cached so subsequent calls reuse the same `Frame` and source-line
-/// objects, matching the stable-object semantics of CPython's
-/// `exc.__traceback__`.
+/// (not at construction), bounding exception-propagation cost: deeply recursive
+/// code referencing a long line can't force the embedder to allocate
+/// `O(depth × line_len)` bytes just by triggering the exception. The result is
+/// cached, matching the stable-object semantics of CPython's `exc.__traceback__`.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyRuntimeError {
     traceback: PyOnceLock<Py<PyList>>,
 }
 
 impl MontyRuntimeError {
-    /// Creates a new `MontyRuntimeError` from the given exception data.
-    ///
-    /// This is O(1) — the underlying `MontyException` is stored on the base
-    /// class and frames are built on demand by `traceback()`.
+    /// Creates a `MontyRuntimeError` from the given exception. O(1) — the
+    /// `MontyException` is stored on the base; frames are built on demand by
+    /// `traceback()`.
     #[must_use]
     pub fn new_err(py: Python<'_>, exc: MontyException) -> PyErr {
         let base_error = MontyError::new(exc);
@@ -381,15 +366,12 @@ fn build_traceback_list(py: Python<'_>, exc: &MontyException) -> PyResult<Py<PyL
     Ok(PyList::new(py, &frames)?.unbind())
 }
 
-/// A single frame in a Monty traceback.
+/// A single frame in a Monty traceback: file location, function name, and an
+/// optional source preview.
 ///
-/// Contains all the information needed to display a traceback line:
-/// the file location, function name, and optional source code preview.
-///
-/// `source_line` is stored as `Py<PyString>` so that frames built from the
-/// same underlying source line in a single `traceback()` call share one
-/// Python string object. For a recursion with a long preview line this turns
-/// what would be `O(depth × line_len)` peak memory into a single allocation.
+/// `source_line` is a `Py<PyString>` so frames sharing one underlying source
+/// line in a single `traceback()` call share one Python string object, turning
+/// `O(depth × line_len)` peak memory into a single allocation for deep recursion.
 #[pyclass(name = "Frame", module = "pydantic_monty", frozen, skip_from_py_object)]
 #[derive(Debug)]
 pub struct PyFrame {
@@ -445,10 +427,8 @@ impl PyFrame {
 }
 
 /// Converts Monty's `MontyException` to the matching Python exception value.
-///
-/// Creates an appropriate Python exception type with the message.
-/// The traceback information is included in the exception message
-/// since PyO3 doesn't provide direct traceback manipulation.
+/// Traceback info is folded into the message, since PyO3 doesn't expose direct
+/// traceback manipulation.
 pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
     let exc_type = exc.exc_type();
     let msg = exc.into_message().unwrap_or_default();
@@ -646,10 +626,8 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
     }
 }
 
-/// Checks if an exception is an instance of `dataclasses.FrozenInstanceError`.
-///
-/// Since `FrozenInstanceError` is not a built-in PyO3 exception type, we need to
-/// check using Python's isinstance against the imported class.
+/// Checks if an exception is a `dataclasses.FrozenInstanceError` (not a built-in
+/// PyO3 type, so this isinstance-checks against the imported class).
 fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     if let Ok(frozen_error_cls) = get_frozen_instance_error(exc.py()) {
         exc.is_instance(frozen_error_cls).unwrap_or(false)
@@ -658,10 +636,8 @@ fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
     }
 }
 
-/// Checks if an exception is an instance of `json.JSONDecodeError`.
-///
-/// The concrete class lives in Python's standard library rather than PyO3's
-/// built-in exception wrappers, so we look it up lazily and cache the type.
+/// Checks if an exception is a `json.JSONDecodeError` (a stdlib class, not a
+/// PyO3 built-in, so looked up lazily and cached).
 fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     if let Ok(json_decode_error_cls) = get_json_decode_error(exc.py()) {
         exc.is_instance(json_decode_error_cls).unwrap_or(false)

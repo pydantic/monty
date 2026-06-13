@@ -63,13 +63,8 @@ impl From<io::Error> for FrameError {
 /// Encodes `msg` and writes it to `writer` as one length-prefixed frame, then
 /// flushes (see the module docs for why flushing every frame is required).
 ///
-/// Framing carries no state between frames, so this is a plain function:
-/// callers write to whatever stream handle they have (`ChildStdin`,
-/// `io::stdout()`, a `Vec<u8>` in tests) without a wrapper object.
-///
 /// Frames above [`MAX_FRAME_LEN`] fail with [`FrameError::FrameTooLarge`]
-/// *before* anything is written: the peer's reader would reject such a
-/// frame anyway, and failing here keeps the stream in sync so the caller
+/// *before* anything is written, keeping the stream in sync so the caller
 /// can degrade gracefully instead of desynchronizing the protocol.
 pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), FrameError> {
     // Check the length before allocating the encoded body. This intentionally

@@ -1,8 +1,5 @@
-//! Type conversion between Monty's `MontyObject` and PyO3 Python objects.
-//!
-//! This module provides bidirectional conversion:
-//! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
-//! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
+//! Bidirectional conversion between Monty's `MontyObject` and PyO3 Python
+//! objects: `py_to_monty` for inputs, `monty_to_py` for outputs.
 
 use std::borrow::Cow;
 
@@ -47,18 +44,15 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Re
     py_to_monty(obj, dc_registry, 0).map_err(|e| exc_py_to_monty(obj.py(), &e))
 }
 
-/// Converts a Python object to Monty's `MontyObject` representation.
+/// Converts a Python object to Monty's `MontyObject` representation; unsupported
+/// types raise `TypeError`.
 ///
-/// Handles all standard Python types that Monty supports as inputs, including callable objects
-/// which are converted to `MontyObject::Function`. Unsupported types will raise a `TypeError`.
+/// Dataclasses (including nested ones) are auto-registered in `dc_registry` so
+/// the original Python type can be reconstructed on output (enabling
+/// `isinstance()`).
 ///
-/// When a dataclass is encountered, it is automatically registered in `dc_registry`
-/// so that the original Python type can be reconstructed on output (enabling `isinstance()`).
-/// This applies recursively to nested dataclasses in fields, lists, dicts, etc.
-///
-/// # Important
-/// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
-/// Callable check is last since many Python types (classes, etc.) are technically callable.
+/// Match order matters: `bool` before `int` (subclass), and the generic
+/// callable check is last since many types (classes, etc.) are callable.
 pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: u8) -> PyResult<MontyObject> {
     depth += 1;
     if depth > MAX_INPUT_DEPTH {
@@ -88,26 +82,22 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
             list.iter().map(|item| py_to_monty(&item, dc_registry, depth)).collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
-        // Check for namedtuple BEFORE treating as regular tuple
-        // Namedtuples have a `_fields` attribute with field names
+        // namedtuples (detected by their `_fields` attribute) carry their type
+        // name, so check before treating as a regular tuple.
         if let Ok(fields) = obj.getattr("_fields")
             && let Ok(fields_tuple) = fields.cast::<PyTuple>()
         {
             let py_type = obj.get_type();
-            // Get the simple class name (e.g., "stat_result")
             let simple_name = py_type.name()?.to_string();
-            // Get the module (e.g., "os" or "__main__")
             let module: String = py_type.getattr("__module__")?.extract()?;
-            // Construct full type name: "os.stat_result"
-            // Skip module prefix if it's a Python built-in module
+            // Build the full type name (e.g. "os.stat_result"), dropping the
+            // module prefix for built-ins.
             let type_name = if module.starts_with('_') || module == "builtins" {
                 simple_name
             } else {
                 format!("{module}.{simple_name}")
             };
-            // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
-            // Extract values
             let values: PyResult<Vec<MontyObject>> = tuple
                 .iter()
                 .map(|item| py_to_monty(&item, dc_registry, depth))
@@ -118,7 +108,6 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
                 values: values?,
             });
         }
-        // Regular tuple
         let items: PyResult<Vec<MontyObject>> = tuple
             .iter()
             .map(|item| py_to_monty(&item, dc_registry, depth))
@@ -269,11 +258,9 @@ fn callable_to_monty_function(obj: &Bound<'_, PyAny>) -> MontyObject {
     }
 }
 
-/// Converts Monty's `MontyObject` to a native Python object, using the dataclass registry.
-///
-/// When a dataclass is converted and its class name is found in the registry,
-/// an instance of the original Python type is created (so `isinstance()` works).
-/// Otherwise, falls back to `PyMontyDataclass`.
+/// Converts Monty's `MontyObject` to a native Python object. A dataclass found
+/// in `dc_registry` reconstructs the original Python type (so `isinstance()`
+/// works), otherwise it falls back to `PyMontyDataclass`.
 pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
     monty_to_py_inner(py, obj, dc_registry, 0)
 }
@@ -318,22 +305,20 @@ pub(crate) fn monty_to_py_inner(
                 .collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
-        // NamedTuple - create a proper Python namedtuple using collections.namedtuple
+        // Rebuild a real Python namedtuple via collections.namedtuple.
         MontyObject::NamedTuple {
             type_name,
             field_names,
             values,
         } => {
-            // Extract module and simple name from full type_name
-            // e.g., "os.stat_result" -> module="os", simple_name="stat_result"
+            // Split the full type_name (e.g. "os.stat_result") into module + name.
             let (module, simple_name) = if let Some(idx) = type_name.rfind('.') {
                 (&type_name[..idx], &type_name[idx + 1..])
             } else {
                 ("", type_name.as_str())
             };
 
-            // Create a namedtuple type with the module set for round-trip support
-            // collections.namedtuple(typename, field_names, module=module)
+            // Set `module=` on the type so it round-trips back through py_to_monty.
             let namedtuple_fn = get_namedtuple(py)?;
             let py_field_names = PyList::new(py, field_names)?;
             let nt_type = if module.is_empty() {
@@ -344,9 +329,7 @@ pub(crate) fn monty_to_py_inner(
                 namedtuple_fn.call((simple_name, py_field_names), Some(&kwargs))?
             };
 
-            // Convert values and instantiate using _make() which accepts an iterable
-            // note `_make` might start with an underscore, but it's a public documented method
-            // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
+            // `_make` is a public documented method despite the leading underscore.
             let py_values: PyResult<Vec<Py<PyAny>>> = values
                 .iter()
                 .map(|item| monty_to_py_inner(py, item, dc_registry, depth))
@@ -671,25 +654,17 @@ fn get_pure_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     PUREPATH.import(py, "pathlib", "PurePath")
 }
 
-/// Host-side mirror of [`MontyObject::FileHandle`].
+/// Host-side mirror of [`MontyObject::FileHandle`]: a thin PyO3 wrapper holding
+/// the same [`MontyFileHandle`] value the interpreter does.
 ///
-/// `PyMontyFileHandle` is a thin PyO3 wrapper around [`MontyFileHandle`]:
-/// it holds the same `MontyFileHandle` value the interpreter does, so the
-/// host crate has a single source of truth for sandbox-file state rather
-/// than a parallel copy that has to be kept in sync with `FileMode` and
-/// the rest of the carrier.
+/// A Python host sees one when a sandbox-opened file flows back across the
+/// boundary (e.g. the return of an `Open` OS callback, or the first argument to
+/// a `read`/`write` callback). It is a plain data holder — the runtime
+/// guarantees the host never owns a live OS file descriptor for a Monty file,
+/// so there is nothing to clean up.
 ///
-/// A Python host sees one when a sandbox-opened file flows back across
-/// the boundary — for example as the return value of an `Open` OS callback,
-/// or as the first positional argument to a `read`/`write` callback. It
-/// is deliberately a plain data holder: the runtime guarantees the host
-/// never owns a live OS file descriptor for a Monty file, so there is
-/// nothing to clean up.
-///
-/// All inner fields are exposed read-only via getters. The three booleans
-/// (`binary`, `readable`, `writable`) are derived from the underlying
-/// [`FileMode`] on demand so callers can branch on mode-dependent behavior
-/// without re-parsing the mode string.
+/// Fields are read-only via getters; `binary`/`readable`/`writable` are derived
+/// from the underlying [`FileMode`] on demand.
 #[pyclass(name = "MontyFileHandle", module = "pydantic_monty", frozen)]
 pub struct PyMontyFileHandle(MontyFileHandle);
 

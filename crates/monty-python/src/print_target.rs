@@ -180,18 +180,13 @@ impl PrintTarget {
         }
     }
 
-    /// Returns a fresh `PrintTarget` that targets the same sink as `self`.
-    ///
-    /// - `Stdout` → `Stdout` (nothing to share).
-    /// - `Callback` → clones the `Py<PyAny>` reference using the provided GIL
-    ///   token.
-    /// - `CollectStreams` / `CollectString` → clones the `Arc`, so the new
-    ///   target **writes into the same buffer**. This is the desired behavior
-    ///   for threading the target through `start`/`resume` chains and into
-    ///   `spawn_blocking` workers.
+    /// Returns a fresh `PrintTarget` targeting the same sink as `self`. The
+    /// collector variants clone their `Arc`, so the new target **writes into the
+    /// same buffer** — exactly what threading through `start`/`resume` chains and
+    /// `spawn_blocking` workers needs.
     ///
     /// Used instead of `Clone` to make the share-vs-copy intent explicit.
-    /// Callers without a `Python` token in scope should use
+    /// Callers without a `Python` token should use
     /// [`clone_handle_detached`](Self::clone_handle_detached) instead.
     pub fn clone_handle(&self, py: Python<'_>) -> Self {
         match self {
