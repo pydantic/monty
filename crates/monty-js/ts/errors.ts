@@ -1,9 +1,10 @@
 // Error classes thrown by the pool client, mirroring pydantic_monty's
 // exception hierarchy: MontyError is the base, with MontySyntaxError /
 // MontyRuntimeError / MontyTypingError for sandbox failures and
-// MontyCrashedError for worker death. All carry the structured exception
-// data produced by the native binding — tracebacks are rendered client-side
-// from its stack frames.
+// MontyCrashedError for worker death. The full Python traceback is rendered
+// once, in the worker (monty's `MontyException` Display), and carried across
+// as a string — never re-implemented here. Structured frames travel alongside
+// it for programmatic access via `MontyRuntimeError.traceback()`.
 
 import type { NativeException, NativeFrame } from './native.js'
 
@@ -68,21 +69,22 @@ export class MontyError extends Error {
  * `SyntaxError`.
  */
 export class MontySyntaxError extends MontyError {
-  private readonly frames: NativeFrame[]
+  private readonly tracebackText: string
 
-  constructor(message: string, frames: NativeFrame[] = []) {
+  constructor(message: string, tracebackText = '') {
     super('SyntaxError', message)
     this.name = 'MontySyntaxError'
-    this.frames = frames
+    this.tracebackText = tracebackText
   }
 
   /**
-   * Formats the exception; `'traceback'` includes the source location frame
-   * CPython shows for syntax errors.
+   * Formats the exception; `'traceback'` returns the worker-rendered traceback
+   * (including the source-location frame CPython shows for syntax errors),
+   * falling back to the `type-msg` summary when none was supplied.
    */
   override display(format: 'traceback' | 'type-msg' | 'msg' = 'msg'): string {
     if (format === 'traceback') {
-      return renderTraceback(this.frames, this.typeName, this.innerMessage)
+      return this.tracebackText || super.display('type-msg')
     }
     return super.display(format)
   }
@@ -94,11 +96,13 @@ export class MontySyntaxError extends MontyError {
  */
 export class MontyRuntimeError extends MontyError {
   private readonly frames: NativeFrame[]
+  private readonly tracebackText: string
 
-  constructor(typeName: string, message: string, frames: NativeFrame[] = []) {
+  constructor(typeName: string, message: string, frames: NativeFrame[] = [], tracebackText = '') {
     super(typeName, message)
     this.name = 'MontyRuntimeError'
     this.frames = frames
+    this.tracebackText = tracebackText
   }
 
   /** The Monty traceback, outermost frame first. */
@@ -115,12 +119,13 @@ export class MontyRuntimeError extends MontyError {
   }
 
   /**
-   * Formats the exception: `'traceback'` (default) renders the full Python
-   * traceback, `'type-msg'` / `'msg'` the summary forms.
+   * Formats the exception: `'traceback'` (default) returns the full Python
+   * traceback rendered by the worker, `'type-msg'` / `'msg'` the summary
+   * forms.
    */
   override display(format: 'traceback' | 'type-msg' | 'msg' = 'traceback'): string {
     if (format === 'traceback') {
-      return renderTraceback(this.frames, this.typeName, this.innerMessage)
+      return this.tracebackText || super.display('type-msg')
     }
     return super.display(format)
   }
@@ -225,72 +230,13 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   're.PatternError',
 ])
 
-/** Number of identical consecutive frames shown before collapsing. */
-const REPEAT_FRAMES_SHOWN = 3
-
-/**
- * Renders a Python-format traceback from native stack frames, matching
- * monty's `MontyException` Display implementation (which itself matches
- * CPython, except carets are always `~`).
- */
-export function renderTraceback(frames: NativeFrame[], typeName: string, message: string): string {
-  let out = ''
-  if (frames.length > 0) {
-    out += 'Traceback (most recent call last):\n'
-  }
-  let i = 0
-  while (i < frames.length) {
-    const frame = frames[i]!
-    let repeat = 1
-    while (i + repeat < frames.length && framesIdentical(frame, frames[i + repeat]!)) {
-      repeat += 1
-    }
-    const shown = repeat > REPEAT_FRAMES_SHOWN ? REPEAT_FRAMES_SHOWN : repeat
-    for (let j = 0; j < shown; j++) {
-      out += renderFrame(frames[i + j]!)
-    }
-    if (repeat > REPEAT_FRAMES_SHOWN) {
-      out += `  [Previous line repeated ${repeat - REPEAT_FRAMES_SHOWN} more times]\n`
-    }
-    i += repeat
-  }
-  out += message ? `${typeName}: ${message}` : typeName
-  return out
-}
-
-/** Frames collapse when filename, line, and frame name all match. */
-function framesIdentical(a: NativeFrame, b: NativeFrame): boolean {
-  return a.filename === b.filename && a.line === b.line && a.frameName === b.frameName
-}
-
-/** Renders one `  File "...", line N[, in name]` block with preview/carets. */
-function renderFrame(f: NativeFrame): string {
-  let out = f.hideFrameName
-    ? `  File "${f.filename}", line ${f.line}`
-    : `  File "${f.filename}", line ${f.line}, in ${f.frameName ?? '<module>'}`
-
-  if (f.previewLine !== undefined) {
-    const trimmed = f.previewLine.replace(/^\s+/, '')
-    out += `\n    ${trimmed}\n`
-    if (!f.hideCaret) {
-      const leadingSpaces = f.previewLine.length - trimmed.length
-      const caretStart = f.column > leadingSpaces ? 4 + f.column - leadingSpaces - 1 : 4
-      const caretLen = Math.max(f.endColumn - f.column, 1)
-      out += `${' '.repeat(caretStart)}${'~'.repeat(caretLen)}\n`
-    }
-  } else {
-    out += '\n'
-  }
-  return out
-}
-
 /**
  * Maps a native exception to the matching error class: `SyntaxError` is a
  * parse failure, everything else a runtime exception.
  */
 export function montyErrorFromNative(exc: NativeException): MontySyntaxError | MontyRuntimeError {
   if (exc.excType === 'SyntaxError') {
-    return new MontySyntaxError(exc.message, exc.frames)
+    return new MontySyntaxError(exc.message, exc.traceback)
   }
-  return new MontyRuntimeError(exc.excType, exc.message, exc.frames)
+  return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback)
 }

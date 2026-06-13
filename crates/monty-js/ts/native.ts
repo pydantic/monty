@@ -17,10 +17,14 @@ export interface NativeFrame {
   hideFrameName: boolean
 }
 
-/** A sandbox exception: type name, message, and structured traceback. */
+/** A sandbox exception: type name, message, the worker-rendered Python
+ *  traceback string, and the structured frames behind it. */
 export interface NativeException {
   excType: string
   message: string
+  /** Full Python traceback, rendered by the worker (monty's `MontyException`
+   *  Display). Used verbatim; never re-rendered in TypeScript. */
+  traceback: string
   frames: NativeFrame[]
 }
 

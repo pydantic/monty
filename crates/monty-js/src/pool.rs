@@ -608,12 +608,15 @@ fn pairs_to_js<'env>(env: &'env Env, pairs: &[(MontyObject, MontyObject)]) -> Re
     Ok(array)
 }
 
-/// Converts an exception for a turn object: type name, message, and the
-/// structured frames `ts/errors.ts` renders into a Python traceback.
+/// Converts an exception for a turn object: type name, message, the
+/// fully-rendered Python traceback (monty's `MontyException` Display — the
+/// single source of truth, so `ts/errors.ts` never re-implements it), and the
+/// structured frames for programmatic access via `MontyRuntimeError.traceback()`.
 fn exception_to_js<'env>(env: &'env Env, exc: &MontyException) -> Result<Object<'env>> {
     let mut obj = Object::new(env)?;
     obj.set("excType", exc.exc_type().to_string())?;
     obj.set("message", exc.message().unwrap_or(""))?;
+    obj.set("traceback", exc.to_string())?;
     let frames = exc.traceback();
     let mut array = env.create_array(u32::try_from(frames.len()).map_err(|_| invalid("traceback too deep"))?)?;
     for (i, frame) in (0u32..).zip(frames.iter()) {
