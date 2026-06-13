@@ -767,12 +767,10 @@ fn run_turn_blocking(
         };
         turn(checkout, &mut on_print)
     };
-    // A print-callback failure aborts the feed (its error is surfaced with
-    // priority in `finalize_turn`). If the turn left the worker suspended —
-    // awaiting a resume the aborted feed will never send — the session cannot
-    // be continued: drop the checkout so it ends cleanly, instead of leaving
-    // the dangling suspension to wedge the next feed with a confusing "feed
-    // called while a suspension is awaiting an answer" protocol error.
+    // A print-callback failure aborts the feed. If the turn left the worker
+    // suspended awaiting a resume the aborted feed will never send, drop the
+    // checkout so the session ends cleanly rather than wedging the next feed
+    // with a dangling suspension.
     if print_err.is_some()
         && matches!(
             result,

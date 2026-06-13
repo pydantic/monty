@@ -56,13 +56,11 @@ impl TryFrom<pb::StackFrame> for StackFrame {
         let start = CodeLoc::from(frame.start.ok_or(ProtoConvertError::MissingField("StackFrame.start"))?);
         let end = CodeLoc::from(frame.end.ok_or(ProtoConvertError::MissingField("StackFrame.end"))?);
         // Frames are untrusted wire data, and `StackFrame`'s `Display` derives
-        // caret padding/width from the columns when a preview line is present
-        // (`" ".repeat(start.column..)`, `end.column - start.column`).
+        // caret padding/width from the columns when a preview is present.
         // Unvalidated coordinates would let a compromised peer trigger an
-        // integer-underflow panic or a multi-gigabyte allocation the moment
-        // the traceback is rendered. Monty itself only attaches a preview
-        // when start and end lie on the same line with columns inside it, so
-        // rejecting anything else loses no legitimate frames.
+        // integer-underflow panic or a huge allocation when the traceback is
+        // rendered. Monty only attaches a preview for same-line spans with
+        // in-bounds columns, so rejecting anything else loses no real frames.
         if let Some(preview) = &frame.preview_line {
             if end.column < start.column {
                 return Err(ProtoConvertError::InvalidValue {

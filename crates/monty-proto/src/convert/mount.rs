@@ -32,9 +32,8 @@ pub fn build_mount_table(mounts: Vec<pb::Mount>) -> Result<Option<MountTable>, P
         table
             .mount(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
             .map_err(|e| {
-                // `MountError::InvalidMount` Display already carries the
-                // "invalid mount: " prefix `ProtoConvertError::InvalidMount`
-                // adds — strip it so the message isn't doubled.
+                // Strip the "invalid mount: " prefix MountError already carries,
+                // since ProtoConvertError::InvalidMount re-adds it.
                 let msg = e.to_string();
                 let msg = match msg.strip_prefix("invalid mount: ") {
                     Some(stripped) => stripped.to_owned(),

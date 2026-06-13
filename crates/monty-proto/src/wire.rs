@@ -100,8 +100,7 @@ impl Message for WireObject {
 }
 
 /// Field numbers of the `MontyObject.kind` oneof — must match
-/// `proto/monty/v1/monty.proto` exactly (the differential oracle test fails
-/// loudly if they drift).
+/// `proto/monty/v1/monty.proto` exactly (the differential oracle test catches drift).
 mod tag {
     pub const ELLIPSIS: u32 = 1;
     pub const NONE: u32 = 2;
@@ -139,11 +138,9 @@ mod tag {
 /// Writes `obj` as one `MontyObject.kind` oneof field. Oneof fields always
 /// encode, even when the payload is a protobuf default (matching prost).
 ///
-/// Every hand-rolled sub-message arm writes `encode_message_key(tag, <body
-/// len>, ...)` immediately followed by the body fields; the corresponding
-/// `*_len` function computes the same body length, and [`object_len`] mirrors
-/// this match arm for arm. A length/payload mismatch here corrupts the frame,
-/// which is exactly what `tests/differential.rs` guards against.
+/// Each sub-message arm writes `encode_message_key(tag, <body len>, ...)` then
+/// the body; the matching `*_len` and [`object_len`] arms must compute the same
+/// length, or the frame corrupts (guarded by `tests/differential.rs`).
 fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
     match obj {
         MontyObject::Ellipsis => encoding::message::encode(tag::ELLIPSIS, &pb::Unit {}, buf),

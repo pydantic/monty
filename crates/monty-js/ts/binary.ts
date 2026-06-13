@@ -82,11 +82,9 @@ export function findMontyBinary(explicit?: string): string {
 /**
  * The binary shipped by the platform-specific npm package, if installed.
  *
- * Resolution failures deliberately fall through to the next strategy rather
- * than erroring: an installed `@pydantic/monty-<triple>` package without the
- * binary is not necessarily broken — the same package names previously
- * shipped napi `.node` bindings, so a stale install from an older release
- * resolves but holds no `monty` executable.
+ * Resolution failures fall through to the next strategy rather than erroring:
+ * the same package names previously shipped napi `.node` bindings, so a stale
+ * install can resolve while holding no `monty` executable.
  */
 function platformPackageBinary(): string | null {
   const triple = platformTriple()

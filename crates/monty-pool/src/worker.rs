@@ -95,14 +95,10 @@ impl Worker {
         self.killed_for_timeout.load(Ordering::SeqCst)
     }
 
-    /// Clears the sticky timeout flag at the start of a turn.
-    ///
-    /// The flag is set by the watchdog and never reset by the read that
-    /// observes it, so without this a kill from one turn's deadline could
-    /// still be readable on the *next* turn — if that turn's first I/O then
-    /// fails (e.g. the worker had already died), the failure would be
-    /// misclassified as a timeout of the new, unrelated deadline. Resetting
-    /// per turn scopes the flag to the deadline currently armed.
+    /// Clears the sticky timeout flag at the start of a turn, scoping it to the
+    /// currently-armed deadline. The watchdog sets the flag but never clears it,
+    /// so without this reset a stale kill could misclassify the next turn's
+    /// first I/O failure as a timeout.
     pub(crate) fn reset_killed_for_timeout(&self) {
         self.killed_for_timeout.store(false, Ordering::SeqCst);
     }
