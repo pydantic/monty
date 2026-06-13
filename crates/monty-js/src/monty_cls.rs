@@ -950,17 +950,7 @@ impl MontySnapshot {
     /// Returns the keyword arguments passed to the external function as an object.
     #[napi(getter)]
     pub fn kwargs<'env>(&self, env: &'env Env) -> Result<Object<'env>> {
-        let mut obj = Object::new(env)?;
-        for (k, v) in &self.kwargs {
-            // Keys should be strings
-            let key = match k {
-                MontyObject::String(s) => s.clone(),
-                _ => format!("{k:?}"),
-            };
-            let js_value = monty_to_js(v, env)?;
-            obj.set_named_property(&key, js_value)?;
-        }
-        Ok(obj)
+        kwargs_to_js_object(env, &self.kwargs)
     }
 
     /// Resumes execution with either a return value or an exception.
@@ -1629,14 +1619,7 @@ fn call_external_function(
 
     // If we have kwargs, add them as a final object argument
     if !kwargs.is_empty() {
-        let mut kwargs_obj = Object::new(env)?;
-        for (key, value) in kwargs {
-            let key_str = match key {
-                MontyObject::String(s) => s.clone(),
-                _ => format!("{key:?}"),
-            };
-            kwargs_obj.set_named_property(&key_str, monty_to_js(value, env)?)?;
-        }
+        let kwargs_obj = kwargs_to_js_object(env, kwargs)?;
         js_args.push(kwargs_obj.raw());
     }
 
@@ -1695,6 +1678,36 @@ fn call_external_function(
     let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
     let monty_result = js_to_monty(result, *env)?;
     Ok(ExtFunctionResult::Return(monty_result))
+}
+
+/// Converts sandbox-controlled keyword names into own JS data properties.
+///
+/// Using `set_named_property` would route through JavaScript `[[Set]]`
+/// semantics, where a key like `__proto__` mutates the object's prototype
+/// instead of creating a normal own property.
+fn kwargs_to_js_object<'env>(env: &'env Env, kwargs: &[(MontyObject, MontyObject)]) -> Result<Object<'env>> {
+    let mut obj = Object::new(env)?;
+    let mut values = Vec::with_capacity(kwargs.len());
+    for (key, value) in kwargs {
+        let key_str = match key {
+            MontyObject::String(s) => Cow::Borrowed(s.as_str()),
+            _ => Cow::Owned(format!("{key:?}")),
+        };
+        values.push((key_str, monty_to_js(value, env)?));
+    }
+    let properties = values
+        .iter()
+        .map(|(key, js_value)| {
+            Ok(Property::new()
+                .with_utf8_name(key.as_ref())?
+                .with_value(&js_value.0)
+                .with_property_attributes(
+                    PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable,
+                ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    obj.define_properties(&properties)?;
+    Ok(obj)
 }
 
 /// Extracts exception info from a JS exception object.

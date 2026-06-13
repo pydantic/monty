@@ -154,6 +154,11 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 test-type-checking: ## Run rust tests on monty_type_checking
 	cargo test -p monty_type_checking -p monty_typeshed
 
+.PHONY: test-subprocess
+test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+	cargo build -p monty-cli
+	cargo test -p monty-proto -p monty-cli -p monty-pool
+
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
 	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
@@ -167,7 +172,7 @@ test-docs: dev-py ## Test docs examples only
 	cargo test --doc -p monty
 
 .PHONY: test
-test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-py miri ## Run rust tests
+test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests
 
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
@@ -227,7 +232,7 @@ fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
 
 .PHONY: main
-main: lint test-memory-model-checks test-py ## run linting and the most important tests
+main: lint test-memory-model-checks test-subprocess test-py ## run linting and the most important tests
 
 # (must stay last!)
 .PHONY: help

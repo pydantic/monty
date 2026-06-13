@@ -16,14 +16,17 @@ underneath (see [sys.md](sys.md)).
 - `file=...` — explicitly rejected with `TypeError: "print() 'file'
   argument is not supported"`. Code that does `print(..., file=sys.stderr)`
   will not work; `sys.stderr` is an opaque marker (see [sys.md](sys.md)).
-- `flush=...` — silently accepted but ignored. Monty does not buffer print
-  output; the host receives each call immediately.
+- `flush=...` — silently accepted but ignored. Output is delivered to the
+  host through the subprocess protocol, which line-buffers and also flushes
+  large partial lines.
 - Any other keyword raises `TypeError: ... unexpected keyword argument`.
 
 ## Behaviour
 
 - Each positional argument is converted via `py_str` (equivalent to
   `str(x)`) before being written.
-- The host callback receives the formatted string for each chunk; there
-  is no atomicity guarantee across multiple `print()` calls if the host
-  interleaves with other output.
+- The host callback receives formatted chunks. In subprocess execution,
+  chunks are flushed on newline or after an internal buffer reaches roughly
+  8 KiB; a single `print()` call can therefore arrive in more than one
+  callback. There is no atomicity guarantee across multiple `print()` calls
+  if the host interleaves with other output.

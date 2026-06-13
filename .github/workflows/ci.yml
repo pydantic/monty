@@ -317,6 +317,17 @@ jobs:
 
       - run: cargo test -p monty --features memory-model-checks
       - run: cargo run -p monty-datatest --features memory-model-checks
+      - run: cargo build -p monty-cli
+      - name: Test subprocess crates (Unix)
+        if: runner.os != 'Windows'
+        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        env:
+          MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
+      - name: Test subprocess crates (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        env:
+          MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 
   bench-test:
     runs-on: ubuntu-latest

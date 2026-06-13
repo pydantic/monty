@@ -52,5 +52,6 @@ directory are **not** available unless the host explicitly mounts them.
 
 `open()` and pathlib I/O do not keep an OS handle alive between calls —
 each `read`/`write` is a separate one-shot host operation. This is what
-makes [snapshotting](#) safe, and it means external processes can observe
-partial state between writes. See the design note in [open.md](open.md).
+makes subprocess [dump/load](pool-architecture.md#execution-model) safe,
+and it means external processes can observe partial state between writes.
+See the design note in [open.md](open.md).

@@ -8,10 +8,9 @@
 //! # Take/put pattern
 //!
 //! [`MountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
-//! When `Monty.run()` or `Monty.start()` begins, each mount is **taken** out
-//! of its slot (zero-cost `Option::take`), moved into a plain [`MountTable`],
-//! and execution proceeds with no locking overhead. When the run finishes
-//! (or when a snapshot is finalized), each mount is **put back**.
+//! The native subprocess pool sends mount configuration to a worker for each
+//! feed. The wasm in-process API still takes mounts into a local [`MountTable`]
+//! for the duration of `Monty.run()` / `Monty.start()`.
 
 use std::sync::{Arc, Mutex};
 
@@ -45,9 +44,10 @@ pub struct MountDirOptions {
 
 /// A single mount point mapping a virtual path to a host directory.
 ///
-/// Owns the underlying [`Mount`] (including overlay state for `'overlay'` mode)
-/// via shared storage, so reusing it across `Monty.run()` calls preserves the
-/// same overlay data.
+/// Owns the underlying [`Mount`] via shared storage. In the native subprocess
+/// API this is reusable configuration; `'overlay'` writes live only for the
+/// current feed. In the wasm in-process API, the mount is temporarily taken
+/// while `Monty.run()` / `Monty.start()` executes.
 ///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write

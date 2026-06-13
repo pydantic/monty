@@ -231,13 +231,13 @@ impl Child {
         {
             return event;
         }
-        self.mounts = match build_mount_table(feed.mounts) {
-            Ok(mounts) => mounts,
-            Err(err) => return violation(&format!("invalid mounts: {err}")),
-        };
         let inputs = match named_inputs(feed.inputs) {
             Ok(inputs) => inputs,
             Err(event) => return *event,
+        };
+        self.mounts = match build_mount_table(feed.mounts) {
+            Ok(mounts) => mounts,
+            Err(err) => return violation(&format!("invalid mounts: {err}")),
         };
         let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Idle) else {
             unreachable!("checked above");

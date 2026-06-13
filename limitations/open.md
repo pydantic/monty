@@ -20,12 +20,13 @@ one-shot OS call that the host opens, acts on, and closes again. The Monty
 heap stores only path, mode, and small Python-visible state — no OS
 handle, no buffered data, no descriptor number.
 
-This is the property that makes snapshotting safe: a `MontySnapshot` can
-be serialized at any pause point and resumed later (potentially in a
-different process or on a different host) without dangling references to
-host resources. It also means external processes can observe partial state
-between calls, and that there is no protection against the underlying file
-being changed or removed between calls — both documented further down.
+This is the property that makes subprocess `dump()` / `load()` safe: a
+session can be serialized at a pause point and resumed later without
+dangling references to host resources. The wasm in-process API exposes the
+same idea as `MontySnapshot`. It also means external processes can observe
+partial state between calls, and that there is no protection against the
+underlying file being changed or removed between calls — both documented
+further down.
 
 ## Mode strings
 

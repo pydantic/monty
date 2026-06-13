@@ -72,6 +72,9 @@ impl From<io::Error> for FrameError {
 /// frame anyway, and failing here keeps the stream in sync so the caller
 /// can degrade gracefully instead of desynchronizing the protocol.
 pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), FrameError> {
+    // Check the length before allocating the encoded body. This intentionally
+    // traverses once for sizing and once for encoding, but avoids building a
+    // >256 MiB Vec just to reject it.
     let encoded_len = msg.encoded_len();
     let len = u32::try_from(encoded_len)
         .ok()
@@ -128,6 +131,10 @@ impl<R: Read> FrameReader<R> {
                 max: self.max_frame_len,
             });
         }
+        // Allocation is up front but bounded by `max_frame_len` (256 MiB by
+        // default). A streaming protobuf decoder would add complexity, while
+        // this keeps byzantine peers bounded to one frame buffer per blocked
+        // reader.
         let mut body = vec![0u8; len as usize];
         match read_exact_or_eof(&mut self.inner, &mut body)? {
             ReadOutcome::Filled => {}

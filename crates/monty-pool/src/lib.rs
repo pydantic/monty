@@ -102,8 +102,9 @@ pub enum PoolError {
         /// The configured timeout that expired.
         timeout: Duration,
     },
-    /// The worker violated the wire protocol (unexpected event, decode
-    /// failure, fatal error frame). The worker has been discarded.
+    /// The worker violated the wire protocol, or the caller violated the
+    /// checkout state machine. Worker-originated protocol failures discard the
+    /// worker; caller misuse leaves it intact.
     Protocol(String),
     /// The sandboxed code raised a Python exception. The worker and its
     /// session remain alive and usable.

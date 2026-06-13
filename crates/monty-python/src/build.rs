@@ -8,15 +8,12 @@
 
 use ::monty::{ExcType, MontyException, MontyObject};
 use pyo3::{
+    exceptions::PyTypeError,
     prelude::*,
     types::{PyDict, PyString},
 };
 
-use crate::{
-    convert::py_to_monty_value,
-    dataclass::DcRegistry,
-    exceptions::{MontyError, exc_py_to_monty},
-};
+use crate::{convert::py_to_monty_value, dataclass::DcRegistry, exceptions::MontyError};
 
 /// Extracts source code, converting invalid UTF-8 (lone surrogates) into a
 /// `MontySyntaxError` — text that cannot be decoded is not valid Python
@@ -64,16 +61,16 @@ pub(crate) fn extract_repl_inputs(
     let Some(inputs) = inputs else {
         return Ok(vec![]);
     };
-    // Both the key and the value are untrusted host values, so conversion
-    // failures (e.g. lone surrogates, non-string keys) surface as
-    // `MontyRuntimeError` rather than raw PyErrs.
+    // Values are untrusted host values, so conversion failures surface as
+    // `MontyRuntimeError`. Keys are part of this host API surface and must be
+    // strings; non-string keys are caller misuse, so they stay `TypeError`.
     inputs
         .iter()
         .map(|(key, value)| {
             let py = key.py();
             let name = key
                 .extract::<String>()
-                .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
+                .map_err(|_| PyTypeError::new_err("inputs keys must be str"))?;
             let obj = py_to_monty_value(&value, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
             Ok((name, obj))
         })

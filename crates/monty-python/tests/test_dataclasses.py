@@ -217,6 +217,20 @@ def test_dataclass_field_access_missing(monty_run: RunMonty):
     assert isinstance(exc_info.value.exception(), AttributeError)
 
 
+def test_dataclass_private_method_not_dispatched(monty_run: RunMonty):
+    @dataclass
+    class Secret:
+        value: int
+
+        def _leak(self) -> int:
+            return self.value
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('x._leak()', inputs={'x': Secret(value=42)})
+    assert isinstance(exc_info.value.exception(), AttributeError)
+    assert str(exc_info.value) == snapshot("AttributeError: 'Secret' object has no attribute '_leak'")
+
+
 # === Repr ===
 
 

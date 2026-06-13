@@ -42,6 +42,19 @@ test('external function kwargs only', (t) => {
   t.is(m.run({ externalFunctions: { func } }), 'ok')
 })
 
+test('external function kwargs cannot replace prototype', (t) => {
+  const m = new Monty('func(**{"__proto__": {"polluted": True}})')
+
+  const func = (...args: unknown[]) => {
+    const kwargs = args[0] as Record<string, unknown>
+    t.is((kwargs as { polluted?: unknown }).polluted, undefined)
+    t.deepEqual(kwargs.__proto__, new Map([['polluted', true]]))
+    return 'ok'
+  }
+
+  t.is(m.run({ externalFunctions: { func } }), 'ok')
+})
+
 test('external function mixed args kwargs', (t) => {
   const m = new Monty('func(1, 2, x="hello", y=True)')
 

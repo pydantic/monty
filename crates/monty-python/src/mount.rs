@@ -8,10 +8,9 @@
 //! # Take/put pattern
 //!
 //! [`PyMountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
-//! When `Monty.run()` starts, each mount is **taken** out of its slot (zero-cost
-//! `Option::take`), moved into a plain [`MountTable`], and execution proceeds
-//! with no locking overhead. When the run finishes, each mount is **put back**.
-//! This gives us shared ownership for Python while keeping the hot path lock-free.
+//! The Python pool sends mount *configuration* to subprocess workers for each
+//! feed. Overlay state is therefore per feed in the worker; the host-side
+//! `MountDir` is reusable configuration, not a live overlay store.
 
 use std::{
     path::PathBuf,
@@ -32,9 +31,9 @@ pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 
 /// A single mount point mapping a virtual path to a host directory.
 ///
-/// Owns the underlying [`Mount`] (including overlay state for `'overlay'` mode)
-/// via shared storage, so passing this to multiple [`OsHandler`]s or reusing
-/// it across `Monty.run()` calls preserves the same overlay data.
+/// Owns the underlying [`Mount`] via shared storage. In subprocess execution,
+/// passing this to multiple feeds reuses the configuration; `'overlay'` writes
+/// live only for the feed currently running in the worker.
 ///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write

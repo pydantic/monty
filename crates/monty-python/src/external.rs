@@ -6,7 +6,7 @@
 
 use ::monty::{ExtFunctionResult, MontyObject};
 use pyo3::{
-    exceptions::PyRuntimeError,
+    exceptions::{PyAttributeError, PyRuntimeError},
     prelude::*,
     types::{PyDict, PyTuple},
 };
@@ -46,6 +46,7 @@ fn dispatch_method_call_inner(
     kwargs: &[(MontyObject, MontyObject)],
     dc_registry: &DcRegistry,
 ) -> PyResult<MontyObject> {
+    validate_host_method_name(function_name)?;
     // First arg is the dataclass self
     let mut args_iter = args.iter();
     let self_obj = args_iter
@@ -259,6 +260,7 @@ fn dispatch_method_call_inner_raw<'py>(
     kwargs: &[(MontyObject, MontyObject)],
     dc_registry: &DcRegistry,
 ) -> PyResult<Bound<'py, PyAny>> {
+    validate_host_method_name(function_name)?;
     let mut args_iter = args.iter();
     let self_obj = args_iter
         .next()
@@ -285,6 +287,17 @@ fn dispatch_method_call_inner_raw<'py>(
             Some(py_kwargs)
         };
         method.call(&py_args_tuple, py_kwargs.as_ref())
+    }
+}
+
+/// Rejects private/dunder method dispatch from a worker-controlled name.
+fn validate_host_method_name(function_name: &str) -> PyResult<()> {
+    if function_name.starts_with('_') {
+        Err(PyAttributeError::new_err(format!(
+            "host dataclass method '{function_name}' is not exposed"
+        )))
+    } else {
+        Ok(())
     }
 }
 

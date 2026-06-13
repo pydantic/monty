@@ -10,7 +10,8 @@
 //! MontyError(Exception)        # Base class for all Monty exceptions
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
 //! ├── MontyRuntimeError        # Raised when code fails during execution
-//! └── MontyTypingError         # Raised when type checking finds errors in the code
+//! ├── MontyTypingError         # Raised when type checking finds errors in the code
+//! └── MontyCrashedError        # Raised when a worker process dies or times out
 //! ```
 
 use std::sync::Arc;

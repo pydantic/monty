@@ -497,8 +497,9 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 pub struct LimitedTracker {
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
-    /// windows. Serialized so time budgets survive dump/load; `#[serde(default)]`
-    /// keeps older snapshots (which had no such field) loadable.
+    /// windows. Serialized so time budgets survive dump/load. The serde
+    /// default helps self-describing formats; postcard snapshots are
+    /// positional, so older snapshot layouts still fail closed at decode.
     #[serde(default)]
     total_execution_time: Cell<Duration>,
     /// When the current execution window started; `None` while suspended or

@@ -2,8 +2,8 @@
 
 The monty type checker, compiler, and interpreter should run in a separate
 process, except in environments where that's not possible (like wasm), so
-that crashes a sandbox can never fully prevent — stack overflow aborts,
-allocator aborts — kill only the worker. The Python package
+that sandbox crashes that cannot be fully prevented — stack overflow aborts
+and allocator aborts — kill only the worker. The Python package
 (`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
 run everything exclusively in `monty --subprocess` workers driven over a
 protobuf protocol (`crates/monty-proto`), and expose no in-process execution
@@ -60,8 +60,15 @@ the *host API* surface.
   never in a worker's memory, where a sandbox escape or memory disclosure
   could reach them. This is invisible to sandbox code — `os.getenv` etc. are
   OS calls answered by the host, never reads of the worker's own
-  environment — but means `extra_args` is the only way to configure a worker
-  process externally.
+  environment. In Rust, `monty_pool::PoolConfig::extra_args` is the only
+  worker configuration channel outside the protocol; Python and JS do not
+  expose that knob.
+- **Worker binary resolution is part of the host trust boundary.** Python and
+  JS resolve the worker from an explicit constructor path first, then
+  `MONTY_BIN`, then their bundled platform package (or Python scripts
+  directory), then `PATH` and development fallbacks. Hosts running untrusted
+  code should pin the binary path when their process environment or `PATH` is
+  not trusted.
 
 ## Values crossing the process boundary
 
@@ -98,9 +105,9 @@ the *host API* surface.
   more than one line, and output larger than the threshold is split into
   ~8 KiB pieces (so a chunk is bounded, but is not guaranteed to be exactly
   one line). A callback that raises aborts the feed after the current
-  protocol turn, not mid-`print`; and if that turn had suspended (an external
-  function, OS call, or name lookup), the session cannot be resumed and is
-  ended — a later feed on it raises rather than continuing.
+  protocol turn, not mid-`print`; if that turn had suspended (an external
+  function, OS call, or name lookup), the binding resets/discards the
+  suspension before surfacing the print error so later feeds can continue.
 - **Mounts are worker-local.** `MountDir` objects contribute configuration
   only; `mode='overlay'` writes live in the worker for the duration of one
   feed and are discarded when it ends — the host `MountDir` object's overlay
@@ -112,6 +119,10 @@ the *host API* surface.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker (Rust `Pool::checkout_load`); there
   is currently no Python API to restore them.
+- **Natural-JSON host serialization was removed.** Results now cross the
+  subprocess boundary as structured protocol values; the old
+  `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /
+  `kwargs_json()` helper format is not part of the pool API.
 
 ## JavaScript client (`@pydantic/monty`)
 

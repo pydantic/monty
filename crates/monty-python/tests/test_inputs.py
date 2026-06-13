@@ -33,6 +33,13 @@ def test_input_dict(monty_run: RunMonty):
     assert monty_run('config["a"] * config["b"]', inputs={'config': {'a': 3, 'b': 4}}) == snapshot(12)
 
 
+def test_input_keys_must_be_strings(monty_run: RunMonty):
+    bad_inputs: Any = {1: 'x'}
+    with pytest.raises(TypeError) as exc_info:
+        monty_run('x', inputs=bad_inputs)
+    assert str(exc_info.value) == snapshot('inputs keys must be str')
+
+
 def test_missing_input_raises(monty_run: RunMonty):
     # inputs are no longer declared up front, so a missing one is a plain NameError
     with pytest.raises(MontyRuntimeError) as exc_info:
