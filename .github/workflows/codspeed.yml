@@ -41,11 +41,25 @@ jobs:
       - name: Install cargo-codspeed
         run: cargo install cargo-codspeed
 
+      # The `pool` bench's workers run the `monty` CLI. Build it in RELEASE so
+      # the workers are optimized (a debug interpreter would make the pool
+      # numbers meaningless), and point the bench at it via MONTY_TEST_BIN so it
+      # resolves the binary instead of shelling out to `cargo build` mid-run.
+      # (CodSpeed instruments only the bench process, so the pool benches
+      # measure parent-side spawn/checkout/wire cost; the uninstrumented worker
+      # children are not counted.)
+      - name: Build the monty worker binary
+        run: cargo build -p monty-cli --release
+
+      # No `--bench` filter: build and run every monty-bench target (`main` +
+      # `pool`). CodSpeed runs all benches built into the package.
       - name: Build benchmarks
-        run: cargo codspeed build -p monty-bench --bench main
+        run: cargo codspeed build -p monty-bench
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@d872884a306dd4853acf0f584f4b706cf0cc72a2 # v4.13.0
         with:
           mode: simulation
-          run: cargo codspeed run -p monty-bench --bench main
+          run: cargo codspeed run -p monty-bench
+        env:
+          MONTY_TEST_BIN: ${{ github.workspace }}/target/release/monty

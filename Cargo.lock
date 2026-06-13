@@ -2027,6 +2027,7 @@ dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "monty",
+ "monty-pool",
  "pprof",
  "pyo3",
  "pyo3-build-config",

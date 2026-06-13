@@ -296,6 +296,7 @@ make testcov              Run Rust tests with coverage, print table, and generat
 make complete-tests       Fill in incomplete test expectations using CPython
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
+make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
 make dev-bench            Run benchmarks to test with dev profile
 make profile              Profile the code with pprof and generate flamegraphs
 make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)

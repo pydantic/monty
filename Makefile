@@ -89,13 +89,13 @@ format: format-rs format-py format-js ## Format Rust code, this does not format 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
-	cargo clippy --workspace --tests -p monty-bench --bench main -- -D warnings
+	cargo clippy --workspace --tests -p monty-bench --benches -- -D warnings
 	cargo clippy --workspace --tests --all-features -- -D warnings
 	./scripts/check_imports.py
 
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy
-	cargo clippy --workspace --tests -p monty-bench --bench main --all-features --fix --allow-dirty
+	cargo clippy --workspace --tests -p monty-bench --benches --all-features --fix --allow-dirty
 
 .PHONY: generate-proto
 generate-proto: ## Regenerate monty-proto's checked-in code from the .proto schema
@@ -208,6 +208,11 @@ update-typeshed: ## Update vendored typeshed from upstream
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main
+
+.PHONY: bench-pool
+bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+	cargo build -p monty-cli --release
+	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
