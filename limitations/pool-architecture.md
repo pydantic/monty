@@ -87,6 +87,19 @@ the *host API* surface.
   When an external-function argument makes the suspension announcement itself
   too large, the current feed is aborted with a host-visible `RuntimeError`;
   Monty code cannot catch that error inside the aborted feed.
+- Independently of the wire-byte limit, a frame is rejected if the values it
+  decodes into would exceed a **per-frame host-memory budget** — a hard,
+  non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
+  bounds bytes, but the cheapest elements (e.g. `None` in a list, ~4 wire bytes)
+  materialize into 88-byte `MontyObject`s — a ~22× blow-up that a ≤256 MiB frame
+  could turn into multiple GiB on the host. The budget is charged incrementally
+  during decode and trips before the full value is built, so a parent reading
+  such a frame discards the worker with a protocol error rather than risking an
+  out-of-memory abort. A value large enough to hit it (tens of millions of
+  elements) cannot cross the boundary even though it is under the wire-byte
+  limit. Worst-case host *peak* is ~2× the budget (a few decode paths
+  transiently hold a second copy of one converted field), and the bound applies
+  per concurrent worker.
 - Semantic validation of wire values (date ranges, timedelta normalization,
   exception/type/builtin names) happens *while decoding* the frame. A frame
   carrying an invalid value therefore fails the whole protocol turn: a parent

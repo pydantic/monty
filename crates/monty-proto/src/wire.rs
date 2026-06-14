@@ -29,7 +29,7 @@
 //! both `encoded_len` and `encode_raw`; those arms are rare in real payloads
 //! and the strings are tiny.
 
-use std::ops::RangeInclusive;
+use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
 use monty::{DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, Type};
 use num_bigint::{BigInt, Sign};
@@ -39,7 +39,7 @@ use prost::{
     encoding::{self, DecodeContext, WireType, encode_key, encode_varint, encoded_len_varint, key_len, skip_field},
 };
 
-use crate::{convert::ProtoConvertError, pb};
+use crate::{convert::ProtoConvertError, frame::DEFAULT_MAX_DECODE_BYTES, pb};
 
 /// The wire form of a [`MontyObject`]: what the `monty.v1.MontyObject` proto
 /// message decodes into and encodes from.
@@ -551,20 +551,20 @@ fn decode_field(
                 values: unwrap_objects(nt.values)?,
             }
         }
-        tag::DICT => MontyObject::Dict(dict_from_proto(merge_message(wire_type, buf, ctx)?)?),
+        tag::DICT => MontyObject::Dict(merge_dict(wire_type, buf, ctx)?),
         tag::SET => MontyObject::Set(merge_value_list(wire_type, buf, ctx)?),
         tag::FROZEN_SET => MontyObject::FrozenSet(merge_value_list(wire_type, buf, ctx)?),
         tag::DATE => {
             let d: pb::DateValue = merge_message(wire_type, buf, ctx)?;
-            MontyObject::Date(date_from_proto(&d).map_err(|err| to_decode_err(&err))?)
+            MontyObject::Date(date_from_proto(&d).map_err(to_decode_err)?)
         }
         tag::DATETIME => {
             let dt: pb::DateTimeValue = merge_message(wire_type, buf, ctx)?;
-            MontyObject::DateTime(datetime_from_proto(dt).map_err(|err| to_decode_err(&err))?)
+            MontyObject::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
         }
         tag::TIMEDELTA => {
             let td: pb::TimeDeltaValue = merge_message(wire_type, buf, ctx)?;
-            MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(|err| to_decode_err(&err))?)
+            MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
         }
         tag::TIMEZONE => {
             let tz: pb::TimeZoneValue = merge_message(wire_type, buf, ctx)?;
@@ -579,7 +579,7 @@ fn decode_field(
                 exc_type: exc
                     .exc_type
                     .parse()
-                    .map_err(|_| to_decode_err(&ProtoConvertError::UnknownExcType(exc.exc_type)))?,
+                    .map_err(|_| to_decode_err(ProtoConvertError::UnknownExcType(exc.exc_type)))?,
                 arg: exc.arg,
             }
         }
@@ -587,12 +587,12 @@ fn decode_field(
             let name = merge_string(wire_type, buf, ctx)?;
             Type::from_type_name(&name)
                 .map(MontyObject::Type)
-                .ok_or_else(|| to_decode_err(&ProtoConvertError::UnknownType(name)))?
+                .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(name)))?
         }
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
             MontyObject::builtin_function_from_name(&name)
-                .ok_or_else(|| to_decode_err(&ProtoConvertError::UnknownBuiltinFunction(name)))?
+                .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownBuiltinFunction(name)))?
         }
         tag::PATH => MontyObject::Path(merge_string(wire_type, buf, ctx)?),
         tag::FILE_HANDLE => {
@@ -601,7 +601,7 @@ fn decode_field(
                 mode: fh
                     .mode
                     .parse()
-                    .map_err(|_| to_decode_err(&ProtoConvertError::InvalidFileMode(fh.mode)))?,
+                    .map_err(|_| to_decode_err(ProtoConvertError::InvalidFileMode(fh.mode)))?,
                 path: fh.path,
                 position: fh.position,
             })
@@ -614,7 +614,7 @@ fn decode_field(
                 field_names: dc.field_names,
                 attrs: dict_from_proto(
                     dc.attrs
-                        .ok_or_else(|| to_decode_err(&ProtoConvertError::MissingField("DataclassValue.attrs")))?,
+                        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("DataclassValue.attrs")))?,
                 )?,
                 frozen: dc.frozen,
             }
@@ -630,7 +630,7 @@ fn decode_field(
         tag::CYCLE => {
             let c: pb::CycleValue = merge_message(wire_type, buf, ctx)?;
             let identity = usize::try_from(c.identity).map_err(|_| {
-                to_decode_err(&ProtoConvertError::InvalidValue {
+                to_decode_err(ProtoConvertError::InvalidValue {
                     field: "CycleValue.identity",
                     reason: format!("{} does not fit in usize", c.identity),
                 })
@@ -642,6 +642,9 @@ fn decode_field(
             return Ok(None);
         }
     };
+    // Charge against the frame budget — every value flows through here, so this
+    // is the bound that stops a cheap frame OOMing the host on decode.
+    charge_decode(obj.host_size())?;
     Ok(Some(obj))
 }
 
@@ -665,43 +668,138 @@ fn merge_string(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> 
     Ok(s)
 }
 
-/// Decodes a `ValueList` and unwraps its items.
+/// Decodes a `ValueList` (list/tuple/set/frozenset payload) straight into
+/// `Vec<MontyObject>` via [`ObjectList`], skipping the `Vec<WireObject>` wrapper
+/// the generated `pb::ValueList` would force and the extra unwrap pass over it.
 fn merge_value_list(
     wire_type: WireType,
     buf: &mut impl Buf,
     ctx: DecodeContext,
 ) -> Result<Vec<MontyObject>, DecodeError> {
-    let list: pb::ValueList = merge_message(wire_type, buf, ctx)?;
-    unwrap_objects(list.items)
+    Ok(merge_message::<ObjectList>(wire_type, buf, ctx)?.0)
+}
+
+/// Decodes a `DictValue` straight into [`DictPairs`] via [`PairList`], skipping
+/// the `Vec<pb::Pair>` wrapper.
+fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Result<DictPairs, DecodeError> {
+    Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
 }
 
 /// Unwraps decoded wire objects, rejecting any with an absent `kind`.
+///
+/// Still used by the `NamedTupleValue.values` field, which arrives as part of a
+/// multi-field generated message and so can't route through [`ObjectList`]
+/// without hand-writing that whole message's decoder.
 fn unwrap_objects(items: Vec<WireObject>) -> Result<Vec<MontyObject>, DecodeError> {
     items
         .into_iter()
-        .map(|item| item.into_object().map_err(|err| to_decode_err(&err)))
+        .map(|item| item.into_object().map_err(to_decode_err))
         .collect()
 }
 
 /// Converts a decoded `DictValue` into dict pairs, rejecting absent keys or
 /// values.
+///
+/// Used by the dataclass `attrs` field, whose `DictValue` arrives pre-decoded
+/// inside the generated `pb::DataclassValue`; the top-level `Dict` value decodes
+/// via [`merge_dict`] / [`PairList`] instead.
 fn dict_from_proto(dict: pb::DictValue) -> Result<DictPairs, DecodeError> {
     dict.pairs
         .into_iter()
-        .map(|pair| {
-            let key = pair
-                .key
-                .ok_or_else(|| to_decode_err(&ProtoConvertError::MissingField("Pair.key")))?;
-            let value = pair
-                .value
-                .ok_or_else(|| to_decode_err(&ProtoConvertError::MissingField("Pair.value")))?;
-            Ok((
-                key.into_object().map_err(|err| to_decode_err(&err))?,
-                value.into_object().map_err(|err| to_decode_err(&err))?,
-            ))
-        })
+        .map(pair_to_kv)
         .collect::<Result<Vec<_>, DecodeError>>()
         .map(DictPairs::from)
+}
+
+/// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
+/// value. Shared by [`dict_from_proto`] and [`PairList`].
+fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError> {
+    let key = pair
+        .key
+        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Pair.key")))?;
+    let value = pair
+        .value
+        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Pair.value")))?;
+    Ok((
+        key.into_object().map_err(to_decode_err)?,
+        value.into_object().map_err(to_decode_err)?,
+    ))
+}
+
+/// Decode-only `prost::Message` materializing a `repeated MontyObject` field
+/// straight into `Vec<MontyObject>`, skipping the `Vec<WireObject>` buffer (and
+/// unwrap pass) `pb::ValueList` would force; only a per-element `WireObject` is
+/// transient. Never encoded (values encode via [`encode_repeated_object`]), so
+/// the encode methods are unreachable.
+#[derive(Default)]
+struct ObjectList(Vec<MontyObject>);
+
+impl Message for ObjectList {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // `ValueList.items` is field 1; any other tag is unknown → skip.
+        if tag == 1 {
+            let item: WireObject = merge_message(wire_type, buf, ctx)?;
+            self.0.push(item.into_object().map_err(to_decode_err)?);
+            Ok(())
+        } else {
+            skip_field(wire_type, tag, buf, ctx)
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("ObjectList is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("ObjectList is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Decode-only `prost::Message` that materializes a `repeated Pair` field
+/// directly into `(key, value)` tuples — the dict analogue of [`ObjectList`],
+/// avoiding the `Vec<pb::Pair>` wrapper. Decode-only; encode is unreachable.
+#[derive(Default)]
+struct PairList(Vec<(MontyObject, MontyObject)>);
+
+impl Message for PairList {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // `DictValue.pairs` is field 1; any other tag is unknown → skip.
+        if tag == 1 {
+            let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
+            self.0.push(pair_to_kv(pair)?);
+            Ok(())
+        } else {
+            skip_field(wire_type, tag, buf, ctx)
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("PairList is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("PairList is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
 }
 
 /// Maps a semantic validation failure onto prost's decode error so it
@@ -711,7 +809,7 @@ fn dict_from_proto(dict: pb::DictValue) -> Result<DictPairs, DecodeError> {
 // 0.14 (`DecodeErrorKind` is crate-private); the deprecation note itself
 // acknowledges external users. Revisit when prost ships a public constructor.
 #[expect(deprecated)]
-fn to_decode_err(err: &ProtoConvertError) -> DecodeError {
+fn to_decode_err(err: impl Display) -> DecodeError {
     DecodeError::new(err.to_string())
 }
 
@@ -863,4 +961,47 @@ fn bounded(value: u32, max: u32, field: &'static str) -> Result<u32, ProtoConver
             reason: format!("{value} exceeds maximum {max}"),
         })
     }
+}
+
+// ============================================================================
+// Decode memory budget
+// ============================================================================
+
+thread_local! {
+    /// Host-memory budget (bytes) left for the value(s) decoding in the current
+    /// frame on this thread.
+    ///
+    /// Thread-local because the budget must be *ambient*: a frame is decoded by
+    /// prost's generated `Message::decode`, which calls our
+    /// [`WireObject::merge_field`] — and that fixed signature has no slot to
+    /// thread a budget through. Per *thread* rather than a global atomic because
+    /// concurrent workers decode on separate threads. The limit is a hard
+    /// constant ([`DEFAULT_MAX_DECODE_BYTES`]): the resting value, and what
+    /// [`reset_decode_budget`] restores per frame.
+    static DECODE_BUDGET: Cell<usize> = const { Cell::new(DEFAULT_MAX_DECODE_BYTES) };
+}
+
+/// Resets this thread's decode budget to the full [`DEFAULT_MAX_DECODE_BYTES`].
+///
+/// [`crate::FrameReader::read`] calls this before decoding each frame, which is
+/// what makes the budget *per frame* rather than cumulative — a (possibly
+/// compromised) child can't drain it across many frames, and a single ≤256 MiB
+/// frame still can't amplify cheap elements into GiB of host `MontyObject`s.
+pub(crate) fn reset_decode_budget() {
+    DECODE_BUDGET.set(DEFAULT_MAX_DECODE_BYTES);
+}
+
+/// Charges `bytes` of decoded host memory against the current frame's budget,
+/// erroring once a frame would exceed it. Called once per [`MontyObject`] from
+/// [`decode_field`] — the choke point every value routes through — so it bounds
+/// total host memory incrementally, rejecting an over-budget frame before its
+/// value tree is fully built.
+fn charge_decode(bytes: usize) -> Result<(), DecodeError> {
+    DECODE_BUDGET.with(|budget| match budget.get().checked_sub(bytes) {
+        Some(remaining) => {
+            budget.set(remaining);
+            Ok(())
+        }
+        None => Err(to_decode_err("frame exceeds decode memory budget")),
+    })
 }

@@ -543,6 +543,40 @@ impl MontyObject {
         }
     }
 
+    /// Shallow host footprint of a freshly decoded `obj`: the fixed [`MontyObject`]
+    /// size plus any leaf payload it owns *directly* (string/bytes/bigint bytes, and
+    /// the `Vec<String>` field names of structured values, which aren't themselves
+    /// `MontyObject`s and would otherwise be uncharged). Container elements are
+    /// excluded — each charges its own size via [`decode_field`], so a list charges
+    /// 88 bytes here.
+    pub fn host_size(&self) -> usize {
+        /// Fixed size of one `MontyObject` (88 bytes today) — the per-element cost
+        /// that makes cheap wire elements amplify on the host.
+        const BASE: usize = size_of::<MontyObject>();
+        /// `String` header counted per owned metadata string; content dominates.
+        const STR_OVERHEAD: usize = size_of::<String>();
+
+        let names_len = |names: &[String]| -> usize { names.iter().map(|s| STR_OVERHEAD + s.len()).sum() };
+
+        let payload = match self {
+            Self::String(s) | Self::Path(s) | Self::Repr(s) => s.len(),
+            Self::Cycle(_, placeholder) => placeholder.len(),
+            Self::Bytes(b) => b.len(),
+            // Saturate rather than truncate on a 32-bit `usize`: an over-large
+            // estimate only trips the budget sooner, which is the safe direction.
+            Self::BigInt(bi) => usize::try_from(bi.bits().div_ceil(8)).unwrap_or(usize::MAX),
+            Self::Exception { arg, .. } => arg.as_ref().map_or(0, String::len),
+            Self::FileHandle(fh) => fh.path.len(),
+            Self::Function { name, docstring } => name.len() + docstring.as_ref().map_or(0, String::len),
+            Self::NamedTuple {
+                type_name, field_names, ..
+            } => type_name.len() + names_len(field_names),
+            Self::Dataclass { name, field_names, .. } => name.len() + names_len(field_names),
+            _ => 0,
+        };
+        BASE + payload
+    }
+
     /// Top-level entry into [`from_value_inner`], allocating the visited-set used
     /// for cycle detection.
     fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {

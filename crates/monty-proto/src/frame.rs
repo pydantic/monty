@@ -17,11 +17,30 @@ use std::{
 
 use prost::Message;
 
+use crate::wire::reset_decode_budget;
+
 /// Default maximum frame length (256 MiB).
 ///
 /// Far above any sane payload, but small enough that a corrupted length
 /// prefix cannot trigger a multi-gigabyte allocation in the receiver.
 pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
+
+/// Hard, fixed per-frame budget for *resident* decoded value bytes (1 GiB = 4×
+/// the frame cap).
+///
+/// `MAX_FRAME_LEN` bounds the *wire* size, but the cheapest elements (`None` in a
+/// list ≈ 4 wire bytes) decode into 88-byte `MontyObject`s — a ~22× blow-up that
+/// could turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
+/// decoded size so amplification is bounded regardless of frame contents.
+///
+/// The budget bounds bytes *resident* at once. A few paths decode a generated
+/// `Vec<WireObject>`/`Vec<Pair>` then convert it into the final vector (named-
+/// tuple/dataclass values, and function/OS-call args & kwargs in `monty-pool`),
+/// transiently holding a second copy of one field; collects are sequential, so
+/// the host *peak* is ≤ `2 × budget` + the ≤256 MiB frame buffer (~2.25 GiB).
+/// The 4× multiplier keeps that worst-case peak near 2 GiB. Multiplies per
+/// concurrent worker.
+pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.
 #[derive(Debug)]
@@ -136,6 +155,9 @@ impl<R: Read> FrameReader<R> {
             // EOF after a length prefix is always mid-frame.
             ReadOutcome::CleanEof | ReadOutcome::Truncated => return Err(FrameError::Truncated),
         }
+        // Bound host memory for this decode: the wire size is capped, but cheap
+        // elements amplify ~22× into `MontyObject`s. Reset the per-frame budget.
+        reset_decode_budget();
         M::decode(body.as_slice()).map(Some).map_err(FrameError::Decode)
     }
 }
