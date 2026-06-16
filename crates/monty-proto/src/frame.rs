@@ -33,13 +33,14 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 /// could turn a ≤256 MiB frame into multiple GiB on the host. The budget caps
 /// decoded size so amplification is bounded regardless of frame contents.
 ///
-/// The budget bounds bytes *resident* at once. A few paths decode a generated
-/// `Vec<WireObject>`/`Vec<Pair>` then convert it into the final vector (named-
-/// tuple/dataclass values, and function/OS-call args & kwargs in `monty-pool`),
-/// transiently holding a second copy of one field; collects are sequential, so
-/// the host *peak* is ≤ `2 × budget` + the ≤256 MiB frame buffer (~2.25 GiB).
-/// The 4× multiplier keeps that worst-case peak near 2 GiB. Multiplies per
-/// concurrent worker.
+/// The budget bounds bytes *resident* at once. The wire decoder materializes
+/// every container directly (no intermediate `Vec<WireObject>`/`Vec<Pair>`),
+/// but `monty-pool` still decodes function/OS-call args & kwargs into a
+/// generated `Vec<WireObject>` and then converts that into the final vector,
+/// transiently holding a second copy of one field; conversions are sequential,
+/// so the host *peak* stays ≤ `2 × budget` + the ≤256 MiB frame buffer
+/// (~2.25 GiB). The 4× multiplier keeps that worst-case peak near 2 GiB.
+/// Multiplies per concurrent worker.
 pub const DEFAULT_MAX_DECODE_BYTES: usize = 4 * MAX_FRAME_LEN as usize;
 
 /// Framing or decoding failure while reading or writing protocol messages.

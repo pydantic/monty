@@ -385,8 +385,8 @@ NOT!
 
 ### Docstrings and comments.
 
-IMPORTANT: every struct, enum and function should be an informative but concise docstring to
-explain what it does and why and any considerations or potential foot-guns of using that type.
+IMPORTANT: every struct, enum and function should have an informative but concise docstring to
+explain what it does and why; and any considerations or potential foot-guns of using that type.
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 

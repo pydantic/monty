@@ -544,11 +544,11 @@ fn decode_field(
         tag::LIST => MontyObject::List(merge_value_list(wire_type, buf, ctx)?),
         tag::TUPLE => MontyObject::Tuple(merge_value_list(wire_type, buf, ctx)?),
         tag::NAMED_TUPLE => {
-            let nt: pb::NamedTupleValue = merge_message(wire_type, buf, ctx)?;
+            let nt: NamedTupleBody = merge_message(wire_type, buf, ctx)?;
             MontyObject::NamedTuple {
                 type_name: nt.type_name,
                 field_names: nt.field_names,
-                values: unwrap_objects(nt.values)?,
+                values: nt.values,
             }
         }
         tag::DICT => MontyObject::Dict(merge_dict(wire_type, buf, ctx)?),
@@ -607,15 +607,15 @@ fn decode_field(
             })
         }
         tag::DATACLASS => {
-            let dc: pb::DataclassValue = merge_message(wire_type, buf, ctx)?;
+            let dc: DataclassBody = merge_message(wire_type, buf, ctx)?;
+            let attrs = dc
+                .attrs
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("DataclassValue.attrs")))?;
             MontyObject::Dataclass {
                 name: dc.name,
                 type_id: dc.type_id,
                 field_names: dc.field_names,
-                attrs: dict_from_proto(
-                    dc.attrs
-                        .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("DataclassValue.attrs")))?,
-                )?,
+                attrs: DictPairs::from(attrs.0),
                 frozen: dc.frozen,
             }
         }
@@ -685,34 +685,8 @@ fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Re
     Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
 }
 
-/// Unwraps decoded wire objects, rejecting any with an absent `kind`.
-///
-/// Still used by the `NamedTupleValue.values` field, which arrives as part of a
-/// multi-field generated message and so can't route through [`ObjectList`]
-/// without hand-writing that whole message's decoder.
-fn unwrap_objects(items: Vec<WireObject>) -> Result<Vec<MontyObject>, DecodeError> {
-    items
-        .into_iter()
-        .map(|item| item.into_object().map_err(to_decode_err))
-        .collect()
-}
-
-/// Converts a decoded `DictValue` into dict pairs, rejecting absent keys or
-/// values.
-///
-/// Used by the dataclass `attrs` field, whose `DictValue` arrives pre-decoded
-/// inside the generated `pb::DataclassValue`; the top-level `Dict` value decodes
-/// via [`merge_dict`] / [`PairList`] instead.
-fn dict_from_proto(dict: pb::DictValue) -> Result<DictPairs, DecodeError> {
-    dict.pairs
-        .into_iter()
-        .map(pair_to_kv)
-        .collect::<Result<Vec<_>, DecodeError>>()
-        .map(DictPairs::from)
-}
-
 /// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
-/// value. Shared by [`dict_from_proto`] and [`PairList`].
+/// value. Used by [`PairList`].
 fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError> {
     let key = pair
         .key
@@ -799,6 +773,106 @@ impl Message for PairList {
 
     fn clear(&mut self) {
         self.0.clear();
+    }
+}
+
+/// Decode-only `prost::Message` for `NamedTupleValue`, materializing the
+/// `repeated MontyObject values` field straight into `Vec<MontyObject>` (the
+/// [`ObjectList`] trick inlined alongside the other two fields) instead of the
+/// `Vec<WireObject>` the generated `pb::NamedTupleValue` would build and then
+/// unwrap. Decode-only; named tuples encode via [`encode_object`]'s arm.
+#[derive(Default)]
+struct NamedTupleBody {
+    type_name: String,
+    field_names: Vec<String>,
+    values: Vec<MontyObject>,
+}
+
+impl Message for NamedTupleBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // Field numbers from `NamedTupleValue` in monty.proto; unknown → skip.
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.type_name, buf, ctx),
+            2 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
+            3 => {
+                let item: WireObject = merge_message(wire_type, buf, ctx)?;
+                self.values.push(item.into_object().map_err(to_decode_err)?);
+                Ok(())
+            }
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("NamedTupleBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("NamedTupleBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.type_name.clear();
+        self.field_names.clear();
+        self.values.clear();
+    }
+}
+
+/// Decode-only `prost::Message` for `DataclassValue`, decoding the `attrs`
+/// field (a `DictValue`) straight into [`DictPairs`] via [`PairList`] rather
+/// than the `Vec<pb::Pair>` wrapper the generated `pb::DataclassValue` would
+/// build and then unwrap. `attrs` stays `Option` so an absent message field is
+/// rejected by [`decode_field`] (presence, not a default). Decode-only.
+#[derive(Default)]
+struct DataclassBody {
+    name: String,
+    type_id: u64,
+    field_names: Vec<String>,
+    attrs: Option<PairList>,
+    frozen: bool,
+}
+
+impl Message for DataclassBody {
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        // Field numbers from `DataclassValue` in monty.proto; unknown → skip.
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
+            2 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
+            3 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
+            // `get_or_insert` mirrors prost's message-field merge: repeated
+            // occurrences accumulate `pairs` into the same `PairList`.
+            4 => encoding::message::merge(wire_type, self.attrs.get_or_insert_with(PairList::default), buf, ctx),
+            5 => encoding::bool::merge(wire_type, &mut self.frozen, buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn encode_raw(&self, _buf: &mut impl BufMut) {
+        unreachable!("DataclassBody is decode-only")
+    }
+
+    fn encoded_len(&self) -> usize {
+        unreachable!("DataclassBody is decode-only")
+    }
+
+    fn clear(&mut self) {
+        self.name.clear();
+        self.type_id = 0;
+        self.field_names.clear();
+        self.attrs = None;
+        self.frozen = false;
     }
 }
 
