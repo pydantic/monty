@@ -99,6 +99,149 @@ impl Message for WireObject {
     }
 }
 
+/// Wire form of `monty.v1.FunctionCall` that decodes arguments directly into
+/// `MontyObject`s.
+///
+/// Generated prost code would first build `Vec<WireObject>` / `Vec<Pair>` and
+/// the parent would then collect those into the public `TurnEvent` vectors.
+/// This type is installed with `prost_build::extern_path`, so generated
+/// `ChildEvent` decoding still handles the envelope while this payload avoids
+/// the duplicate allocation for large argument lists.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WireFunctionCall {
+    /// Name of the external function the sandbox is calling.
+    pub function_name: String,
+    /// Positional arguments, decoded straight from repeated `MontyObject`.
+    pub args: Vec<MontyObject>,
+    /// Keyword arguments, preserving wire order.
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Child-assigned call id used by the matching resume request.
+    pub call_id: u32,
+    /// Whether the first argument is the method receiver.
+    pub method_call: bool,
+}
+
+impl Message for WireFunctionCall {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        encode_str(1, &self.function_name, buf);
+        encode_repeated_object(2, &self.args, buf);
+        encode_repeated_pair(3, &self.kwargs, buf);
+        encode_uint32(4, self.call_id, buf);
+        if self.method_call {
+            encoding::bool::encode(5, &self.method_call, buf);
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        str_len(1, &self.function_name)
+            + repeated_object_len(2, &self.args)
+            + repeated_pair_len(3, &self.kwargs)
+            + uint32_len(4, self.call_id)
+            + if self.method_call {
+                encoding::bool::encoded_len(5, &self.method_call)
+            } else {
+                0
+            }
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.function_name, buf, ctx),
+            2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
+            3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
+            4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
+            5 => encoding::bool::merge(wire_type, &mut self.method_call, buf, ctx),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.function_name.clear();
+        self.args.clear();
+        self.kwargs.clear();
+        self.call_id = 0;
+        self.method_call = false;
+    }
+}
+
+/// Wire form of `monty.v1.OsCall` with direct argument decoding.
+///
+/// Like [`WireFunctionCall`], this is an `extern_path` replacement for the
+/// generated payload type. `not_handled_error` remains generated because it is
+/// not a repeated value payload and does not create the amplification pattern.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WireOsCall {
+    /// Name of the OS operation the sandbox is asking the parent to handle.
+    pub function_name: String,
+    /// Positional arguments, decoded straight from repeated `MontyObject`.
+    pub args: Vec<MontyObject>,
+    /// Keyword arguments, preserving wire order.
+    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// Child-assigned call id used by the matching resume request.
+    pub call_id: u32,
+    /// Child-provided fallback exception for parents that do not handle this call.
+    pub not_handled_error: Option<pb::Exception>,
+}
+
+impl Message for WireOsCall {
+    fn encode_raw(&self, buf: &mut impl BufMut) {
+        encode_str(1, &self.function_name, buf);
+        encode_repeated_object(2, &self.args, buf);
+        encode_repeated_pair(3, &self.kwargs, buf);
+        encode_uint32(4, self.call_id, buf);
+        if let Some(error) = &self.not_handled_error {
+            encoding::message::encode(5, error, buf);
+        }
+    }
+
+    fn encoded_len(&self) -> usize {
+        str_len(1, &self.function_name)
+            + repeated_object_len(2, &self.args)
+            + repeated_pair_len(3, &self.kwargs)
+            + uint32_len(4, self.call_id)
+            + self
+                .not_handled_error
+                .as_ref()
+                .map_or(0, |error| encoding::message::encoded_len(5, error))
+    }
+
+    fn merge_field(
+        &mut self,
+        tag: u32,
+        wire_type: WireType,
+        buf: &mut impl Buf,
+        ctx: DecodeContext,
+    ) -> Result<(), DecodeError> {
+        match tag {
+            1 => encoding::string::merge(wire_type, &mut self.function_name, buf, ctx),
+            2 => merge_object_item(wire_type, buf, ctx, &mut self.args),
+            3 => merge_pair_item(wire_type, buf, ctx, &mut self.kwargs),
+            4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
+            5 => encoding::message::merge(
+                wire_type,
+                self.not_handled_error.get_or_insert_with(pb::Exception::default),
+                buf,
+                ctx,
+            ),
+            _ => skip_field(wire_type, tag, buf, ctx),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.function_name.clear();
+        self.args.clear();
+        self.kwargs.clear();
+        self.call_id = 0;
+        self.not_handled_error = None;
+    }
+}
+
 /// Field numbers of the `MontyObject.kind` oneof — must match
 /// `proto/monty/v1/monty.proto` exactly (the differential oracle test catches drift).
 mod tag {
@@ -347,13 +490,29 @@ fn dict_len(pairs: &DictPairs) -> usize {
 }
 
 fn encode_dict(pairs: &DictPairs, buf: &mut impl BufMut) {
+    encode_repeated_pair(1, pairs, buf);
+}
+
+/// `repeated Pair` field: each entry is a length-delimited key/value message.
+fn encode_repeated_pair<'a>(
+    tag: u32,
+    pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
+    buf: &mut impl BufMut,
+) {
     for (key, value) in pairs {
-        encode_message_key(1, pair_len(key, value), buf);
+        encode_message_key(tag, pair_len(key, value), buf);
         encode_message_key(1, object_len(key), buf);
         encode_object(key, buf);
         encode_message_key(2, object_len(value), buf);
         encode_object(value, buf);
     }
+}
+
+fn repeated_pair_len<'a>(tag: u32, pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>) -> usize {
+    pairs
+        .into_iter()
+        .map(|(key, value)| submessage_len(tag, pair_len(key, value)))
+        .sum()
 }
 
 fn pair_len(key: &MontyObject, value: &MontyObject) -> usize {
@@ -685,6 +844,30 @@ fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Re
     Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
 }
 
+/// Decodes one repeated `MontyObject` entry into an already-owned vector.
+fn merge_object_item(
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+    items: &mut Vec<MontyObject>,
+) -> Result<(), DecodeError> {
+    let item: WireObject = merge_message(wire_type, buf, ctx)?;
+    items.push(item.into_object().map_err(to_decode_err)?);
+    Ok(())
+}
+
+/// Decodes one repeated `Pair` entry into an already-owned vector.
+fn merge_pair_item(
+    wire_type: WireType,
+    buf: &mut impl Buf,
+    ctx: DecodeContext,
+    pairs: &mut Vec<(MontyObject, MontyObject)>,
+) -> Result<(), DecodeError> {
+    let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
+    pairs.push(pair_to_kv(pair)?);
+    Ok(())
+}
+
 /// Unwraps one decoded `Pair` into a `(key, value)`, rejecting an absent key or
 /// value. Used by [`PairList`].
 fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError> {
@@ -718,9 +901,7 @@ impl Message for ObjectList {
     ) -> Result<(), DecodeError> {
         // `ValueList.items` is field 1; any other tag is unknown → skip.
         if tag == 1 {
-            let item: WireObject = merge_message(wire_type, buf, ctx)?;
-            self.0.push(item.into_object().map_err(to_decode_err)?);
-            Ok(())
+            merge_object_item(wire_type, buf, ctx, &mut self.0)
         } else {
             skip_field(wire_type, tag, buf, ctx)
         }
@@ -755,9 +936,7 @@ impl Message for PairList {
     ) -> Result<(), DecodeError> {
         // `DictValue.pairs` is field 1; any other tag is unknown → skip.
         if tag == 1 {
-            let pair: pb::Pair = merge_message(wire_type, buf, ctx)?;
-            self.0.push(pair_to_kv(pair)?);
-            Ok(())
+            merge_pair_item(wire_type, buf, ctx, &mut self.0)
         } else {
             skip_field(wire_type, tag, buf, ctx)
         }
@@ -800,11 +979,7 @@ impl Message for NamedTupleBody {
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.type_name, buf, ctx),
             2 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
-            3 => {
-                let item: WireObject = merge_message(wire_type, buf, ctx)?;
-                self.values.push(item.into_object().map_err(to_decode_err)?);
-                Ok(())
-            }
+            3 => merge_object_item(wire_type, buf, ctx, &mut self.values),
             _ => skip_field(wire_type, tag, buf, ctx),
         }
     }

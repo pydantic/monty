@@ -19,7 +19,7 @@ use monty::{
     DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta,
     MontyTimeZone, Type,
 };
-use monty_proto::WireObject;
+use monty_proto::{WireFunctionCall, WireObject, WireOsCall, pb};
 use num_bigint::{BigInt, Sign};
 use prost::Message;
 
@@ -282,14 +282,18 @@ fn oracle_list(items: &[MontyObject]) -> oracle::ValueList {
 
 fn oracle_dict(pairs: &DictPairs) -> oracle::DictValue {
     oracle::DictValue {
-        pairs: pairs
-            .into_iter()
-            .map(|(key, value)| oracle::Pair {
-                key: Some(to_oracle(key)),
-                value: Some(to_oracle(value)),
-            })
-            .collect(),
+        pairs: oracle_pairs(pairs),
     }
+}
+
+fn oracle_pairs<'a>(pairs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>) -> Vec<oracle::Pair> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| oracle::Pair {
+            key: Some(to_oracle(key)),
+            value: Some(to_oracle(value)),
+        })
+        .collect()
 }
 
 /// Decodes wire bytes through the hand-written codec.
@@ -333,6 +337,81 @@ fn generated_decoder_reads_hand_bytes() {
             "oracle decoding hand bytes diverges for {obj:?}"
         );
     }
+}
+
+#[test]
+fn hand_call_payloads_match_generated_encoding() {
+    let args = vec![
+        MontyObject::Int(1),
+        MontyObject::String("arg".to_owned()),
+        MontyObject::List(vec![MontyObject::None]),
+    ];
+    let kwargs = vec![
+        (MontyObject::String("flag".to_owned()), MontyObject::Bool(true)),
+        (MontyObject::String("count".to_owned()), MontyObject::Int(3)),
+    ];
+
+    let hand_call = WireFunctionCall {
+        function_name: "external".to_owned(),
+        args: args.clone(),
+        kwargs: kwargs.clone(),
+        call_id: 42,
+        method_call: true,
+    };
+    let generated_call = oracle::FunctionCall {
+        function_name: "external".to_owned(),
+        args: args.iter().map(to_oracle).collect(),
+        kwargs: oracle_pairs(&kwargs),
+        call_id: 42,
+        method_call: true,
+    };
+    assert_eq!(hand_call.encode_to_vec(), generated_call.encode_to_vec());
+    assert_eq!(
+        WireFunctionCall::decode(generated_call.encode_to_vec().as_slice()).expect("generated function call decodes"),
+        hand_call
+    );
+    assert_eq!(
+        oracle::FunctionCall::decode(hand_call.encode_to_vec().as_slice())
+            .expect("hand function call decodes")
+            .encode_to_vec(),
+        generated_call.encode_to_vec()
+    );
+
+    let hand_error = pb::Exception {
+        exc_type: "PermissionError".to_owned(),
+        message: Some("denied".to_owned()),
+        traceback: vec![],
+    };
+    let generated_error = oracle::Exception {
+        exc_type: "PermissionError".to_owned(),
+        message: Some("denied".to_owned()),
+        traceback: vec![],
+    };
+    let hand_os = WireOsCall {
+        function_name: "Path.read_text".to_owned(),
+        args,
+        kwargs,
+        call_id: 7,
+        not_handled_error: Some(hand_error),
+    };
+    let generated_os = oracle::OsCall {
+        function_name: "Path.read_text".to_owned(),
+        args: hand_os.args.iter().map(to_oracle).collect(),
+        kwargs: oracle_pairs(&hand_os.kwargs),
+        call_id: 7,
+        not_handled_error: Some(generated_error),
+    };
+    assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
+    assert_eq!(
+        WireOsCall::decode(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
+        hand_os
+    );
+    assert_eq!(
+        oracle::OsCall::decode(hand_os.encode_to_vec().as_slice())
+            .expect("hand os call decodes")
+            .encode_to_vec(),
+        generated_os.encode_to_vec()
+    );
 }
 
 /// A cyclic value produced by real execution must agree byte-for-byte too —

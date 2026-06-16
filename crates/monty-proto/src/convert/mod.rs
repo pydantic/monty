@@ -26,8 +26,6 @@ use monty::{DictPairs, MontyObject};
 pub use mount::build_mount_table;
 pub use resume::future_results_from_proto;
 
-use crate::{WireObject, pb};
-
 /// Why a wire value could not be converted into its monty equivalent.
 ///
 /// Returned by all `TryFrom<pb::...>` impls in this crate. The variants are
@@ -71,46 +69,6 @@ impl fmt::Display for ProtoConvertError {
 }
 
 impl error::Error for ProtoConvertError {}
-
-/// Wraps monty values for the wire. A move — values are never cloned; clone
-/// at the call site when the originals must be kept (e.g. a suspension that
-/// has to survive a `Dump`).
-#[must_use]
-pub fn values_to_proto(values: Vec<MontyObject>) -> Vec<WireObject> {
-    values.into_iter().map(WireObject::from).collect()
-}
-
-/// Unwraps decoded wire values, failing on the first absent one. Semantic
-/// validation already happened during decode (see `wire.rs`); only an absent
-/// `kind` oneof can fail here.
-pub fn values_from_proto(values: Vec<WireObject>) -> Result<Vec<MontyObject>, ProtoConvertError> {
-    values.into_iter().map(WireObject::into_object).collect()
-}
-
-/// Wraps monty key/value pairs (kwargs, dict contents) for the wire. A move,
-/// like [`values_to_proto`].
-#[must_use]
-pub fn pairs_to_proto(pairs: Vec<(MontyObject, MontyObject)>) -> Vec<pb::Pair> {
-    pairs
-        .into_iter()
-        .map(|(key, value)| pb::Pair {
-            key: Some(key.into()),
-            value: Some(value.into()),
-        })
-        .collect()
-}
-
-/// Unwraps decoded wire pairs back to monty key/value pairs.
-pub fn pairs_from_proto(pairs: Vec<pb::Pair>) -> Result<Vec<(MontyObject, MontyObject)>, ProtoConvertError> {
-    pairs
-        .into_iter()
-        .map(|pair| {
-            let key = pair.key.ok_or(ProtoConvertError::MissingField("Pair.key"))?;
-            let value = pair.value.ok_or(ProtoConvertError::MissingField("Pair.value"))?;
-            Ok((key.into_object()?, value.into_object()?))
-        })
-        .collect()
-}
 
 /// prost's decode recursion limit: the hard ceiling on nested protobuf
 /// message levels a receiver will process before rejecting the frame.

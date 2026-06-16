@@ -19,8 +19,8 @@ use monty::{
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, MAX_FRAME_LEN, build_mount_table, exceeds_max_value_depth, future_results_from_proto, pairs_to_proto,
-    pb, values_to_proto, write_frame,
+    FrameReader, MAX_FRAME_LEN, WireFunctionCall, WireOsCall, build_mount_table, exceeds_max_value_depth,
+    future_results_from_proto, pb, write_frame,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
@@ -490,10 +490,10 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = event(pb::child_event::Kind::OsCall(pb::OsCall {
+                    let event = event(pb::child_event::Kind::OsCall(WireOsCall {
                         function_name: name.to_owned(),
-                        args: values_to_proto(args),
-                        kwargs: pairs_to_proto(kwargs),
+                        args,
+                        kwargs,
                         call_id,
                         not_handled_error: Some((&not_handled_error).into()),
                     }));
@@ -652,10 +652,10 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 /// Clones the argument payload: the suspension keeps its args so a `Dump` of
 /// the suspended state (and its replay on `Load`) stays complete.
 fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::ChildEvent {
-    event(pb::child_event::Kind::FunctionCall(pb::FunctionCall {
+    event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: call.function_name.clone(),
-        args: values_to_proto(call.args.clone()),
-        kwargs: pairs_to_proto(call.kwargs.clone()),
+        args: call.args.clone(),
+        kwargs: call.kwargs.clone(),
         call_id: call.call_id,
         method_call: call.method_call,
     }))
@@ -672,10 +672,10 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 /// the call's argument payload).
 fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
     let kind = match progress {
-        ReplProgress::FunctionCall(call) => pb::child_event::Kind::FunctionCall(pb::FunctionCall {
+        ReplProgress::FunctionCall(call) => pb::child_event::Kind::FunctionCall(WireFunctionCall {
             function_name: call.function_name.clone(),
-            args: values_to_proto(call.args.clone()),
-            kwargs: pairs_to_proto(call.kwargs.clone()),
+            args: call.args.clone(),
+            kwargs: call.kwargs.clone(),
             call_id: call.call_id,
             method_call: call.method_call,
         }),
@@ -686,7 +686,7 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
             // name/args from its own records; a fresh suspension goes through
             // `drive` instead
             let has_payload = !matches!(call.function_call, monty::OsFunctionCall::Used);
-            pb::child_event::Kind::OsCall(pb::OsCall {
+            pb::child_event::Kind::OsCall(WireOsCall {
                 function_name: if has_payload {
                     call.function_call.name().to_owned()
                 } else {

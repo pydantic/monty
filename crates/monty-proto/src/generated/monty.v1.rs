@@ -414,9 +414,9 @@ pub mod child_event {
         #[prost(message, tag = "1")]
         Print(super::Print),
         #[prost(message, tag = "2")]
-        FunctionCall(super::FunctionCall),
+        FunctionCall(crate::WireFunctionCall),
         #[prost(message, tag = "3")]
-        OsCall(super::OsCall),
+        OsCall(crate::WireOsCall),
         #[prost(message, tag = "4")]
         NameLookup(super::NameLookup),
         #[prost(message, tag = "5")]
@@ -443,47 +443,6 @@ pub struct Print {
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
-}
-/// Suspension: the sandbox called an external function (or a dataclass method
-/// when `method_call` is true — the instance is then the first arg). Answer
-/// with `ResumeCall`.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct FunctionCall {
-    #[prost(string, tag = "1")]
-    pub function_name: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub args: ::prost::alloc::vec::Vec<crate::WireObject>,
-    #[prost(message, repeated, tag = "3")]
-    pub kwargs: ::prost::alloc::vec::Vec<Pair>,
-    #[prost(uint32, tag = "4")]
-    pub call_id: u32,
-    #[prost(bool, tag = "5")]
-    pub method_call: bool,
-}
-/// Suspension: the sandbox performed an OS operation no mount handled, e.g.
-/// "Path.read_text" or "os.getenv". Answer with `ResumeCall`. Some calls have
-/// typed result expectations (e.g. "Open" must return a file_handle); a
-/// mismatched result becomes a Python-level error inside the sandbox.
-///
-/// NOTE: an OsCall re-announced after `Load` carries only `call_id` and
-/// `not_handled_error` — the argument payload was consumed when the call was
-/// first announced, before the dump was taken.
-#[derive(Clone, PartialEq, ::prost::Message)]
-pub struct OsCall {
-    #[prost(string, tag = "1")]
-    pub function_name: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub args: ::prost::alloc::vec::Vec<crate::WireObject>,
-    #[prost(message, repeated, tag = "3")]
-    pub kwargs: ::prost::alloc::vec::Vec<Pair>,
-    #[prost(uint32, tag = "4")]
-    pub call_id: u32,
-    /// The exception monty would raise for this call when nothing handles it
-    /// (e.g. PermissionError for filesystem calls). A parent with no handler
-    /// should answer `ResumeCall` with this error — only the child knows the
-    /// per-call semantics.
-    #[prost(message, optional, tag = "5")]
-    pub not_handled_error: ::core::option::Option<Exception>,
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
 /// the parent provides an external function. Answer with `ResumeNameLookup`.

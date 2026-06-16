@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{FrameError, exceeds_max_value_depth, pairs_from_proto, pb, values_from_proto};
+use monty_proto::{FrameError, exceeds_max_value_depth, pb};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -479,8 +479,8 @@ impl Checkout {
                     break self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
                             function_name: call.function_name,
-                            args: values_from_proto(call.args)?,
-                            kwargs: pairs_from_proto(call.kwargs)?,
+                            args: call.args,
+                            kwargs: call.kwargs,
                             call_id: call.call_id,
                             method_call: call.method_call,
                         })
@@ -494,8 +494,8 @@ impl Checkout {
                     break self.convert_turn(|| {
                         Ok(TurnEvent::OsCall {
                             function_name: call.function_name,
-                            args: values_from_proto(call.args)?,
-                            kwargs: pairs_from_proto(call.kwargs)?,
+                            args: call.args,
+                            kwargs: call.kwargs,
                             call_id: call.call_id,
                             not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
                         })

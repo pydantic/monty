@@ -235,8 +235,7 @@ fn external_function_round_trip() {
     };
     assert_eq!(call.function_name, "add");
     assert!(!call.method_call);
-    let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
-    assert_eq!(args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
+    assert_eq!(call.args, vec![MontyObject::Int(1), MontyObject::Int(2)]);
 
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::ReturnValue(int_value(3)));
     assert_eq!(expect_complete(event), MontyObject::Int(3));
@@ -289,8 +288,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
         panic!("expected OsCall, got {event:?}");
     };
     assert_eq!(call.function_name, "Path.read_text");
-    let args: Vec<MontyObject> = call.args.into_iter().map(|v| v.into_object().unwrap()).collect();
-    assert_eq!(args, vec![MontyObject::Path("/data.txt".to_owned())]);
+    assert_eq!(call.args, vec![MontyObject::Path("/data.txt".to_owned())]);
 
     let (_, event) = child.resume_call(
         call.call_id,

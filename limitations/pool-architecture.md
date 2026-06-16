@@ -97,9 +97,10 @@ the *host API* surface.
   such a frame discards the worker with a protocol error rather than risking an
   out-of-memory abort. A value large enough to hit it (tens of millions of
   elements) cannot cross the boundary even though it is under the wire-byte
-  limit. Worst-case host *peak* is ~2× the budget (the host's function/OS-call
-  argument conversion transiently holds a second copy of one converted field),
-  and the bound applies per concurrent worker.
+  limit. Every payload — containers and function/OS-call args & kwargs alike —
+  decodes straight into its final type with no intermediate copy, so the
+  worst-case host *peak* is ~1× the budget plus the ≤256 MiB frame buffer, and
+  the bound applies per concurrent worker.
 - Semantic validation of wire values (date ranges, timedelta normalization,
   exception/type/builtin names) happens *while decoding* the frame. A frame
   carrying an invalid value therefore fails the whole protocol turn: a parent
