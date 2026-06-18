@@ -186,7 +186,7 @@ pub struct WireOsCall {
     /// Child-assigned call id used by the matching resume request.
     pub call_id: u32,
     /// Child-provided fallback exception for parents that do not handle this call.
-    pub not_handled_error: Option<pb::Exception>,
+    pub not_handled_error: Option<pb::RaisedException>,
 }
 
 impl Message for WireOsCall {
@@ -225,7 +225,7 @@ impl Message for WireOsCall {
             4 => encoding::uint32::merge(wire_type, &mut self.call_id, buf, ctx),
             5 => encoding::message::merge(
                 wire_type,
-                self.not_handled_error.get_or_insert_with(pb::Exception::default),
+                self.not_handled_error.get_or_insert_with(pb::RaisedException::default),
                 buf,
                 ctx,
             ),
@@ -457,7 +457,7 @@ fn submessage_len(tag: u32, body_len: usize) -> usize {
     key_len(tag) + encoded_len_varint(body_len as u64) + body_len
 }
 
-/// `ValueList` body: `repeated MontyObject items = 1`.
+/// `ObjectList` body: `repeated MontyObject items = 1`.
 fn value_list_len(items: &[MontyObject]) -> usize {
     repeated_object_len(1, items)
 }
@@ -474,13 +474,13 @@ fn repeated_object_len(tag: u32, items: &[MontyObject]) -> usize {
     items.iter().map(|obj| submessage_len(tag, object_len(obj))).sum()
 }
 
-/// `NamedTupleValue` body: `string type_name = 1; repeated string
+/// `NamedTuple` body: `string type_name = 1; repeated string
 /// field_names = 2; repeated MontyObject values = 3`.
 fn named_tuple_len(type_name: &str, field_names: &[String], values: &[MontyObject]) -> usize {
     str_len(1, type_name) + repeated_str_len(2, field_names) + repeated_object_len(3, values)
 }
 
-/// `DictValue` body: `repeated Pair pairs = 1` where `Pair` is
+/// `Dict` body: `repeated Pair pairs = 1` where `Pair` is
 /// `MontyObject key = 1; MontyObject value = 2` (both always present).
 fn dict_len(pairs: &DictPairs) -> usize {
     pairs
@@ -519,7 +519,7 @@ fn pair_len(key: &MontyObject, value: &MontyObject) -> usize {
     submessage_len(1, object_len(key)) + submessage_len(2, object_len(value))
 }
 
-/// `DateTimeValue` body: scalar fields 1–7 (implicit presence, skipped at
+/// `DateTime` body: scalar fields 1–7 (implicit presence, skipped at
 /// zero) plus explicit-presence `offset_seconds = 8` / `timezone_name = 9`.
 fn datetime_len(dt: &MontyDateTime) -> usize {
     int32_len(1, dt.year)
@@ -547,19 +547,19 @@ fn encode_datetime(dt: &MontyDateTime, buf: &mut impl BufMut) {
     encode_opt_str(9, dt.timezone_name.as_deref(), buf);
 }
 
-/// `TimeZoneValue` body: `int32 offset_seconds = 1; optional string name = 2`.
+/// `TimeZone` body: `int32 offset_seconds = 1; optional string name = 2`.
 fn timezone_len(tz: &MontyTimeZone) -> usize {
     int32_len(1, tz.offset_seconds) + opt_str_len(2, tz.name.as_deref())
 }
 
-/// `FileHandleValue` body: `string path = 1; string mode = 2;
+/// `FileHandle` body: `string path = 1; string mode = 2;
 /// uint64 position = 3`.
 fn file_handle_len(fh: &MontyFileHandle) -> usize {
     str_len(1, &fh.path) + str_len(2, fh.mode.as_str()) + uint64_len(3, fh.position)
 }
 
-/// `DataclassValue` body: `string name = 1; uint64 type_id = 2; repeated
-/// string field_names = 3; DictValue attrs = 4; bool frozen = 5`.
+/// `Dataclass` body: `string name = 1; uint64 type_id = 2; repeated
+/// string field_names = 3; Dict attrs = 4; bool frozen = 5`.
 fn dataclass_len(name: &str, type_id: u64, field_names: &[String], attrs: &DictPairs, frozen: bool) -> usize {
     str_len(1, name)
         + uint64_len(2, type_id)
@@ -714,26 +714,26 @@ fn decode_field(
         tag::SET => MontyObject::Set(merge_value_list(wire_type, buf, ctx)?),
         tag::FROZEN_SET => MontyObject::FrozenSet(merge_value_list(wire_type, buf, ctx)?),
         tag::DATE => {
-            let d: pb::DateValue = merge_message(wire_type, buf, ctx)?;
+            let d: pb::Date = merge_message(wire_type, buf, ctx)?;
             MontyObject::Date(date_from_proto(&d).map_err(to_decode_err)?)
         }
         tag::DATETIME => {
-            let dt: pb::DateTimeValue = merge_message(wire_type, buf, ctx)?;
+            let dt: pb::DateTime = merge_message(wire_type, buf, ctx)?;
             MontyObject::DateTime(datetime_from_proto(dt).map_err(to_decode_err)?)
         }
         tag::TIMEDELTA => {
-            let td: pb::TimeDeltaValue = merge_message(wire_type, buf, ctx)?;
+            let td: pb::TimeDelta = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeDelta(timedelta_from_proto(&td).map_err(to_decode_err)?)
         }
         tag::TIMEZONE => {
-            let tz: pb::TimeZoneValue = merge_message(wire_type, buf, ctx)?;
+            let tz: pb::TimeZone = merge_message(wire_type, buf, ctx)?;
             MontyObject::TimeZone(MontyTimeZone {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })
         }
         tag::EXCEPTION => {
-            let exc: pb::ExceptionValue = merge_message(wire_type, buf, ctx)?;
+            let exc: pb::Exception = merge_message(wire_type, buf, ctx)?;
             MontyObject::Exception {
                 exc_type: exc
                     .exc_type
@@ -755,7 +755,7 @@ fn decode_field(
         }
         tag::PATH => MontyObject::Path(merge_string(wire_type, buf, ctx)?),
         tag::FILE_HANDLE => {
-            let fh: pb::FileHandleValue = merge_message(wire_type, buf, ctx)?;
+            let fh: pb::FileHandle = merge_message(wire_type, buf, ctx)?;
             MontyObject::FileHandle(MontyFileHandle {
                 mode: fh
                     .mode
@@ -769,7 +769,7 @@ fn decode_field(
             let dc: DataclassBody = merge_message(wire_type, buf, ctx)?;
             let attrs = dc
                 .attrs
-                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("DataclassValue.attrs")))?;
+                .ok_or_else(|| to_decode_err(ProtoConvertError::MissingField("Dataclass.attrs")))?;
             MontyObject::Dataclass {
                 name: dc.name,
                 type_id: dc.type_id,
@@ -779,7 +779,7 @@ fn decode_field(
             }
         }
         tag::FUNCTION => {
-            let func: pb::FunctionValue = merge_message(wire_type, buf, ctx)?;
+            let func: pb::Function = merge_message(wire_type, buf, ctx)?;
             MontyObject::Function {
                 name: func.name,
                 docstring: func.docstring,
@@ -787,10 +787,10 @@ fn decode_field(
         }
         tag::REPR => MontyObject::Repr(merge_string(wire_type, buf, ctx)?),
         tag::CYCLE => {
-            let c: pb::CycleValue = merge_message(wire_type, buf, ctx)?;
+            let c: pb::Cycle = merge_message(wire_type, buf, ctx)?;
             let identity = usize::try_from(c.identity).map_err(|_| {
                 to_decode_err(ProtoConvertError::InvalidValue {
-                    field: "CycleValue.identity",
+                    field: "Cycle.identity",
                     reason: format!("{} does not fit in usize", c.identity),
                 })
             })?;
@@ -827,9 +827,9 @@ fn merge_string(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> 
     Ok(s)
 }
 
-/// Decodes a `ValueList` (list/tuple/set/frozenset payload) straight into
+/// Decodes an `ObjectList` (list/tuple/set/frozenset payload) straight into
 /// `Vec<MontyObject>` via [`ObjectList`], skipping the `Vec<WireObject>` wrapper
-/// the generated `pb::ValueList` would force and the extra unwrap pass over it.
+/// the generated `pb::ObjectList` would force and the extra unwrap pass over it.
 fn merge_value_list(
     wire_type: WireType,
     buf: &mut impl Buf,
@@ -838,7 +838,7 @@ fn merge_value_list(
     Ok(merge_message::<ObjectList>(wire_type, buf, ctx)?.0)
 }
 
-/// Decodes a `DictValue` straight into [`DictPairs`] via [`PairList`], skipping
+/// Decodes a `Dict` straight into [`DictPairs`] via [`PairList`], skipping
 /// the `Vec<pb::Pair>` wrapper.
 fn merge_dict(wire_type: WireType, buf: &mut impl Buf, ctx: DecodeContext) -> Result<DictPairs, DecodeError> {
     Ok(DictPairs::from(merge_message::<PairList>(wire_type, buf, ctx)?.0))
@@ -885,7 +885,7 @@ fn pair_to_kv(pair: pb::Pair) -> Result<(MontyObject, MontyObject), DecodeError>
 
 /// Decode-only `prost::Message` materializing a `repeated MontyObject` field
 /// straight into `Vec<MontyObject>`, skipping the `Vec<WireObject>` buffer (and
-/// unwrap pass) `pb::ValueList` would force; only a per-element `WireObject` is
+/// unwrap pass) `pb::ObjectList` would force; only a per-element `WireObject` is
 /// transient. Never encoded (values encode via [`encode_repeated_object`]), so
 /// the encode methods are unreachable.
 #[derive(Default)]
@@ -899,7 +899,7 @@ impl Message for ObjectList {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // `ValueList.items` is field 1; any other tag is unknown → skip.
+        // `ObjectList.items` is field 1; any other tag is unknown → skip.
         if tag == 1 {
             merge_object_item(wire_type, buf, ctx, &mut self.0)
         } else {
@@ -934,7 +934,7 @@ impl Message for PairList {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // `DictValue.pairs` is field 1; any other tag is unknown → skip.
+        // `Dict.pairs` is field 1; any other tag is unknown → skip.
         if tag == 1 {
             merge_pair_item(wire_type, buf, ctx, &mut self.0)
         } else {
@@ -955,10 +955,10 @@ impl Message for PairList {
     }
 }
 
-/// Decode-only `prost::Message` for `NamedTupleValue`, materializing the
+/// Decode-only `prost::Message` for `NamedTuple`, materializing the
 /// `repeated MontyObject values` field straight into `Vec<MontyObject>` (the
 /// [`ObjectList`] trick inlined alongside the other two fields) instead of the
-/// `Vec<WireObject>` the generated `pb::NamedTupleValue` would build and then
+/// `Vec<WireObject>` the generated `pb::NamedTuple` would build and then
 /// unwrap. Decode-only; named tuples encode via [`encode_object`]'s arm.
 #[derive(Default)]
 struct NamedTupleBody {
@@ -975,7 +975,7 @@ impl Message for NamedTupleBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `NamedTupleValue` in monty.proto; unknown → skip.
+        // Field numbers from `NamedTuple` in monty.proto; unknown → skip.
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.type_name, buf, ctx),
             2 => encoding::string::merge_repeated(wire_type, &mut self.field_names, buf, ctx),
@@ -999,9 +999,9 @@ impl Message for NamedTupleBody {
     }
 }
 
-/// Decode-only `prost::Message` for `DataclassValue`, decoding the `attrs`
-/// field (a `DictValue`) straight into [`DictPairs`] via [`PairList`] rather
-/// than the `Vec<pb::Pair>` wrapper the generated `pb::DataclassValue` would
+/// Decode-only `prost::Message` for `Dataclass`, decoding the `attrs`
+/// field (a `Dict`) straight into [`DictPairs`] via [`PairList`] rather
+/// than the `Vec<pb::Pair>` wrapper the generated `pb::Dataclass` would
 /// build and then unwrap. `attrs` stays `Option` so an absent message field is
 /// rejected by [`decode_field`] (presence, not a default). Decode-only.
 #[derive(Default)]
@@ -1021,7 +1021,7 @@ impl Message for DataclassBody {
         buf: &mut impl Buf,
         ctx: DecodeContext,
     ) -> Result<(), DecodeError> {
-        // Field numbers from `DataclassValue` in monty.proto; unknown → skip.
+        // Field numbers from `Dataclass` in monty.proto; unknown → skip.
         match tag {
             1 => encoding::string::merge(wire_type, &mut self.name, buf, ctx),
             2 => encoding::uint64::merge(wire_type, &mut self.type_id, buf, ctx),
@@ -1067,9 +1067,9 @@ fn to_decode_err(err: impl Display) -> DecodeError {
 // ============================================================================
 
 /// Encodes a `BigInt` as sign + big-endian magnitude.
-fn bigint_to_proto(bi: &BigInt) -> pb::BigIntValue {
+fn bigint_to_proto(bi: &BigInt) -> pb::BigInt {
     let (sign, magnitude) = bi.to_bytes_be();
-    pb::BigIntValue {
+    pb::BigInt {
         negative: sign == Sign::Minus,
         magnitude,
     }
@@ -1079,33 +1079,28 @@ fn bigint_to_proto(bi: &BigInt) -> pb::BigIntValue {
 ///
 /// An all-zero/empty magnitude decodes to zero regardless of the sign flag —
 /// `BigInt` normalizes the sign of zero, so no invalid state is possible.
-fn bigint_from_proto(bi: &pb::BigIntValue) -> BigInt {
+fn bigint_from_proto(bi: &pb::BigInt) -> BigInt {
     let sign = if bi.negative { Sign::Minus } else { Sign::Plus };
     BigInt::from_bytes_be(sign, &bi.magnitude)
 }
 
-fn date_to_proto(d: &MontyDate) -> pb::DateValue {
-    pb::DateValue {
+fn date_to_proto(d: &MontyDate) -> pb::Date {
+    pb::Date {
         year: d.year,
         month: u32::from(d.month),
         day: u32::from(d.day),
     }
 }
 
-fn date_from_proto(d: &pb::DateValue) -> Result<MontyDate, ProtoConvertError> {
-    let (year, month, day) = date_fields(
-        d.year,
-        d.month,
-        d.day,
-        ["DateValue.year", "DateValue.month", "DateValue.day"],
-    )?;
+fn date_from_proto(d: &pb::Date) -> Result<MontyDate, ProtoConvertError> {
+    let (year, month, day) = date_fields(d.year, d.month, d.day, ["Date.year", "Date.month", "Date.day"])?;
     Ok(MontyDate { year, month, day })
 }
 
-fn datetime_from_proto(dt: pb::DateTimeValue) -> Result<MontyDateTime, ProtoConvertError> {
+fn datetime_from_proto(dt: pb::DateTime) -> Result<MontyDateTime, ProtoConvertError> {
     if dt.offset_seconds.is_none() && dt.timezone_name.is_some() {
         return Err(ProtoConvertError::InvalidValue {
-            field: "DateTimeValue.timezone_name",
+            field: "DateTime.timezone_name",
             reason: "timezone_name requires offset_seconds".to_owned(),
         });
     }
@@ -1113,37 +1108,37 @@ fn datetime_from_proto(dt: pb::DateTimeValue) -> Result<MontyDateTime, ProtoConv
         dt.year,
         dt.month,
         dt.day,
-        ["DateTimeValue.year", "DateTimeValue.month", "DateTimeValue.day"],
+        ["DateTime.year", "DateTime.month", "DateTime.day"],
     )?;
     Ok(MontyDateTime {
         year,
         month,
         day,
-        hour: ranged_u8(dt.hour, 0..=23, "DateTimeValue.hour")?,
-        minute: ranged_u8(dt.minute, 0..=59, "DateTimeValue.minute")?,
-        second: ranged_u8(dt.second, 0..=59, "DateTimeValue.second")?,
-        microsecond: bounded(dt.microsecond, 999_999, "DateTimeValue.microsecond")?,
+        hour: ranged_u8(dt.hour, 0..=23, "DateTime.hour")?,
+        minute: ranged_u8(dt.minute, 0..=59, "DateTime.minute")?,
+        second: ranged_u8(dt.second, 0..=59, "DateTime.second")?,
+        microsecond: bounded(dt.microsecond, 999_999, "DateTime.microsecond")?,
         offset_seconds: dt.offset_seconds,
         timezone_name: dt.timezone_name,
     })
 }
 
-fn timedelta_to_proto(td: &MontyTimeDelta) -> pb::TimeDeltaValue {
-    pb::TimeDeltaValue {
+fn timedelta_to_proto(td: &MontyTimeDelta) -> pb::TimeDelta {
+    pb::TimeDelta {
         days: td.days,
         seconds: td.seconds,
         microseconds: td.microseconds,
     }
 }
 
-fn timedelta_from_proto(td: &pb::TimeDeltaValue) -> Result<MontyTimeDelta, ProtoConvertError> {
+fn timedelta_from_proto(td: &pb::TimeDelta) -> Result<MontyTimeDelta, ProtoConvertError> {
     Ok(MontyTimeDelta {
         days: td.days,
         // out-of-range components would violate `MontyTimeDelta`'s
         // documented normalization invariants and corrupt arithmetic
         // and formatting once inside the sandbox
-        seconds: normalized(td.seconds, 86_400, "TimeDeltaValue.seconds")?,
-        microseconds: normalized(td.microseconds, 1_000_000, "TimeDeltaValue.microseconds")?,
+        seconds: normalized(td.seconds, 86_400, "TimeDelta.seconds")?,
+        microseconds: normalized(td.microseconds, 1_000_000, "TimeDelta.microseconds")?,
     })
 }
 

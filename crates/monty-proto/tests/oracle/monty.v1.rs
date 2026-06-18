@@ -41,7 +41,7 @@ pub mod monty_object {
         Int(i64),
         /// Python int wider than 64 bits.
         #[prost(message, tag = "5")]
-        Bigint(super::BigIntValue),
+        Bigint(super::BigInt),
         #[prost(double, tag = "6")]
         Float(f64),
         #[prost(string, tag = "7")]
@@ -49,29 +49,29 @@ pub mod monty_object {
         #[prost(bytes, tag = "8")]
         Bytes(::prost::alloc::vec::Vec<u8>),
         #[prost(message, tag = "9")]
-        List(super::ValueList),
+        List(super::ObjectList),
         #[prost(message, tag = "10")]
-        Tuple(super::ValueList),
+        Tuple(super::ObjectList),
         #[prost(message, tag = "11")]
-        NamedTuple(super::NamedTupleValue),
+        NamedTuple(super::NamedTuple),
         #[prost(message, tag = "12")]
-        Dict(super::DictValue),
+        Dict(super::Dict),
         #[prost(message, tag = "13")]
-        Set(super::ValueList),
+        Set(super::ObjectList),
         #[prost(message, tag = "14")]
-        FrozenSet(super::ValueList),
+        FrozenSet(super::ObjectList),
         #[prost(message, tag = "15")]
-        Date(super::DateValue),
+        Date(super::Date),
         #[prost(message, tag = "16")]
-        Datetime(super::DateTimeValue),
+        Datetime(super::DateTime),
         #[prost(message, tag = "17")]
-        Timedelta(super::TimeDeltaValue),
+        Timedelta(super::TimeDelta),
         #[prost(message, tag = "18")]
-        Timezone(super::TimeZoneValue),
+        Timezone(super::TimeZone),
         /// A simple exception VALUE (no traceback) — e.g. an exception stored in a
-        /// variable. Errors that terminate execution use `Exception` instead.
+        /// variable. Errors that terminate execution use `RaisedException` instead.
         #[prost(message, tag = "19")]
-        Exception(super::ExceptionValue),
+        Exception(super::Exception),
         /// A Python type object, named by monty's `Type` Display string, e.g.
         /// "int", "str", "datetime.datetime", "ValueError".
         #[prost(string, tag = "20")]
@@ -83,21 +83,21 @@ pub mod monty_object {
         #[prost(string, tag = "22")]
         Path(::prost::alloc::string::String),
         #[prost(message, tag = "23")]
-        FileHandle(super::FileHandleValue),
+        FileHandle(super::FileHandle),
         #[prost(message, tag = "24")]
-        Dataclass(super::DataclassValue),
+        Dataclass(super::Dataclass),
         #[prost(message, tag = "25")]
-        Function(super::FunctionValue),
+        Function(super::Function),
         /// OUTPUT-ONLY fallback: repr() of a value with no other representation.
         #[prost(string, tag = "26")]
         Repr(::prost::alloc::string::String),
         /// OUTPUT-ONLY marker breaking reference cycles in container output.
         #[prost(message, tag = "27")]
-        Cycle(super::CycleValue),
+        Cycle(super::Cycle),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ValueList {
+pub struct ObjectList {
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<MontyObject>,
 }
@@ -112,21 +112,21 @@ pub struct Pair {
     pub value: ::core::option::Option<MontyObject>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DictValue {
+pub struct Dict {
     #[prost(message, repeated, tag = "1")]
     pub pairs: ::prost::alloc::vec::Vec<Pair>,
 }
 /// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
 /// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BigIntValue {
+pub struct BigInt {
     #[prost(bool, tag = "1")]
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NamedTupleValue {
+pub struct NamedTuple {
     /// Type name used in repr, e.g. "os.stat_result".
     #[prost(string, tag = "1")]
     pub type_name: ::prost::alloc::string::String,
@@ -137,7 +137,7 @@ pub struct NamedTupleValue {
     pub values: ::prost::alloc::vec::Vec<MontyObject>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DateValue {
+pub struct Date {
     /// Gregorian year in 1..=9999.
     #[prost(int32, tag = "1")]
     pub year: i32,
@@ -148,7 +148,7 @@ pub struct DateValue {
     pub day: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DateTimeValue {
+pub struct DateTime {
     #[prost(int32, tag = "1")]
     pub year: i32,
     #[prost(uint32, tag = "2")]
@@ -172,7 +172,7 @@ pub struct DateTimeValue {
     pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TimeDeltaValue {
+pub struct TimeDelta {
     #[prost(int32, tag = "1")]
     pub days: i32,
     /// Normalized to 0..86400.
@@ -183,7 +183,7 @@ pub struct TimeDeltaValue {
     pub microseconds: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TimeZoneValue {
+pub struct TimeZone {
     #[prost(int32, tag = "1")]
     pub offset_seconds: i32,
     #[prost(string, optional, tag = "2")]
@@ -192,14 +192,14 @@ pub struct TimeZoneValue {
 /// A simple exception value: type name (e.g. "ValueError") + optional single
 /// string argument.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ExceptionValue {
+pub struct Exception {
     #[prost(string, tag = "1")]
     pub exc_type: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub arg: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FileHandleValue {
+pub struct FileHandle {
     /// Virtual (sandbox) path — never a host path.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
@@ -212,7 +212,7 @@ pub struct FileHandleValue {
     pub position: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DataclassValue {
+pub struct Dataclass {
     /// Class name, e.g. "Point".
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -224,21 +224,21 @@ pub struct DataclassValue {
     pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// All attributes (fields and extras), in order.
     #[prost(message, optional, tag = "4")]
-    pub attrs: ::core::option::Option<DictValue>,
+    pub attrs: ::core::option::Option<Dict>,
     #[prost(bool, tag = "5")]
     pub frozen: bool,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FunctionValue {
+pub struct Function {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CycleValue {
+pub struct Cycle {
     /// Opaque identity token for the object the cycle refers back to: two
     /// cycle markers in the same result are the same object iff their tokens
     /// match. Meaningless outside the result that produced it.
@@ -251,7 +251,7 @@ pub struct CycleValue {
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Exception {
+pub struct RaisedException {
     /// Exception type name, e.g. "ValueError", "json.JSONDecodeError".
     #[prost(string, tag = "1")]
     pub exc_type: ::prost::alloc::string::String,
@@ -339,7 +339,7 @@ pub mod ext_function_result {
         ReturnValue(super::MontyObject),
         /// The call raised this exception.
         #[prost(message, tag = "2")]
-        Error(super::Exception),
+        Error(super::RaisedException),
         /// The call is asynchronous: register an external future for `call_id`
         /// (the id from the suspension event) and keep executing other tasks.
         #[prost(uint32, tag = "3")]
@@ -573,7 +573,7 @@ pub struct OsCall {
     /// should answer `ResumeCall` with this error — only the child knows the
     /// per-call semantics.
     #[prost(message, optional, tag = "5")]
-    pub not_handled_error: ::core::option::Option<Exception>,
+    pub not_handled_error: ::core::option::Option<RaisedException>,
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
 /// the parent provides an external function. Answer with `ResumeNameLookup`.
@@ -601,7 +601,7 @@ pub struct Complete {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Error {
     #[prost(message, optional, tag = "1")]
-    pub exception: ::core::option::Option<Exception>,
+    pub exception: ::core::option::Option<RaisedException>,
 }
 /// Turn end: type checking rejected the fed snippet (only when the session
 /// was created with type_check). The snippet was not executed; the session

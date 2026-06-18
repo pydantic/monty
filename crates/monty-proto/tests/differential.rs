@@ -189,7 +189,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
         MontyObject::Int(i) => Kind::Int(*i),
         MontyObject::BigInt(bi) => {
             let (sign, magnitude) = bi.to_bytes_be();
-            Kind::Bigint(oracle::BigIntValue {
+            Kind::Bigint(oracle::BigInt {
                 negative: sign == Sign::Minus,
                 magnitude,
             })
@@ -203,7 +203,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             type_name,
             field_names,
             values,
-        } => Kind::NamedTuple(oracle::NamedTupleValue {
+        } => Kind::NamedTuple(oracle::NamedTuple {
             type_name: type_name.clone(),
             field_names: field_names.clone(),
             values: values.iter().map(to_oracle).collect(),
@@ -211,12 +211,12 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
         MontyObject::Dict(pairs) => Kind::Dict(oracle_dict(pairs)),
         MontyObject::Set(items) => Kind::Set(oracle_list(items)),
         MontyObject::FrozenSet(items) => Kind::FrozenSet(oracle_list(items)),
-        MontyObject::Date(d) => Kind::Date(oracle::DateValue {
+        MontyObject::Date(d) => Kind::Date(oracle::Date {
             year: d.year,
             month: u32::from(d.month),
             day: u32::from(d.day),
         }),
-        MontyObject::DateTime(dt) => Kind::Datetime(oracle::DateTimeValue {
+        MontyObject::DateTime(dt) => Kind::Datetime(oracle::DateTime {
             year: dt.year,
             month: u32::from(dt.month),
             day: u32::from(dt.day),
@@ -227,23 +227,23 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             offset_seconds: dt.offset_seconds,
             timezone_name: dt.timezone_name.clone(),
         }),
-        MontyObject::TimeDelta(td) => Kind::Timedelta(oracle::TimeDeltaValue {
+        MontyObject::TimeDelta(td) => Kind::Timedelta(oracle::TimeDelta {
             days: td.days,
             seconds: td.seconds,
             microseconds: td.microseconds,
         }),
-        MontyObject::TimeZone(tz) => Kind::Timezone(oracle::TimeZoneValue {
+        MontyObject::TimeZone(tz) => Kind::Timezone(oracle::TimeZone {
             offset_seconds: tz.offset_seconds,
             name: tz.name.clone(),
         }),
-        MontyObject::Exception { exc_type, arg } => Kind::Exception(oracle::ExceptionValue {
+        MontyObject::Exception { exc_type, arg } => Kind::Exception(oracle::Exception {
             exc_type: exc_type.to_string(),
             arg: arg.clone(),
         }),
         MontyObject::Type(t) => Kind::Type(t.to_string()),
         MontyObject::BuiltinFunction(bf) => Kind::BuiltinFunction(bf.to_string()),
         MontyObject::Path(p) => Kind::Path(p.clone()),
-        MontyObject::FileHandle(fh) => Kind::FileHandle(oracle::FileHandleValue {
+        MontyObject::FileHandle(fh) => Kind::FileHandle(oracle::FileHandle {
             path: fh.path.clone(),
             mode: fh.mode.as_str().to_owned(),
             position: fh.position,
@@ -254,19 +254,19 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             field_names,
             attrs,
             frozen,
-        } => Kind::Dataclass(oracle::DataclassValue {
+        } => Kind::Dataclass(oracle::Dataclass {
             name: name.clone(),
             type_id: *type_id,
             field_names: field_names.clone(),
             attrs: Some(oracle_dict(attrs)),
             frozen: *frozen,
         }),
-        MontyObject::Function { name, docstring } => Kind::Function(oracle::FunctionValue {
+        MontyObject::Function { name, docstring } => Kind::Function(oracle::Function {
             name: name.clone(),
             docstring: docstring.clone(),
         }),
         MontyObject::Repr(r) => Kind::Repr(r.clone()),
-        MontyObject::Cycle(identity, placeholder) => Kind::Cycle(oracle::CycleValue {
+        MontyObject::Cycle(identity, placeholder) => Kind::Cycle(oracle::Cycle {
             identity: *identity as u64,
             placeholder: placeholder.clone(),
         }),
@@ -274,14 +274,14 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
     oracle::MontyObject { kind: Some(kind) }
 }
 
-fn oracle_list(items: &[MontyObject]) -> oracle::ValueList {
-    oracle::ValueList {
+fn oracle_list(items: &[MontyObject]) -> oracle::ObjectList {
+    oracle::ObjectList {
         items: items.iter().map(to_oracle).collect(),
     }
 }
 
-fn oracle_dict(pairs: &DictPairs) -> oracle::DictValue {
-    oracle::DictValue {
+fn oracle_dict(pairs: &DictPairs) -> oracle::Dict {
+    oracle::Dict {
         pairs: oracle_pairs(pairs),
     }
 }
@@ -377,12 +377,12 @@ fn hand_call_payloads_match_generated_encoding() {
         generated_call.encode_to_vec()
     );
 
-    let hand_error = pb::Exception {
+    let hand_error = pb::RaisedException {
         exc_type: "PermissionError".to_owned(),
         message: Some("denied".to_owned()),
         traceback: vec![],
     };
-    let generated_error = oracle::Exception {
+    let generated_error = oracle::RaisedException {
         exc_type: "PermissionError".to_owned(),
         message: Some("denied".to_owned()),
         traceback: vec![],
@@ -439,7 +439,7 @@ fn rejected(kind: oracle::monty_object::Kind) -> String {
 #[test]
 fn invalid_values_are_rejected_during_decode() {
     assert_eq!(
-        rejected(Kind::Exception(oracle::ExceptionValue {
+        rejected(Kind::Exception(oracle::Exception {
             exc_type: "NotARealError".to_owned(),
             arg: None,
         })),
@@ -455,7 +455,7 @@ fn invalid_values_are_rejected_during_decode() {
     );
     // update file modes are not yet supported by monty's parser
     assert_eq!(
-        rejected(Kind::FileHandle(oracle::FileHandleValue {
+        rejected(Kind::FileHandle(oracle::FileHandle {
             path: "/f".to_owned(),
             mode: "r+".to_owned(),
             position: 0,
@@ -464,7 +464,7 @@ fn invalid_values_are_rejected_during_decode() {
     );
     // timezone_name without offset_seconds
     assert_eq!(
-        rejected(Kind::Datetime(oracle::DateTimeValue {
+        rejected(Kind::Datetime(oracle::DateTime {
             year: 2026,
             month: 1,
             day: 1,
@@ -475,7 +475,7 @@ fn invalid_values_are_rejected_during_decode() {
             offset_seconds: None,
             timezone_name: Some("UTC".to_owned()),
         })),
-        "failed to decode Protobuf message: invalid value for DateTimeValue.timezone_name: timezone_name requires offset_seconds"
+        "failed to decode Protobuf message: invalid value for DateTime.timezone_name: timezone_name requires offset_seconds"
     );
     // an absent kind decodes (it is a valid empty message) but cannot be
     // unwrapped into a value
@@ -491,23 +491,23 @@ fn invalid_values_are_rejected_during_decode() {
 /// `MontyTimeDelta` must be rejected during decode.
 #[test]
 fn out_of_range_temporal_values_are_rejected() {
-    let date = |year, month, day| Kind::Date(oracle::DateValue { year, month, day });
+    let date = |year, month, day| Kind::Date(oracle::Date { year, month, day });
     let rejected_field =
         |kind, expected_field: &str| rejected(kind).contains(&format!("invalid value for {expected_field}:"));
-    assert!(rejected_field(date(0, 1, 1), "DateValue.year"));
-    assert!(rejected_field(date(10_000, 1, 1), "DateValue.year"));
-    assert!(rejected_field(date(2026, 0, 1), "DateValue.month"));
-    assert!(rejected_field(date(2026, 13, 1), "DateValue.month"));
-    assert!(rejected_field(date(2026, 2, 0), "DateValue.day"));
-    assert!(rejected_field(date(2026, 2, 29), "DateValue.day")); // 2026 is not a leap year
-    assert!(rejected_field(date(2025, 4, 31), "DateValue.day"));
+    assert!(rejected_field(date(0, 1, 1), "Date.year"));
+    assert!(rejected_field(date(10_000, 1, 1), "Date.year"));
+    assert!(rejected_field(date(2026, 0, 1), "Date.month"));
+    assert!(rejected_field(date(2026, 13, 1), "Date.month"));
+    assert!(rejected_field(date(2026, 2, 0), "Date.day"));
+    assert!(rejected_field(date(2026, 2, 29), "Date.day")); // 2026 is not a leap year
+    assert!(rejected_field(date(2025, 4, 31), "Date.day"));
     assert_eq!(
         rejected(date(2026, 4096, 1)),
-        "failed to decode Protobuf message: invalid value for DateValue.month: 4096 is outside the range 1..=12"
+        "failed to decode Protobuf message: invalid value for Date.month: 4096 is outside the range 1..=12"
     );
 
     let datetime = |hour, minute, second, microsecond| {
-        Kind::Datetime(oracle::DateTimeValue {
+        Kind::Datetime(oracle::DateTime {
             year: 2026,
             month: 1,
             day: 1,
@@ -519,25 +519,22 @@ fn out_of_range_temporal_values_are_rejected() {
             timezone_name: None,
         })
     };
-    assert!(rejected_field(datetime(24, 0, 0, 0), "DateTimeValue.hour"));
-    assert!(rejected_field(datetime(0, 60, 0, 0), "DateTimeValue.minute"));
-    assert!(rejected_field(datetime(0, 0, 60, 0), "DateTimeValue.second"));
-    assert!(rejected_field(
-        datetime(0, 0, 0, 1_000_000),
-        "DateTimeValue.microsecond"
-    ));
+    assert!(rejected_field(datetime(24, 0, 0, 0), "DateTime.hour"));
+    assert!(rejected_field(datetime(0, 60, 0, 0), "DateTime.minute"));
+    assert!(rejected_field(datetime(0, 0, 60, 0), "DateTime.second"));
+    assert!(rejected_field(datetime(0, 0, 0, 1_000_000), "DateTime.microsecond"));
 
     let timedelta = |seconds, microseconds| {
-        Kind::Timedelta(oracle::TimeDeltaValue {
+        Kind::Timedelta(oracle::TimeDelta {
             days: 1,
             seconds,
             microseconds,
         })
     };
-    assert!(rejected_field(timedelta(-1, 0), "TimeDeltaValue.seconds"));
-    assert!(rejected_field(timedelta(86_400, 0), "TimeDeltaValue.seconds"));
-    assert!(rejected_field(timedelta(0, -1), "TimeDeltaValue.microseconds"));
-    assert!(rejected_field(timedelta(0, 1_000_000), "TimeDeltaValue.microseconds"));
+    assert!(rejected_field(timedelta(-1, 0), "TimeDelta.seconds"));
+    assert!(rejected_field(timedelta(86_400, 0), "TimeDelta.seconds"));
+    assert!(rejected_field(timedelta(0, -1), "TimeDelta.microseconds"));
+    assert!(rejected_field(timedelta(0, 1_000_000), "TimeDelta.microseconds"));
 }
 
 // ============================================================================

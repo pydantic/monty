@@ -148,7 +148,7 @@ fn expect_complete(event: pb::child_event::Kind) -> MontyObject {
 }
 
 #[track_caller]
-fn expect_error(event: pb::child_event::Kind) -> pb::Exception {
+fn expect_error(event: pb::child_event::Kind) -> pb::RaisedException {
     match event {
         pb::child_event::Kind::Error(error) => error.exception.expect("error has no exception"),
         other => panic!("expected Error, got {other:?}"),
@@ -306,7 +306,7 @@ fn os_call_error_resume_carries_exception() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    let exc = pb::Exception {
+    let exc = pb::RaisedException {
         exc_type: "FileNotFoundError".to_owned(),
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
         traceback: vec![],

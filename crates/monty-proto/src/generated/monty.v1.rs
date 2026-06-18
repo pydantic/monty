@@ -7,7 +7,7 @@
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Unit {}
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ValueList {
+pub struct ObjectList {
     #[prost(message, repeated, tag = "1")]
     pub items: ::prost::alloc::vec::Vec<crate::WireObject>,
 }
@@ -22,21 +22,21 @@ pub struct Pair {
     pub value: ::core::option::Option<crate::WireObject>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DictValue {
+pub struct Dict {
     #[prost(message, repeated, tag = "1")]
     pub pairs: ::prost::alloc::vec::Vec<Pair>,
 }
 /// Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
 /// JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct BigIntValue {
+pub struct BigInt {
     #[prost(bool, tag = "1")]
     pub negative: bool,
     #[prost(bytes = "vec", tag = "2")]
     pub magnitude: ::prost::alloc::vec::Vec<u8>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct NamedTupleValue {
+pub struct NamedTuple {
     /// Type name used in repr, e.g. "os.stat_result".
     #[prost(string, tag = "1")]
     pub type_name: ::prost::alloc::string::String,
@@ -47,7 +47,7 @@ pub struct NamedTupleValue {
     pub values: ::prost::alloc::vec::Vec<crate::WireObject>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DateValue {
+pub struct Date {
     /// Gregorian year in 1..=9999.
     #[prost(int32, tag = "1")]
     pub year: i32,
@@ -58,7 +58,7 @@ pub struct DateValue {
     pub day: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct DateTimeValue {
+pub struct DateTime {
     #[prost(int32, tag = "1")]
     pub year: i32,
     #[prost(uint32, tag = "2")]
@@ -82,7 +82,7 @@ pub struct DateTimeValue {
     pub timezone_name: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TimeDeltaValue {
+pub struct TimeDelta {
     #[prost(int32, tag = "1")]
     pub days: i32,
     /// Normalized to 0..86400.
@@ -93,7 +93,7 @@ pub struct TimeDeltaValue {
     pub microseconds: i32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct TimeZoneValue {
+pub struct TimeZone {
     #[prost(int32, tag = "1")]
     pub offset_seconds: i32,
     #[prost(string, optional, tag = "2")]
@@ -102,14 +102,14 @@ pub struct TimeZoneValue {
 /// A simple exception value: type name (e.g. "ValueError") + optional single
 /// string argument.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct ExceptionValue {
+pub struct Exception {
     #[prost(string, tag = "1")]
     pub exc_type: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub arg: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FileHandleValue {
+pub struct FileHandle {
     /// Virtual (sandbox) path — never a host path.
     #[prost(string, tag = "1")]
     pub path: ::prost::alloc::string::String,
@@ -122,7 +122,7 @@ pub struct FileHandleValue {
     pub position: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct DataclassValue {
+pub struct Dataclass {
     /// Class name, e.g. "Point".
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -134,21 +134,21 @@ pub struct DataclassValue {
     pub field_names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// All attributes (fields and extras), in order.
     #[prost(message, optional, tag = "4")]
-    pub attrs: ::core::option::Option<DictValue>,
+    pub attrs: ::core::option::Option<Dict>,
     #[prost(bool, tag = "5")]
     pub frozen: bool,
 }
 /// An external (host-provided) function value, usually supplied by the parent
 /// in response to a `NameLookup` event.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct FunctionValue {
+pub struct Function {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "2")]
     pub docstring: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct CycleValue {
+pub struct Cycle {
     /// Opaque identity token for the object the cycle refers back to: two
     /// cycle markers in the same result are the same object iff their tokens
     /// match. Meaningless outside the result that produced it.
@@ -161,7 +161,7 @@ pub struct CycleValue {
 /// A raised Python exception with its traceback. Mirrors monty's
 /// `MontyException`.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct Exception {
+pub struct RaisedException {
     /// Exception type name, e.g. "ValueError", "json.JSONDecodeError".
     #[prost(string, tag = "1")]
     pub exc_type: ::prost::alloc::string::String,
@@ -249,7 +249,7 @@ pub mod ext_function_result {
         ReturnValue(crate::WireObject),
         /// The call raised this exception.
         #[prost(message, tag = "2")]
-        Error(super::Exception),
+        Error(super::RaisedException),
         /// The call is asynchronous: register an external future for `call_id`
         /// (the id from the suspension event) and keep executing other tasks.
         #[prost(uint32, tag = "3")]
@@ -470,7 +470,7 @@ pub struct Complete {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Error {
     #[prost(message, optional, tag = "1")]
-    pub exception: ::core::option::Option<Exception>,
+    pub exception: ::core::option::Option<RaisedException>,
 }
 /// Turn end: type checking rejected the fed snippet (only when the session
 /// was created with type_check). The snippet was not executed; the session

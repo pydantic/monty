@@ -279,7 +279,7 @@ fn exceptions_round_trip_with_traceback() {
         },
     ];
     let exc = MontyException::with_traceback(ExcType::ValueError, Some("oops".to_owned()), frames);
-    let proto = pb::Exception::from(&exc);
+    let proto = pb::RaisedException::from(&exc);
     let back = MontyException::try_from(proto).expect("proto -> MontyException failed");
     assert_eq!(back, exc);
     // the rendered traceback (the user-visible artifact) must be identical
@@ -289,7 +289,7 @@ fn exceptions_round_trip_with_traceback() {
 #[test]
 fn exception_without_traceback_round_trips() {
     let exc = MontyException::new(ExcType::TypeError, None);
-    let back = MontyException::try_from(pb::Exception::from(&exc)).unwrap();
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
 }
 
@@ -378,7 +378,7 @@ fn nest_list(depth: usize) -> MontyObject {
 }
 
 /// `Int(1)` nested in `depth` levels of single-entry dict (3 proto levels per
-/// level: `MontyObject` + `DictValue` + `Pair`).
+/// level: `MontyObject` + `Dict` + `Pair`).
 fn nest_dict(depth: usize) -> MontyObject {
     (0..depth).fold(MontyObject::Int(1), |inner, _| {
         MontyObject::dict(vec![(MontyObject::String("k".to_owned()), inner)])
@@ -386,7 +386,7 @@ fn nest_dict(depth: usize) -> MontyObject {
 }
 
 /// `Int(1)` nested in `depth` levels of single-field dataclass (4 proto
-/// levels per level: `MontyObject` + `DataclassValue` + `DictValue` + `Pair`).
+/// levels per level: `MontyObject` + `Dataclass` + `Dict` + `Pair`).
 fn nest_dataclass(depth: usize) -> MontyObject {
     (0..depth).fold(MontyObject::Int(1), |inner, _| MontyObject::Dataclass {
         name: "D".to_owned(),

@@ -45,7 +45,7 @@ pub enum ProtoConvertError {
     InvalidFileMode(String),
     /// A field value was out of range or otherwise malformed.
     InvalidValue {
-        /// The offending field, e.g. `"DateValue.month"`.
+        /// The offending field, e.g. `"Date.month"`.
         field: &'static str,
         /// Human-readable explanation.
         reason: String,
@@ -84,12 +84,12 @@ const FRAME_WRAPPER_DEPTH: usize = 3;
 const MAX_PROTO_VALUE_DEPTH: usize = PROST_RECURSION_LIMIT - FRAME_WRAPPER_DEPTH;
 
 /// Proto message levels per list/tuple/set/frozenset/namedtuple level
-/// (`MontyObject` plus its `ValueList`/`NamedTupleValue` payload).
+/// (`MontyObject` plus its `ObjectList`/`NamedTuple` payload).
 const LIST_COST: usize = 2;
-/// Proto message levels per dict level (`MontyObject` + `DictValue` + `Pair`).
+/// Proto message levels per dict level (`MontyObject` + `Dict` + `Pair`).
 const DICT_COST: usize = 3;
 /// Proto message levels per dataclass level (`MontyObject` +
-/// `DataclassValue` + the attrs `DictValue` + `Pair`).
+/// `Dataclass` + the attrs `Dict` + `Pair`).
 const DATACLASS_COST: usize = 4;
 
 /// Maximum nesting depth of a *list-like* value that can safely cross the

@@ -614,7 +614,7 @@ fn event(kind: pb::child_event::Kind) -> pb::ChildEvent {
 /// state, bad call id, invalid payload). The child's state is unchanged.
 fn violation(message: &str) -> pb::ChildEvent {
     event(pb::child_event::Kind::Error(pb::Error {
-        exception: Some(pb::Exception {
+        exception: Some(pb::RaisedException {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
             traceback: vec![],
@@ -629,7 +629,7 @@ fn ok_event() -> pb::ChildEvent {
 /// Builds a turn-ending `Error` event from an exception type and message.
 fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
     event(pb::child_event::Kind::Error(pb::Error {
-        exception: Some(pb::Exception {
+        exception: Some(pb::RaisedException {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
             traceback: vec![],

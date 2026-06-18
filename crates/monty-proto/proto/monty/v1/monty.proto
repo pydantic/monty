@@ -43,23 +43,23 @@ message MontyObject {
     // Python int fitting in 64 bits.
     sint64 int = 4;
     // Python int wider than 64 bits.
-    BigIntValue bigint = 5;
+    BigInt bigint = 5;
     double float = 6;
     string str = 7;
     bytes bytes = 8;
-    ValueList list = 9;
-    ValueList tuple = 10;
-    NamedTupleValue named_tuple = 11;
-    DictValue dict = 12;
-    ValueList set = 13;
-    ValueList frozen_set = 14;
-    DateValue date = 15;
-    DateTimeValue datetime = 16;
-    TimeDeltaValue timedelta = 17;
-    TimeZoneValue timezone = 18;
+    ObjectList list = 9;
+    ObjectList tuple = 10;
+    NamedTuple named_tuple = 11;
+    Dict dict = 12;
+    ObjectList set = 13;
+    ObjectList frozen_set = 14;
+    Date date = 15;
+    DateTime datetime = 16;
+    TimeDelta timedelta = 17;
+    TimeZone timezone = 18;
     // A simple exception VALUE (no traceback) — e.g. an exception stored in a
-    // variable. Errors that terminate execution use `Exception` instead.
-    ExceptionValue exception = 19;
+    // variable. Errors that terminate execution use `RaisedException` instead.
+    Exception exception = 19;
     // A Python type object, named by monty's `Type` Display string, e.g.
     // "int", "str", "datetime.datetime", "ValueError".
     string type = 20;
@@ -67,17 +67,17 @@ message MontyObject {
     string builtin_function = 21;
     // A pathlib.Path value (always a virtual POSIX path, never a host path).
     string path = 22;
-    FileHandleValue file_handle = 23;
-    DataclassValue dataclass = 24;
-    FunctionValue function = 25;
+    FileHandle file_handle = 23;
+    Dataclass dataclass = 24;
+    Function function = 25;
     // OUTPUT-ONLY fallback: repr() of a value with no other representation.
     string repr = 26;
     // OUTPUT-ONLY marker breaking reference cycles in container output.
-    CycleValue cycle = 27;
+    Cycle cycle = 27;
   }
 }
 
-message ValueList {
+message ObjectList {
   repeated MontyObject items = 1;
 }
 
@@ -89,18 +89,18 @@ message Pair {
   MontyObject value = 2;
 }
 
-message DictValue {
+message Dict {
   repeated Pair pairs = 1;
 }
 
 // Arbitrary-precision integer as sign + big-endian magnitude. Exact and O(n);
 // JS decode is `(negative ? -1n : 1n) * BigInt('0x' + hex(magnitude))`.
-message BigIntValue {
+message BigInt {
   bool negative = 1;
   bytes magnitude = 2;
 }
 
-message NamedTupleValue {
+message NamedTuple {
   // Type name used in repr, e.g. "os.stat_result".
   string type_name = 1;
   // Attribute names, one per value.
@@ -108,7 +108,7 @@ message NamedTupleValue {
   repeated MontyObject values = 3;
 }
 
-message DateValue {
+message Date {
   // Gregorian year in 1..=9999.
   int32 year = 1;
   // 1..=12.
@@ -116,7 +116,7 @@ message DateValue {
   uint32 day = 3;
 }
 
-message DateTimeValue {
+message DateTime {
   int32 year = 1;
   uint32 month = 2;
   uint32 day = 3;
@@ -131,7 +131,7 @@ message DateTimeValue {
   optional string timezone_name = 9;
 }
 
-message TimeDeltaValue {
+message TimeDelta {
   int32 days = 1;
   // Normalized to 0..86400.
   int32 seconds = 2;
@@ -139,19 +139,19 @@ message TimeDeltaValue {
   int32 microseconds = 3;
 }
 
-message TimeZoneValue {
+message TimeZone {
   int32 offset_seconds = 1;
   optional string name = 2;
 }
 
 // A simple exception value: type name (e.g. "ValueError") + optional single
 // string argument.
-message ExceptionValue {
+message Exception {
   string exc_type = 1;
   optional string arg = 2;
 }
 
-message FileHandleValue {
+message FileHandle {
   // Virtual (sandbox) path — never a host path.
   string path = 1;
   // Canonical Python open() mode string: one of r, rb, r+, rb+, w, wb, w+,
@@ -161,7 +161,7 @@ message FileHandleValue {
   uint64 position = 3;
 }
 
-message DataclassValue {
+message Dataclass {
   // Class name, e.g. "Point".
   string name = 1;
   // Host-side identity of the class, from `id(type(dc))`.
@@ -169,18 +169,18 @@ message DataclassValue {
   // Declared field names in definition order.
   repeated string field_names = 3;
   // All attributes (fields and extras), in order.
-  DictValue attrs = 4;
+  Dict attrs = 4;
   bool frozen = 5;
 }
 
 // An external (host-provided) function value, usually supplied by the parent
 // in response to a `NameLookup` event.
-message FunctionValue {
+message Function {
   string name = 1;
   optional string docstring = 2;
 }
 
-message CycleValue {
+message Cycle {
   // Opaque identity token for the object the cycle refers back to: two
   // cycle markers in the same result are the same object iff their tokens
   // match. Meaningless outside the result that produced it.
@@ -195,7 +195,7 @@ message CycleValue {
 
 // A raised Python exception with its traceback. Mirrors monty's
 // `MontyException`.
-message Exception {
+message RaisedException {
   // Exception type name, e.g. "ValueError", "json.JSONDecodeError".
   string exc_type = 1;
   optional string message = 2;
@@ -271,7 +271,7 @@ message ExtFunctionResult {
     // The call returned this value.
     MontyObject return_value = 1;
     // The call raised this exception.
-    Exception error = 2;
+    RaisedException error = 2;
     // The call is asynchronous: register an external future for `call_id`
     // (the id from the suspension event) and keep executing other tasks.
     uint32 future = 3;
@@ -449,7 +449,7 @@ message OsCall {
   // (e.g. PermissionError for filesystem calls). A parent with no handler
   // should answer `ResumeCall` with this error — only the child knows the
   // per-call semantics.
-  Exception not_handled_error = 5;
+  RaisedException not_handled_error = 5;
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether
@@ -473,7 +473,7 @@ message Complete {
 // Turn end: the snippet (or request) failed with a Python exception. The
 // session survives — prior globals remain available to later feeds.
 message Error {
-  Exception exception = 1;
+  RaisedException exception = 1;
 }
 
 // Turn end: type checking rejected the fed snippet (only when the session
