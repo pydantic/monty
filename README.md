@@ -416,3 +416,11 @@ Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
 - **Setup complexity**: None
 - **File mounting**: Direct filesystem access (that's the problem)
 - **Snapshotting**: Possible with durable execution solutions like Temporal
+
+## Part of the Pydantic Stack
+
+The Pydantic Stack is everything you need to ship production-grade AI agents:
+
+- [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe agent framework
+- [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first, full-stack observability
+- [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified LLM proxy
