@@ -17,7 +17,7 @@ use crate::types::TestContextManager;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
-    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
+    asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_str},
@@ -396,22 +396,7 @@ impl HeapItem for Coroutine {
 impl HeapItem for GatherFuture {
     fn py_estimate_size(&self) -> usize {
         let state_size = match &self.state {
-            GatherState::Awaited(awaited) => {
-                // Rough sizing — per-entry storage in `pending_children` plus
-                // the result-slot vector. The map's bucket overhead and the
-                // SmallVec inline buffer are elided; we only estimate
-                // dynamically-allocated content tied to user code.
-                let pending_size: usize = awaited
-                    .pending_children
-                    .values()
-                    .map(|slots| {
-                        // Spilled SmallVec entries (beyond the inline 1) are heap-allocated.
-                        let spilled = slots.len().saturating_sub(1);
-                        mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
-                    })
-                    .sum::<usize>();
-                awaited.results.len() * mem::size_of::<Option<Value>>() + pending_size
-            }
+            GatherState::Awaited(awaited) => awaited_state_size(&awaited.pending_children, &awaited.results),
             GatherState::Pending | GatherState::Completed(_) | GatherState::Failed(_) => 0,
         };
         mem::size_of::<Self>() + self.items.len() * mem::size_of::<HeapId>() + state_size

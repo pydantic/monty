@@ -15,8 +15,11 @@ use crate::{
 impl<T: ResourceTracker> VM<'_, T> {
     /// Returns the current frame's name for traceback generation: the
     /// function name for user-defined functions, or `<module>` for
-    /// module-level code. Falls back to `<module>` when the frame stack
-    /// is empty so transitional async error paths still unwind cleanly.
+    /// module-level code. The empty-frames branch is defensive — async
+    /// error paths now charge their tracker growth *before* draining
+    /// `self.frames`, so any caller reaching this with an empty stack
+    /// indicates a bug elsewhere; the `<module>` fallback keeps
+    /// traceback generation total rather than panicking.
     fn current_frame_name(&self) -> StringId {
         match self.frames.last() {
             Some(frame) => match frame.function_id {

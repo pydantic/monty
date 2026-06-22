@@ -16,9 +16,9 @@ use crate::{
     MontyException,
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
-        GatherState, TaskId,
+        GatherState, TaskId, awaited_state_size,
     },
-    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState, saved_task_context_size},
+    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
@@ -169,16 +169,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // committing the state: a rejected charge that landed after the
         // mutation would leave bytes that were never added, then `fail`
         // would shrink them and drift the tracker counter downward.
-        // Mirrors the per-entry sizing in `GatherFuture::py_estimate_size`.
-        let awaited_state_size: usize = pending_children
-            .values()
-            .map(|slots| {
-                let spilled = slots.len().saturating_sub(1);
-                mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
-            })
-            .sum::<usize>()
-            + results.len() * mem::size_of::<Option<Value>>();
-        if let Err(err) = this.heap.track_growth(awaited_state_size) {
+        // Reuse the same formula `GatherFuture::py_estimate_size` uses so
+        // the eventual shrink matches the charge exactly.
+        let delta = awaited_state_size(&pending_children, &results);
+        if let Err(err) = this.heap.track_growth(delta) {
             let err = RunError::from(err);
             // Roll back: gather is still `Pending`, so the locals (awaiter,
             // results) and the committed children own resources that need
@@ -348,16 +342,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Save current task context ONLY when switching to another task.
             // This is critical: if we're about to yield (no ready tasks), the main task's
             // frames must stay in the VM so they're included in the snapshot.
-            if let Some(current_task_id) = self.scheduler.current_task_id()
-                && let Err(err) = self.save_task_context(current_task_id)
-            {
-                // Save failed (e.g. tracker rejected the growth charge):
-                // put `next_task_id` back at the head of the queue so a
-                // recoverable error path can still schedule it later.
-                self.scheduler.requeue_ready_front(next_task_id);
-                return Err(err);
-            }
-
+            self.save_current_context_or_requeue(next_task_id)?;
             self.scheduler.set_current_task(Some(next_task_id));
 
             // Load or initialize the next task's context
@@ -370,6 +355,22 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Don't save the main task's context - frames stay in VM for the snapshot.
             Ok(AwaitResult::Yield(self.scheduler.pending_call_ids()))
         }
+    }
+
+    /// Saves the current task's context before switching to `next_task_id`.
+    ///
+    /// If the save fails (typically a tracker growth rejection) the dequeued
+    /// `next_task_id` is restored to the head of the ready queue so a
+    /// recoverable error path can still schedule it later. No-op when there
+    /// is no current task to save.
+    fn save_current_context_or_requeue(&mut self, next_task_id: TaskId) -> Result<(), RunError> {
+        if let Some(current_task_id) = self.scheduler.current_task_id()
+            && let Err(err) = self.save_task_context(current_task_id)
+        {
+            self.scheduler.requeue_ready_front(next_task_id);
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Handles completion of a spawned task.
@@ -576,6 +577,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// (balances the subtraction in `save_task_context`).
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         let task = self.scheduler.get_task_mut(task_id);
+        // Snapshot the charge to release *before* draining the Vecs out of
+        // `task`; the released bytes mirror what `save_task_context`
+        // charged. VM-local Vecs are untracked (matching the rest of the
+        // stack accounting); a fresh task with no saved context makes
+        // this a no-op.
+        let saved_size = task.saved_context_size();
         let frames = mem::take(&mut task.frames);
         let stack = mem::take(&mut task.stack);
         let exception_stack = mem::take(&mut task.exception_stack);
@@ -587,11 +594,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let global_depth = self.heap.get_recursion_depth();
         self.heap.set_recursion_depth(global_depth + task_depth);
 
-        // Release the charge from `save_task_context`. VM-local Vecs are
-        // untracked (matching the rest of the stack accounting); a fresh
-        // task with no saved context makes this a no-op.
-        self.heap
-            .track_shrink(saved_task_context_size(&frames, &stack, &exception_stack));
+        self.heap.track_shrink(saved_size);
 
         if !frames.is_empty() {
             // Task has existing context - restore it
@@ -957,14 +960,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // Current task was not able to resume, but there might be other ready tasks which can make
         // progress
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
-            if let Some(current_task_id) = self.scheduler.current_task_id()
-                && let Err(err) = self.save_task_context(current_task_id)
-            {
-                // Restore the dequeued task on a save failure (see
-                // `switch_or_yield` for the same handling).
-                self.scheduler.requeue_ready_front(next_task_id);
-                return Err(err);
-            }
+            self.save_current_context_or_requeue(next_task_id)?;
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
             return self.run_external();

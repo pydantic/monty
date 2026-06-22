@@ -4,6 +4,8 @@
 //! and task identifiers. The host acts as the event loop - external function
 //! calls return `ExternalFuture` objects that can be awaited.
 
+use std::mem;
+
 use ahash::AHashMap;
 use smallvec::SmallVec;
 
@@ -13,6 +15,29 @@ use crate::{
     intern::FunctionId,
     value::Value,
 };
+
+/// Rough byte cost of the dynamically-allocated `Awaited` bookkeeping for a
+/// gather with the given pending children and result slots. Authoritative
+/// for the tracker charge taken at `Pending → Awaited` *and* for
+/// `GatherFuture::py_estimate_size`; keeping the formula in one place
+/// prevents the charge and the eventual shrink from silently drifting apart.
+///
+/// Per-entry sizing matches conventions elsewhere in the codebase: the
+/// HashMap's bucket overhead is elided, and only `SmallVec` entries spilled
+/// beyond the inline buffer (size 1) are counted.
+pub(crate) fn awaited_state_size(
+    pending_children: &AHashMap<HeapId, SmallVec<[usize; 1]>>,
+    results: &[Option<Value>],
+) -> usize {
+    let pending_size: usize = pending_children
+        .values()
+        .map(|slots| {
+            let spilled = slots.len().saturating_sub(1);
+            mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
+        })
+        .sum();
+    mem::size_of_val(results) + pending_size
+}
 
 /// Unique identifier for external function calls.
 ///

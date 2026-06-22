@@ -160,6 +160,16 @@ impl Task {
     pub fn is_finished(&self) -> bool {
         matches!(self.state, TaskState::Completed(_) | TaskState::Failed(_))
     }
+
+    /// Estimated bytes occupied by this task's saved VM context — the
+    /// charge `save_task_context` takes and `load_or_init_task` /
+    /// `cancel_task` release. Vec capacity overhead is elided to match
+    /// `py_estimate_size`'s len-based estimates elsewhere.
+    pub(crate) fn saved_context_size(&self) -> usize {
+        mem::size_of_val(self.frames.as_slice())
+            + mem::size_of_val(self.stack.as_slice())
+            + mem::size_of_val(self.exception_stack.as_slice())
+    }
 }
 
 /// Scheduler for managing call IDs, async tasks, and external call tracking.
@@ -437,11 +447,7 @@ impl Scheduler {
         if task_id != TaskId::default() {
             heap.heap_mut().track_shrink(SCHEDULER_TASK_OVERHEAD);
         }
-        heap.heap_mut().track_shrink(saved_task_context_size(
-            &task.frames,
-            &task.stack,
-            &task.exception_stack,
-        ));
+        heap.heap_mut().track_shrink(task.saved_context_size());
 
         // If we're cancelling the current task, clear `current_task` so callers
         // don't try to look up a task that's about to be dropped (e.g.
@@ -594,15 +600,4 @@ impl Default for Scheduler {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Estimated bytes occupied by a suspended task's saved VM context.
-/// Vec capacity overhead is elided to match `py_estimate_size`'s
-/// len-based estimates elsewhere.
-pub(crate) fn saved_task_context_size(
-    frames: &[SerializedTaskFrame],
-    stack: &[Value],
-    exception_stack: &[Value],
-) -> usize {
-    mem::size_of_val(frames) + mem::size_of_val(stack) + mem::size_of_val(exception_stack)
 }
