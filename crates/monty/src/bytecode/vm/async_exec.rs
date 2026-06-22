@@ -18,10 +18,10 @@ use crate::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, TaskId,
     },
-    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
+    bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState, saved_task_context_size},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput, HeapReader},
+    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
     resource::ResourceTracker,
     run_progress::ExtFunctionResult,
@@ -164,11 +164,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         let results = results_guard.into_inner();
         let (awaiter, this) = awaiter_guard.into_parts();
+        // Charge the per-await bookkeeping (`pending_children` map +
+        // `results` slot vector) against the tracker. `Pending` reports
+        // 0 state-size, so the delta equals the new `Awaited` state-size.
+        // A budget-overshoot error is surfaced; the gather is left in
+        // `Awaited` and the eventual heap-entry free / `Awaited → …`
+        // transition will undo the partial accounting.
+        let old_size = gather.get(this.heap).py_estimate_size();
         gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
             awaiter,
             pending_children,
             results,
         });
+        let new_size = gather.get(this.heap).py_estimate_size();
+        this.heap.track_growth(new_size.saturating_sub(old_size))?;
 
         Ok(Poll::Pending)
     }
@@ -203,9 +212,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 HeapReadOutput::Coroutine(coro) => {
                     // Reject reuse up-front: either the coroutine is no longer
                     // `New`, or another gather already spawned it (`spawn`
-                    // returns `None`).
+                    // returns `Ok(None)`). `spawn` may also return
+                    // `Err(ResourceError)` when the per-task scheduler
+                    // overhead would push past the memory limit; that
+                    // propagates via `?` as a normal `MemoryError`.
                     if coro.get(self.heap).state != CoroutineState::New
-                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none()
+                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id))?.is_none()
                     {
                         return Err(ExcType::cannot_reuse_already_awaited_coroutine());
                     }
@@ -324,7 +336,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // This is critical: if we're about to yield (no ready tasks), the main task's
             // frames must stay in the VM so they're included in the snapshot.
             if let Some(current_task_id) = self.scheduler.current_task_id() {
-                self.save_task_context(current_task_id);
+                self.save_task_context(current_task_id)?;
             }
 
             self.scheduler.set_current_task(Some(next_task_id));
@@ -492,8 +504,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Saves the current VM context into the given task in the scheduler.
     ///
     /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
-    /// and adjusts the global recursion depth counter.
-    fn save_task_context(&mut self, task_id: TaskId) {
+    /// adjusts the global recursion depth counter, and charges the saved
+    /// state's size against the tracker — the matching `track_shrink`
+    /// runs in [`Self::load_or_init_task`] (when the context is moved
+    /// back into the VM) or in [`Scheduler::cancel_task`] (when the
+    /// suspended task is torn down).
+    ///
+    /// Returns `Err(ResourceError)` when the tracker rejects the
+    /// charge. The VM state has already been moved into the task at
+    /// that point — the caller propagates the error up to the run
+    /// loop, which tears the run down through the normal `RunError`
+    /// path; pending tasks (including this one) are freed by
+    /// `Scheduler::clear` on heap drop.
+    fn save_task_context(&mut self, task_id: TaskId) -> Result<(), RunError> {
         let frames: Vec<SerializedTaskFrame> = self
             .frames
             .drain(..)
@@ -513,12 +536,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let global_depth = self.heap.get_recursion_depth();
         self.heap.set_recursion_depth(global_depth - task_depth);
 
+        // Charge the about-to-be-saved context against the tracker.
+        // Symmetric with `load_or_init_task` / `cancel_task` shrinks.
+        let saved_size = saved_task_context_size(&frames, &self.stack, &self.exception_stack);
+        self.heap.track_growth(saved_size)?;
+
         // Save VM state into the task
         let task = self.scheduler.get_task_mut(task_id);
         task.frames = frames;
         task.stack = mem::take(&mut self.stack);
         task.exception_stack = mem::take(&mut self.exception_stack);
         task.instruction_ip = self.instruction_ip;
+
+        Ok(())
     }
 
     /// Loads an existing task's context or initializes a new task from its coroutine.
@@ -542,6 +572,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
         let global_depth = self.heap.get_recursion_depth();
         self.heap.set_recursion_depth(global_depth + task_depth);
+
+        // Release the tracker charge made by `save_task_context` — the
+        // saved context now lives in VM-local Vecs again, which are
+        // treated as untracked the same way the rest of the stack
+        // accounting is. For a fresh task with no saved context this
+        // is a no-op (all three slices are empty).
+        self.heap
+            .track_shrink(saved_task_context_size(&frames, &stack, &exception_stack));
 
         if !frames.is_empty() {
             // Task has existing context - restore it
@@ -897,7 +935,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // progress
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
             if let Some(current_task_id) = self.scheduler.current_task_id() {
-                self.save_task_context(current_task_id);
+                self.save_task_context(current_task_id)?;
             }
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;
@@ -935,8 +973,17 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// (empty gather, all externals already resolved); on the async path the
     /// transition happens inside [`Self::resolve_child`].
     pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h, impl ResourceTracker>, list_id: HeapId) {
+        // Release any Awaited-state bookkeeping charged by
+        // `await_gather_future`. `py_estimate_size` for Pending /
+        // Completed reports 0 state-size, so on the synchronous-completion
+        // paths (gather constructed and immediately resolved without
+        // crossing through Awaited) the delta is zero and this is a
+        // no-op.
+        let old_size = self.get(heap).py_estimate_size();
         heap.inc_ref(list_id);
         self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
+        let new_size = self.get(heap).py_estimate_size();
+        heap.track_shrink(old_size.saturating_sub(new_size));
     }
 
     /// Records one child's resolution on this gather and, if everything has
@@ -1029,6 +1076,11 @@ impl<'h> HeapRead<'h, GatherFuture> {
         heap: &mut HeapReader<'h, impl ResourceTracker>,
         error: &RunError,
     ) -> Awaiter {
+        // Capture the Awaited state-size before any draining so the
+        // tracker decrement below balances the `track_growth` charged at
+        // the Pending → Awaited transition.
+        let old_size = self.get(heap).py_estimate_size();
+
         // Take the Awaited bookkeeping. The state stays `Awaited` (with
         // placeholder fields) until the state replace below commits the
         // transition. The extracted `awaiter` is transferred to the caller
@@ -1047,6 +1099,8 @@ impl<'h> HeapRead<'h, GatherFuture> {
 
         // Cache a clone so re-awaits replay the same exception.
         self.get_mut(heap).state = GatherState::Failed(error.clone());
+        let new_size = self.get(heap).py_estimate_size();
+        heap.track_shrink(old_size.saturating_sub(new_size));
 
         // Drop fanned-out result Values that won't reach the waiter.
         results.drop_with_heap(heap);
