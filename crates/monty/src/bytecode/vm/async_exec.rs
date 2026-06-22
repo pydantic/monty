@@ -164,18 +164,36 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         let results = results_guard.into_inner();
         let (awaiter, this) = awaiter_guard.into_parts();
-        // `Pending` reports 0 state-size, so the delta covers the new
-        // `Awaited` bookkeeping. On a budget overshoot we leave the
-        // state as `Awaited` and let the eventual transition out (or
-        // entry free) undo the partial accounting.
-        let old_size = gather.get(this.heap).py_estimate_size();
+        // `Pending` reports 0 state-size, so the new `Awaited` bookkeeping
+        // *is* the delta. Pre-charge from the still-owned locals before
+        // committing the state: a rejected charge that landed after the
+        // mutation would leave bytes that were never added, then `fail`
+        // would shrink them and drift the tracker counter downward.
+        // Mirrors the per-entry sizing in `GatherFuture::py_estimate_size`.
+        let awaited_state_size: usize = pending_children
+            .values()
+            .map(|slots| {
+                let spilled = slots.len().saturating_sub(1);
+                mem::size_of::<HeapId>() + spilled * mem::size_of::<usize>()
+            })
+            .sum::<usize>()
+            + results.len() * mem::size_of::<Option<Value>>();
+        if let Err(err) = this.heap.track_growth(awaited_state_size) {
+            let err = RunError::from(err);
+            // Roll back: gather is still `Pending`, so the locals (awaiter,
+            // results) and the committed children own resources that need
+            // releasing. Cache the failure so a re-await replays it.
+            gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
+            awaiter.drop_with_heap(this.heap);
+            results.drop_with_heap(this.heap);
+            drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
+            return Err(err);
+        }
         gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
             awaiter,
             pending_children,
             results,
         });
-        let new_size = gather.get(this.heap).py_estimate_size();
-        this.heap.track_growth(new_size.saturating_sub(old_size))?;
 
         Ok(Poll::Pending)
     }
@@ -330,8 +348,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Save current task context ONLY when switching to another task.
             // This is critical: if we're about to yield (no ready tasks), the main task's
             // frames must stay in the VM so they're included in the snapshot.
-            if let Some(current_task_id) = self.scheduler.current_task_id() {
-                self.save_task_context(current_task_id)?;
+            if let Some(current_task_id) = self.scheduler.current_task_id()
+                && let Err(err) = self.save_task_context(current_task_id)
+            {
+                // Save failed (e.g. tracker rejected the growth charge):
+                // put `next_task_id` back at the head of the queue so a
+                // recoverable error path can still schedule it later.
+                self.scheduler.requeue_ready_front(next_task_id);
+                return Err(err);
             }
 
             self.scheduler.set_current_task(Some(next_task_id));
@@ -726,19 +750,30 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// has already been cancelled (no longer in the scheduler) or failed,
     /// drops `value` instead — the resolution still gets cached on the future,
     /// but the (now-gone) awaiter doesn't receive it.
-    fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) {
+    ///
+    /// Pushing onto a parked task's `task.stack` grows the saved-context size
+    /// that `load_or_init_task` will later shrink by — so this path pre-charges
+    /// one `Value` slot against the tracker. The current-task branch pushes
+    /// onto the VM's untracked stack, matching the rest of the stack
+    /// accounting.
+    fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) -> RunResult<()> {
         if !self.scheduler.has_task(task_id) || self.scheduler.is_task_failed(task_id) {
             value.drop_with_heap(self);
-            return;
+            return Ok(());
         }
 
         let task_is_current = self.scheduler.current_task_id() == Some(task_id) && !self.frames.is_empty();
         if task_is_current {
             self.stack.push(value);
         } else {
+            if let Err(err) = self.heap.track_growth(mem::size_of::<Value>()) {
+                value.drop_with_heap(self);
+                return Err(err.into());
+            }
             self.scheduler.get_task_mut(task_id).stack.push(value);
         }
         self.scheduler.make_ready(task_id, self.heap);
+        Ok(())
     }
 
     /// Delivers `value` along the awaiter chain starting at `awaiter`.
@@ -763,7 +798,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         loop {
             match awaiter {
                 Awaiter::Task(t) => {
-                    this.deliver_value_to_task(t, value);
+                    this.deliver_value_to_task(t, value)?;
                     return Ok(Some(t));
                 }
                 Awaiter::GatherSlot { gather, source } => {
@@ -922,8 +957,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // Current task was not able to resume, but there might be other ready tasks which can make
         // progress
         if let Some(next_task_id) = self.scheduler.next_ready_task() {
-            if let Some(current_task_id) = self.scheduler.current_task_id() {
-                self.save_task_context(current_task_id)?;
+            if let Some(current_task_id) = self.scheduler.current_task_id()
+                && let Err(err) = self.save_task_context(current_task_id)
+            {
+                // Restore the dequeued task on a save failure (see
+                // `switch_or_yield` for the same handling).
+                self.scheduler.requeue_ready_front(next_task_id);
+                return Err(err);
             }
             self.scheduler.set_current_task(Some(next_task_id));
             self.load_or_init_task(next_task_id)?;

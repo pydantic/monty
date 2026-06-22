@@ -23,11 +23,10 @@ use crate::{
 /// Per-spawn scheduler overhead charged against the tracker so memory
 /// budgets bound recursive gathers. The exact value isn't load-bearing
 /// — it just needs to be non-zero. HashMap bucket overhead is elided to
-/// match `py_estimate_size` conventions elsewhere.
-pub(crate) const SCHEDULER_TASK_OVERHEAD: usize = mem::size_of::<Task>()
-    + mem::size_of::<(TaskId, Task)>()
-    + mem::size_of::<(HeapId, TaskId)>()
-    + mem::size_of::<TaskId>();
+/// match `py_estimate_size` conventions elsewhere; the `(TaskId, Task)`
+/// entry covers the `Task` value, so it isn't summed in separately.
+pub(crate) const SCHEDULER_TASK_OVERHEAD: usize =
+    mem::size_of::<(TaskId, Task)>() + mem::size_of::<(HeapId, TaskId)>() + mem::size_of::<TaskId>();
 
 /// Task execution state for async scheduling.
 ///
@@ -367,6 +366,17 @@ impl Scheduler {
     /// Returns `None` if no tasks are ready.
     pub fn next_ready_task(&mut self) -> Option<TaskId> {
         self.ready_queue.pop_front()
+    }
+
+    /// Pushes `task_id` back onto the front of the ready queue.
+    ///
+    /// Used by error-recovery paths that popped a task via
+    /// [`Scheduler::next_ready_task`] and then hit a fallible step
+    /// (e.g. `save_task_context`'s growth charge) — re-queueing at the
+    /// front keeps the original scheduling order intact instead of
+    /// sending the task to the back.
+    pub fn requeue_ready_front(&mut self, task_id: TaskId) {
+        self.ready_queue.push_front(task_id);
     }
 
     /// Replaces a task's state, properly releasing any heap references owned
