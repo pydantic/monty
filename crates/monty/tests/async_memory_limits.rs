@@ -224,6 +224,54 @@ fn gather_awaited_state_charged_against_tracker() {
 /// are enough to trip the budget today, but the test also pins that
 /// the additional scheduler-task accounting (added by Bug B's fix)
 /// cannot regress the worker into the SIGABRT path.
+/// Regression for the second SIGABRT reproducer (snippet 108681).
+///
+/// `async def deep(n): r = await asyncio.gather(deep(n - 1)); return r[0]`
+/// returns the gather result back through every level. When the
+/// memory budget trips mid-recursion, the `MemoryError` originates
+/// inside `save_task_context` *after* it has drained `self.frames`,
+/// which used to leave the exception unwinder calling
+/// `current_frame()` on an empty frame stack and aborting with
+/// "no active frame".
+///
+/// Two changes guard this:
+///   * `save_task_context` charges the tracker *before* draining
+///     frames, so a rejected charge leaves the VM intact.
+///   * `current_frame_name` falls back to `<module>` when frames is
+///     empty, so any future transitional-error path can still attach
+///     a traceback frame instead of panicking.
+#[test]
+fn recursive_gather_with_return_value_hits_memory_limit_not_panic() {
+    let code = r"
+import asyncio
+
+async def deep(n):
+    if n <= 0:
+        return None
+    r = await asyncio.gather(deep(n - 1))
+    return r[0]
+
+asyncio.run(deep(20000))
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new()
+        .max_memory(128 * 1024)
+        .max_allocations(200_000)
+        .max_duration(Duration::from_secs(30));
+    let tracker = LimitedTracker::new(limits);
+    let result = runner.run(vec![], tracker, PrintWriter::Stdout);
+
+    let exc = result.expect_err("deep recursive gather must be bounded by the memory limit");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    let msg = exc.message().expect("memory error carries a message");
+    assert!(
+        msg.starts_with("memory limit exceeded:"),
+        "expected memory-limit error from scheduler task accounting, \
+         not the allocation-count safety net: {msg}"
+    );
+}
+
 #[test]
 fn recursive_gather_hits_memory_limit_not_sigabrt() {
     let code = r"

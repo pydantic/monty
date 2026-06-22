@@ -511,12 +511,23 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// suspended task is torn down).
     ///
     /// Returns `Err(ResourceError)` when the tracker rejects the
-    /// charge. The VM state has already been moved into the task at
-    /// that point — the caller propagates the error up to the run
-    /// loop, which tears the run down through the normal `RunError`
-    /// path; pending tasks (including this one) are freed by
-    /// `Scheduler::clear` on heap drop.
+    /// charge. Charging happens *before* the VM state is moved into
+    /// the task, so on the error path the VM still holds its current
+    /// frame and the regular `handle_exception` path can attach a
+    /// traceback — without this ordering, the exception unwinder
+    /// would find `self.frames` already drained and panic in
+    /// `current_frame_name`.
     fn save_task_context(&mut self, task_id: TaskId) -> Result<(), RunError> {
+        // Pre-charge the tracker so a budget rejection leaves the VM
+        // intact (see method docstring). Size is computed from the
+        // current frame count + stack lengths; the actual
+        // `SerializedTaskFrame` values are built only after the charge
+        // succeeds.
+        let saved_size = self.frames.len() * mem::size_of::<SerializedTaskFrame>()
+            + mem::size_of_val(self.stack.as_slice())
+            + mem::size_of_val(self.exception_stack.as_slice());
+        self.heap.track_growth(saved_size)?;
+
         let frames: Vec<SerializedTaskFrame> = self
             .frames
             .drain(..)
@@ -535,11 +546,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
         let global_depth = self.heap.get_recursion_depth();
         self.heap.set_recursion_depth(global_depth - task_depth);
-
-        // Charge the about-to-be-saved context against the tracker.
-        // Symmetric with `load_or_init_task` / `cancel_task` shrinks.
-        let saved_size = saved_task_context_size(&frames, &self.stack, &self.exception_stack);
-        self.heap.track_growth(saved_size)?;
 
         // Save VM state into the task
         let task = self.scheduler.get_task_mut(task_id);
