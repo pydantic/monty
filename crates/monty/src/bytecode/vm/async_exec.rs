@@ -1093,7 +1093,10 @@ fn drop_committed_children(
                 // Terminal or never-committed nested gathers have no active
                 // children left for this parent to tear down.
             }
-            _ => panic!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
+            // `gather()` rejects anything other than these three types at
+            // construction (see `modules/asyncio.rs`), and heap entries don't
+            // change type — so keys here are always one of the above.
+            _ => unreachable!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
         }
     }
 }
