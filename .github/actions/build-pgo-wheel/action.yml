@@ -35,9 +35,25 @@ runs:
       env:
         RUSTFLAGS: '-Cprofile-generate=${{ github.workspace }}/profdata'
 
+    # `exercise.py` drives `pydantic_monty.Monty()` which spawns the `monty`
+    # worker subprocess — build an instrumented worker so PGO data covers
+    # both the parent (FFI/pool/proto in pydantic-monty) and the worker
+    # (bytecode interpreter in monty-cli).
+    - name: build instrumented monty binary
+      shell: bash
+      run: cargo build --release -p monty-cli
+      env:
+        RUSTFLAGS: '-Cprofile-generate=${{ github.workspace }}/profdata'
+
     - name: generate pgo data
       run: |
         export RUST_HOST=$(rustc --print host-tuple)
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          MONTY_BIN="$GITHUB_WORKSPACE/target/release/monty.exe"
+        else
+          MONTY_BIN="$GITHUB_WORKSPACE/target/release/monty"
+        fi
+        export MONTY_BIN
         pip install typing_extensions
         pip install pydantic-monty --no-index --no-deps --find-links pgo-wheel --force-reinstall
         python exercise.py

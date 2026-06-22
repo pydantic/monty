@@ -541,13 +541,15 @@ jobs:
           working-directory: crates/monty-python
 
       # the pydantic-monty-cli wheel ships the `monty` worker binary
-      # (bin bindings, one py3-none wheel per platform)
+      # (bin bindings, one py3-none wheel per platform). `-i` is required so
+      # maturin can find a Python to read pyproject.toml — the produced wheel
+      # is `py3-none-<plat>` and doesn't depend on a specific Python version.
       - name: build cli wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --out dist
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-cli
@@ -608,15 +610,22 @@ jobs:
           interpreter: ${{ matrix.interpreter }}
           rust-toolchain: stable
 
-      # the cli wheel for the main platforms (no PGO — it's a plain binary)
+      # the PGO-optimized cli wheel for the main platforms — reuses the
+      # merged profile data from the build-pgo-wheel action above (which
+      # exercised an instrumented monty binary via `exercise.py`).
+      # `-i` is required so maturin can find a Python to read pyproject.toml
+      # inside the manylinux docker container; the produced wheel is
+      # `py3-none-<plat>` and doesn't depend on a specific Python version.
       - name: build cli wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           manylinux: auto
-          args: --release --out dist
+          args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
           working-directory: crates/monty-cli
+        env:
+          RUSTFLAGS: '-Cprofile-use=${{ github.workspace }}/merged.profdata'
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
