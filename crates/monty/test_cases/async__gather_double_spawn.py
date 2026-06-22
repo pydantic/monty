@@ -1,20 +1,10 @@
 # run-async
-"""Cross-gather coroutine reuse must raise `RuntimeError`, not panic the VM.
-
-Awaiting the same coroutine through two separate `asyncio.gather` calls
-spawns it twice in monty's scheduler. Without a single-shot guard at
-`Scheduler::spawn`, the second spawn clobbers `coroutine_to_task`, which
-later trips `as_awaited_mut().expect("...")` panics in `GatherFuture::fail`
-and `GatherFuture::resolve_child`. CPython catches the reuse with
-`RuntimeError: cannot reuse already awaited coroutine`; these tests pin
-that behavior down for every cross-gather shape we have seen in the wild.
-"""
+"""Cross-gather coroutine reuse must raise `RuntimeError`, not panic."""
 
 import asyncio
 
 
 # === Canonical: g1 = gather(c); g2 = gather(c); await gather(g1, g2) ===
-# The minimal reachable-from-live-server repro from `01-gather-double-spawn.md`.
 async def foo_canonical():
     return [1, 2, 3]
 
@@ -48,7 +38,7 @@ except RuntimeError as e:
 
 
 # === Sequential: g1 = gather(c); g2 = gather(c); await g1; await g2 ===
-# CPython: `await g1` resolves successfully with `[[result]]`; `await g2` raises
+# CPython: `await g1` resolves successfully with `[result]`; `await g2` raises
 # because the coroutine was already driven by g1.
 async def foo_seq():
     return 42
@@ -80,8 +70,7 @@ except RuntimeError as e:
 
 
 # === Direct await then gather: await c; await gather(c) ===
-# Already covered by the existing state-check guard at `await_coroutine`,
-# but kept here so the full matrix lives in one place.
+# Covered by the direct await state check; kept with the gather reuse matrix.
 async def foo_direct_first():
     return 9
 
@@ -113,7 +102,7 @@ except RuntimeError as e:
 
 
 # === Cleanup smoke test: scheduler/heap still usable after the error path ===
-# Proves the error path doesn't leak refs that wedge subsequent gathers.
+# The scheduler and heap should still be usable after the error path.
 async def foo_cleanup_doomed():
     return 1
 

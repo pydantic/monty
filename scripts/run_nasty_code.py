@@ -1,10 +1,8 @@
-"""Run code snippets from `all_code.jsonl` concurrently via `AsyncMonty`.
+"""Run JSONL code snippets concurrently via `AsyncMonty`.
 
-The input is a JSONL file with one `{"code": "..."}` object per line. For
-every snippet we spawn an asyncio task; a semaphore caps in-flight work at
-the pool size, so each `checkout()` finds an idle worker immediately and we
-keep every CPU busy without queueing inside the pool. Results are discarded
-— we only track status counts and throughput.
+Each non-empty input line must be a JSON object with a string `code` field.
+The runner records status counts and optionally logs snippets that crash a
+worker.
 """
 
 from __future__ import annotations

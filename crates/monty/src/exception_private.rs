@@ -294,14 +294,8 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
-    /// Creates the canonical `RuntimeError: cannot reuse already awaited coroutine`.
-    ///
-    /// Raised whenever an already-driven coroutine is awaited again — either
-    /// directly (`await c; await c`) or through a second `asyncio.gather`
-    /// call (`g1 = gather(c); g2 = gather(c)`). The four reuse sites in
-    /// `async_exec.rs` all funnel through this helper so the message stays in
-    /// one place and the gather/spawn path raises the same error CPython does
-    /// instead of panicking the worker.
+    /// Creates the canonical `RuntimeError: cannot reuse already awaited coroutine`,
+    /// raised on direct re-await and on cross-gather coroutine reuse.
     #[must_use]
     pub(crate) fn cannot_reuse_already_awaited_coroutine() -> RunError {
         SimpleException::new_msg(Self::RuntimeError, "cannot reuse already awaited coroutine").into()

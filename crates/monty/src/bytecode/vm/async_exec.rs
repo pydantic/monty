@@ -141,12 +141,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let mut results_guard = HeapGuard::new(results, this);
         let (results, this) = results_guard.as_parts_mut();
 
-        // Commit each item, spawning tasks / installing sub-awaiters / recursing
-        // into nested gathers. On any mid-commit error we roll back already-
-        // committed siblings via `drop_committed_children` before propagating
-        // — otherwise they would survive as orphans pointing at the still-
-        // `Pending` outer gather and later trip
-        // `expect("...non-Awaited gather")` at teardown.
+        // Roll back already-committed siblings if a later child fails during
+        // this commit pass; otherwise spawned tasks or awaiters can outlive a
+        // gather that never reached `Awaited`.
         if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results) {
             gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
             drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
@@ -176,22 +173,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         Ok(Poll::Pending)
     }
 
-    /// Walks `gather`'s items left-to-right, committing each by spawning a
-    /// task (coroutine), installing a sub-awaiter (external future), or
-    /// recursing into the child's own commit (nested gather). Synchronously-
-    /// resolved items land in `results[idx]`; everything else gets a slot in
-    /// `pending_children` keyed by the item's `HeapId`.
+    /// Commits `gather`'s items left-to-right into result slots or pending children.
     ///
-    /// Returns `Err` as soon as any item raises — cross-gather coroutine
-    /// reuse (`Scheduler::spawn` returns `None`), an already-`Failed` nested
-    /// gather, a `Pending { awaiter: Some(_) }` external, an outer
-    /// `Failed`/`Awaited` re-await, etc. The caller is responsible for
-    /// rolling back whatever's accumulated in `pending_children` via
-    /// [`drop_committed_children`].
-    ///
-    /// Split out of [`Self::await_gather_future`] so the rollback site stays
-    /// a single `if let Err(...)` instead of a `'commit: { … }` labeled
-    /// block; lets `?` propagate sub-call errors naturally.
+    /// Spawns coroutine children, installs awaiters on external futures, and
+    /// recursively awaits nested gathers. Any error leaves already-committed
+    /// entries in `pending_children`; the caller must pass them to
+    /// [`drop_committed_children`] before propagating the error.
     fn commit_gather_items(
         &mut self,
         gather_id: HeapId,
@@ -213,13 +200,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             };
 
             let poll = match self.heap.read(item_id) {
-                HeapReadOutput::Coroutine(_) => {
-                    // `Scheduler::spawn` returns `None` if `item_id` is already
-                    // driving another task — typically the same coroutine reached
-                    // through a second `asyncio.gather` call. Raise the canonical
-                    // `RuntimeError` and let rollback clean up the siblings we
-                    // already committed in this gather's pending_children.
-                    if self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none() {
+                HeapReadOutput::Coroutine(coro) => {
+                    // Reject reuse up-front: either the coroutine is no longer
+                    // `New`, or another gather already spawned it (`spawn`
+                    // returns `None`).
+                    if coro.get(self.heap).state != CoroutineState::New
+                        || self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none()
+                    {
                         return Err(ExcType::cannot_reuse_already_awaited_coroutine());
                     }
                     Poll::Pending
@@ -1064,45 +1051,20 @@ impl<'h> HeapRead<'h, GatherFuture> {
         // Drop fanned-out result Values that won't reach the waiter.
         results.drop_with_heap(heap);
 
-        // Tear down every committed child. Skips nested gathers that are
-        // already `Failed` — that case arises when failure propagated up via
-        // [`VM::deliver_awaiter_failure`] from a nested child that *itself*
-        // failed first; revisiting its `pending_children` entry without the
-        // state check would re-call `nested.fail(...)` and panic.
+        // Skip nested gathers that already failed while propagating this same
+        // error up the awaiter chain.
         drop_committed_children(pending_children, scheduler, heap, error);
 
         waiter
     }
 }
 
-/// Tears down children of a partially- or fully-committed gather, releasing
-/// their refcounts on the parent gather and the host's pending-external map.
+/// Tears down children of a failed gather commit.
 ///
-/// Shared by:
-///
-/// * the commit-time rollback path in [`VM::await_gather_future`], when an
-///   error propagates after some siblings already committed and the gather
-///   itself is still in `Pending` (transitioned to `Failed` by the caller),
-///   and
-/// * [`HeapRead::<GatherFuture>::fail`] when a sibling's failure tears down
-///   an `Awaited` gather.
-///
-/// Handling per child kind:
-///
-/// * **Coroutine** — its spawned task (if any) is cancelled via
-///   [`Scheduler::cancel_task`]. The cancel releases the task's inc_refs on
-///   the coroutine and the (outer) gather.
-/// * **ExternalFuture** — clears the awaiter slot we installed. The dropped
-///   awaiter's `drop_with_heap` releases the inc_ref it held on the (outer)
-///   gather. The future itself stays in `pending_externals` and a later
-///   host resolution simply caches the value (it has no awaiter to fan to).
-/// * **GatherFuture (nested)** — recursively `fail`ed *only if still
-///   `Awaited`*. The state check matters because this helper also runs from
-///   the awaiter-chain failure path: when a child gather fails first and
-///   walks up to its parent via `deliver_awaiter_failure`, that very child
-///   is still in the parent's `pending_children` map but is already
-///   `Failed`. Without the check the parent would call `nested.fail(...)` a
-///   second time and trip `expect("fail called on non-Awaited gather")`.
+/// Coroutine children are cancelled through the scheduler, external futures
+/// have their gather awaiter removed, and nested gathers are failed
+/// recursively while they are still `Awaited`. Nested gathers already in a
+/// terminal state were cleaned up by the error path that reached them first.
 fn drop_committed_children(
     pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
     scheduler: &mut Scheduler,
@@ -1128,10 +1090,8 @@ fn drop_committed_children(
                     let nested_awaiter = nested.fail(scheduler, heap, error);
                     nested_awaiter.drop_with_heap(heap);
                 }
-                // Else: nested is already `Failed`/`Completed`/`Pending` —
-                // its resources are already cleaned up (or were never
-                // committed) and dropping the `pending_children` key
-                // (via `into_keys`) is the only bookkeeping left.
+                // Terminal or never-committed nested gathers have no active
+                // children left for this parent to tear down.
             }
             _ => panic!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
         }

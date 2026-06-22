@@ -1,33 +1,12 @@
 # run-async
-"""Mid-commit errors in `asyncio.gather` must roll back already-committed
-siblings, and failure propagation must not re-fail an already-Failed nested
-gather.
-
-Two distinct topologies historically reached the same
-`expect("...non-Awaited gather")` panics at `async_exec.rs:957` /
-`async_exec.rs:1030`:
-
-1. **Commit-time orphan.** An earlier item in the outer gather successfully
-   commits (spawn / sub-awaiter install / nested-gather Awaited), then a
-   *later* item raises synchronously (already-`Failed` nested gather, etc.).
-   The outer gather never reaches `Awaited`, but the earlier sibling's
-   task/awaiter survives in the scheduler, points back at the still-`Pending`
-   outer, and panics on next pickup. Rollback cancels the sibling.
-2. **Double-fail on nested gather.** A child coroutine of `g_inner` raises;
-   propagation walks `g_inner → g_outer` via `Awaiter::GatherSlot`. `g_outer`
-   then iterates its own `pending_children`, which still contains the
-   already-`Failed` `g_inner`, and previously called `g_inner.fail(...)` a
-   second time. The teardown helper now skips nested children that aren't
-   `Awaited`.
-"""
+"""Gather failure must clean up committed siblings and nested failures."""
 
 import asyncio
 
 
 # === Commit-time orphan: Failed nested gather is the second item ===
-# Smallest published repro of the orphan. Outer spawns slow() first, then hits
-# `g_failed` which raises synchronously. Rollback must cancel slow()'s task;
-# the post-error gather then runs cleanly.
+# Outer spawns slow() first, then hits `g_failed` which raises synchronously.
+# Rollback must cancel slow()'s task.
 async def boom_orphan():
     raise ValueError('boom')
 
@@ -49,17 +28,14 @@ try:
 except ValueError as e:
     assert str(e) == 'boom', f'second await: {e}'
 
-# If `slow_orphan`'s task was orphaned, scheduling another await would let it
-# complete and trip `resolve_child` on a `Pending` gather (the panic at
-# `async_exec.rs:957`).
+# If `slow_orphan`'s task was orphaned, this later gather would trip stale
+# scheduler state.
 result_after_orphan = await asyncio.gather(slow_orphan())  # pyright: ignore
 assert result_after_orphan == ['slow ok'], f'post-orphan gather: {result_after_orphan}'
 
 
 # === Double-fail: nested gather whose only child raises ===
-# `gather(gather(b()))` previously triggered `expect("fail called on
-# non-Awaited gather")` because the outer's failure walk re-failed the
-# already-Failed inner.
+# The outer failure walk must not re-fail an inner gather that already failed.
 async def boom_double_fail():
     raise ValueError('double-fail err')
 
@@ -76,8 +52,8 @@ except ValueError as e:
 
 
 # === Three-deep nested gather with the deepest child raising ===
-# Failure walks up two GatherSlot links; both ancestors must skip the
-# already-Failed entry in their own pending_children.
+# Failure walks up two GatherSlot links; both ancestors must skip the inner
+# gather that already failed.
 async def boom_triple():
     raise ValueError('triple')
 
@@ -94,10 +70,8 @@ except ValueError as e:
 
 
 # === Sibling-failure-with-orphan: outer has nested-gather + coroutine ===
-# `gather(gather(boom_a(), boom_b()), ext_c())` — inner gather has two
-# children; one raises and propagates upward, leaving outer's other coroutine
-# (ext_c) committed. The fail-walk on outer must (a) cancel ext_c, (b) skip
-# the already-Failed inner.
+# One inner child raises and propagates upward while the outer sibling has
+# already committed. Teardown must cancel that sibling and skip the failed inner.
 async def boom_a():
     raise NotImplementedError('a')
 
@@ -117,9 +91,7 @@ async def sibling_main():
         await outer
         assert False, 'sibling_main should have raised'
     except NotImplementedError as e:
-        # The first child of inner to be scheduled raises and is the one
-        # whose error wins; both 'a' and 'b' are valid depending on schedule
-        # order. Same for ext_c('c').
+        # Any committed sibling may win before teardown reaches the rest.
         assert str(e) in ('a', 'b', 'c'), f'sibling error: {e}'
 
 
@@ -127,9 +99,7 @@ await sibling_main()  # pyright: ignore
 
 
 # === Rolled-back gather caches the error: re-await replays it ===
-# After rollback transitions the outer gather to `Failed`, a second `await`
-# on the same instance must replay the cached error rather than retry the
-# (still-broken) commit.
+# Re-awaiting a rolled-back gather must replay the cached error.
 async def boom_replay():
     raise ValueError('replay')
 
@@ -160,10 +130,8 @@ except ValueError as e:
 
 
 # === Cross-gather double-spawn rollback works mid-tree ===
-# Cross-gather coroutine reuse no longer panics — but it now also has to
-# roll back: in `await gather(g1, g2)`, g1 commits (spawns c), then g2 hits
-# spawn-None for the same c. The rollback must cancel c's task spawned by g1
-# so a subsequent gather over a fresh coroutine completes cleanly.
+# Cross-gather coroutine reuse must also roll back siblings committed before
+# the duplicate spawn is detected.
 async def make_payload():
     return 'payload'
 
