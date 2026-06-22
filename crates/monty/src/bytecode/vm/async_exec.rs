@@ -8,7 +8,7 @@
 
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
@@ -77,9 +77,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn await_coroutine(&mut self, mut coro: HeapRead<'h, Coroutine>) -> Result<AwaitResult, RunError> {
         // Check if coroutine can be awaited (must be New)
         if coro.get(self.heap).state != CoroutineState::New {
-            return Err(
-                SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
-            );
+            return Err(ExcType::cannot_reuse_already_awaited_coroutine());
         }
 
         // Extract coroutine data before mutating
@@ -136,6 +134,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
 
+        // Pre-flight pass: descend through this gather's items (recursively into
+        // any nested `Pending` gathers) and ensure no coroutine is reachable
+        // through more than one would-be spawn or is already driving another
+        // task. Raising here keeps every gather in the tree in `Pending`, so
+        // the failure path needs no rollback — sibling commits below have not
+        // happened yet. Without this, two gathers sharing a coroutine would
+        // each commit and orphan a child task whose teardown later panics with
+        // `fail called on non-Awaited gather`.
+        {
+            let mut seen: AHashSet<HeapId> = AHashSet::new();
+            preflight_gather_no_double_spawn(&gather.get(this.heap).items, &mut seen, &this.scheduler, this.heap)?;
+        }
+
         // Await all items, storing already resolved state and tracking the rest in `pending_children`.
 
         let mut pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>> = AHashMap::new();
@@ -158,7 +169,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
             let poll = match this.heap.read(item_id) {
                 HeapReadOutput::Coroutine(_) => {
-                    this.scheduler.spawn(this.heap, item_id, Some(gather_id));
+                    // `Scheduler::spawn` returns `None` if `item_id` is already
+                    // driving another task — typically the same coroutine reached
+                    // through a second `asyncio.gather` call. Raise the same
+                    // `RuntimeError` CPython does instead of clobbering the
+                    // `coroutine_to_task` mapping (which previously panicked at
+                    // gather teardown: `fail called on non-Awaited gather`).
+                    if this.scheduler.spawn(this.heap, item_id, Some(gather_id)).is_none() {
+                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                    }
                     Poll::Pending
                 }
                 HeapReadOutput::ExternalFuture(mut fut) => {
@@ -557,9 +576,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             if coro.get(self.heap).state == CoroutineState::New {
                 self.init_task_from_coroutine(coro_id)?;
             } else {
-                let error: RunError =
-                    SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into();
-                return self.handle_task_failure(error);
+                return self.handle_task_failure(ExcType::cannot_reuse_already_awaited_coroutine());
             }
         } else {
             // This shouldn't happen - task with no frames and no coroutine
@@ -584,9 +601,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         // Check state
         if coro.get(self.heap).state != CoroutineState::New {
-            return Err(
-                SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
-            );
+            return Err(ExcType::cannot_reuse_already_awaited_coroutine());
         }
 
         // Extract coroutine data
@@ -1067,4 +1082,70 @@ impl<'h> HeapRead<'h, GatherFuture> {
 
         waiter
     }
+}
+
+/// Validates that no coroutine reachable through this gather's items would be
+/// spawned more than once or reused after a previous await.
+///
+/// Walks `items` and recursively descends into any `Pending` nested
+/// `GatherFuture`. Raises [`ExcType::cannot_reuse_already_awaited_coroutine`]
+/// when it spots a coroutine that:
+///
+/// * is no longer in `CoroutineState::New` (already directly awaited, running,
+///   or completed),
+/// * already has an entry in the scheduler's `coroutine_to_task` map (already
+///   driving a task from a prior gather), or
+/// * appears at two distinct positions in the same outer-gather tree (the
+///   cross-gather double-spawn shape `g1 = gather(c); g2 = gather(c);
+///   await gather(g1, g2)` — both gathers would otherwise call
+///   `Scheduler::spawn` and clobber the inverse mapping).
+///
+/// Crucially, **within a single gather** duplicates dedup rather than raise
+/// (CPython allows `gather(c, c)` and the existing in-gather dedup pass in
+/// [`VM::await_gather_future`] handles them). That is enforced via the
+/// per-gather `local_dedup` set below — only the first occurrence at each
+/// level is checked against the tree-wide `seen` set.
+///
+/// Running this *before* any commit work (spawn / awaiter installation / state
+/// transition) means the failure path requires no rollback: the gather and
+/// every nested gather stay in `GatherState::Pending` and can be re-awaited
+/// later if the caller catches the `RuntimeError`.
+fn preflight_gather_no_double_spawn(
+    items: &[HeapId],
+    seen: &mut AHashSet<HeapId>,
+    scheduler: &Scheduler,
+    heap: &HeapReader<'_, impl ResourceTracker>,
+) -> Result<(), RunError> {
+    let mut local_dedup: AHashSet<HeapId> = AHashSet::new();
+    for &item_id in items {
+        if !local_dedup.insert(item_id) {
+            // Same item already validated at this level — `await_gather_future`
+            // dedups via `pending_children`; matching that here keeps
+            // `gather(c, c)` legal.
+            continue;
+        }
+        match heap.read(item_id) {
+            HeapReadOutput::Coroutine(coro) => {
+                if coro.get(heap).state != CoroutineState::New
+                    || scheduler.task_for_coroutine(item_id).is_some()
+                    || !seen.insert(item_id)
+                {
+                    return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                }
+            }
+            HeapReadOutput::GatherFuture(child) => {
+                if matches!(child.get(heap).state, GatherState::Pending) {
+                    // The borrow on `child` lives across the recursive call —
+                    // safe because `preflight` only ever reads (no `get_mut`,
+                    // no `allocate`), and multiple `HeapRead` handles can
+                    // coexist for reads.
+                    preflight_gather_no_double_spawn(&child.get(heap).items, seen, scheduler, heap)?;
+                }
+            }
+            // ExternalFuture and already-Resolved/Failed gathers can't
+            // contribute a duplicate coroutine spawn — they're skipped.
+            _ => {}
+        }
+    }
+    Ok(())
 }

@@ -298,14 +298,19 @@ impl Scheduler {
         self.ready_queue.retain(|&id| id != task_id);
     }
 
-    /// Spawns a new task from a coroutine.
+    /// Spawns a new task from a coroutine, enforcing one-task-per-coroutine.
     ///
-    /// Creates a new task that will execute the given coroutine when scheduled.
-    /// The task is added to the ready queue.
+    /// Returns `None` if `coroutine_id` is already driving a task — the
+    /// "each spawned task owns exactly one coroutine for its lifetime"
+    /// invariant is enforced at this chokepoint rather than at the (currently
+    /// single) caller. Without this guard, a second `spawn` for the same
+    /// coroutine would overwrite `coroutine_to_task`, leaving the first
+    /// gather's child task unreachable and panicking at gather teardown
+    /// (`fail called on non-Awaited gather` etc.).
     ///
     /// Both `coroutine_id` and `gather_id` (when present) become **owning**
     /// references held by the new task — `inc_ref` is called on each before
-    /// storing. The matching `dec_ref` happens in [`Scheduler::remove_task`]
+    /// storing. The matching `dec_ref` happens in [`Scheduler::cancel_task`]
     /// when the task is eventually removed (typically at gather finalization).
     ///
     /// # Arguments
@@ -314,13 +319,25 @@ impl Scheduler {
     /// * `gather_id` - Optional HeapId of the GatherFuture this task belongs to
     ///
     /// # Returns
-    /// The TaskId of the newly created task.
+    /// `Some(task_id)` of the newly created task, or `None` if `coroutine_id`
+    /// is already driving a task. Callers translate `None` into the canonical
+    /// `RuntimeError: cannot reuse already awaited coroutine`.
+    #[must_use]
     pub fn spawn(
         &mut self,
         heap: &Heap<impl ResourceTracker>,
         coroutine_id: HeapId,
         gather_id: Option<HeapId>,
-    ) -> TaskId {
+    ) -> Option<TaskId> {
+        // Single-shot invariant: one task per coroutine. The direct-await
+        // paths check `CoroutineState::New` to enforce this, but the spawn
+        // path through `await_gather_future` can hit two gathers committing
+        // before either child task runs — both coroutines are still `New`,
+        // so only this scheduler-level check catches the cross-gather case.
+        if self.coroutine_to_task.contains_key(&coroutine_id) {
+            return None;
+        }
+
         let task_id = TaskId::new(self.next_task_id);
         self.next_task_id += 1;
 
@@ -336,7 +353,7 @@ impl Scheduler {
         self.coroutine_to_task.insert(coroutine_id, task_id);
         self.ready_queue.push_back(task_id);
 
-        task_id
+        Some(task_id)
     }
 
     /// Returns the task driving `coroutine_id`, if any.

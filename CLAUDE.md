@@ -757,10 +757,12 @@ wasm toolchain (`make build-wasm`).
 
 Every pull request that adds, changes, or removes user-visible behavior MUST
 land (or update) a markdown document under `./limitations/` describing how
-the feature diverges from CPython and what subset of the CPython surface
+the feature DIVERGES from CPython and what subset of the CPython surface
 area Monty actually implements. The directory is the single source of truth
 for "what does Monty *not* do that CPython does" — module-level docstrings
 and inline comments are not sufficient on their own.
+
+**NOTE**: `./limitations/` SHOULD **ONLY** INCLUDE INFORMATION ABOUT BEHAVIOR DIVERGENCES FROM CPython, not points that describe behavior that matches CPython's behavior.
 
 One file per feature, named after the builtin / module / construct it
 covers (e.g. `limitations/open.md`, `limitations/asyncio.md`,
@@ -771,7 +773,7 @@ Keep entries concise but comprehensive — list every known divergence,
 including ones that "feel obvious". A divergence that is not written down
 is one that future readers (and future Claude) will assume does not exist.
 Reviewers should reject PRs that change behavior without updating
-`./limitations/`.
+`./limitations/` if necessary.
 
 Structure each file around what a Python user would actually try:
 
