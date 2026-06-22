@@ -164,12 +164,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         let results = results_guard.into_inner();
         let (awaiter, this) = awaiter_guard.into_parts();
-        // Charge the per-await bookkeeping (`pending_children` map +
-        // `results` slot vector) against the tracker. `Pending` reports
-        // 0 state-size, so the delta equals the new `Awaited` state-size.
-        // A budget-overshoot error is surfaced; the gather is left in
-        // `Awaited` and the eventual heap-entry free / `Awaited → …`
-        // transition will undo the partial accounting.
+        // `Pending` reports 0 state-size, so the delta covers the new
+        // `Awaited` bookkeeping. On a budget overshoot we leave the
+        // state as `Awaited` and let the eventual transition out (or
+        // entry free) undo the partial accounting.
         let old_size = gather.get(this.heap).py_estimate_size();
         gather.get_mut(this.heap).state = GatherState::Awaited(AwaitedGather {
             awaiter,
@@ -212,10 +210,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 HeapReadOutput::Coroutine(coro) => {
                     // Reject reuse up-front: either the coroutine is no longer
                     // `New`, or another gather already spawned it (`spawn`
-                    // returns `Ok(None)`). `spawn` may also return
-                    // `Err(ResourceError)` when the per-task scheduler
-                    // overhead would push past the memory limit; that
-                    // propagates via `?` as a normal `MemoryError`.
+                    // returns `Ok(None)`).
                     if coro.get(self.heap).state != CoroutineState::New
                         || self.scheduler.spawn(self.heap, item_id, Some(gather_id))?.is_none()
                     {
@@ -505,24 +500,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Serializes frames, moves stack/exception_stack, stores instruction_ip,
     /// adjusts the global recursion depth counter, and charges the saved
-    /// state's size against the tracker — the matching `track_shrink`
-    /// runs in [`Self::load_or_init_task`] (when the context is moved
-    /// back into the VM) or in [`Scheduler::cancel_task`] (when the
-    /// suspended task is torn down).
+    /// state's size against the tracker — released by `load_or_init_task`
+    /// when the context is moved back, or by `cancel_task` if the task
+    /// is torn down while suspended.
     ///
-    /// Returns `Err(ResourceError)` when the tracker rejects the
-    /// charge. Charging happens *before* the VM state is moved into
-    /// the task, so on the error path the VM still holds its current
-    /// frame and the regular `handle_exception` path can attach a
-    /// traceback — without this ordering, the exception unwinder
-    /// would find `self.frames` already drained and panic in
-    /// `current_frame_name`.
+    /// Charging happens *before* draining VM state so a budget rejection
+    /// leaves `self.frames` intact for the exception unwinder to walk.
     fn save_task_context(&mut self, task_id: TaskId) -> Result<(), RunError> {
-        // Pre-charge the tracker so a budget rejection leaves the VM
-        // intact (see method docstring). Size is computed from the
-        // current frame count + stack lengths; the actual
-        // `SerializedTaskFrame` values are built only after the charge
-        // succeeds.
         let saved_size = self.frames.len() * mem::size_of::<SerializedTaskFrame>()
             + mem::size_of_val(self.stack.as_slice())
             + mem::size_of_val(self.exception_stack.as_slice());
@@ -579,11 +563,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let global_depth = self.heap.get_recursion_depth();
         self.heap.set_recursion_depth(global_depth + task_depth);
 
-        // Release the tracker charge made by `save_task_context` — the
-        // saved context now lives in VM-local Vecs again, which are
-        // treated as untracked the same way the rest of the stack
-        // accounting is. For a fresh task with no saved context this
-        // is a no-op (all three slices are empty).
+        // Release the charge from `save_task_context`. VM-local Vecs are
+        // untracked (matching the rest of the stack accounting); a fresh
+        // task with no saved context makes this a no-op.
         self.heap
             .track_shrink(saved_task_context_size(&frames, &stack, &exception_stack));
 
@@ -979,12 +961,9 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// (empty gather, all externals already resolved); on the async path the
     /// transition happens inside [`Self::resolve_child`].
     pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h, impl ResourceTracker>, list_id: HeapId) {
-        // Release any Awaited-state bookkeeping charged by
-        // `await_gather_future`. `py_estimate_size` for Pending /
-        // Completed reports 0 state-size, so on the synchronous-completion
-        // paths (gather constructed and immediately resolved without
-        // crossing through Awaited) the delta is zero and this is a
-        // no-op.
+        // Pending and Completed both report 0 state-size, so this is a
+        // no-op on the synchronous-completion path and a real shrink
+        // when transitioning out of `Awaited`.
         let old_size = self.get(heap).py_estimate_size();
         heap.inc_ref(list_id);
         self.get_mut(heap).state = GatherState::Completed(Value::Ref(list_id));
@@ -1082,9 +1061,8 @@ impl<'h> HeapRead<'h, GatherFuture> {
         heap: &mut HeapReader<'h, impl ResourceTracker>,
         error: &RunError,
     ) -> Awaiter {
-        // Capture the Awaited state-size before any draining so the
-        // tracker decrement below balances the `track_growth` charged at
-        // the Pending → Awaited transition.
+        // Captured before draining so the decrement below balances the
+        // `track_growth` from the Pending → Awaited transition.
         let old_size = self.get(heap).py_estimate_size();
 
         // Take the Awaited bookkeeping. The state stays `Awaited` (with

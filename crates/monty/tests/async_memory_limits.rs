@@ -1,25 +1,7 @@
 //! Tests that the async runtime accounts its dynamically-allocated state
-//! against `ResourceTracker`.
-//!
-//! Two memory-bypass classes are covered here. Both let untrusted Monty code
-//! grow live memory inside the worker without `LimitedTracker::max_memory`
-//! ever seeing it, which in the worst case drives the host process to
-//! allocator abort (SIGABRT) — see `security-reports/async-memory.md` and
-//! the SIGABRT group in `security-reports/subprocess_panics.md`.
-//!
-//! 1. **Gather `Pending → Awaited` bookkeeping.** `GatherFuture` is created
-//!    in `GatherState::Pending`, whose `py_estimate_size` charges no
-//!    state-side bytes. On first await, `await_gather_future` allocates
-//!    `pending_children` and `results` slot storage and stores them as
-//!    `GatherState::Awaited(...)`. That growth must be charged against
-//!    the tracker; otherwise an `await asyncio.gather(...)` over many
-//!    unresolved externals keeps O(N) untracked bytes live.
-//!
-//! 2. **Scheduler task overhead.** `Scheduler::spawn` and
-//!    `VM::save_task_context` allocate a `Task` (plus map entries and
-//!    a saved frames/stack/exception_stack) on every coroutine spawn and
-//!    suspension. None of that is charged today, so deeply recursive
-//!    `await asyncio.gather(f())` consumes host memory unbounded.
+//! against `ResourceTracker`, so a configured `max_memory` actually
+//! bounds gathers over many unresolved externals and unbounded async
+//! recursion via `gather`.
 
 use std::{mem, rc::Rc, time::Duration};
 
@@ -129,36 +111,19 @@ await main()
     MontyRun::new(code, "test.py", vec![]).unwrap()
 }
 
-// ============================================================================
-// Bug A — gather Pending → Awaited bookkeeping is charged against the tracker.
-// ============================================================================
-
-/// Witness for the bypass reported in `security-reports/async-memory.md`.
+/// `await_gather_future` must charge its per-await bookkeeping
+/// (`pending_children` + `results`) against the tracker.
 ///
-/// With `n` unresolved externals the Awaited-state bookkeeping is on the
-/// order of `n * (sizeof::<Option<Value>>() + sizeof::<HeapId>())` bytes
-/// (`results` slot vector + `pending_children` map entries — see
-/// `heap_data.rs::py_estimate_size for GatherFuture`). The chosen budget
-/// covers the bare GatherFuture, the `n` `ExternalFuture` heap entries,
-/// the coroutine frame, and module bookkeeping, but leaves no headroom
-/// for the per-await bookkeeping. Post-fix the `Pending → Awaited`
-/// transition raises `MemoryError`; pre-fix the run quietly settles into
-/// `ResolveFutures` with the Awaited bookkeeping off-the-books.
+/// Run with a generous budget so the gather drives to `ResolveFutures`
+/// without raising; then assert `current_memory()` includes the
+/// bookkeeping. A budget-based witness is unreliable: transient
+/// allocations between list construction and gather construction
+/// exceed any threshold sitting close to the bookkeeping delta. For
+/// N = 10_000 unresolved externals the threshold (1.25 MiB) sits
+/// between the pre-fix counter (~1.12 MiB) and the post-fix counter
+/// (~1.36 MiB).
 #[test]
 fn gather_awaited_state_charged_against_tracker() {
-    // Run with a generous budget so the gather drives all the way to
-    // `ResolveFutures`. Once there, tracker `current_memory()` must
-    // include the bookkeeping that `await_gather_future` just stored
-    // (`pending_children` map + `results` slot vector). Pre-fix the
-    // transition didn't call `track_growth`, so the tracker counter
-    // was about 1.12 MiB at this point; post-fix it is about
-    // 1.36 MiB — the ~240 KiB Awaited state-size for N = 10_000.
-    //
-    // A budget-based witness is unreliable because the run has
-    // transient allocation spikes between the list comprehension and
-    // the gather construction that exceed any threshold sitting
-    // close to the bookkeeping delta. Observing the post-await
-    // tracker counter directly is the cleanest signal.
     let n = 10_000;
     let runner = gather_n_pending_runner(n);
 
@@ -178,68 +143,30 @@ fn gather_awaited_state_charged_against_tracker() {
     };
 
     let memory = handle.current_memory();
-    // Pre-fix measured: ~1_120_448 bytes (no charge for `pending_children`
-    // or `results`). Post-fix: ~1_360_448 bytes. The threshold sits
-    // safely between, so it only holds when the per-await bookkeeping
-    // is accounted.
     let post_fix_threshold = 1_250_000;
     let threshold_failure = (memory < post_fix_threshold).then_some(memory);
 
-    // Resume with an error on the first pending external so the gather
-    // tears down and the snapshot is consumed cleanly. Dropping a
-    // `ResolveFutures` directly would leave `Value::Ref` entries inside
-    // `VMSnapshot.stack` to be auto-dropped, which `memory-model-checks`
-    // (correctly) treats as a refcounting bug.
+    // Tear the gather down before dropping the snapshot. Dropping
+    // `ResolveFutures` directly auto-drops `Value::Ref`s on the saved
+    // VM stack, which `memory-model-checks` treats as a refcounting bug.
     let first_call = resolve.pending_call_ids()[0];
     let error = MontyException::new(ExcType::ValueError, Some("test-shutdown".to_string()));
-    let outcome = resolve.resume(vec![(first_call, ExtFunctionResult::Error(error))], PrintWriter::Stdout);
-    // The gather propagates the error; either form is acceptable —
-    // what matters is that the heap is consumed and freed cleanly.
-    let _ = outcome;
+    let _ = resolve.resume(vec![(first_call, ExtFunctionResult::Error(error))], PrintWriter::Stdout);
 
     if let Some(memory) = threshold_failure {
         panic!(
-            "Gather Pending → Awaited bookkeeping is not charged against \
-             the tracker: tracker memory = {memory} bytes; expected at \
-             least {post_fix_threshold} (pre-fix is ~1.12 MiB, post-fix \
-             ~1.36 MiB for N = {n}).",
+            "Awaited bookkeeping not charged: tracker memory = {memory} bytes; \
+             expected at least {post_fix_threshold} for N = {n}.",
         );
     }
 }
 
-// ============================================================================
-// Bug B — Scheduler task overhead must not SIGABRT under a memory cap.
-// ============================================================================
-
-/// Regression for the SIGABRT case from
-/// `security-reports/subprocess_panics.md` (group 4, snippet 51165).
-///
-/// `async def f(): return await asyncio.gather(f())` creates one new
-/// scheduler task per recursion level. Without tracker accounting on
-/// `Scheduler::spawn` and `VM::save_task_context`, the worker grows
-/// linearly per level and is eventually killed by the system
-/// allocator. With *any* memory cap configured, this run MUST exit
-/// gracefully with `MemoryError` rather than running the host out of
-/// memory — the tracked Coroutine + GatherFuture allocations alone
-/// are enough to trip the budget today, but the test also pins that
-/// the additional scheduler-task accounting (added by Bug B's fix)
-/// cannot regress the worker into the SIGABRT path.
-/// Regression for the second SIGABRT reproducer (snippet 108681).
-///
-/// `async def deep(n): r = await asyncio.gather(deep(n - 1)); return r[0]`
-/// returns the gather result back through every level. When the
-/// memory budget trips mid-recursion, the `MemoryError` originates
-/// inside `save_task_context` *after* it has drained `self.frames`,
-/// which used to leave the exception unwinder calling
-/// `current_frame()` on an empty frame stack and aborting with
-/// "no active frame".
-///
-/// Two changes guard this:
-///   * `save_task_context` charges the tracker *before* draining
-///     frames, so a rejected charge leaves the VM intact.
-///   * `current_frame_name` falls back to `<module>` when frames is
-///     empty, so any future transitional-error path can still attach
-///     a traceback frame instead of panicking.
+/// `deep(n)` that returns the gather result back through every level
+/// used to trip a "no active frame" panic when the memory budget fired
+/// mid-recursion inside `save_task_context` after it had already
+/// drained `self.frames`. Charging the tracker before the drain — plus
+/// a `current_frame_name` fallback when frames is empty — turns this
+/// back into a graceful `MemoryError`.
 #[test]
 fn recursive_gather_with_return_value_hits_memory_limit_not_panic() {
     let code = r"
@@ -272,6 +199,9 @@ asyncio.run(deep(20000))
     );
 }
 
+/// Unbounded `async def f(): await asyncio.gather(f())` must terminate
+/// under any configured `max_memory` instead of growing the worker
+/// until the system allocator aborts.
 #[test]
 fn recursive_gather_hits_memory_limit_not_sigabrt() {
     let code = r"

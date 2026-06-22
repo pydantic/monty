@@ -13,14 +13,10 @@ use crate::{
 };
 
 impl<T: ResourceTracker> VM<'_, T> {
-    /// Returns the current frame's name for traceback generation.
-    ///
-    /// Returns the function name for user-defined functions, or `<module>` for
-    /// module-level code. When the frame stack is empty (rare — an error
-    /// raised between `save_task_context` draining the VM and
-    /// `load_or_init_task` populating the next task's frames), falls back
-    /// to the `<module>` sentinel so the exception machinery can still
-    /// attach a frame and unwind cleanly rather than panicking.
+    /// Returns the current frame's name for traceback generation: the
+    /// function name for user-defined functions, or `<module>` for
+    /// module-level code. Falls back to `<module>` when the frame stack
+    /// is empty so transitional async error paths still unwind cleanly.
     fn current_frame_name(&self) -> StringId {
         match self.frames.last() {
             Some(frame) => match frame.function_id {

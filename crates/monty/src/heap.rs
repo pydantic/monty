@@ -922,17 +922,12 @@ impl<T: ResourceTracker> Heap<T> {
         self.tracker.on_grow(additional_bytes)
     }
 
-    /// Mirror of [`track_growth`](Self::track_growth) for in-place shrinks:
-    /// subtracts `bytes` from the tracker's `current_memory` counter.
+    /// Mirror of [`track_growth`](Self::track_growth) for in-place shrinks.
     ///
-    /// Use at state transitions that release dynamically-allocated bookkeeping
-    /// *without* freeing the enclosing heap entry — e.g. `GatherFuture`'s
-    /// `Awaited → Completed` / `Failed` transitions release the
-    /// `pending_children` map and `results` slot vector while the entry
-    /// itself lives on. Without a matching shrink, the bytes charged at
-    /// `track_growth` time would leak into the tracker counter forever
-    /// (`on_free` at heap-entry release only ever subtracts the *current*
-    /// `py_estimate_size`).
+    /// Needed when a heap entry's `py_estimate_size` decreases without the
+    /// entry itself being freed: `on_free` at entry release reads the
+    /// *current* size, so growth charged earlier would otherwise leak in
+    /// the tracker counter.
     #[inline]
     pub fn track_shrink(&self, bytes: usize) {
         self.tracker.on_free(|| bytes);

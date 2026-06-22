@@ -20,19 +20,10 @@ use crate::{
     value::Value,
 };
 
-/// Fixed per-spawn scheduler overhead charged against `ResourceTracker`
-/// every time [`Scheduler::spawn`] inserts a new task into `self.tasks`,
-/// `self.coroutine_to_task`, and the ready queue.
-///
-/// HashMap bucket overhead is intentionally elided to match the rest of
-/// the codebase's `py_estimate_size` conventions; this constant captures
-/// the `Task` itself plus one entry in each of the two indexing maps and
-/// a slot on the ready queue, which is what scales O(N) per recursive
-/// gather-spawn. The exact value isn't load-bearing — what matters is
-/// that scheduler growth becomes visible to `max_memory` so unbounded
-/// `async def f(): await asyncio.gather(f())` can no longer drive the
-/// host process to allocator abort. See
-/// `security-reports/subprocess_panics.md` (group 4).
+/// Per-spawn scheduler overhead charged against the tracker so memory
+/// budgets bound recursive gathers. The exact value isn't load-bearing
+/// — it just needs to be non-zero. HashMap bucket overhead is elided to
+/// match `py_estimate_size` conventions elsewhere.
 pub(crate) const SCHEDULER_TASK_OVERHEAD: usize = mem::size_of::<Task>()
     + mem::size_of::<(TaskId, Task)>()
     + mem::size_of::<(HeapId, TaskId)>()
@@ -323,13 +314,8 @@ impl Scheduler {
     /// both coroutine states are still `New`, so the state check in
     /// `await_coroutine` doesn't catch it. Callers translate `None`
     /// into a `RuntimeError: cannot reuse already awaited coroutine`.
-    ///
-    /// Returns `Err(ResourceError)` when charging
-    /// [`SCHEDULER_TASK_OVERHEAD`] against the tracker would exceed the
-    /// memory limit. Without this charge the per-spawn cost is
-    /// invisible to `max_memory`, and unbounded async recursion such as
-    /// `async def f(): await asyncio.gather(f())` drives the worker to
-    /// allocator abort instead of a graceful `MemoryError`.
+    /// Returns `Err(ResourceError)` if charging
+    /// [`SCHEDULER_TASK_OVERHEAD`] would exceed the memory limit.
     ///
     /// Both `coroutine_id` and `gather_id` (when present) become **owning**
     /// references held by the new task; the matching `dec_ref` happens in
@@ -435,17 +421,9 @@ impl Scheduler {
             return;
         };
 
-        // Symmetric release of the per-spawn overhead charged by
-        // [`Scheduler::spawn`], plus any saved task-context bytes still
-        // sitting in `task.{frames,stack,exception_stack}`. The latter is
-        // a no-op for an actively-running task (whose context lives in
-        // the VM, not the Task struct) and a real shrink for a suspended
-        // task whose context was moved here by `save_task_context`.
-        //
-        // The main task (task 0, pre-created in [`Scheduler::new`] and
-        // therefore never charged via `spawn`) is excluded from the
-        // per-spawn decrement so cleanup doesn't drift the tracker
-        // counter on every VM drop.
+        // The main task is pre-created in `Scheduler::new`, not via `spawn`,
+        // so it was never charged for `SCHEDULER_TASK_OVERHEAD`; skipping
+        // its decrement keeps cleanup balanced across VM drops.
         if task_id != TaskId::default() {
             heap.heap_mut().track_shrink(SCHEDULER_TASK_OVERHEAD);
         }
@@ -608,12 +586,9 @@ impl Default for Scheduler {
     }
 }
 
-/// Estimated bytes occupied by a suspended task's saved VM context — the
-/// frames vector, the operand stack, and the exception stack. Used by
-/// `save_task_context` (charge) and `load_or_init_task` / `cancel_task`
-/// (release) so the per-suspension memory cost is visible to
-/// `ResourceTracker::on_grow`. The Vec capacity overhead is elided to
-/// stay consistent with `py_estimate_size`'s len-based estimates.
+/// Estimated bytes occupied by a suspended task's saved VM context.
+/// Vec capacity overhead is elided to match `py_estimate_size`'s
+/// len-based estimates elsewhere.
 pub(crate) fn saved_task_context_size(
     frames: &[SerializedTaskFrame],
     stack: &[Value],
