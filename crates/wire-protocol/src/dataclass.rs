@@ -160,6 +160,7 @@ pub struct DcRegistry {
 
 impl DcRegistry {
     /// Creates a new empty registry.
+    #[must_use]
     pub fn new(py: Python<'_>) -> Self {
         Self {
             registry: PyDict::new(py).unbind(),
@@ -185,6 +186,7 @@ impl DcRegistry {
     ///
     /// The clone points to the **same** underlying Python dict, so insertions
     /// through any handle are visible to all others.
+    #[must_use]
     pub fn clone_ref(&self, py: Python<'_>) -> Self {
         Self {
             registry: self.registry.clone_ref(py),

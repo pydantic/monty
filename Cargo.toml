@@ -12,6 +12,7 @@ members = [
     "crates/monty-type-checking",
     "crates/monty-typeshed",
     "crates/monty-macros",
+    "crates/wire-protocol",
     "crates/fuzz"
 ]
 default-members = ["crates/monty-cli"]

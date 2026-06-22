@@ -42,12 +42,14 @@ use pyo3::{
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::task::{JoinSet, spawn_blocking};
+use wire_protocol::{
+    convert::{get_docstring, monty_to_py, py_to_monty_value},
+    dataclass::DcRegistry,
+};
 
 use crate::{
     async_dispatch::{dispatch_function_call, join_error_to_py, spawn_coroutine_task, wait_for_futures},
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
-    convert::{get_docstring, monty_to_py, py_to_monty_value},
-    dataclass::DcRegistry,
     exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_py_to_monty},
     external::{CallResult, ExternalFunctionRegistry, dispatch_method_call},
     get_not_handled,

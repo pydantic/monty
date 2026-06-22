@@ -297,7 +297,7 @@ message NamedValue {
 message ParentRequest {
   oneof kind {
     Configure configure = 1;
-    ReplFeed repl_feed = 2;
+    Feed feed = 2;
     ResumeCall resume_call = 3;
     ResumeNameLookup resume_name_lookup = 4;
     ResumeFutures resume_futures = 5;
@@ -306,11 +306,15 @@ message ParentRequest {
     Reset reset = 8;
     Shutdown shutdown = 9;
   }
+  // Old oneof field names from before the session-control arms were renamed.
+  // proto3 reserves names within the enclosing message, not the oneof, so the
+  // old names cannot be reused by a future field. Tag numbers are unchanged.
+  reserved "repl_create", "repl_feed";
 }
 
 // Configures the REPL session this child will serve until `Reset`, sent once
 // when the worker is checked out. The session's repl is materialized lazily on
-// the first `ReplFeed` (or restored by `Load`), so a checked-out-but-unfed
+// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 // worker can still be initialized by `Load` instead. Valid only when the
 // worker has no session yet.
 message Configure {
@@ -320,11 +324,17 @@ message Configure {
   bool type_check = 3;
   // Optional stub file contents used by type checking.
   optional string type_check_stubs = 4;
+  // The parent's monty version (e.g. "0.0.18"). The child rejects the
+  // session with a `FatalError` when this does not match its own version:
+  // the protocol has no in-band negotiation and parent and child must be
+  // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
+  // than a silent source of frame desync.
+  string monty_version = 5;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,
 // `Error`, `TypingError`, or a suspension event.
-message ReplFeed {
+message Feed {
   string code = 1;
   repeated NamedValue inputs = 2;
   // Mounts for this feed; handled entirely inside the child. OS calls the
@@ -480,7 +490,7 @@ message ResolveFutures {
 }
 
 // Turn end: the snippet completed with this value. The session is ready for
-// the next `ReplFeed`.
+// the next `Feed`.
 message Complete {
   MontyObject value = 1;
 }

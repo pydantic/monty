@@ -178,6 +178,11 @@ impl Checkout {
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
                 type_check_stubs: repl.type_check_stubs.clone(),
+                // This crate ships the matching `monty` binary, so our own
+                // version is always what the child expects. The child rejects a
+                // mismatch with a `FatalError` (relevant when a remote driver
+                // built against a different version reuses the wire format).
+                monty_version: env!("CARGO_PKG_VERSION").to_owned(),
             })),
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
@@ -255,7 +260,7 @@ impl Checkout {
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
                 code: code.to_owned(),
                 inputs: inputs
                     .into_iter()

@@ -22,6 +22,14 @@ the *host API* surface.
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
+- **The session `StartSession` request carries the parent's `monty_version`, and
+  the worker rejects a mismatch.** The protocol has no in-band negotiation and
+  assumes parent and child are deployed in lockstep, so a child whose version
+  differs from the `monty_version` in `StartSession` replies `FatalError` (with a
+  `version skew: parent=… child=…` message) and exits non-zero rather than
+  risk a frame desync. In-process parents (`monty-pool`) always send their own
+  version, so this only fires for an out-of-band driver — e.g. the
+  `wire_protocol` package talking to a differently-versioned remote sandbox.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.

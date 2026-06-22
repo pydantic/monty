@@ -96,11 +96,11 @@ pub(crate) fn run() -> ExitCode {
 /// REPL session state of the child.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
-    /// (the repl is built lazily on the first `ReplFeed` / `Dump`); `None` on a
+    /// (the repl is built lazily on the first `Feed` / `Dump`); `None` on a
     /// freshly spawned or just-`Reset` worker, before `Configure`. `Load` is
     /// valid only from here — it cannot clobber a started session.
     Configured(Option<Box<pb::Configure>>),
-    /// Session ready for the next `ReplFeed`.
+    /// Session ready for the next `Feed`.
     Ready(Box<MontyRepl<Tracker>>),
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
@@ -198,8 +198,24 @@ impl Child {
         };
 
         let mut event = match kind {
-            pb::parent_request::Kind::Configure(configure) => self.handle_configure(configure),
-            pb::parent_request::Kind::ReplFeed(feed) => self.handle_repl_feed(feed),
+            pb::parent_request::Kind::Configure(configure) => {
+                // Version skew is fatal. The protocol has no in-band
+                // negotiation and assumes parent and child are deployed in
+                // lockstep; a mismatched build can have a different frame
+                // layout, so we fail fast with a `FatalError` rather than risk
+                // a silent desync. `fatal` sends the event; returning an exit
+                // code stops the loop so the parent sees a clean cause.
+                let expected = env!("CARGO_PKG_VERSION");
+                if configure.monty_version != expected {
+                    self.fatal(&format!(
+                        "version skew: parent={:?} child={expected:?}",
+                        configure.monty_version
+                    ));
+                    return Ok(Some(ExitCode::from(4)));
+                }
+                self.handle_configure(configure)
+            }
+            pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed),
             pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume),
             pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume),
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume),
@@ -294,6 +310,8 @@ impl Child {
             limits,
             type_check,
             type_check_stubs,
+            // already validated against our own version when `Configure` arrived
+            monty_version: _,
         } = *config;
         let limits = limits.unwrap_or_default().into();
         self.script_name = script_name;
@@ -305,13 +323,13 @@ impl Child {
         Ok(())
     }
 
-    fn handle_repl_feed(&mut self, feed: pb::ReplFeed) -> pb::ChildEvent {
+    fn handle_repl_feed(&mut self, feed: pb::Feed) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
         }
         if !matches!(self.state, SessionState::Ready(_)) {
             // ensure_repl left it un-Ready only when mid-suspension
-            return violation("ReplFeed without a session ready for input");
+            return violation("Feed without a session ready for input");
         }
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)

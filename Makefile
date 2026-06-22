@@ -26,6 +26,7 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 dev-py: ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
+	uv run maturin develop --uv -m crates/wire-protocol/Cargo.toml
 
 .PHONY: build-js
 build-js: install-js ## Build the JS package (napi debug build + TypeScript)
@@ -163,8 +164,13 @@ test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
 pytest: ## Run Python tests with pytest
 	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests
 
+.PHONY: test-wire-protocol
+test-wire-protocol: ## Build and test the wire-protocol python package
+	uv run maturin develop --uv -m crates/wire-protocol/Cargo.toml
+	uv run --package wire-protocol --only-dev pytest crates/wire-protocol/tests
+
 .PHONY: test-py
-test-py: dev-py pytest ## Build the python package (debug profile) and run tests
+test-py: dev-py pytest test-wire-protocol ## Build the python package (debug profile) and run tests
 
 .PHONY: test-docs
 test-docs: dev-py ## Test docs examples only

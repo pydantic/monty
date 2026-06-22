@@ -375,7 +375,7 @@ pub mod parent_request {
         #[prost(message, tag = "1")]
         Configure(super::Configure),
         #[prost(message, tag = "2")]
-        ReplFeed(super::ReplFeed),
+        Feed(super::Feed),
         #[prost(message, tag = "3")]
         ResumeCall(super::ResumeCall),
         #[prost(message, tag = "4")]
@@ -394,7 +394,7 @@ pub mod parent_request {
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
 /// when the worker is checked out. The session's repl is materialized lazily on
-/// the first `ReplFeed` (or restored by `Load`), so a checked-out-but-unfed
+/// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -409,11 +409,18 @@ pub struct Configure {
     /// Optional stub file contents used by type checking.
     #[prost(string, optional, tag = "4")]
     pub type_check_stubs: ::core::option::Option<::prost::alloc::string::String>,
+    /// The parent's monty version (e.g. "0.0.18"). The child rejects the
+    /// session with a `FatalError` when this does not match its own version:
+    /// the protocol has no in-band negotiation and parent and child must be
+    /// deployed in lockstep, so a mismatch is a hard, fail-fast error rather
+    /// than a silent source of frame desync.
+    #[prost(string, tag = "5")]
+    pub monty_version: ::prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReplFeed {
+pub struct Feed {
     #[prost(string, tag = "1")]
     pub code: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
@@ -606,7 +613,7 @@ pub struct ResolveFutures {
     pub pending_call_ids: ::prost::alloc::vec::Vec<u32>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
-/// the next `ReplFeed`.
+/// the next `Feed`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Complete {
     #[prost(message, optional, tag = "1")]

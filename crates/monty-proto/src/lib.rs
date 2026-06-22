@@ -29,4 +29,4 @@ pub use convert::{
 };
 pub use frame::{DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, write_frame};
 pub use generated::pb;
-pub use wire::{WireFunctionCall, WireObject, WireOsCall};
+pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};

@@ -9,8 +9,6 @@
 
 mod async_dispatch;
 mod build;
-mod convert;
-mod dataclass;
 mod exceptions;
 mod external;
 mod limits;
@@ -21,8 +19,6 @@ mod snapshot;
 
 use std::sync::OnceLock;
 
-// Use `::monty` to refer to the external crate (not the pymodule)
-pub use convert::PyMontyFileHandle;
 pub use exceptions::{MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyMonty, PyMontySession};
@@ -79,6 +75,11 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
 #[pymodule]
 mod _monty {
     use pyo3::prelude::*;
+    // The value-conversion layer (`convert`/`dataclass`) and its
+    // `MontyFileHandle` class live in the shared `wire-protocol` crate;
+    // re-export the class as part of the `pydantic_monty` surface.
+    #[pymodule_export]
+    use wire_protocol::convert::PyMontyFileHandle as MontyFileHandle;
 
     #[pymodule_export]
     use super::MontyComplete;
@@ -114,8 +115,6 @@ mod _monty {
     use super::PyFutureSnapshot as FutureSnapshot;
     #[pymodule_export]
     use super::PyMonty as Monty;
-    #[pymodule_export]
-    use super::PyMontyFileHandle as MontyFileHandle;
     #[pymodule_export]
     use super::PyMontySession as MontySession;
     #[pymodule_export]

@@ -10,12 +10,12 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyTuple},
 };
-
-use crate::{
+use wire_protocol::{
     convert::{monty_to_py, py_to_monty, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::exc_py_to_monty,
 };
+
+use crate::exceptions::exc_py_to_monty;
 
 /// Dispatches a dataclass method call back to the original Python object.
 ///
