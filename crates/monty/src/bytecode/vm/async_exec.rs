@@ -8,7 +8,7 @@
 
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
@@ -134,19 +134,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Ok(Poll::Ready(Value::Ref(list_id)));
         }
 
-        // Pre-flight pass: descend through this gather's items (recursively into
-        // any nested `Pending` gathers) and ensure no coroutine is reachable
-        // through more than one would-be spawn or is already driving another
-        // task. Raising here keeps every gather in the tree in `Pending`, so
-        // the failure path needs no rollback — sibling commits below have not
-        // happened yet. Without this, two gathers sharing a coroutine would
-        // each commit and orphan a child task whose teardown later panics with
-        // `fail called on non-Awaited gather`.
-        {
-            let mut seen: AHashSet<HeapId> = AHashSet::new();
-            preflight_gather_no_double_spawn(&gather.get(this.heap).items, &mut seen, &this.scheduler, this.heap)?;
-        }
-
         // Await all items, storing already resolved state and tracking the rest in `pending_children`.
 
         let mut pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>> = AHashMap::new();
@@ -154,59 +141,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let mut results_guard = HeapGuard::new(results, this);
         let (results, this) = results_guard.as_parts_mut();
 
-        for (idx, result) in results.iter_mut().enumerate() {
-            let item_id = gather.get(this.heap).items[idx];
-            let vacant_entry = match pending_children.entry(item_id) {
-                Entry::Occupied(occ) => {
-                    // Dedup: We've already registered this item in this commit pass —
-                    // this is a duplicate item (e.g. `gather(coro, coro)`). Just
-                    // append the new slot index to the existing entry.
-                    occ.into_mut().push(idx);
-                    continue;
-                }
-                Entry::Vacant(vacant) => vacant,
-            };
-
-            let poll = match this.heap.read(item_id) {
-                HeapReadOutput::Coroutine(_) => {
-                    // `Scheduler::spawn` returns `None` if `item_id` is already
-                    // driving another task — typically the same coroutine reached
-                    // through a second `asyncio.gather` call. Raise the same
-                    // `RuntimeError` CPython does instead of clobbering the
-                    // `coroutine_to_task` mapping (which previously panicked at
-                    // gather teardown: `fail called on non-Awaited gather`).
-                    if this.scheduler.spawn(this.heap, item_id, Some(gather_id)).is_none() {
-                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
-                    }
-                    Poll::Pending
-                }
-                HeapReadOutput::ExternalFuture(mut fut) => {
-                    this.heap.inc_ref(gather_id);
-                    let sub_awaiter = Awaiter::GatherSlot {
-                        gather: gather_id,
-                        source: item_id,
-                    };
-                    this.await_external_future(&mut fut, sub_awaiter)?
-                }
-                HeapReadOutput::GatherFuture(child_gather) => {
-                    this.heap.inc_ref(gather_id);
-                    let sub_awaiter = Awaiter::GatherSlot {
-                        gather: gather_id,
-                        source: item_id,
-                    };
-                    this.await_gather_future(item_id, child_gather, sub_awaiter)?
-                }
-                _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
-            };
-
-            match poll {
-                Poll::Ready(value) => {
-                    *result = Some(value);
-                }
-                Poll::Pending => {
-                    vacant_entry.insert(smallvec![idx]);
-                }
-            }
+        // Commit each item, spawning tasks / installing sub-awaiters / recursing
+        // into nested gathers. On any mid-commit error we roll back already-
+        // committed siblings via `drop_committed_children` before propagating
+        // — otherwise they would survive as orphans pointing at the still-
+        // `Pending` outer gather and later trip
+        // `expect("...non-Awaited gather")` at teardown.
+        if let Err(err) = this.commit_gather_items(gather_id, &gather, &mut pending_children, results) {
+            gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
+            drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
+            return Err(err);
         }
 
         if pending_children.is_empty() {
@@ -230,6 +174,85 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         });
 
         Ok(Poll::Pending)
+    }
+
+    /// Walks `gather`'s items left-to-right, committing each by spawning a
+    /// task (coroutine), installing a sub-awaiter (external future), or
+    /// recursing into the child's own commit (nested gather). Synchronously-
+    /// resolved items land in `results[idx]`; everything else gets a slot in
+    /// `pending_children` keyed by the item's `HeapId`.
+    ///
+    /// Returns `Err` as soon as any item raises — cross-gather coroutine
+    /// reuse (`Scheduler::spawn` returns `None`), an already-`Failed` nested
+    /// gather, a `Pending { awaiter: Some(_) }` external, an outer
+    /// `Failed`/`Awaited` re-await, etc. The caller is responsible for
+    /// rolling back whatever's accumulated in `pending_children` via
+    /// [`drop_committed_children`].
+    ///
+    /// Split out of [`Self::await_gather_future`] so the rollback site stays
+    /// a single `if let Err(...)` instead of a `'commit: { … }` labeled
+    /// block; lets `?` propagate sub-call errors naturally.
+    fn commit_gather_items(
+        &mut self,
+        gather_id: HeapId,
+        gather: &HeapRead<'h, GatherFuture>,
+        pending_children: &mut AHashMap<HeapId, SmallVec<[usize; 1]>>,
+        results: &mut [Option<Value>],
+    ) -> Result<(), RunError> {
+        for (idx, result) in results.iter_mut().enumerate() {
+            let item_id = gather.get(self.heap).items[idx];
+            let vacant_entry = match pending_children.entry(item_id) {
+                Entry::Occupied(occ) => {
+                    // Dedup: We've already registered this item in this commit pass —
+                    // this is a duplicate item (e.g. `gather(coro, coro)`). Just
+                    // append the new slot index to the existing entry.
+                    occ.into_mut().push(idx);
+                    continue;
+                }
+                Entry::Vacant(vacant) => vacant,
+            };
+
+            let poll = match self.heap.read(item_id) {
+                HeapReadOutput::Coroutine(_) => {
+                    // `Scheduler::spawn` returns `None` if `item_id` is already
+                    // driving another task — typically the same coroutine reached
+                    // through a second `asyncio.gather` call. Raise the canonical
+                    // `RuntimeError` and let rollback clean up the siblings we
+                    // already committed in this gather's pending_children.
+                    if self.scheduler.spawn(self.heap, item_id, Some(gather_id)).is_none() {
+                        return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                    }
+                    Poll::Pending
+                }
+                HeapReadOutput::ExternalFuture(mut fut) => {
+                    self.heap.inc_ref(gather_id);
+                    let sub_awaiter = Awaiter::GatherSlot {
+                        gather: gather_id,
+                        source: item_id,
+                    };
+                    self.await_external_future(&mut fut, sub_awaiter)?
+                }
+                HeapReadOutput::GatherFuture(child_gather) => {
+                    self.heap.inc_ref(gather_id);
+                    let sub_awaiter = Awaiter::GatherSlot {
+                        gather: gather_id,
+                        source: item_id,
+                    };
+                    self.await_gather_future(item_id, child_gather, sub_awaiter)?
+                }
+                _ => panic!("gather item is not a Coroutine, ExternalFuture, or GatherFuture"),
+            };
+
+            match poll {
+                Poll::Ready(value) => {
+                    *result = Some(value);
+                }
+                Poll::Pending => {
+                    vacant_entry.insert(smallvec![idx]);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Awaits an external future by inspecting its heap state.
@@ -1041,111 +1064,76 @@ impl<'h> HeapRead<'h, GatherFuture> {
         // Drop fanned-out result Values that won't reach the waiter.
         results.drop_with_heap(heap);
 
-        // Walk every child the gather was waiting on and clean it up
-        // appropriately. `heap.read(id)` recovers the kind:
-        // - Coroutine: find its driving task via the scheduler's
-        //   `task_for_coroutine` index and cancel it, releasing the task's
-        //   inc_refs on the gather and coroutine.
-        // - ExternalFuture: clear the awaiter slot so a late host resolution
-        //   doesn't fan into the now-failed gather. The future stays in
-        //   `pending_externals` and a `Pending { awaiter: None }` resolution
-        //   simply caches the value (and a re-await replays it).
-        // - GatherFuture (nested): recurse — tear it down with the same
-        //   error so its own tasks/externals/gathers are cleaned up too.
-        for child_id in pending_children.into_keys() {
-            match heap.read(child_id) {
-                HeapReadOutput::Coroutine(_) => {
-                    if let Some(tid) = scheduler.task_for_coroutine(child_id) {
-                        scheduler.cancel_task(tid, heap);
-                    }
-                }
-                HeapReadOutput::ExternalFuture(mut fut) => {
-                    // Take the awaiter out so the inc_ref it holds on this
-                    // (failing) gather is released.
-                    if let ExternalFutureState::Pending { awaiter } = &mut fut.get_mut(heap).state
-                        && let Some(old) = awaiter.take()
-                    {
-                        old.drop_with_heap(heap);
-                    }
-                }
-                HeapReadOutput::GatherFuture(mut nested) => {
-                    // The nested gather's waiter is `Awaiter::GatherSlot {
-                    // gather: self, .. }` — we own its routing and are now
-                    // gone, so drop the returned awaiter (releasing its
-                    // inc_ref back on us) rather than forwarding the chain.
-                    let nested_awaiter = nested.fail(scheduler, heap, error);
-                    nested_awaiter.drop_with_heap(heap);
-                }
-                _ => panic!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
-            }
-        }
+        // Tear down every committed child. Skips nested gathers that are
+        // already `Failed` — that case arises when failure propagated up via
+        // [`VM::deliver_awaiter_failure`] from a nested child that *itself*
+        // failed first; revisiting its `pending_children` entry without the
+        // state check would re-call `nested.fail(...)` and panic.
+        drop_committed_children(pending_children, scheduler, heap, error);
 
         waiter
     }
 }
 
-/// Validates that no coroutine reachable through this gather's items would be
-/// spawned more than once or reused after a previous await.
+/// Tears down children of a partially- or fully-committed gather, releasing
+/// their refcounts on the parent gather and the host's pending-external map.
 ///
-/// Walks `items` and recursively descends into any `Pending` nested
-/// `GatherFuture`. Raises [`ExcType::cannot_reuse_already_awaited_coroutine`]
-/// when it spots a coroutine that:
+/// Shared by:
 ///
-/// * is no longer in `CoroutineState::New` (already directly awaited, running,
-///   or completed),
-/// * already has an entry in the scheduler's `coroutine_to_task` map (already
-///   driving a task from a prior gather), or
-/// * appears at two distinct positions in the same outer-gather tree (the
-///   cross-gather double-spawn shape `g1 = gather(c); g2 = gather(c);
-///   await gather(g1, g2)` — both gathers would otherwise call
-///   `Scheduler::spawn` and clobber the inverse mapping).
+/// * the commit-time rollback path in [`VM::await_gather_future`], when an
+///   error propagates after some siblings already committed and the gather
+///   itself is still in `Pending` (transitioned to `Failed` by the caller),
+///   and
+/// * [`HeapRead::<GatherFuture>::fail`] when a sibling's failure tears down
+///   an `Awaited` gather.
 ///
-/// Crucially, **within a single gather** duplicates dedup rather than raise
-/// (CPython allows `gather(c, c)` and the existing in-gather dedup pass in
-/// [`VM::await_gather_future`] handles them). That is enforced via the
-/// per-gather `local_dedup` set below — only the first occurrence at each
-/// level is checked against the tree-wide `seen` set.
+/// Handling per child kind:
 ///
-/// Running this *before* any commit work (spawn / awaiter installation / state
-/// transition) means the failure path requires no rollback: the gather and
-/// every nested gather stay in `GatherState::Pending` and can be re-awaited
-/// later if the caller catches the `RuntimeError`.
-fn preflight_gather_no_double_spawn(
-    items: &[HeapId],
-    seen: &mut AHashSet<HeapId>,
-    scheduler: &Scheduler,
-    heap: &HeapReader<'_, impl ResourceTracker>,
-) -> Result<(), RunError> {
-    let mut local_dedup: AHashSet<HeapId> = AHashSet::new();
-    for &item_id in items {
-        if !local_dedup.insert(item_id) {
-            // Same item already validated at this level — `await_gather_future`
-            // dedups via `pending_children`; matching that here keeps
-            // `gather(c, c)` legal.
-            continue;
-        }
-        match heap.read(item_id) {
-            HeapReadOutput::Coroutine(coro) => {
-                if coro.get(heap).state != CoroutineState::New
-                    || scheduler.task_for_coroutine(item_id).is_some()
-                    || !seen.insert(item_id)
+/// * **Coroutine** — its spawned task (if any) is cancelled via
+///   [`Scheduler::cancel_task`]. The cancel releases the task's inc_refs on
+///   the coroutine and the (outer) gather.
+/// * **ExternalFuture** — clears the awaiter slot we installed. The dropped
+///   awaiter's `drop_with_heap` releases the inc_ref it held on the (outer)
+///   gather. The future itself stays in `pending_externals` and a later
+///   host resolution simply caches the value (it has no awaiter to fan to).
+/// * **GatherFuture (nested)** — recursively `fail`ed *only if still
+///   `Awaited`*. The state check matters because this helper also runs from
+///   the awaiter-chain failure path: when a child gather fails first and
+///   walks up to its parent via `deliver_awaiter_failure`, that very child
+///   is still in the parent's `pending_children` map but is already
+///   `Failed`. Without the check the parent would call `nested.fail(...)` a
+///   second time and trip `expect("fail called on non-Awaited gather")`.
+fn drop_committed_children(
+    pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
+    scheduler: &mut Scheduler,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
+    error: &RunError,
+) {
+    for child_id in pending_children.into_keys() {
+        match heap.read(child_id) {
+            HeapReadOutput::Coroutine(_) => {
+                if let Some(tid) = scheduler.task_for_coroutine(child_id) {
+                    scheduler.cancel_task(tid, heap);
+                }
+            }
+            HeapReadOutput::ExternalFuture(mut fut) => {
+                if let ExternalFutureState::Pending { awaiter } = &mut fut.get_mut(heap).state
+                    && let Some(old) = awaiter.take()
                 {
-                    return Err(ExcType::cannot_reuse_already_awaited_coroutine());
+                    old.drop_with_heap(heap);
                 }
             }
-            HeapReadOutput::GatherFuture(child) => {
-                if matches!(child.get(heap).state, GatherState::Pending) {
-                    // The borrow on `child` lives across the recursive call —
-                    // safe because `preflight` only ever reads (no `get_mut`,
-                    // no `allocate`), and multiple `HeapRead` handles can
-                    // coexist for reads.
-                    preflight_gather_no_double_spawn(&child.get(heap).items, seen, scheduler, heap)?;
+            HeapReadOutput::GatherFuture(mut nested) => {
+                if matches!(nested.get(heap).state, GatherState::Awaited(_)) {
+                    let nested_awaiter = nested.fail(scheduler, heap, error);
+                    nested_awaiter.drop_with_heap(heap);
                 }
+                // Else: nested is already `Failed`/`Completed`/`Pending` —
+                // its resources are already cleaned up (or were never
+                // committed) and dropping the `pending_children` key
+                // (via `into_keys`) is the only bookkeeping left.
             }
-            // ExternalFuture and already-Resolved/Failed gathers can't
-            // contribute a duplicate coroutine spawn — they're skipped.
-            _ => {}
+            _ => panic!("gather pending_children key is not a Coroutine, ExternalFuture, or GatherFuture"),
         }
     }
-    Ok(())
 }
