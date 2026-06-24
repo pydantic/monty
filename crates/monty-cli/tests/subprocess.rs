@@ -60,7 +60,7 @@ impl ChildProc {
     }
 
     fn create_repl(&mut self) {
-        self.create_repl_with(pb::ReplCreate {
+        self.create_repl_with(pb::Configure {
             script_name: "main.py".to_owned(),
             limits: None,
             type_check: false,
@@ -68,11 +68,11 @@ impl ChildProc {
         });
     }
 
-    fn create_repl_with(&mut self, create: pb::ReplCreate) {
-        self.send(pb::parent_request::Kind::ReplCreate(create));
+    fn create_repl_with(&mut self, create: pb::Configure) {
+        self.send(pb::parent_request::Kind::Configure(create));
         match self.recv() {
             pb::child_event::Kind::Ok(_) => {}
-            other => panic!("expected Ok for ReplCreate, got {other:?}"),
+            other => panic!("expected Ok for Configure, got {other:?}"),
         }
     }
 
@@ -402,7 +402,7 @@ fn overlay_mount_discards_writes_at_feed_end() {
 #[test]
 fn child_enforces_time_limit() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(pb::ReplCreate {
+    child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: Some(pb::ResourceLimits {
             max_duration_micros: Some(100_000), // 100ms
@@ -415,7 +415,7 @@ fn child_enforces_time_limit() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "TimeoutError");
     // resource exhaustion is terminal for the SESSION (the tracker stays
-    // exhausted) but not for the child process: Reset + ReplCreate reuses it
+    // exhausted) but not for the child process: Reset + Configure reuses it
     let (_, event) = child.feed("1 + 1");
     assert_eq!(expect_error(event).exc_type, "TimeoutError");
     child.send(pb::parent_request::Kind::Reset(pb::Reset {}));
@@ -434,7 +434,7 @@ fn child_enforces_time_limit() {
 #[test]
 fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(pb::ReplCreate {
+    child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
         type_check: true,
@@ -490,7 +490,10 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -511,7 +514,7 @@ fn dump_then_load_into_fresh_child_resumes() {
 #[test]
 fn type_check_state_survives_dump_and_load() {
     let mut child = ChildProc::spawn();
-    child.create_repl_with(pb::ReplCreate {
+    child.create_repl_with(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
         type_check: true,
@@ -526,7 +529,10 @@ fn type_check_state_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -558,7 +564,7 @@ fn protocol_violations_keep_the_child_alive() {
     child.create_repl();
 
     // double create
-    child.send(pb::parent_request::Kind::ReplCreate(pb::ReplCreate {
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "again.py".to_owned(),
         limits: None,
         type_check: false,

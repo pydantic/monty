@@ -3,7 +3,7 @@ from typing import Any, Callable, Literal, final
 
 from typing_extensions import Self
 
-from . import ResourceLimits
+from . import AsyncSnapshot, ExternalResult, OsHandler, PrintCallback, ResourceLimits, SyncSnapshot
 from .os_access import AbstractOS, OsFunction
 
 __all__ = [
@@ -23,6 +23,13 @@ __all__ = [
     'MontyRuntimeError',
     'MontyTypingError',
     'MountDir',
+    'MontyComplete',
+    'FunctionSnapshot',
+    'NameLookupSnapshot',
+    'FutureSnapshot',
+    'AsyncFunctionSnapshot',
+    'AsyncNameLookupSnapshot',
+    'AsyncFutureSnapshot',
 ]
 __version__: str
 
@@ -359,6 +366,59 @@ class MontySession:
                 the session is lost but the pool replaces the worker.
         """
 
+    def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        print_callback: PrintCallback | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: OsHandler | None = None,
+        skip_type_check: bool = False,
+    ) -> SyncSnapshot:
+        """
+        Start a snippet and return a snapshot at each external call, OS call,
+        name lookup, or future resolution instead of driving to completion.
+
+        Answer the snapshot with `snapshot.resume(...)`, which returns the next
+        snapshot or a `MontyComplete`. Unlike `feed_run` there is no
+        `external_functions` argument — surfacing those calls is the point. An
+        `os=` handler still auto-dispatches uncovered OS calls until the next
+        non-OS event. Mounts are fixed for the whole feed (there is no `mount=`
+        on `resume`).
+
+        Use `snapshot.dump()` to checkpoint the worker mid-execution and
+        `load_snapshot` to restore it.
+        """
+
+    def load_snapshot(
+        self,
+        state: bytes,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        print_callback: PrintCallback | None = None,
+    ) -> SyncSnapshot | None:
+        """
+        Restore a dump (from `session.dump()` / `snapshot.dump()`) into this
+        session instead of starting it fresh, returning the re-announced
+        snapshot to resume — or `None` when the dump was taken between feeds.
+
+        Valid only on a fresh session, before any `feed_run` / `feed_start` /
+        `load_snapshot` (it replaces the whole session, so it would otherwise
+        silently discard work); raises `RuntimeError` otherwise.
+
+        The dump restores its own `script_name` / limits / type-check state, so
+        the `checkout()` config for those is not applied; the dataclass registry
+        from `checkout()` is reused. `mount` re-establishes the suspended feed's
+        mounts (whose host paths are not in the dump) and is validated against
+        the dump's recorded requirements — a missing, extra, or altered mount
+        raises. An idle dump takes no `mount`. `'overlay'` writes made before
+        the dump are not preserved (the restored overlay starts empty).
+
+        A re-announced OS-call snapshot carries only its `not_handled_error`,
+        not the original `args`/`kwargs` (those were consumed before the dump).
+        """
+
     def dump(self) -> bytes:
         """
         Serialize the worker's session state (idle or suspended) to opaque
@@ -457,6 +517,34 @@ class AsyncMontySession:
         shared semantics (mounts, error types).
         """
 
+    async def feed_start(
+        self,
+        code: str,
+        *,
+        inputs: dict[str, Any] | None = None,
+        print_callback: PrintCallback | None = None,
+        mount: MountDir | list[MountDir] | None = None,
+        os: OsHandler | None = None,
+        skip_type_check: bool = False,
+    ) -> AsyncSnapshot:
+        """
+        Async counterpart of `MontySession.feed_start`: resolves to a snapshot
+        (whose `resume(...)` is awaitable) or a `MontyComplete`.
+        """
+
+    async def load_snapshot(
+        self,
+        state: bytes,
+        *,
+        mount: MountDir | list[MountDir] | None = None,
+        print_callback: PrintCallback | None = None,
+    ) -> AsyncSnapshot | None:
+        """
+        Async counterpart of `MontySession.load_snapshot`: resolves to the
+        re-announced snapshot (whose `resume(...)` is awaitable) or `None` for a
+        between-feeds dump. Valid only on a fresh session.
+        """
+
     async def dump(self) -> bytes:
         """
         Serialize the worker's session state (idle or suspended) to opaque
@@ -470,3 +558,163 @@ class AsyncMontySession:
         `None` when no worker is attached or a turn is currently in flight
         on another thread (the getter never blocks on a running turn).
         """
+
+@final
+class MontyComplete:
+    """The result of a completed `feed_start` execution."""
+
+    @property
+    def output(self) -> Any:
+        """The final value, converted to a Python object on each access."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class FunctionSnapshot:
+    """A paused execution waiting for an external function or OS call result.
+
+    For OS calls `is_os_function` is `True` and `function_name` is the
+    `OsFunction` name; resume with a value, an exception, or
+    `resume_not_handled()`.
+    """
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def is_os_function(self) -> bool: ...
+    @property
+    def is_method_call(self) -> bool:
+        """Whether this is a dataclass method call (the instance is `args[0]`)."""
+
+    @property
+    def function_name(self) -> str | OsFunction: ...
+    @property
+    def call_id(self) -> int: ...
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+    @property
+    def kwargs(self) -> dict[str, Any]: ...
+    def resume(
+        self,
+        result: ExternalResult,
+        *,
+        os: OsHandler | None = None,
+    ) -> SyncSnapshot:
+        """Resume with the call's result; resumes at most once.
+
+        Mounts are fixed when the feed starts, so there is no `mount=` here. An
+        `os=` handler auto-dispatches OS calls produced by the continuation
+        until the next non-OS event.
+        """
+
+    def resume_not_handled(self, *, os: OsHandler | None = None) -> SyncSnapshot:
+        """Resume an OS-call snapshot with monty's default unhandled behaviour."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class NameLookupSnapshot:
+    """A paused execution waiting for the value of an undefined name."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def variable_name(self) -> str: ...
+    def resume(
+        self,
+        *,
+        value: Any | None = None,
+        os: OsHandler | None = None,
+    ) -> SyncSnapshot:
+        """Resume with `value` to define the name, or nothing to raise `NameError`."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class FutureSnapshot:
+    """A paused execution where every sandbox task is blocked on external futures."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def pending_call_ids(self) -> list[int]: ...
+    def resume(
+        self,
+        results: dict[int, ExternalResult],
+        *,
+        os: OsHandler | None = None,
+    ) -> SyncSnapshot:
+        """Resume with results for one or more pending futures (by `call_id`)."""
+
+    def dump(self) -> bytes:
+        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncFunctionSnapshot:
+    """Async sibling of `FunctionSnapshot`; `resume`/`resume_not_handled` are awaitable."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def is_os_function(self) -> bool: ...
+    @property
+    def is_method_call(self) -> bool: ...
+    @property
+    def function_name(self) -> str | OsFunction: ...
+    @property
+    def call_id(self) -> int: ...
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+    @property
+    def kwargs(self) -> dict[str, Any]: ...
+    async def resume(
+        self,
+        result: ExternalResult,
+        *,
+        os: OsHandler | None = None,
+    ) -> AsyncSnapshot: ...
+    async def resume_not_handled(self, *, os: OsHandler | None = None) -> AsyncSnapshot: ...
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncNameLookupSnapshot:
+    """Async sibling of `NameLookupSnapshot`."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def variable_name(self) -> str: ...
+    async def resume(
+        self,
+        *,
+        value: Any | None = None,
+        os: OsHandler | None = None,
+    ) -> AsyncSnapshot: ...
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...
+
+@final
+class AsyncFutureSnapshot:
+    """Async sibling of `FutureSnapshot`."""
+
+    @property
+    def script_name(self) -> str: ...
+    @property
+    def pending_call_ids(self) -> list[int]: ...
+    async def resume(
+        self,
+        results: dict[int, ExternalResult],
+        *,
+        os: OsHandler | None = None,
+    ) -> AsyncSnapshot: ...
+    def dump(self) -> bytes: ...
+    def __repr__(self) -> str: ...

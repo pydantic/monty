@@ -102,6 +102,12 @@ export interface ProtocolTurn {
   message: string
 }
 
+/** A `load` restored an idle (between-feeds) session — no suspension to
+ *  resume. Only produced by `NativeSession.load`. */
+export interface LoadedTurn {
+  kind: 'loaded'
+}
+
 /** Everything one protocol turn can resolve to. */
 export type NativeTurn =
   | CompleteTurn

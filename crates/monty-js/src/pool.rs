@@ -372,6 +372,32 @@ impl NativeSession {
         })
     }
 
+    /// Restores a dump into this session's worker in place of starting it
+    /// fresh, replacing the worker's (non-suspended) session. Resolves to a
+    /// turn object: a suspension when the dump was mid-feed, or `loaded` for an
+    /// idle dump. The TypeScript layer enforces "fresh session only".
+    #[napi]
+    pub fn load<'env>(
+        &self,
+        env: &'env Env,
+        state: Buffer,
+        mounts: Vec<NativeMount>,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let mounts = mounts
+            .into_iter()
+            .map(MountSpec::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        let state = state.to_vec();
+        self.run_outcome(env, on_print, move |checkout, on_print| {
+            match checkout.load_snapshot(state, mounts, on_print) {
+                Ok(Some(event)) => TurnOutcome::Event(event),
+                Ok(None) => TurnOutcome::LoadedIdle,
+                Err(err) => TurnOutcome::from(Err(err)),
+            }
+        })
+    }
+
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's dump format. The session stays usable.
     #[napi]
@@ -431,6 +457,22 @@ impl NativeSession {
         on_print: PrintCallback<'env>,
         turn: impl FnOnce(&mut Checkout, OnPrint<'_>) -> StdResult<TurnEvent, PoolError> + Send + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, move |checkout, on_print| {
+            TurnOutcome::from(turn(checkout, on_print))
+        })
+    }
+
+    /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
+    /// checkout off the event loop, streams prints, and resolves the computed
+    /// [`TurnOutcome`] to a JS turn object. `compute` returns the outcome
+    /// directly so the `load` turn (which yields `Option<TurnEvent>`) can map
+    /// its idle case to [`TurnOutcome::LoadedIdle`].
+    fn run_outcome<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+        compute: impl FnOnce(&mut Checkout, OnPrint<'_>) -> TurnOutcome + Send + 'static,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = on_print.build_threadsafe_function().build()?;
         let slot = Arc::clone(&self.checkout);
         let pending_not_handled = Arc::clone(&self.pending_not_handled);
@@ -454,7 +496,7 @@ impl NativeSession {
                         };
                         let _ = block_on(tsfn.call_async(FnArgs::from((stream.to_owned(), text.to_owned()))));
                     };
-                    let outcome = TurnOutcome::from(turn(checkout, &mut on_print));
+                    let outcome = compute(checkout, &mut on_print);
                     if let TurnOutcome::Event(TurnEvent::OsCall { not_handled_error, .. }) = &outcome {
                         lock(&pending_not_handled).clone_from(not_handled_error);
                     }
@@ -485,6 +527,9 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
+    /// A `load` restored an idle (between-feeds) session — there is no
+    /// suspension to resume. Only produced by [`NativeSession::load`].
+    LoadedIdle,
 }
 
 impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
@@ -580,6 +625,9 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         TurnOutcome::Protocol(message) => {
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
+        }
+        TurnOutcome::LoadedIdle => {
+            obj.set("kind", "loaded")?;
         }
     }
     Ok(obj)

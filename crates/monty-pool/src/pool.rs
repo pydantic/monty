@@ -80,16 +80,6 @@ impl Pool {
         Checkout::create(worker, Arc::clone(&self.inner), repl)
     }
 
-    /// Like [`Pool::checkout`], but restores a session previously serialized
-    /// with [`Checkout::dump`] instead of creating a fresh one.
-    ///
-    /// Returns the checkout plus the re-announced suspension event when the
-    /// dump was taken mid-feed (`None` for an idle session).
-    pub fn checkout_load(&self, state: Vec<u8>) -> Result<(Checkout, Option<crate::TurnEvent>), PoolError> {
-        let worker = self.inner.acquire_worker()?;
-        Checkout::load(worker, Arc::clone(&self.inner), state)
-    }
-
     /// Number of idle workers right now (diagnostics/tests only — the value
     /// is stale the moment it is returned).
     #[must_use]

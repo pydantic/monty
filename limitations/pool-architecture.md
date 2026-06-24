@@ -15,10 +15,11 @@ the *host API* surface.
 
 - The protocol (and `pydantic_monty`) is **REPL-only**: a pool checkout is a
   REPL session in a dedicated worker, and a one-shot run is a checkout plus a
-  single feed. There are no manual suspension snapshots in Python; external
-  function calls, OS callbacks, and print callbacks are driven automatically
-  by `feed_run` (sync or awaited). (The Rust `monty-pool::Checkout` API does
-  expose manual suspension driving and `Pool::checkout_load`.)
+  single feed. `feed_run` drives external function calls, OS callbacks, and
+  print callbacks automatically. `feed_start` instead returns a *snapshot* at
+  each suspension (`FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot`,
+  or `MontyComplete`) for the caller to inspect, `dump()`, and `resume(...)`;
+  see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
@@ -131,12 +132,48 @@ the *host API* surface.
   filesystem calls are handled inside the worker and never reach the
   callback.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
-  restored into another subprocess worker (Rust `Pool::checkout_load`); there
-  is currently no Python API to restore them.
+  restored into another subprocess worker of the same version, via
+  `session.load_snapshot` (Rust `Checkout::load_in_place`).
+- **`feed_start` snapshots are live cursors, not owned state.** The execution
+  state lives in the worker, so only one suspension is live per session, each
+  snapshot may be resumed at most once (a second resume raises
+  `RuntimeError`), and feeding while suspended raises. This differs from the
+  pre-subprocess in-process API, where a snapshot owned freely-copyable state.
+- **`load_snapshot` is a session method, valid only on a fresh session.** The
+  old module-level `load_snapshot` / `load_repl_snapshot` are replaced by
+  `session.load_snapshot(state) -> snapshot | None` (the snapshot is `None` for
+  a dump taken between feeds). It restores a dump *into* a freshly checked-out
+  session in place of starting it fresh, so it is rejected (`RuntimeError`)
+  after any `feed_run` / `feed_start` / `load_snapshot` — it would otherwise
+  silently discard work. The dump restores its own `script_name` / limits /
+  type-check state (the `checkout()` config for those is not applied); the
+  dataclass registry from `checkout()` is reused.
+- **`resume` takes no `mount=`.** Mounts are fixed for the whole feed (passed
+  to `feed_start`), so there is no per-`resume` mount argument.
+- **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
+  are host configuration, not sandbox state, so their **host paths** never enter
+  the (opaque, possibly-transmitted) dump bytes — a dump that carried host paths
+  could otherwise be crafted to mount an arbitrary host directory on load. To
+  resume a suspended feed with its mounts, pass the same `mount=` the original
+  `feed_start` used to `load_snapshot`; the worker rebuilds the mount table.
+- **`load_snapshot` validates the re-supplied mounts.** The dump records the
+  suspended feed's mount *requirements* (virtual path + mode + write limit, no
+  host path). `load_snapshot` must supply mounts that match them exactly (host
+  paths may differ); a missing, extra, or altered mount raises rather than
+  silently dropping the feed's mounts. An idle dump records no requirements, so
+  it takes no `mount=` (supplying one raises).
+- **`'overlay'` writes are not preserved across a dump.** A restored overlay
+  mount starts empty; `read-only` / `read-write` mounts hold no in-worker state
+  and restore fully.
+- **A re-announced OS-call snapshot after `load_snapshot` carries only its
+  `not_handled_error`** — its `args`/`kwargs` were consumed before the dump, so
+  they come back empty.
 - **Natural-JSON host serialization was removed.** Results now cross the
   subprocess boundary as structured protocol values; the old
   `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /
-  `kwargs_json()` helper format is not part of the pool API.
+  `kwargs_json()` helper format is not part of the pool API. (`feed_start`
+  snapshots and `MontyComplete` expose `args` / `kwargs` / `output` as
+  converted Python objects only.)
 
 ## JavaScript client (`@pydantic/monty`)
 
@@ -158,7 +195,17 @@ binaries shipped in platform npm packages. Everything above applies, plus:
   Return values that cannot be converted at all (e.g. a `Symbol`, or a
   malformed `__monty_type__` marker object) likewise raise a catchable
   in-sandbox `TypeError` instead of failing host-side.
-- **`dump()`** returns the opaque bytes; there is no JS restore API.
+- **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
+  returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
+  `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,
+  and `session.loadSnapshot(bytes, opts)` restores it (fresh-session-only,
+  returning the re-announced snapshot or `null`). Differences from Python: a
+  name lookup resolves only to an external *function* (`resume(functionName?)`,
+  matching `resumeNameLookup`), not an arbitrary value; resume verbs are
+  methods (`resume`, `resumeError`, `resumeNotFound`, `resumeFuture`,
+  `resumeNotHandled`) rather than a result dict; and the sandbox-future
+  mechanism is fully caller-driven (`resumeFuture()` then
+  `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.
 

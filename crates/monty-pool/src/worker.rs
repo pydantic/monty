@@ -38,7 +38,7 @@ impl Worker {
     ///
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
-    /// `ReplCreate` of its first checkout).
+    /// `Configure` of its first checkout).
     pub(crate) fn spawn(config: &PoolConfig) -> Result<Self, PoolError> {
         let mut command = Command::new(&config.binary_path);
         command

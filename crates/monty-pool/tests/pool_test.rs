@@ -532,7 +532,7 @@ fn suspension_time_does_not_consume_the_duration_budget() {
 fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
     // The `max_duration` budget and consumed execution time travel inside the
     // dump, and the worker stamps them onto its replies — so a session
-    // restored via `checkout_load` regains the parent-side backstop without
+    // restored via `load_snapshot` regains the parent-side backstop without
     // the parent ever having seen the original `ReplConfig`.
     let dir = tempfile::tempdir().unwrap();
     let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
@@ -550,7 +550,8 @@ fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
     let state = session.dump().unwrap();
     drop(session);
 
-    let (mut restored, event) = pool.checkout_load(state).unwrap();
+    let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
+    let event = restored.load_snapshot(state, vec![], &mut no_print).unwrap();
     assert!(event.is_none(), "idle dump should restore without a suspension");
     let err = restored
         .feed(
@@ -709,7 +710,9 @@ fn dump_survives_worker_death_and_loads_elsewhere() {
     let state = session.dump().unwrap();
     drop(session); // kill the original worker outright
 
-    let (mut restored, event) = pool.checkout_load(state).unwrap();
+    // restore into a fresh worker by loading over its empty session
+    let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
+    let event = restored.load_snapshot(state, vec![], &mut no_print).unwrap();
     let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
         panic!("expected re-announced FunctionCall, got {event:?}");
     };

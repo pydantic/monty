@@ -155,7 +155,8 @@ enum Pending {
 }
 
 impl Checkout {
-    /// Sends `ReplCreate` on a fresh worker.
+    /// Sends `Configure` on a fresh worker (the worker materializes the repl
+    /// lazily on the first feed, or restores one via `load_snapshot` instead).
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
         let mut this = Self {
             worker: Some(worker),
@@ -166,7 +167,7 @@ impl Checkout {
             armed_deadline: None,
         };
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ReplCreate(pb::ReplCreate {
+            kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
                 script_name: repl.script_name.clone(),
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
@@ -175,33 +176,48 @@ impl Checkout {
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
-            other => Err(this.protocol_violation(&format!("unexpected reply to ReplCreate: {other:?}"))),
+            other => Err(this.protocol_violation(&format!("unexpected reply to Configure: {other:?}"))),
         }
     }
 
-    /// Restores a dumped session on a fresh worker; returns the re-announced
-    /// suspension event when the dump was taken mid-feed.
-    pub(crate) fn load(
-        worker: Worker,
-        pool: Arc<PoolInner>,
+    /// Restores a dumped session into this checkout's worker, replacing its
+    /// current (non-suspended) session, and returns the re-announced suspension
+    /// event when the dump was taken mid-feed (`None` for an idle dump).
+    ///
+    /// Intended to initialize a freshly created checkout by loading instead of
+    /// feeding: the worker is `Ready` with an empty session, and `Load`
+    /// overwrites it (no `Reset` round-trip). It is the caller's job to only do
+    /// this on a checkout that has not been fed (a suspended worker rejects
+    /// `Load`).
+    ///
+    /// `mounts` re-establish the suspended feed's mounts (which are never part
+    /// of the dump). They must match the mounts the original feed used; pass an
+    /// empty `Vec` for an idle dump or to deliberately resume without mounts
+    /// (its mount-covered OS calls then bubble up). The session's resource
+    /// budget is taken from the dump, so the prior `Configure` limits are
+    /// dropped here and re-adopted from the worker's reply.
+    pub fn load_snapshot(
+        &mut self,
         state: Vec<u8>,
-    ) -> Result<(Self, Option<TurnEvent>), PoolError> {
-        let mut this = Self {
-            worker: Some(worker),
-            pool,
-            pending: None,
-            duration_budget: None,
-            reported_execution: Duration::ZERO,
-            armed_deadline: None,
-        };
+        mounts: Vec<MountSpec>,
+        on_print: OnPrint<'_>,
+    ) -> Result<Option<TurnEvent>, PoolError> {
+        // the dump carries its own limits/consumed time — forget what the
+        // replaced session.s Configure established and re-adopt from the reply
+        self.pending = None;
+        self.duration_budget = None;
+        self.reported_execution = Duration::ZERO;
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
+            kind: Some(pb::parent_request::Kind::Load(pb::Load {
+                state,
+                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
+            })),
         };
-        match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
-            ControlEvent::Ok => Ok((this, None)),
-            ControlEvent::Turn(event) => Ok((this, Some(event))),
+        match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
+            ControlEvent::Ok => Ok(None),
+            ControlEvent::Turn(event) => Ok(Some(event)),
             other @ ControlEvent::Dump(_) => {
-                Err(this.protocol_violation(&format!("unexpected reply to Load: {other:?}")))
+                Err(self.protocol_violation(&format!("unexpected reply to Load: {other:?}")))
             }
         }
     }
