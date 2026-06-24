@@ -405,6 +405,56 @@ impl ExtFunctionResult {
         }
     }
 
+    /// Which arm this result is: `"return"`, `"error"`, `"future"`, or
+    /// `"not_found"`. A child resuming its own call dispatches on this to decide
+    /// which payload getter below to read.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match &self.result {
+            ExtResult::Return(_) => "return",
+            ExtResult::Error(_) => "error",
+            ExtResult::Future(_) => "future",
+            ExtResult::NotFound(_) => "not_found",
+        }
+    }
+
+    /// The returned value for a `"return"` result, else `None`. `None` is
+    /// ambiguous with a returned Python `None`; check `kind` to disambiguate.
+    #[getter]
+    fn value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        match &self.result {
+            ExtResult::Return(value) => Ok(Some(from_monty(py, value)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// The carried exception for an `"error"` result, else `None`.
+    #[getter]
+    fn exception(&self) -> Option<RaisedException> {
+        match &self.result {
+            ExtResult::Error(exc) => Some(RaisedException::from_monty(exc.clone())),
+            _ => None,
+        }
+    }
+
+    /// The missing name for a `"not_found"` result, else `None`.
+    #[getter]
+    fn name(&self) -> Option<String> {
+        match &self.result {
+            ExtResult::NotFound(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
+    /// The pending call id for a `"future"` result, else `None`.
+    #[getter]
+    fn future_call_id(&self) -> Option<u32> {
+        match &self.result {
+            ExtResult::Future(call_id) => Some(*call_id),
+            _ => None,
+        }
+    }
+
     fn __repr__(&self) -> String {
         match &self.result {
             ExtResult::Return(_) => "ExtFunctionResult.returns(...)".to_owned(),

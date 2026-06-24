@@ -16,8 +16,7 @@
 //! Decoding is deliberately fallible: a frame arriving over a network comes
 //! from an untrusted peer, so it validates everything (value depth, enum names,
 //! date ranges, the per-call decode budget) exactly as the in-process
-//! subprocess protocol does. See `websocket_plan.md` for transport recipes and
-//! the protocol footguns.
+//! subprocess protocol does.
 
 pub mod convert;
 pub mod dataclass;

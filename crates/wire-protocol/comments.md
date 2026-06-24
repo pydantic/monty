@@ -5,9 +5,7 @@
 (`encode_parent_request`, `decode_parent_request`, `encode_child_event`,
 `decode_child_event`) plus frozen message classes mirroring the `ParentRequest`
 and `ChildEvent` oneof arms. It exists so a sandbox can be driven over an
-arbitrary transport (WebSocket, HTTP, socket, Docker pipe). See
-[`websocket_plan.md`](./websocket_plan.md) for usage and the full footgun list;
-this file records how the package behaves where it might surprise you.
+arbitrary transport (WebSocket, HTTP, socket, Docker pipe).
 
 ## Not a transport
 
@@ -60,6 +58,11 @@ mean "unlimited" (except recursion depth, which the child defaults).
   `from_exception` captures type + `str()` only — **no traceback**.
 - `ResumeNameLookup` distinguishes "resolved to `None`" from "undefined" via
   `is_defined`; `value` alone is ambiguous.
+- `ExtFunctionResult` is built via classmethods (`returns`/`error`/`future`/
+  `not_found`) but also *read* via attributes (`kind` plus `value` / `exception`
+  / `name` / `future_call_id`), so a Python *child* can interpret the result it
+  receives when resuming its own `FunctionCall`. As with `ResumeNameLookup`,
+  `value` is ambiguous with a returned `None` — dispatch on `kind` first.
 
 ## Version field
 

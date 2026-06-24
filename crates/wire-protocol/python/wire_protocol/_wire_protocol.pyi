@@ -105,8 +105,22 @@ class RaisedException:
 @final
 class ExtFunctionResult:
     """The outcome of a host-side function/OS call, for `ResumeCall` /
-    `FutureResult`. Build via the classmethods."""
+    `FutureResult`. Build via the classmethods; read via the attributes.
 
+    The read attributes let a *child* interpret the result it gets back when
+    resuming its own call: dispatch on `kind`, then read the matching payload.
+    """
+
+    # `'return'`, `'error'`, `'future'`, or `'not_found'`.
+    kind: str
+    # Set for `'return'` (ambiguous with a returned `None` — check `kind`).
+    value: Value | None
+    # Set for `'error'`.
+    exception: RaisedException | None
+    # Set for `'not_found'`.
+    name: str | None
+    # Set for `'future'`.
+    future_call_id: int | None
     @classmethod
     def returns(cls, value: Value) -> ExtFunctionResult:
         """The call returned `value`."""

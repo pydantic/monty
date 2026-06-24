@@ -15,8 +15,3 @@ from wire_protocol import (
     decode_child_event,     # client side: decode an event/response from the sandbox
 )
 ```
-
-Values cross the boundary as native Python objects (`int`, `str`, `bytes`,
-`list`, `dict`, `datetime`, `pathlib.PurePosixPath`, registered dataclasses,
-…). See [`websocket_plan.md`](./websocket_plan.md) for transport recipes, a
-server skeleton, and the protocol footguns.

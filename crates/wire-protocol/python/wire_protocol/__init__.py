@@ -2,8 +2,7 @@
 
 The four codec functions turn the message objects below into protobuf bytes and
 back, so a sandbox can be driven over a WebSocket, an HTTP request, a raw
-socket, or a Docker `exec` pipe. See `websocket_plan.md` for transport recipes
-and footguns.
+socket, or a Docker `exec` pipe.
 """
 
 from typing import Union
