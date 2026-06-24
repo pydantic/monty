@@ -416,9 +416,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         Ok(())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -426,10 +429,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
-                return Ok(false);
+                return Ok(Some(false));
             }
         }
-        Ok(true)
+        Ok(Some(true))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

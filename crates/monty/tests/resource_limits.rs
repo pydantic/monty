@@ -1425,7 +1425,7 @@ fn timeout_in_tuple_repetition() {
 
 /// Test that comparing two large equal lists respects the time limit.
 ///
-/// `List::py_eq()` iterates element-wise comparing pairs. With large equal lists,
+/// `List::py_eq_impl()` iterates element-wise comparing pairs. With large equal lists,
 /// it must compare every element before returning True.
 #[test]
 fn timeout_in_list_equality() {
@@ -1439,7 +1439,7 @@ a == b
 
 /// Test that comparing two large equal dicts respects the time limit.
 ///
-/// `Dict::py_eq()` iterates all entries checking keys and values. With large equal
+/// `Dict::py_eq_impl()` iterates all entries checking keys and values. With large equal
 /// dicts, it must check every entry before returning True.
 #[test]
 fn timeout_in_dict_equality() {

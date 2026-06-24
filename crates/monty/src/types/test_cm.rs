@@ -110,8 +110,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TestContextManager> {
         None
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(false)
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // Test context managers use identity equality.
+        Ok(None)
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

@@ -23,7 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     object::MontyObject,
     os::OsFunctionCall,
@@ -896,16 +896,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
-        if is_aware(a) != is_aware(b) {
-            return Ok(false);
-        }
-        if is_aware(a) {
-            return Ok(utc_micros(a) == utc_micros(b));
-        }
-        Ok(local_micros(a) == local_micros(b))
+        Ok(Some(if is_aware(a) != is_aware(b) {
+            false
+        } else if is_aware(a) {
+            utc_micros(a) == utc_micros(b)
+        } else {
+            local_micros(a) == local_micros(b)
+        }))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

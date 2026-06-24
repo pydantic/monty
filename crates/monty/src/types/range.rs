@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
@@ -234,21 +234,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Value::Int(offset_i64))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         // Compare ranges by their actual sequences, not parameters.
         // Two ranges are equal if they produce the same elements.
         let len1 = a.len();
         let len2 = b.len();
-        if len1 != len2 {
-            return Ok(false);
-        }
-        // Same length - compare first element and step (if non-empty)
-        if len1 == 0 {
-            return Ok(true); // Both empty
-        }
-        Ok(a.start == b.start && a.step == b.step)
+        Ok(Some(if len1 != len2 {
+            false
+        } else if len1 == 0 {
+            true // Both empty
+        } else {
+            // Same length - compare first element and step
+            a.start == b.start && a.step == b.step
+        }))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

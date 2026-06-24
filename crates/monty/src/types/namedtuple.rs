@@ -31,7 +31,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithHeap, HeapId, HeapItem, HeapRead, RecursionToken},
+    heap::{ContainsHeap, DropWithHeap, HeapId, HeapItem, HeapRead, HeapReadOutput, RecursionToken},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::Type,
@@ -295,20 +295,30 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
-        }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, a)) = iter.next_with_index(vm)? {
-            let b = other.clone_item(i, vm);
-            defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
-                return Ok(false);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // A namedtuple equals another namedtuple element-wise, and also equals a
+        // plain tuple with the same elements (class name is ignored). Both
+        // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
+        // need not know about namedtuples.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::NamedTuple(other)) => {
+                if self.get(vm.heap).len() != other.get(vm.heap).len() {
+                    return Ok(Some(false));
+                }
+                let iter = self.iter(vm)?;
+                defer_drop_mut!(iter, vm);
+                while let Some((i, a)) = iter.next_with_index(vm)? {
+                    let b = other.clone_item(i, vm);
+                    defer_drop!(b, vm);
+                    if !a.py_eq(b, vm)? {
+                        return Ok(Some(false));
+                    }
+                }
+                Ok(Some(true))
             }
+            Some(HeapReadOutput::Tuple(other)) => Ok(Some(self.eq_tuple(&other, vm)?)),
+            _ => Ok(None),
         }
-        Ok(true)
     }
 
     /// Hashes by element only (not by class name), matching `Tuple::py_hash`

@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{PyTrait, Type},
@@ -170,10 +170,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
-        Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
+        Ok(Some(a.start == b.start && a.stop == b.stop && a.step == b.step))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

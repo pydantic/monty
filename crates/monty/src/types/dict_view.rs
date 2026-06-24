@@ -136,19 +136,26 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-            return Ok(true);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::DictKeysView(other)) => {
+                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                    return Ok(Some(true));
+                }
+                let left = self.dict(vm);
+                let right = other.dict(vm);
+                dict_keys_eq_set_like(
+                    &left,
+                    right.get(vm.heap).len(),
+                    |key, vm| right.contains_key(key, vm),
+                    vm,
+                )
+                .map(Some)
+            }
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.eq_set(&other, vm)?)),
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.eq_frozenset(&other, vm)?)),
+            _ => Ok(None),
         }
-
-        let left = self.dict(vm);
-        let right = other.dict(vm);
-        dict_keys_eq_set_like(
-            &left,
-            right.get(vm.heap).len(),
-            |key, vm| right.contains_key(key, vm),
-            vm,
-        )
     }
 
     fn py_repr_fmt(
@@ -291,14 +298,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
-            return Ok(true);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::DictItemsView(other)) => {
+                if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
+                    return Ok(Some(true));
+                }
+                let left = self.dict(vm);
+                let right = other.dict(vm);
+                Ok(Some(left.eq_dict(&right, vm)?))
+            }
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.eq_set(&other, vm)?)),
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.eq_frozenset(&other, vm)?)),
+            _ => Ok(None),
         }
-
-        let left = self.dict(vm);
-        let right = other.dict(vm);
-        left.py_eq(&right, vm)
     }
 
     fn py_repr_fmt(
@@ -388,8 +401,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(false)
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // `dict_values` views use identity equality (handled before the heap read).
+        Ok(None)
     }
 
     fn py_repr_fmt(

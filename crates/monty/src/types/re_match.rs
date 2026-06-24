@@ -284,9 +284,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         None
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        // Match objects are not comparable
-        Ok(false)
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // Match objects use identity equality (handled before the heap read).
+        Ok(None)
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
