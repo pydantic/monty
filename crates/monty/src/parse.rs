@@ -1036,7 +1036,7 @@ impl<'a> Parser<'a> {
                 let position = self.convert_range(range);
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let args_vec = args.into_vec();
-                let keywords_vec = keywords.into_vec();
+                let keywords_vec: Vec<_> = keywords.into_iter().collect();
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR

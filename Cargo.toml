@@ -42,17 +42,18 @@ lto = false
 
 [workspace.dependencies]
 # ruff, ty and related crates
-ruff_python_parser = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_parser", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_python_stdlib = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_stdlib", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_python_ast = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_ast", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_text_size = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_text_size", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_db = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_db", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30", features = ["serde"] }
-ty_python_semantic = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_semantic", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_python_core = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_core", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_module_resolver = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_module_resolver", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_vendored = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_vendored", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-# salsa version matches current main of ruff
-salsa = { version="0.26.1", default-features = false, features = [
+# using git until all ruff and ty crates are published to crates.io
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_parser", tag = "0.15.19" }
+ruff_python_stdlib = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_stdlib", tag = "0.15.19" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_python_ast", tag = "0.15.19" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_text_size", tag = "0.15.19" }
+ruff_db = { git = "https://github.com/astral-sh/ruff.git", package = "ruff_db", tag = "0.15.19" ,features = ["serde"] }
+ty_python_semantic = { git = "https://github.com/astral-sh/ruff.git", package = "ty_python_semantic", tag = "0.15.19" }
+ty_python_core = { git = "https://github.com/astral-sh/ruff.git", package = "ty_python_core", tag = "0.15.19" }
+ty_module_resolver = { git = "https://github.com/astral-sh/ruff.git", package = "ty_module_resolver", tag = "0.15.19" }
+ty_vendored = { git = "https://github.com/astral-sh/ruff.git", package = "ty_vendored", tag = "0.15.19" }
+# salsa version matches the version ruff uses
+salsa = { version="0.27.0", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
