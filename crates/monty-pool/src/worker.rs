@@ -1,5 +1,5 @@
 //! A single worker the pool drives over the wire protocol: either a local
-//! `monty --subprocess` child (framed stdio) or a remote child reached over a
+//! `monty subprocess` child (framed stdio) or a remote child reached over a
 //! WebSocket. Both expose the same send/recv/kill surface so the checkout turn
 //! loop and the watchdog are transport-agnostic.
 //!
@@ -51,7 +51,7 @@ enum WorkerKind {
     WebSocket(Box<WebSocketWorker>),
 }
 
-/// A local `monty --subprocess` child with framed stdio pipes.
+/// A local `monty subprocess` child with framed stdio pipes.
 ///
 /// The `Child` handle lives behind `Arc<Mutex<..>>` so the watchdog can kill the
 /// process while the owning thread is blocked reading from it.
@@ -100,7 +100,7 @@ impl Killable for WsShutdown {
 }
 
 impl Worker {
-    /// Spawns a local `monty --subprocess` child with framed pipes.
+    /// Spawns a local `monty subprocess` child with framed pipes.
     ///
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
@@ -113,7 +113,7 @@ impl Worker {
         };
         let mut command = Command::new(binary_path);
         command
-            .arg("--subprocess")
+            .arg("subprocess")
             // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())

@@ -20,6 +20,7 @@ name = "monty_cpython"
 path = "src/lib.rs"
 
 [dependencies]
+clap = { workspace = true }
 monty = { path = "../monty" }
 monty-proto = { path = "../monty-proto" }
 # `pydantic-monty`'s lib (`_monty`) is linked as an rlib purely for its

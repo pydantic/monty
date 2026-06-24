@@ -1,5 +1,5 @@
 //! napi binding over `monty-pool`: crash-isolated execution in pools of
-//! `monty --subprocess` workers, the Node.js counterpart of `pydantic_monty`.
+//! `monty subprocess` workers, the Node.js counterpart of `pydantic_monty`.
 //!
 //! The architecture mirrors the Python binding but keeps JS-shaped concerns in
 //! TypeScript: this module exposes *turn-level* primitives ([`NativePool`],

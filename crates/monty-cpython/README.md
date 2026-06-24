@@ -1,6 +1,6 @@
 # monty-cpython
 
-A Monty wire-protocol child worker (like `monty --subprocess`) that executes each
+A Monty wire-protocol child worker (like `monty subprocess`) that executes each
 fed snippet in **embedded CPython** instead of Monty, routing undefined names back
 to the parent as `FunctionCall`s. It lets a parent (`monty-pool` /
 `pydantic_monty`) drive a *real* Python interpreter over the same protocol —
@@ -8,10 +8,14 @@ locally over stdio, or remotely over a WebSocket.
 
 ## Transports
 
-- `--subprocess` (or `--stdio`) — framed stdio, a drop-in worker for `monty-pool`
+The transport is selected by subcommand:
+
+- `monty-cpython subprocess` — framed stdio, a drop-in worker for `monty-pool`
   (point `binary_path` at this binary).
-- `--connect <ws-url>` — dial a relay (or a parent-as-server) as a WebSocket client.
-- `--listen <addr>` — bind and accept one parent connection (server mode).
+- `monty-cpython connect <ws-url>` — dial a relay (or a parent-as-server) as a
+  WebSocket client.
+- `monty-cpython server <addr>` — bind and accept one parent connection (server
+  mode).
 
 The execution `globals` is a `dict` subclass whose `__missing__` turns any unbound
 global that is not a builtin or dunder into a proxy; calling that proxy emits a

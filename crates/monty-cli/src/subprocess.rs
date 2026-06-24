@@ -1,4 +1,4 @@
-//! `monty --subprocess`: protocol child mode.
+//! `monty subprocess`: protocol child mode.
 //!
 //! Reads framed [`pb::ParentRequest`]s from stdin and writes framed [`pb::ChildEvent`]s
 //! to stdout (see `monty-proto` for the schema and protocol rules). The child
@@ -716,7 +716,7 @@ impl Child {
     /// Best-effort `FatalError` event, duplicated to stderr. Used only for
     /// unrecoverable conditions — the child exits right after.
     fn fatal(&self, message: &str) {
-        eprintln!("monty --subprocess fatal error: {message}");
+        eprintln!("monty subprocess fatal error: {message}");
         let mut fatal_event = event(pb::child_event::Kind::FatalError(pb::FatalError {
             message: message.to_owned(),
         }));

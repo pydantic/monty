@@ -1,7 +1,7 @@
 //! The protocol state machine: turns `pb::ParentRequest`s into `pb::ChildEvent`s
 //! by running feeds in embedded CPython.
 //!
-//! Mirrors the strict alternation of `monty --subprocess` (one request in, zero
+//! Mirrors the strict alternation of `monty subprocess` (one request in, zero
 //! or more `Print` events, then exactly one turn-ender) but uses a *blocking*
 //! host-call model: an undefined name suspends and resumes entirely inside the
 //! feed (see [`crate::pyexec::HostBridge`]), so the top-level loop only ever

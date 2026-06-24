@@ -1,4 +1,4 @@
-//! Pool of `monty --subprocess` worker processes.
+//! Pool of `monty subprocess` worker processes.
 //!
 //! Monty executes untrusted Python, and a monty process can never be made
 //! fully crash-proof against memory errors (stack overflow, allocator
@@ -41,7 +41,7 @@ pub use crate::{
 /// How the pool reaches its workers.
 #[derive(Debug, Clone)]
 pub enum MontyTransport {
-    /// Spawn a local `monty --subprocess` child and talk to it over framed
+    /// Spawn a local `monty subprocess` child and talk to it over framed
     /// stdio pipes.
     Subprocess {
         /// Path to the `monty` (or compatible child) binary.

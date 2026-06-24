@@ -16,7 +16,7 @@ name = "monty"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
 monty = { workspace = true }
 monty-proto = { workspace = true }
 monty-type-checking = { workspace = true }

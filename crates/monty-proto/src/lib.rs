@@ -1,9 +1,9 @@
-//! Wire protocol shared by `monty --subprocess` children and their parents.
+//! Wire protocol shared by `monty subprocess` children and their parents.
 //!
 //! Monty executes untrusted Python, and a monty process can never be made
 //! fully crash-proof against memory errors (stack overflow, allocator
 //! aborts). The subprocess protocol isolates those crashes: a parent drives a
-//! pool of `monty --subprocess` children over stdin/stdout, and a dead child
+//! pool of `monty subprocess` children over stdin/stdout, and a dead child
 //! is simply respawned. Protobuf (rather than monty's internal postcard
 //! format) lets a parent be implemented in any language — see
 //! `proto/monty/v1/monty.proto` for the schema and protocol rules.

@@ -1,4 +1,4 @@
-//! Integration tests for `monty --subprocess`: spawn the real binary and
+//! Integration tests for `monty subprocess`: spawn the real binary and
 //! drive it over the wire protocol, including crash scenarios — the entire
 //! point of the subprocess mode is that a dead child is a recoverable event
 //! for the parent.
@@ -14,7 +14,7 @@ use std::{
 use monty::MontyObject;
 use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
 
-/// A spawned `monty --subprocess` child with framed pipes.
+/// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
     child: Child,
     writer: ChildStdin,
@@ -24,11 +24,11 @@ struct ChildProc {
 impl ChildProc {
     fn spawn() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
-            .arg("--subprocess")
+            .arg("subprocess")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("failed to spawn monty --subprocess");
+            .expect("failed to spawn monty subprocess");
         let writer = child.stdin.take().expect("child stdin");
         let reader = FrameReader::new(child.stdout.take().expect("child stdout"));
         Self { child, writer, reader }

@@ -4,7 +4,7 @@
 //! A [`Transport`] moves whole protocol messages: one [`pb::ParentRequest`] in,
 //! one [`pb::ChildEvent`] out. The framing lives in the adapter — [`StdioTransport`]
 //! prepends monty's 4-byte little-endian length prefix (so the binary can drop
-//! in under the existing `monty-pool` as a `--subprocess` worker), while the
+//! in under the existing `monty-pool` as a `subprocess` worker), while the
 //! WebSocket adapters (added later) use one binary message per frame.
 
 use std::{
@@ -60,7 +60,7 @@ pub trait Transport {
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), SendError>;
 }
 
-/// stdio transport: framed exactly like `monty --subprocess` (4-byte LE length
+/// stdio transport: framed exactly like `monty subprocess` (4-byte LE length
 /// prefix), so the existing `monty-pool` can spawn and drive this binary
 /// unchanged. Diagnostics must go to stderr — stdout carries only frames.
 pub struct StdioTransport {

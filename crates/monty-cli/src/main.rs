@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use monty::{
     LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
@@ -82,17 +82,17 @@ struct Cli {
     #[arg(long)]
     max_recursion_depth: Option<usize>,
 
+    #[command(subcommand)]
+    subcommand: Option<Command>,
+}
+
+/// Subcommands that switch `monty` out of its normal file/REPL behaviour.
+#[derive(Subcommand)]
+enum Command {
     /// Run as a protocol child: read framed protobuf requests on stdin and
     /// write framed events on stdout (see the monty-proto crate). Intended to
     /// be driven by a parent process such as monty-pool, not by hand.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "interactive", "type_check", "command", "file", "mounts",
-            "max_allocations", "max_duration", "max_memory", "gc_interval", "max_recursion_depth",
-        ],
-    )]
-    subprocess: bool,
+    Subprocess,
 }
 
 impl Cli {
@@ -138,7 +138,7 @@ const EXT_FUNCTIONS: bool = false;
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if cli.subprocess {
+    if let Some(Command::Subprocess) = cli.subcommand {
         return subprocess::run();
     }
 

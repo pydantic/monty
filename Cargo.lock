@@ -2014,6 +2014,7 @@ dependencies = [
 name = "monty-cpython"
 version = "0.0.18"
 dependencies = [
+ "clap",
  "monty",
  "monty-proto",
  "pydantic-monty",

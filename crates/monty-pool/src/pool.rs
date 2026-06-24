@@ -15,7 +15,7 @@ use crate::{
     worker::{Worker, lock_ignore_poison},
 };
 
-/// An elastic pool of `monty --subprocess` workers.
+/// An elastic pool of `monty subprocess` workers.
 ///
 /// `min_processes` workers spawn eagerly so the first checkout is fast;
 /// further workers spawn on demand up to `max_processes`, and dead workers
