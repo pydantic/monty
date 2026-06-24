@@ -158,8 +158,9 @@ impl PyTrait<'_> for Value {
         match self {
             // `Undefined` is a sentinel and is never equal to anything.
             Self::Undefined => Ok(Some(false)),
-            Self::None => Ok(Some(matches!(other, Self::None))),
-            Self::Ellipsis => Ok(Some(matches!(other, Self::Ellipsis))),
+
+            Self::None => Ok(matches!(other, Self::None).then_some(true)),
+            Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
             Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
             Self::Int(a) => Ok(eq_i64(*a, other, vm)),
             Self::Float(f) => Ok(eq_f64(*f, other, vm)),
@@ -178,15 +179,30 @@ impl PyTrait<'_> for Value {
                 Self::InternBytes(o) if id == o => Some(true),
                 _ => eq_bytes(vm.interns.get_bytes(*id), other, vm),
             }),
-            Self::Builtin(b) => Ok(Some(matches!(other, Self::Builtin(o) if b == o))),
-            Self::ModuleFunction(mf) => Ok(Some(matches!(other, Self::ModuleFunction(o) if mf == o))),
-            Self::DefFunction(f) => Ok(Some(matches!(other, Self::DefFunction(o) if f == o))),
+            Self::Builtin(b) => Ok(match other {
+                Self::Builtin(o) => Some(b == o),
+                _ => None,
+            }),
+            Self::ModuleFunction(mf) => Ok(match other {
+                Self::ModuleFunction(o) => Some(mf == o),
+                _ => None,
+            }),
+            Self::DefFunction(f) => Ok(match other {
+                Self::DefFunction(o) => Some(f == o),
+                _ => None,
+            }),
             // External function equality is name-based across both the inline
             // `Value::ExtFunction(StringId)` and heap `HeapData::ExtFunction(String)`
             // representations. (#347)
             Self::ExtFunction(name_id) => Ok(eq_ext_function(vm.interns.get_str(*name_id), other, vm)),
-            Self::Marker(m) => Ok(Some(matches!(other, Self::Marker(o) if m == o))),
-            Self::Property(p) => Ok(Some(matches!(other, Self::Property(o) if p == o))),
+            Self::Marker(m) => Ok(match other {
+                Self::Marker(o) => Some(m == o),
+                _ => None,
+            }),
+            Self::Property(p) => Ok(match other {
+                Self::Property(o) => Some(p == o),
+                _ => None,
+            }),
             Self::Ref(id) => {
                 // Identity short-circuit: a heap object always equals itself.
                 if let Self::Ref(other_id) = other

@@ -169,8 +169,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
-        // Dataclasses are equal if they have the same class name and equal attrs.
-        if self.get(vm.heap).name(vm.interns) != other.get(vm.heap).name(vm.interns) {
+        // Dataclasses are equal only if they are the same class and have equal attrs.
+        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
             return Ok(Some(false));
         }
         Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))

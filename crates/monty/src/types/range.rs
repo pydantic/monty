@@ -248,15 +248,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
             false
         } else if len1 == 0 {
             true // Both empty
+        } else if len1 == 1 {
+            // Single-element ranges are equal when their one element matches,
+            // regardless of step (e.g. range(0, 1, 1) == range(0, 2, 2)).
+            a.start == b.start
         } else {
-            // Same length - compare first element and step
+            // Same length (>1) - compare first element and step.
             a.start == b.start && a.step == b.step
         }))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        // Ranges are equal by the sequence they produce, so the hash must depend
+        // only on what equality compares: length, then start (if non-empty), then
+        // step (only if length > 1). Hashing the raw `start`/`stop`/`step` fields
+        // would break `hash(a) == hash(b)` for equal ranges like `range(0, 1, 1)`
+        // and `range(0, 2, 2)`.
+        let r = self.get(vm.heap);
+        let len = r.len();
         let mut hasher = DefaultHasher::new();
-        self.get(vm.heap).hash(&mut hasher);
+        len.hash(&mut hasher);
+        if len > 0 {
+            r.start.hash(&mut hasher);
+            if len > 1 {
+                r.step.hash(&mut hasher);
+            }
+        }
         Ok(Some(HashValue::new(hasher.finish())))
     }
 

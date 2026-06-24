@@ -39,9 +39,21 @@ alice = make_user('Alice')
 bob = make_user('Bob')
 assert hash(alice) != hash(bob), 'different field values have different hash'
 
+# === Equality ===
+assert point == point2, 'equal frozen dataclasses compare equal'
+assert alice != bob, 'dataclasses with different field values not equal'
+assert point != alice, 'dataclasses of different types not equal'
+# A dataclass is never equal to a non-dataclass, even with matching fields
+assert point != (1, 2), 'dataclass not equal to tuple'
+assert point != {'x': 1, 'y': 2}, 'dataclass not equal to dict'
+
 # === Mutable dataclass ===
 mut_point = make_mutable_point()
 assert repr(mut_point) == 'MutablePoint(x=1, y=2)', f'mutable point repr {mut_point=!r}'
+# Distinct classes are not equal even with identical field names and values
+# (Point and MutablePoint are both (x=1, y=2)).
+assert point != mut_point, 'different dataclass types with same fields not equal'
+assert mut_point != point, 'reflected: different dataclass types not equal'
 
 # === Dataclass with string argument ===
 alice = make_user('Alice')

@@ -238,7 +238,7 @@ impl<'h> HeapRead<'h, Dict> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some((key, value)) = iter.next(vm)? {
-            let Ok(Some(other_value)) = other.dict_get(key, vm) else {
+            let Some(other_value) = other.dict_get(key, vm)? else {
                 return Ok(false);
             };
             defer_drop!(other_value, vm);
