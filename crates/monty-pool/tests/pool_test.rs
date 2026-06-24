@@ -42,7 +42,7 @@ fn monty_binary() -> PathBuf {
 }
 
 fn config() -> PoolConfig {
-    PoolConfig::new(monty_binary())
+    PoolConfig::subprocess(monty_binary())
 }
 
 fn no_print(_: PrintStream, _: &str) {}

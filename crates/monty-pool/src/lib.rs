@@ -42,21 +42,16 @@ pub use crate::{
 #[derive(Debug, Clone)]
 pub enum MontyTransport {
     /// Spawn a local `monty subprocess` child and talk to it over framed
-    /// stdio pipes.
-    Subprocess {
-        /// Path to the `monty` (or compatible child) binary.
-        binary_path: PathBuf,
-    },
+    /// stdio pipes. Takes ath to the `monty` (or compatible child) binary.
+    Subprocess(PathBuf),
     /// Connect *out* to a remote child over a WebSocket — either a relay (which
     /// pairs this connection with a child that dialed in with the same session
     /// id) or a child running a server. One binary message per protocol frame.
-    Websocket {
-        /// Base `ws://`/`wss://` URL to dial.
-        url: String,
-        /// Append a fresh per-checkout session id (`/<uuid>`) to `url` so a
-        /// relay can rendezvous the two sides. Set `false` to dial `url` as-is.
-        append_session_id: bool,
-    },
+    ///
+    /// The URL is dialed verbatim — if a relay needs the two ends to share a
+    /// session id in the path (`/<uuid>/parent`), the caller is responsible for
+    /// putting it there. Takes full `ws://`/`wss://` URL to dial.
+    Websocket(String),
 }
 
 /// Configuration for a [`Pool`].
@@ -96,21 +91,14 @@ impl PoolConfig {
     /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
     /// `max_processes =` available parallelism, no timeouts, a 1s
     /// `duration_limit_grace`, no recycling.
-    pub fn new(binary_path: impl Into<PathBuf>) -> Self {
-        Self::with_transport(MontyTransport::Subprocess {
-            binary_path: binary_path.into(),
-        })
+    pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
+        Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
     }
 
-    /// Creates a WebSocket-transport config dialing `url`. `min_processes` is 0
-    /// (no pre-warming — connections are made per-checkout); a fresh session id
-    /// is appended to `url` per checkout (set `Websocket::append_session_id` to
-    /// `false` afterwards to dial `url` verbatim).
+    /// Creates a WebSocket-transport config dialing `url` verbatim per checkout.
+    /// `min_processes` is 0 (no pre-warming — connections are made per-checkout).
     pub fn websocket(url: impl Into<String>) -> Self {
-        let mut config = Self::with_transport(MontyTransport::Websocket {
-            url: url.into(),
-            append_session_id: true,
-        });
+        let mut config = Self::with_transport(MontyTransport::Websocket(url.into()));
         config.min_processes = 0;
         config
     }

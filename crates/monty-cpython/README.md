@@ -62,14 +62,22 @@ that differ from CPython:
 - `not_found` from the parent raises `NameError` (matching CPython for a genuinely
   undefined *call*).
 
-## One blocking call at a time; no async
+## One blocking host call at a time
 
 The host-call model is synchronous: a `FunctionCall` blocks the interpreter until
 its `ResumeCall` arrives, so only one external call is outstanding at a time.
 
-- **`async`/`await`**: top-level `await` is not supported (it is a `SyntaxError`
-  under the plain `exec`/`eval` runner). Async external functions are not
-  supported — an `ExtFunctionResult::future` answer raises `RuntimeError`.
+- **Top-level `await` is supported.** The runner compiles snippets with
+  `PyCF_ALLOW_TOP_LEVEL_AWAIT` and drives any resulting coroutine with
+  `asyncio.run`, so `await`, `async for`, and `async with` work at module level
+  (and `async def`s defined in the snippet run normally). A trailing `await`
+  expression becomes the `Complete` value.
+- **Host calls are not awaitable.** An undefined name resolves to a *synchronous*
+  blocking proxy that returns a plain value, so `await fetch(...)` raises
+  `TypeError` (you cannot await a host call). Call host functions without `await`;
+  use `await` only for coroutines defined inside the snippet or in the stdlib.
+- **Async external functions are not supported** — an `ExtFunctionResult::future`
+  answer from the parent raises `RuntimeError`.
 
 ## Other behaviour notes
 

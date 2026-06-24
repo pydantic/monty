@@ -21,7 +21,6 @@ use std::{
 
 use monty_proto::{FrameError, FrameReader, decode_frame, encode_to_capped_vec, pb, write_frame};
 use tungstenite::{Error as WsError, Message, WebSocket, stream::MaybeTlsStream};
-use uuid::Uuid;
 
 use crate::{MontyTransport, PoolConfig, PoolError};
 
@@ -106,7 +105,7 @@ impl Worker {
     /// an error on the first request the worker serves (typically the
     /// `Configure` of its first checkout).
     pub(crate) fn spawn(config: &PoolConfig) -> Result<Self, PoolError> {
-        let MontyTransport::Subprocess { binary_path } = &config.transport else {
+        let MontyTransport::Subprocess(binary_path) = &config.transport else {
             return Err(PoolError::Spawn(
                 "internal error: spawn called for a non-subprocess transport".to_owned(),
             ));
@@ -140,22 +139,16 @@ impl Worker {
         })))
     }
 
-    /// Connects to a remote child over a WebSocket. `session_id` is appended to
-    /// the URL when `append_session_id` is set, so a relay can pair this
-    /// connection with the child that dialed in with the same id.
-    pub(crate) fn connect_ws(config: &PoolConfig, session_id: Uuid) -> Result<Self, PoolError> {
-        let MontyTransport::Websocket { url, append_session_id } = &config.transport else {
+    /// Connects to a remote child over a WebSocket, dialing `config.transport.url`
+    /// verbatim. Any session/rendezvous routing the URL needs is the caller's
+    /// responsibility.
+    pub(crate) fn connect_ws(config: &PoolConfig) -> Result<Self, PoolError> {
+        let MontyTransport::Websocket(url) = &config.transport else {
             return Err(PoolError::Spawn(
                 "internal error: connect_ws called for a non-websocket transport".to_owned(),
             ));
         };
-        let target = if *append_session_id {
-            format!("{}/{session_id}", url.trim_end_matches('/'))
-        } else {
-            url.clone()
-        };
-        let (socket, _response) =
-            tungstenite::connect(&target).map_err(|err| PoolError::Spawn(format!("{target}: {err}")))?;
+        let (socket, _response) = tungstenite::connect(url).map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
         // Clone the underlying TCP socket up front for the watchdog's shutdown
         // handle (reaching it through the TLS stream once connected).
         let tcp = underlying_tcp(socket.get_ref()).and_then(|tcp| tcp.try_clone().ok());

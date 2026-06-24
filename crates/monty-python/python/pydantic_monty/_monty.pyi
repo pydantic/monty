@@ -514,7 +514,7 @@ class AsyncMontyWebsocket:
     network-bound. `checkout()` yields the same `AsyncMontySession`.
 
     ```python
-    async with AsyncMontyWebsocket('ws://127.0.0.1:8799', append_session_id=False) as pool:
+    async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
         async with pool.checkout() as session:
             result = await session.feed_run('1 + 1')
     ```
@@ -524,7 +524,6 @@ class AsyncMontyWebsocket:
         cls,
         url: str,
         *,
-        append_session_id: bool = True,
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
         request_timeout: float | None = None,
@@ -534,11 +533,10 @@ class AsyncMontyWebsocket:
         each checkout (no workers are pre-warmed).
 
         Arguments:
-            url: `ws://`/`wss://` URL to dial — a relay or a child running a server.
-            append_session_id: Append a fresh `/<uuid>` to `url` per checkout so a
-                relay can pair this connection with the child that dialed in with
-                the same id. Set `False` to dial `url` verbatim (e.g. a child
-                running `--listen`).
+            url: `ws://`/`wss://` URL to dial — a relay or a child running a
+                server. Dialed verbatim; any session/rendezvous routing the URL
+                needs (e.g. a `/<uuid>/parent` path for a relay) must already be
+                in it.
             max_processes: Cap on concurrent connections (defaults to the CPU
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before

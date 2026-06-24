@@ -124,7 +124,7 @@ impl NativePool {
     /// [`start`](Self::start).
     #[napi(constructor)]
     pub fn new(options: NativePoolOptions) -> Result<Self> {
-        let mut config = PoolConfig::new(&options.binary_path);
+        let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
         config.checkout_timeout = options.checkout_timeout_ms.map(duration_from_ms).transpose()?;

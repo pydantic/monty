@@ -35,7 +35,16 @@ use crate::{
 /// Python glue, executed once per process. Defines the sandbox namespace type
 /// and the REPL runner; everything else lives in Rust via the `host` object.
 const PREAMBLE: &CStr = cr#"
-import ast as _ast, builtins as _builtins
+import ast as _ast, builtins as _builtins, asyncio as _asyncio
+
+# inspect.CO_COROUTINE — set on a code object the compiler turned into a coroutine
+# because it contains a top-level `await`. A bare expression that merely *evaluates*
+# to a coroutine (e.g. calling an `async def`) does NOT get this flag, so we only
+# auto-run genuine top-level-await snippets, never arbitrary coroutine values.
+_CO_COROUTINE = 0x80
+# Allow `await`/`async for`/`async with` at module level (the flag the asyncio
+# REPL and IPython use); the compiled unit then needs driving to completion.
+_TOP_LEVEL_AWAIT = _ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
 class _CallbackGlobals(dict):
@@ -62,13 +71,32 @@ class _CallbackGlobals(dict):
 
 
 def _run(code, ns):
-    """Execute `code` REPL-style: a trailing expression becomes the value."""
+    """Execute `code` REPL-style: a trailing expression becomes the value.
+
+    Mirrors how IPython/the stdlib REPL split a cell — run the body in `exec`
+    mode, then evaluate a trailing *expression* statement separately so its value
+    can be returned. The split node keeps its original location, so a traceback
+    from the trailing expression still points at the right line.
+
+    Top-level `await` is supported: both halves are compiled with
+    `PyCF_ALLOW_TOP_LEVEL_AWAIT`, and any half that the compiler turned into a
+    coroutine is driven to completion with `asyncio.run`. Purely synchronous
+    snippets never touch asyncio.
+    """
     module = _ast.parse(code, '<sandbox>', 'exec')
-    last = module.body.pop() if module.body and isinstance(module.body[-1], _ast.Expr) else None
-    exec(compile(module, '<sandbox>', 'exec'), ns)
-    if last is None:
+    trailing_expr = None
+    if module.body and isinstance(module.body[-1], _ast.Expr):
+        trailing_expr = module.body.pop().value
+    _drive(compile(module, '<sandbox>', 'exec', flags=_TOP_LEVEL_AWAIT), ns)
+    if trailing_expr is None:
         return None
-    return eval(compile(_ast.Expression(last.value), '<sandbox>', 'eval'), ns)
+    return _drive(compile(_ast.Expression(trailing_expr), '<sandbox>', 'eval', flags=_TOP_LEVEL_AWAIT), ns)
+
+
+def _drive(code, ns):
+    """Run a compiled code object, awaiting it if it's a top-level coroutine."""
+    result = eval(code, ns)
+    return _asyncio.run(result) if code.co_flags & _CO_COROUTINE else result
 "#;
 
 /// Compiles [`PREAMBLE`] into a module whose `_CallbackGlobals` and `_run`

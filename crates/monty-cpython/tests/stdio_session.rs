@@ -2,6 +2,14 @@
 //! it scripts a session (Configure → Feeds → Shutdown) and answers each
 //! `FunctionCall` the child emits from a small external-function table, exactly
 //! as a real parent would.
+//!
+//! These tests share one `auto-initialize` interpreter across the cargo test
+//! harness's threads, so you may see a stray `HostBridge is unsendable, but is
+//! being dropped on another thread` line on stderr when the interpreter's cyclic
+//! GC reclaims a session's objects on a harness thread other than the one that
+//! created them. It is harmless (PyO3 skips the drop; the test still passes) and
+//! cannot occur in the real worker, which serves one session on a single thread
+//! end-to-end — verified by driving the actual binary over real stdio.
 
 use std::{
     cell::RefCell,
@@ -133,6 +141,64 @@ fn drives_a_full_session() {
         })
         .expect("an Error event");
     assert_eq!(error.exc_type, "ZeroDivisionError");
+}
+
+/// Top-level `await` is supported (`PyCF_ALLOW_TOP_LEVEL_AWAIT` + `asyncio.run`),
+/// `__missing__` still resolves host calls inside coroutines, but a host call is
+/// not itself awaitable.
+#[test]
+fn supports_top_level_await() {
+    let externals: HashMap<String, External> = HashMap::from([(
+        "double".to_string(),
+        Box::new(|args: &[MontyObject]| match args {
+            [MontyObject::Int(n)] => ExtFunctionResult::Return(MontyObject::Int(n * 2)),
+            _ => ExtFunctionResult::NotFound("double".to_string()),
+        }) as External,
+    )]);
+
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            // Top-level await of an async def that makes a (synchronous) host call:
+            // proves the coroutine is driven AND that `__missing__` resolves the
+            // undefined `double` from inside the coroutine.
+            feed("async def f():\n    return double(21)\nawait f()"),
+            // Top-level await in the body, then a trailing synchronous value.
+            feed("import asyncio\nawait asyncio.sleep(0)\n5"),
+            // Awaiting a host call is a TypeError: the proxy returns a plain value.
+            feed("await double(21)"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        externals,
+        events: events.clone(),
+    };
+
+    let _ = run_with_transport(Box::new(parent));
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+
+    // Both awaiting feeds completed with their values, in order.
+    let completes: Vec<MontyObject> = kinds
+        .iter()
+        .filter_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completes, vec![MontyObject::Int(42), MontyObject::Int(5)]);
+
+    // Awaiting the host call ended the third feed with a TypeError.
+    let error = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+    assert_eq!(error.exc_type, "TypeError");
 }
 
 fn configure() -> pb::ParentRequest {

@@ -6,7 +6,6 @@ use std::{
 };
 
 use monty_proto::pb;
-use uuid::Uuid;
 
 use crate::{
     MontyTransport, PoolConfig, PoolError,
@@ -130,7 +129,7 @@ impl PoolInner {
                 state.total += 1;
                 drop(state);
                 let acquired = if websocket {
-                    Worker::connect_ws(&self.config, Uuid::new_v4())
+                    Worker::connect_ws(&self.config)
                 } else {
                     Worker::spawn(&self.config)
                 };

@@ -34,9 +34,7 @@ use std::{
 };
 
 use ::monty::{ExcType, ExtFunctionResult, MontyException, MontyObject};
-use monty_pool::{
-    Checkout, MontyTransport, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent,
-};
+use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use pyo3::{
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
@@ -513,20 +511,18 @@ impl PyAsyncMontyWebsocket {
     #[pyo3(signature = (
         url,
         *,
-        append_session_id = true,
         max_processes = None,
         checkout_timeout = None,
         request_timeout = None,
     ))]
     fn new(
         url: String,
-        append_session_id: bool,
         max_processes: Option<usize>,
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
     ) -> PyResult<Self> {
         Ok(Self {
-            config: parse_websocket_config(url, append_session_id, max_processes, checkout_timeout, request_timeout)?,
+            config: parse_websocket_config(url, max_processes, checkout_timeout, request_timeout)?,
             pool: Arc::new(Mutex::new(None)),
         })
     }
@@ -822,7 +818,7 @@ fn parse_pool_config(
             .call_method0("find_monty_binary")?
             .extract()?,
     };
-    let mut config = PoolConfig::new(binary_path);
+    let mut config = PoolConfig::subprocess(binary_path);
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -883,24 +879,16 @@ fn discard_checkout(checkout: &SharedCheckout) {
 }
 
 /// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
-/// constructor arguments. Each checkout dials `url` (with a fresh session id
-/// appended when `append_session_id`); there is no pre-warming, so
-/// `min_processes` stays 0 and `max_processes` caps concurrent connections.
+/// constructor arguments. Each checkout dials `url` verbatim; there is no
+/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
+/// connections.
 fn parse_websocket_config(
     url: String,
-    append_session_id: bool,
     max_processes: Option<usize>,
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
 ) -> PyResult<PoolConfig> {
     let mut config = PoolConfig::websocket(url);
-    if let MontyTransport::Websocket {
-        append_session_id: flag,
-        ..
-    } = &mut config.transport
-    {
-        *flag = append_session_id;
-    }
     if let Some(max) = max_processes {
         config.max_processes = max;
     }
