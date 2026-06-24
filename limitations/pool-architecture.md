@@ -27,9 +27,10 @@ the *host API* surface.
   assumes parent and child are deployed in lockstep, so a child whose version
   differs from the `monty_version` in `StartSession` replies `FatalError` (with a
   `version skew: parent=… child=…` message) and exits non-zero rather than
-  risk a frame desync. In-process parents (`monty-pool`) always send their own
-  version, so this only fires for an out-of-band driver — e.g. the
-  `wire_protocol` package talking to a differently-versioned remote sandbox.
+  risk a frame desync. A local subprocess child is built in lockstep with the
+  parent, so this mostly matters for the WebSocket transport, where the remote
+  child is deployed separately — a `monty-cpython` (or `monty`) child on a
+  different version replies `FatalError` and the pool surfaces it cleanly.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.

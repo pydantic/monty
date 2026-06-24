@@ -27,7 +27,7 @@ use crate::{
 /// `monty_proto::MAX_VALUE_DEPTH`) — checking here gives the caller a clean
 /// `Max input depth exceeded` error before anything is sent to a worker.
 #[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
-const MAX_INPUT_DEPTH: u8 = monty_proto::MAX_VALUE_DEPTH as u8;
+const MAX_INPUT_DEPTH: u8 = monty_pool::MAX_VALUE_DEPTH as u8;
 /// Depth limit when converting sandbox values back to Python objects; values
 /// arriving over the wire are already bounded well below this, so it is a
 /// pure defence-in-depth backstop.
@@ -665,12 +665,7 @@ fn get_pure_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 ///
 /// Fields are read-only via getters; `binary`/`readable`/`writable` are derived
 /// from the underlying [`FileMode`] on demand.
-///
-/// The class lives in (and is `module = "wire_protocol"`-tagged for) this
-/// shared conversion crate because `monty_to_py` produces it whenever a
-/// `MontyObject::FileHandle` crosses the boundary. `pydantic_monty` re-exports
-/// it unchanged as `MontyFileHandle`.
-#[pyclass(name = "MontyFileHandle", module = "wire_protocol", frozen)]
+#[pyclass(name = "MontyFileHandle", module = "pydantic_monty", frozen)]
 pub struct PyMontyFileHandle(MontyFileHandle);
 
 impl PyMontyFileHandle {

@@ -399,9 +399,10 @@ impl Checkout {
         }
     }
 
-    /// OS process id of the worker (diagnostics/tests).
+    /// OS process id of the worker, when it is a local subprocess (`None` for a
+    /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
-        self.worker.as_ref().map(Worker::pid)
+        self.worker.as_ref().and_then(Worker::pid)
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].

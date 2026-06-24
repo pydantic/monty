@@ -16,7 +16,10 @@ repository = { workspace = true }
 
 [lib]
 name = "_monty"
-crate-type = ["cdylib"]
+# cdylib: the `_monty` Python extension module.
+# rlib: lets the `monty-cpython` child worker link the Python ↔ MontyObject
+# value-conversion layer (`convert`/`dataclass`/`exceptions`) directly.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 ahash = { workspace = true }

@@ -1,0 +1,39 @@
+[package]
+name = "monty-cpython"
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+description = "A Monty wire-protocol child worker that executes fed code in embedded CPython"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "monty-cpython"
+path = "src/main.rs"
+
+[lib]
+name = "monty_cpython"
+path = "src/lib.rs"
+
+[dependencies]
+monty = { path = "../monty" }
+monty-proto = { path = "../monty-proto" }
+# `pydantic-monty`'s lib (`_monty`) is linked as an rlib purely for its
+# Python ↔ MontyObject value-conversion layer (`convert`/`dataclass`/`exceptions`).
+# This works because that crate does not enable pyo3's `extension-module` feature
+# in Cargo, so libpython is linked and we can embed CPython here via `auto-initialize`.
+pydantic-monty = { path = "../monty-python" }
+pyo3 = { version = "0.28", features = ["auto-initialize", "indexmap", "num-bigint"] }
+# Blocking WebSocket transport: `--connect` (dial a relay, with rustls for wss)
+# and `--listen` (accept one parent). Matches the synchronous pool client.
+tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+
+[lints]
+workspace = true

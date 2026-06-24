@@ -27,6 +27,8 @@ mod wire;
 pub use convert::{
     MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
 };
-pub use frame::{DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, write_frame};
+pub use frame::{
+    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, write_frame,
+};
 pub use generated::pb;
 pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};

@@ -17,6 +17,12 @@ name = "monty_pool"
 [dependencies]
 monty = { workspace = true }
 monty-proto = { workspace = true }
+# Blocking WebSocket client for the remote (Websocket) transport. The pool is
+# blocking/threaded, so a synchronous client fits; rustls gives `wss://` support
+# without a system TLS dependency.
+tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Fresh per-checkout session ids appended to the relay URL.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

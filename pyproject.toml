@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.10"
 
 [tool.uv.workspace]
-members = ["crates/monty-python", "crates/monty-cli", "crates/wire-protocol"]
+members = ["crates/monty-python", "crates/monty-cli"]
 
 [dependency-groups]
 dev = [
@@ -14,7 +14,6 @@ dev = [
     "ruff>=0.14.7",
     "duckdb>=1.0.0",
     "httpx>=0.28.1",
-    "httpx-ws>=0.7.2",
     "playwright>=1.58.0",
     "beautifulsoup4>=4.14.3",
     "logfire>=4.25.0",

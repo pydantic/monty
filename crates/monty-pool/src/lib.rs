@@ -38,15 +38,38 @@ pub use crate::{
     pool::Pool,
 };
 
+/// How the pool reaches its workers.
+#[derive(Debug, Clone)]
+pub enum MontyTransport {
+    /// Spawn a local `monty --subprocess` child and talk to it over framed
+    /// stdio pipes.
+    Subprocess {
+        /// Path to the `monty` (or compatible child) binary.
+        binary_path: PathBuf,
+    },
+    /// Connect *out* to a remote child over a WebSocket — either a relay (which
+    /// pairs this connection with a child that dialed in with the same session
+    /// id) or a child running a server. One binary message per protocol frame.
+    Websocket {
+        /// Base `ws://`/`wss://` URL to dial.
+        url: String,
+        /// Append a fresh per-checkout session id (`/<uuid>`) to `url` so a
+        /// relay can rendezvous the two sides. Set `false` to dial `url` as-is.
+        append_session_id: bool,
+    },
+}
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Workers spawned eagerly at pool creation and kept warm.
+    /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
+    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
     pub max_processes: usize,
-    /// Path to the `monty` binary.
-    pub binary_path: PathBuf,
+    /// How workers are reached (spawned locally or connected to remotely).
+    pub transport: MontyTransport,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -70,14 +93,34 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    /// Creates a config with defaults: `min_processes = 1`, `max_processes =`
-    /// available parallelism, no timeouts, a 1s `duration_limit_grace`, no
-    /// recycling.
+    /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
+    /// `max_processes =` available parallelism, no timeouts, a 1s
+    /// `duration_limit_grace`, no recycling.
     pub fn new(binary_path: impl Into<PathBuf>) -> Self {
+        Self::with_transport(MontyTransport::Subprocess {
+            binary_path: binary_path.into(),
+        })
+    }
+
+    /// Creates a WebSocket-transport config dialing `url`. `min_processes` is 0
+    /// (no pre-warming — connections are made per-checkout); a fresh session id
+    /// is appended to `url` per checkout (set `Websocket::append_session_id` to
+    /// `false` afterwards to dial `url` verbatim).
+    pub fn websocket(url: impl Into<String>) -> Self {
+        let mut config = Self::with_transport(MontyTransport::Websocket {
+            url: url.into(),
+            append_session_id: true,
+        });
+        config.min_processes = 0;
+        config
+    }
+
+    /// Shared constructor for both transports.
+    fn with_transport(transport: MontyTransport) -> Self {
         Self {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
-            binary_path: binary_path.into(),
+            transport,
             checkout_timeout: None,
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),

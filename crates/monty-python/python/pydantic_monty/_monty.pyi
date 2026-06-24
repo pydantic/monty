@@ -19,6 +19,7 @@ __all__ = [
     'NOT_HANDLED',
     'AsyncMonty',
     'AsyncMontySession',
+    'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
     'Frame',
@@ -500,6 +501,69 @@ class AsyncMonty:
         The worker is checked out of the pool by `async with` on the returned
         session and returned to the pool when the `async with` block exits.
         Arguments are identical to `Monty.checkout`.
+        """
+
+@final
+class AsyncMontyWebsocket:
+    """
+    Async context manager owning a pool of remote `monty` workers reached over a
+    WebSocket — a relay, or a child running a server (e.g. `monty-cpython`).
+
+    Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
+    dials the configured URL. There is no sync counterpart — remote turns are
+    network-bound. `checkout()` yields the same `AsyncMontySession`.
+
+    ```python
+    async with AsyncMontyWebsocket('ws://127.0.0.1:8799', append_session_id=False) as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        url: str,
+        *,
+        append_session_id: bool = True,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = None,
+    ) -> Self:
+        """
+        Configure a remote worker pool; connections are made by `async with` and
+        each checkout (no workers are pre-warmed).
+
+        Arguments:
+            url: `ws://`/`wss://` URL to dial — a relay or a child running a server.
+            append_session_id: Append a fresh `/<uuid>` to `url` per checkout so a
+                relay can pair this connection with the child that dialed in with
+                the same id. Set `False` to dial `url` verbatim (e.g. a child
+                running `--listen`).
+            max_processes: Cap on concurrent connections (defaults to the CPU
+                count); checkouts beyond it wait.
+            checkout_timeout: Seconds `checkout()` waits for capacity before
+                raising `TimeoutError`. `None` waits forever.
+            request_timeout: Hard per-call deadline in seconds — a worker that
+                exceeds it has its connection killed and the call raises
+                `MontyCrashedError` with `timed_out=True`.
+        """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> AsyncMontySession:
+        """
+        Prepare a REPL session served by a dedicated remote connection.
+
+        Identical to `AsyncMonty.checkout`; the connection is opened by
+        `async with` on the returned session.
         """
 
 @final

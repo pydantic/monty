@@ -11,9 +11,12 @@ use pyo3::{
     prelude::*,
     types::{PyDict, PyString},
 };
-use wire_protocol::{convert::py_to_monty_value, dataclass::DcRegistry};
 
-use crate::exceptions::{MontyError, exc_py_to_monty};
+use crate::{
+    convert::py_to_monty_value,
+    dataclass::DcRegistry,
+    exceptions::{MontyError, exc_py_to_monty},
+};
 
 /// Extracts source code, converting invalid UTF-8 (lone surrogates) into a
 /// `MontySyntaxError` — text that cannot be decoded is not valid Python

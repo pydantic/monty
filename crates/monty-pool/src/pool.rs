@@ -6,9 +6,10 @@ use std::{
 };
 
 use monty_proto::pb;
+use uuid::Uuid;
 
 use crate::{
-    PoolConfig, PoolError,
+    MontyTransport, PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig},
     watchdog::Watchdog,
     worker::{Worker, lock_ignore_poison},
@@ -55,9 +56,13 @@ impl Pool {
         }
         let watchdog =
             Watchdog::new().map_err(|err| PoolError::Spawn(format!("failed to spawn the watchdog thread: {err}")))?;
+        // Only the subprocess transport pre-warms workers; WebSocket connections
+        // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
-        for _ in 0..config.min_processes {
-            idle.push(Worker::spawn(&config)?);
+        if matches!(config.transport, MontyTransport::Subprocess { .. }) {
+            for _ in 0..config.min_processes {
+                idle.push(Worker::spawn(&config)?);
+            }
         }
         let total = idle.len();
         Ok(Self {
@@ -93,32 +98,43 @@ impl Pool {
         lock_ignore_poison(&self.inner.state)
             .idle
             .iter()
-            .map(Worker::pid)
+            .filter_map(Worker::pid)
             .collect()
     }
 }
 
 impl PoolInner {
-    /// Takes an idle worker, spawning or waiting as capacity allows.
+    /// Takes a worker, reusing/spawning a local one or connecting a fresh remote
+    /// one, waiting as capacity allows.
     fn acquire_worker(&self) -> Result<Worker, PoolError> {
+        // WebSocket connections are single-use and never pooled idle, so the
+        // idle-reuse step is skipped and each acquisition dials a fresh worker.
+        let websocket = matches!(self.config.transport, MontyTransport::Websocket { .. });
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
         let mut state = lock_ignore_poison(&self.state);
         loop {
-            // discard workers that died while idle — their replacement is
-            // the spawn below or a later checkout's spawn
-            while let Some(worker) = state.idle.pop() {
-                if worker.is_dead() {
-                    state.total -= 1;
-                    drop(worker); // reaps
-                } else {
-                    return Ok(worker);
+            if !websocket {
+                // discard workers that died while idle — their replacement is
+                // the spawn below or a later checkout's spawn
+                while let Some(worker) = state.idle.pop() {
+                    if worker.is_dead() {
+                        state.total -= 1;
+                        drop(worker); // reaps
+                    } else {
+                        return Ok(worker);
+                    }
                 }
             }
             if state.total < self.config.max_processes {
-                // reserve capacity before releasing the lock to spawn
+                // reserve capacity before releasing the lock to spawn/connect
                 state.total += 1;
                 drop(state);
-                return Worker::spawn(&self.config).inspect_err(|_| self.release_capacity());
+                let acquired = if websocket {
+                    Worker::connect_ws(&self.config, Uuid::new_v4())
+                } else {
+                    Worker::spawn(&self.config)
+                };
+                return acquired.inspect_err(|_| self.release_capacity());
             }
             state = match deadline {
                 Some(deadline) => {
@@ -138,12 +154,14 @@ impl PoolInner {
     }
 
     /// Returns a healthy worker to the idle queue (or retires it when it hit
-    /// the recycle limit).
+    /// the recycle limit, or it is a single-use WebSocket connection).
     pub(crate) fn release_worker(&self, worker: Worker) {
-        let recycle = self
-            .config
-            .max_checkouts_per_worker
-            .is_some_and(|max| worker.checkouts_served >= max);
+        let websocket = matches!(self.config.transport, MontyTransport::Websocket { .. });
+        let recycle = websocket
+            || self
+                .config
+                .max_checkouts_per_worker
+                .is_some_and(|max| worker.checkouts_served >= max);
         if recycle {
             drop(worker); // kill + reap
             self.release_capacity();
