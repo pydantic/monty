@@ -12,10 +12,8 @@ The transport is selected by subcommand:
 
 - `monty-cpython subprocess` — framed stdio, a drop-in worker for `monty-pool`
   (point `binary_path` at this binary).
-- `monty-cpython connect <ws-url>` — dial a relay (or a parent-as-server) as a
+- `monty-cpython websocket <ws-url>` — dial a relay (or a parent-as-server) as a
   WebSocket client.
-- `monty-cpython server <addr>` — bind and accept one parent connection (server
-  mode).
 
 The execution `globals` is a `dict` subclass whose `__missing__` turns any unbound
 global that is not a builtin or dunder into a proxy; calling that proxy emits a

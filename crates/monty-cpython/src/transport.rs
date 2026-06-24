@@ -9,8 +9,8 @@
 
 use std::{
     cell::RefCell,
-    io::{self, Read, Stdin, Stdout, Write},
-    net::{TcpListener, TcpStream},
+    io::{self, Stdin, Stdout},
+    net::TcpStream,
     rc::Rc,
 };
 
@@ -107,30 +107,19 @@ impl Transport for StdioTransport {
 }
 
 /// WebSocket transport: one binary message per protocol frame (no length
-/// prefix). Generic over the stream so it covers both `--connect` (which dials a
-/// relay/server, possibly over TLS — `MaybeTlsStream`) and `--listen` (which
-/// accepts one parent — a plain `TcpStream`).
-pub struct WsTransport<S> {
-    socket: WebSocket<S>,
+/// prefix). Dials a relay (or a parent-as-server), possibly over TLS — hence
+/// the `MaybeTlsStream` wrapper.
+pub struct WsTransport {
+    socket: WebSocket<MaybeTlsStream<TcpStream>>,
 }
 
-/// Dials `url` (a relay, or a child-as-server) as a WebSocket client.
-pub fn connect(url: &str) -> io::Result<WsTransport<MaybeTlsStream<TcpStream>>> {
+/// Dials `url` (a relay, or a parent-as-server) as a WebSocket client.
+pub fn connect(url: &str) -> io::Result<WsTransport> {
     let (socket, _response) = tungstenite::connect(url).map_err(ws_io_error)?;
     Ok(WsTransport { socket })
 }
 
-/// Binds `addr` and accepts exactly one parent connection (server mode).
-pub fn listen(addr: &str) -> io::Result<WsTransport<TcpStream>> {
-    let listener = TcpListener::bind(addr)?;
-    let (stream, _peer) = listener.accept()?;
-    // `accept` returns a `HandshakeError` (not `tungstenite::Error`); on a
-    // blocking stream the handshake never returns `Interrupted`, so flatten it.
-    let socket = tungstenite::accept(stream).map_err(|err| io::Error::other(err.to_string()))?;
-    Ok(WsTransport { socket })
-}
-
-impl<S: Read + Write> Transport for WsTransport<S> {
+impl Transport for WsTransport {
     fn recv(&mut self) -> Incoming {
         loop {
             match self.socket.read() {

@@ -9,7 +9,7 @@
 //!
 //! Transports are pluggable ([`Transport`]) and chosen by subcommand: the
 //! `subprocess` subcommand uses stdio framed like the Monty child, while
-//! `connect`/`server` use WebSocket (dial a relay/parent, or accept one parent).
+//! `websocket` dials a relay (or a parent-as-server) as a WebSocket client.
 //!
 //! SECURITY: full CPython is **not** a sandbox. This worker runs untrusted code
 //! with no isolation of its own — that is the deployment's responsibility (a
@@ -28,7 +28,7 @@ use pyo3::prelude::*;
 
 use crate::{
     session::Session,
-    transport::{SharedTransport, StdioTransport, Transport, connect, listen},
+    transport::{SharedTransport, StdioTransport, Transport, connect},
 };
 
 /// Exit code for a failure to initialize the embedded interpreter.
@@ -55,14 +55,9 @@ enum TransportArg {
     /// Run as a framed-stdio child, a drop-in worker for `monty-pool`.
     Subprocess,
     /// Dial a relay (or a parent-as-server) as a WebSocket client.
-    Connect {
+    Websocket {
         /// The `ws://`/`wss://` URL to dial.
         url: String,
-    },
-    /// Bind an address and accept one parent connection (server mode).
-    Server {
-        /// The `host:port` to bind and accept on.
-        addr: String,
     },
 }
 
@@ -71,17 +66,10 @@ enum TransportArg {
 pub fn run() -> ExitCode {
     match Cli::parse().transport {
         TransportArg::Subprocess => run_with_transport(Box::new(StdioTransport::new())),
-        TransportArg::Connect { url } => match connect(&url) {
+        TransportArg::Websocket { url } => match connect(&url) {
             Ok(transport) => run_with_transport(Box::new(transport)),
             Err(err) => {
                 eprintln!("monty-cpython: failed to connect to {url}: {err}");
-                ExitCode::from(EXIT_TRANSPORT)
-            }
-        },
-        TransportArg::Server { addr } => match listen(&addr) {
-            Ok(transport) => run_with_transport(Box::new(transport)),
-            Err(err) => {
-                eprintln!("monty-cpython: failed to listen on {addr}: {err}");
                 ExitCode::from(EXIT_TRANSPORT)
             }
         },

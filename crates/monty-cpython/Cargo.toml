@@ -29,8 +29,8 @@ monty-proto = { path = "../monty-proto" }
 # in Cargo, so libpython is linked and we can embed CPython here via `auto-initialize`.
 pydantic-monty = { path = "../monty-python" }
 pyo3 = { version = "0.28", features = ["auto-initialize", "indexmap", "num-bigint"] }
-# Blocking WebSocket transport: `--connect` (dial a relay, with rustls for wss)
-# and `--listen` (accept one parent). Matches the synchronous pool client.
+# Blocking WebSocket transport for the `websocket` subcommand: dial a relay
+# (or a parent-as-server), with rustls for `wss://`. Matches the pool client.
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 
 [build-dependencies]
