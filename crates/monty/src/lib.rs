@@ -18,6 +18,7 @@ mod heap_data;
 mod intern;
 mod io;
 mod modules;
+mod name_map;
 mod namespace;
 mod object;
 mod os;
