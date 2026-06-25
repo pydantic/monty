@@ -362,8 +362,7 @@ message ResumeFutures {
 // be restored by a monty child of the same version via `Load`.
 message Dump {}
 
-// Restores state produced by `Dump`, replacing any current non-suspended
-// session (valid from no session or a between-feeds one, but not mid-feed). If
+// Restores state produced by `Dump`. Valid only from no session. If
 // the restored state was suspended, the child re-emits the suspension event so
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
@@ -372,7 +371,7 @@ message Load {
   // host configuration, not sandbox state, so they are never part of the dump
   // — the parent re-supplies the same mounts it used for the original feed.
   // Without them a restored feed has no mounts and its OS calls all bubble up.
-  // Ignored when the restored state is idle (the next feed supplies its own).
+  // When the restored state is idle this must be empty.
   repeated Mount mounts = 2;
 }
 

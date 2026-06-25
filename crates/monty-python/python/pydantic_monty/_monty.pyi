@@ -3,7 +3,15 @@ from typing import Any, Callable, Literal, final
 
 from typing_extensions import Self
 
-from . import AsyncSnapshot, ExternalResult, OsHandler, PrintCallback, ResourceLimits, SyncSnapshot
+from . import (
+    AsyncSnapshot,
+    ExternalResult,
+    ExternalSettledResult,
+    OsHandler,
+    PrintCallback,
+    ResourceLimits,
+    SyncSnapshot,
+)
 from .os_access import AbstractOS, OsFunction
 
 __all__ = [
@@ -645,10 +653,11 @@ class NameLookupSnapshot:
     def resume(
         self,
         *,
-        value: Any | None = None,
+        value: Any = ...,
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
-        """Resume with `value` to define the name, or nothing to raise `NameError`."""
+        """Resume by binding the name to `value` (any value, including `None`), or
+        omit `value` to leave the name undefined and raise `NameError`."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -665,11 +674,12 @@ class FutureSnapshot:
     def pending_call_ids(self) -> list[int]: ...
     def resume(
         self,
-        results: dict[int, ExternalResult],
+        results: dict[int, ExternalSettledResult],
         *,
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
-        """Resume with results for one or more pending futures (by `call_id`)."""
+        """Resume with settled results for one or more pending futures (by
+        `call_id`); a future cannot resolve to another `future`."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -715,7 +725,7 @@ class AsyncNameLookupSnapshot:
     async def resume(
         self,
         *,
-        value: Any | None = None,
+        value: Any = ...,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot: ...
     def dump(self) -> bytes: ...
@@ -731,7 +741,7 @@ class AsyncFutureSnapshot:
     def pending_call_ids(self) -> list[int]: ...
     async def resume(
         self,
-        results: dict[int, ExternalResult],
+        results: dict[int, ExternalSettledResult],
         *,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot: ...

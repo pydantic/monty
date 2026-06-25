@@ -18,16 +18,21 @@
 //! When a caller supplies an `os=` handler, OS calls the mounts don't cover are
 //! auto-dispatched through it (reusing the `feed_run` path) until the next
 //! non-OS event, matching the old behaviour. Mounts are fixed for the whole
-//! feed (passed to `feed_start`), so `resume` takes no `mount=`: a normal feed
-//! already has its mounts live in the worker, and a `load_snapshot`-restored
-//! feed has none (they are not part of the dump) — its mount-covered OS calls
-//! bubble up to be answered via `os=` / `resume`.
+//! feed (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
+//! suspended feed with `load_snapshot` re-establishes those mounts — the caller
+//! re-supplies them (their host paths are not in the dump) and they are
+//! validated against the dump's recorded requirements — so the restored feed's
+//! mount-covered file access is served in-worker exactly as before the dump.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    convert::Infallible,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use ::monty::{ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use pyo3::{
+    Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
     intern,
     prelude::*,
@@ -648,11 +653,39 @@ struct NameLookupSnapshot {
     name: String,
 }
 
+/// The argument to `NameLookupSnapshot.resume`, distinguishing an omitted value
+/// (`Unset` — raise `NameError`) from an explicitly supplied one (`Set`,
+/// including `None`).
+///
+/// A bare `Option<Bound<PyAny>>` cannot express this: PyO3 extracts Python
+/// `None` to Rust `None`, collapsing an explicit `None` binding into the
+/// "omitted" case. Capturing the object here keeps `None` a real value, while
+/// the unit `Unset` default — which needs no `py` token, unlike any Python
+/// object — marks omission.
+enum MaybeValue<'py> {
+    Unset,
+    Set(Bound<'py, PyAny>),
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for MaybeValue<'py> {
+    type Error = Infallible;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+        Ok(MaybeValue::Set(obj.to_owned()))
+    }
+}
+
 impl NameLookupSnapshot {
-    fn resume_value(&self, py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<MontyObject>> {
-        value
-            .map(|v| py_to_monty_value(v, &self.snapshot.ctx.dc_registry).map_err(|e| MontyError::new_err(py, e)))
-            .transpose()
+    /// Converts the `resume` argument into the name's binding: an omitted value
+    /// (`Unset`) leaves the name undefined so the sandbox raises `NameError`,
+    /// while a supplied value — **including `None`** — binds the name to it.
+    fn resume_value(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Option<MontyObject>> {
+        match value {
+            MaybeValue::Unset => Ok(None),
+            MaybeValue::Set(value) => py_to_monty_value(&value, &self.snapshot.ctx.dc_registry)
+                .map(Some)
+                .map_err(|e| MontyError::new_err(py, e)),
+        }
     }
 }
 
@@ -673,8 +706,8 @@ impl PyNameLookupSnapshot {
         &self.0.name
     }
 
-    #[pyo3(signature = (*, value=None, os=None))]
-    fn resume(&self, py: Python<'_>, value: Option<&Bound<'_, PyAny>>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    #[pyo3(signature = (*, value=MaybeValue::Unset, os=None))]
+    fn resume(&self, py: Python<'_>, value: MaybeValue<'_>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
         drive_sync(py, ctx, os, move |c, p| c.resume_name_lookup(value, p))
@@ -705,11 +738,11 @@ impl PyAsyncNameLookupSnapshot {
         &self.0.name
     }
 
-    #[pyo3(signature = (*, value=None, os=None))]
+    #[pyo3(signature = (*, value=MaybeValue::Unset, os=None))]
     fn resume<'py>(
         &self,
         py: Python<'py>,
-        value: Option<&Bound<'_, PyAny>>,
+        value: MaybeValue<'_>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.resume_value(py, value)?;

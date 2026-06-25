@@ -68,6 +68,16 @@ def test_name_lookup_resume_with_value(session: MontySession):
     assert done.output == snapshot(42)
 
 
+def test_name_lookup_resume_with_none_value(session: MontySession):
+    # an explicit None binds the name to None — distinct from omitting value,
+    # which raises NameError
+    snap = session.feed_start('x = missing\nx is None')
+    assert isinstance(snap, NameLookupSnapshot)
+    done = snap.resume(value=None)
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot(True)
+
+
 def test_name_lookup_resume_without_value_raises_name_error(session: MontySession):
     snap = session.feed_start('missing + 1')
     assert isinstance(snap, NameLookupSnapshot)

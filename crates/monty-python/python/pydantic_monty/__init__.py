@@ -44,6 +44,7 @@ __all__ = (
     # this file
     'ResourceLimits',
     'ExternalResult',
+    'ExternalSettledResult',
     'ExternalReturnValue',
     'ExternalException',
     'ExternalExceptionData',
@@ -122,7 +123,7 @@ class ExternalReturnValue(TypedDict):
 class ExternalException(TypedDict):
     """Represents an exception raised during an external function call."""
 
-    exception: Exception
+    exception: BaseException
 
 
 ExcType = Literal[
@@ -192,9 +193,14 @@ class ExternalFuture(TypedDict):
     future: EllipsisType
 
 
-ExternalResult = ExternalReturnValue | ExternalException | ExternalExceptionData | ExternalFuture
-"""A caller's answer to a `FunctionSnapshot` / `FutureSnapshot`: a return value,
-an exception (by instance or by type name), or a pending `future`."""
+ExternalSettledResult = ExternalReturnValue | ExternalException | ExternalExceptionData
+"""A *settled* answer — a return value or an exception, but never a pending
+`future`. Resolving a `FutureSnapshot` requires settled results: a future
+cannot resolve to another future."""
+
+ExternalResult = ExternalSettledResult | ExternalFuture
+"""A caller's answer to a `FunctionSnapshot`: a return value, an exception (by
+instance or by type name), or a pending `future`."""
 
 PrintCallback: TypeAlias = Callable[[Literal['stdout', 'stderr'], str], None] | CollectStreams | CollectString
 """Print sink accepted by `feed_run` / `feed_start` / `load_snapshot`."""
