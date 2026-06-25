@@ -505,7 +505,7 @@ impl Child {
             Ok(table) => table,
             Err(err) => return violation(&format!("invalid mounts: {err}")),
         };
-        let event = match tag {
+        let mut event = match tag {
             0 => match MontyRepl::load(payload) {
                 Ok(repl) => {
                     self.state = SessionState::Ready(Box::new(repl));
@@ -537,10 +537,12 @@ impl Child {
         }
         // adopt the restored metadata only once the payload actually loaded
         // (state is now Ready/Suspended) — a failed load leaves the child in
-        // its prior un-started state, re-loadable
+        // its prior un-started state, re-loadable. Surface the adopted script
+        // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
             self.script_name = script_name;
             self.type_check = type_check;
+            event.restored_script_name = Some(self.script_name.clone());
         }
         event
     }

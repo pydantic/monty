@@ -283,7 +283,8 @@ impl PyMontySession {
     /// applied); the dataclass registry from `checkout()` is reused. Raises if
     /// the dump is actually a suspended snapshot.
     fn load(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
-        if self.restore_turn(py, state, Vec::new())?.is_some() {
+        // an idle session has no snapshot, so the restored script name is unused
+        if self.restore_turn(py, state, Vec::new())?.0.is_some() {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
                 "this dump is a suspended snapshot — use load_snapshot() to resume it",
@@ -315,7 +316,8 @@ impl PyMontySession {
         // session — matching the async path)
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        let Some(event) = self.restore_turn(py, state, mounts)? else {
+        let (event, script_name) = self.restore_turn(py, state, mounts)?;
+        let Some(event) = event else {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
                 "this dump is an idle session — use load() to restore it",
@@ -325,7 +327,9 @@ impl PyMontySession {
             Arc::clone(&self.checkout),
             self.dc_registry.clone_ref(py),
             print_target,
-            self.repl_config.script_name.clone(),
+            // the dump's own script name, falling back to the session config
+            // only if the worker did not report one (e.g. an older child)
+            script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
         );
         build_snapshot(py, ctx, event, false)
     }
@@ -354,10 +358,16 @@ impl PyMontySession {
 impl PyMontySession {
     /// Claims the fresh session (rejecting a reused one) and runs the low-level
     /// restore off the GIL, returning the re-announced suspension (`Some`) or
-    /// `None` for an idle dump. The restore turn runs no sandbox code, so it
-    /// needs no print sink. Shared by [`load`](Self::load) and
+    /// `None` for an idle dump, paired with the dump's adopted script name (for
+    /// restored snapshots' `script_name`). The restore turn runs no sandbox
+    /// code, so it needs no print sink. Shared by [`load`](Self::load) and
     /// [`load_snapshot`](Self::load_snapshot).
-    fn restore_turn(&self, py: Python<'_>, state: Vec<u8>, mounts: Vec<MountSpec>) -> PyResult<Option<TurnEvent>> {
+    fn restore_turn(
+        &self,
+        py: Python<'_>,
+        state: Vec<u8>,
+        mounts: Vec<MountSpec>,
+    ) -> PyResult<(Option<TurnEvent>, Option<String>)> {
         if self.used.swap(true, Ordering::Relaxed) {
             // non-destructive: an already-running session keeps its worker
             return Err(session_used_err());
@@ -613,8 +623,10 @@ impl PyAsyncMontySession {
         }
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
+            // an idle session has no snapshot, so the restored name is unused
             if restore_turn_async(Arc::clone(&checkout), state, Vec::new())
                 .await?
+                .0
                 .is_some()
             {
                 spawn_blocking(move || discard_checkout(&checkout))
@@ -649,9 +661,10 @@ impl PyAsyncMontySession {
         }
         let checkout = Arc::clone(&self.checkout);
         let dc_registry = self.dc_registry.clone_ref(py);
-        let script_name = self.repl_config.script_name.clone();
+        let config_script_name = self.repl_config.script_name.clone();
         future_into_py(py, async move {
-            let Some(event) = restore_turn_async(Arc::clone(&checkout), state, mounts).await? else {
+            let (event, restored_script_name) = restore_turn_async(Arc::clone(&checkout), state, mounts).await?;
+            let Some(event) = event else {
                 spawn_blocking(move || discard_checkout(&checkout))
                     .await
                     .map_err(join_error_to_py)?;
@@ -659,6 +672,9 @@ impl PyAsyncMontySession {
                     "this dump is an idle session — use load() to restore it",
                 ));
             };
+            // the dump's own script name, falling back to the session config
+            // only if the worker did not report one (e.g. an older child)
+            let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
                 let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
                 build_snapshot(py, ctx, event, true)
@@ -732,14 +748,15 @@ fn session_used_err() -> PyErr {
 }
 
 /// Runs the low-level restore off the event loop (via `spawn_blocking`),
-/// returning the re-announced suspension (`Some`) or `None` for an idle dump.
-/// The restore turn runs no sandbox code, so it needs no print sink. Shared by
-/// the async [`PyAsyncMontySession::load`] / `load_snapshot`.
+/// returning the re-announced suspension (`Some`) or `None` for an idle dump,
+/// paired with the dump's adopted script name. The restore turn runs no sandbox
+/// code, so it needs no print sink. Shared by the async
+/// [`PyAsyncMontySession::load`] / `load_snapshot`.
 async fn restore_turn_async(
     checkout: SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
-) -> PyResult<Option<TurnEvent>> {
+) -> PyResult<(Option<TurnEvent>, Option<String>)> {
     spawn_blocking(move || {
         let result = {
             let mut guard = lock(&checkout);

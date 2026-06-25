@@ -390,9 +390,10 @@ impl NativeSession {
             .collect::<Result<Vec<_>>>()?;
         let state = state.to_vec();
         self.run_outcome(env, on_print, move |checkout, on_print| {
+            // JS snapshots expose no script name, so the restored name is unused
             match checkout.restore(state, mounts, on_print) {
-                Ok(Some(event)) => TurnOutcome::Event(event),
-                Ok(None) => TurnOutcome::LoadedIdle,
+                Ok((Some(event), _)) => TurnOutcome::Event(event),
+                Ok((None, _)) => TurnOutcome::LoadedIdle,
                 Err(err) => TurnOutcome::from(Err(err)),
             }
         })

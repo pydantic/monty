@@ -127,9 +127,9 @@ pub struct Checkout {
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
     /// The session's `max_duration` budget for the parent-side backstop, when
-    /// configured. Set from the config on `create`; for `checkout_load`
-    /// restores it is adopted from the timing fields on the worker's first
-    /// reply (the limits travel inside the opaque dump).
+    /// configured. Set from the config on `create`; for `restore`d sessions it
+    /// is adopted from the timing fields on the worker's first reply (the limits
+    /// travel inside the opaque dump).
     duration_budget: Option<Duration>,
     /// Cumulative sandbox execution time as last reported by the worker —
     /// the child's clock is the single source of truth (it runs only while
@@ -140,6 +140,11 @@ pub struct Checkout {
     /// The deadline armed for the most recent turn, surfaced by
     /// [`PoolError::Timeout`] when the watchdog fires.
     armed_deadline: Option<Duration>,
+    /// The script name a `restore` adopted, captured from the worker's `Load`
+    /// reply (the name travels inside the opaque dump, so the parent learns it
+    /// only by the worker echoing it). Reset at the start of each `restore` and
+    /// taken by `restore` to return; unset for non-restore turns.
+    restored_script_name: Option<String>,
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -165,6 +170,7 @@ impl Checkout {
             duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
             reported_execution: Duration::ZERO,
             armed_deadline: None,
+            restored_script_name: None,
         };
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
@@ -195,30 +201,36 @@ impl Checkout {
     /// empty `Vec` for an idle dump. The session's resource budget is taken
     /// from the dump, so the prior `Configure` limits are dropped here and
     /// re-adopted from the worker's reply.
+    ///
+    /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
+    /// (an idle dump), paired with the worker's adopted script name (the dump's,
+    /// not the `Configure` one), which the parent surfaces in restored snapshots.
     pub fn restore(
         &mut self,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
         on_print: OnPrint<'_>,
-    ) -> Result<Option<TurnEvent>, PoolError> {
-        // the dump carries its own limits/consumed time — forget what the
-        // worker's Configure established and re-adopt from the reply
+    ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+        // the dump carries its own limits/consumed time/script name — forget
+        // what the worker's Configure established and re-adopt from the reply
         self.pending = None;
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;
+        self.restored_script_name = None;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Load(pb::Load {
                 state,
                 mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
             })),
         };
-        match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
-            ControlEvent::Ok => Ok(None),
-            ControlEvent::Turn(event) => Ok(Some(event)),
+        let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
+            ControlEvent::Ok => None,
+            ControlEvent::Turn(event) => Some(event),
             other @ ControlEvent::Dump(_) => {
-                Err(self.protocol_violation(&format!("unexpected reply to Load: {other:?}")))
+                return Err(self.protocol_violation(&format!("unexpected reply to Load: {other:?}")));
             }
-        }
+        };
+        Ok((event, self.restored_script_name.take()))
     }
 
     /// Executes one snippet against the session. Inputs become sandbox
@@ -478,6 +490,11 @@ impl Checkout {
             // Print events carry no timing (the fields are zero), so this is
             // a no-op for them thanks to the monotonic-max ratchet.
             self.note_reported_time(&event);
+            // Only a `Load` reply carries this; it lets `restore` report the
+            // dump's script name without parsing the opaque dump bytes.
+            if let Some(name) = &event.restored_script_name {
+                self.restored_script_name = Some(name.clone());
+            }
             match event.kind {
                 Some(pb::child_event::Kind::Print(print)) => {
                     let stream = match print.stream() {

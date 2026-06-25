@@ -551,7 +551,7 @@ fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
-    let event = restored.restore(state, vec![], &mut no_print).unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).unwrap();
     assert!(event.is_none(), "idle dump should restore without a suspension");
     let err = restored
         .feed(
@@ -712,7 +712,9 @@ fn dump_survives_worker_death_and_loads_elsewhere() {
 
     // restore into a fresh worker by loading over its empty session
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
-    let event = restored.restore(state, vec![], &mut no_print).unwrap();
+    let (event, script_name) = restored.restore(state, vec![], &mut no_print).unwrap();
+    // the worker echoes the dump's adopted script name back to the parent
+    assert_eq!(script_name.as_deref(), Some("main.py"));
     let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
         panic!("expected re-announced FunctionCall, got {event:?}");
     };

@@ -346,6 +346,14 @@ impl SnapshotState {
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        // a resumed snapshot is a spent cursor: the worker has advanced past
+        // this suspension, so dumping now would serialize the *current* session
+        // state mislabeled as this snapshot. Reject it, matching `claim`.
+        if self.resumed.load(Ordering::SeqCst) {
+            return Err(PyRuntimeError::new_err(
+                "cannot dump a snapshot that has already been resumed",
+            ));
+        }
         let checkout = SharedCheckout::clone(&self.ctx.checkout);
         let state = py
             .detach(|| {
@@ -771,6 +779,11 @@ struct FutureSnapshot {
 }
 
 impl FutureSnapshot {
+    /// Parses the `{call_id: result}` mapping into `ResumeValue`s, rejecting a
+    /// pending `future` answer up front: a future must settle to a return value
+    /// or exception, not to another future. Validating here — before `resume`
+    /// calls `claim()` — means an invalid resolution fails with a `PyTypeError`
+    /// without consuming the (single-use) snapshot or stranding the worker.
     fn resume_values(&self, py: Python<'_>, results: &Bound<'_, PyDict>) -> PyResult<Vec<(u32, ResumeValue)>> {
         let mut resolved = Vec::with_capacity(results.len());
         for (key, value) in results {
@@ -780,10 +793,13 @@ impl FutureSnapshot {
             let dict = value
                 .cast_into::<PyDict>()
                 .map_err(|_| PyTypeError::new_err("future result values must be ExternalResult dicts"))?;
-            resolved.push((
-                call_id,
-                parse_external_result(py, &dict, &self.snapshot.ctx.dc_registry)?,
-            ));
+            let resume = parse_external_result(py, &dict, &self.snapshot.ctx.dc_registry)?;
+            if matches!(resume, ResumeValue::Future) {
+                return Err(PyTypeError::new_err(format!(
+                    "future {call_id} cannot resolve to another future; provide a return value or exception"
+                )));
+            }
+            resolved.push((call_id, resume));
         }
         Ok(resolved)
     }

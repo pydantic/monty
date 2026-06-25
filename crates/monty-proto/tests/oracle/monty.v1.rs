@@ -465,8 +465,7 @@ pub struct ResumeFutures {
 /// be restored by a monty child of the same version via `Load`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Dump {}
-/// Restores state produced by `Dump`, replacing any current non-suspended
-/// session (valid from no session or a between-feeds one, but not mid-feed). If
+/// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -477,7 +476,7 @@ pub struct Load {
     /// host configuration, not sandbox state, so they are never part of the dump
     /// — the parent re-supplies the same mounts it used for the original feed.
     /// Without them a restored feed has no mounts and its OS calls all bubble up.
-    /// Ignored when the restored state is idle (the next feed supplies its own).
+    /// When the restored state is idle this must be empty.
     #[prost(message, repeated, tag = "2")]
     pub mounts: ::prost::alloc::vec::Vec<Mount>,
 }
@@ -505,6 +504,12 @@ pub struct ChildEvent {
     /// state bytes) still learns the budget.
     #[prost(uint64, optional, tag = "13")]
     pub max_duration_micros: ::core::option::Option<u64>,
+    /// The session's script name, surfaced on a `Load` reply so a parent that
+    /// restored a session (whose script name, like the limits above, travels
+    /// inside the opaque dump bytes) learns it without parsing the dump. Set only
+    /// on a successful `Load` reply; unset on all other events.
+    #[prost(string, optional, tag = "14")]
+    pub restored_script_name: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }

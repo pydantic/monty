@@ -95,10 +95,25 @@ def test_double_resume_raises(session: MontySession):
     assert str(exc_info.value) == snapshot('snapshot has already been resumed')
 
 
+def test_dump_after_resume_raises(session: MontySession):
+    # a resumed snapshot is a spent cursor — dumping it would serialize the
+    # advanced session state, not this suspension, so it is rejected
+    snap = session.feed_start('f()')
+    assert isinstance(snap, FunctionSnapshot)
+    snap.dump()  # dumping a live (un-resumed) snapshot is fine
+    snap.resume({'return_value': 1})
+    with pytest.raises(RuntimeError) as exc_info:
+        snap.dump()
+    assert str(exc_info.value) == snapshot('cannot dump a snapshot that has already been resumed')
+
+
 def test_feed_while_suspended_raises(session: MontySession):
     session.feed_start('f()')
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as exc_info:
         session.feed_run('1 + 1')
+    assert exc_info.value.args[0] == snapshot(
+        'monty worker protocol error: feed called while a suspension is awaiting an answer'
+    )
 
 
 def test_resume_has_no_mount_arg(session: MontySession):
@@ -107,8 +122,9 @@ def test_resume_has_no_mount_arg(session: MontySession):
     snap = session.feed_start('f()')
     assert isinstance(snap, FunctionSnapshot)
     untyped_snap: Any = snap
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError) as exc_info:
         untyped_snap.resume({'return_value': 1}, mount=[])
+    assert exc_info.value.args[0] == snapshot("FunctionSnapshot.resume() got an unexpected keyword argument 'mount'")
     # the rejected call did not consume the snapshot — it can still be answered
     done = snap.resume({'return_value': 1})
     assert isinstance(done, MontyComplete)
@@ -148,6 +164,31 @@ def test_future_mechanism_sync(session: MontySession):
     assert done.output == snapshot(99)
 
 
+def test_future_cannot_resolve_to_future(session: MontySession):
+    # a future must settle to a value/exception; resolving with another future
+    # is rejected up front, without consuming the (single-use) snapshot
+    code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
+    snap = session.feed_start(code)
+    assert isinstance(snap, FunctionSnapshot)
+    call_id = snap.call_id
+    nxt = snap.resume({'future': ...})
+    assert isinstance(nxt, FutureSnapshot)
+    # a future result is not a settled result, so the stub rejects it too —
+    # go through Any to exercise the runtime guard
+    untyped_nxt: Any = nxt
+    with pytest.raises(TypeError) as exc_info:
+        untyped_nxt.resume({call_id: {'future': ...}})
+    # message embeds the runtime call id, so compare directly rather than snapshot
+    assert (
+        exc_info.value.args[0]
+        == f'future {call_id} cannot resolve to another future; provide a return value or exception'
+    )
+    # the rejected resolution did not consume the snapshot — it still resolves
+    done = nxt.resume({call_id: {'return_value': 7}})
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot(7)
+
+
 def test_dump_at_suspension_then_load_and_resume(pool: Monty):
     with pool.checkout() as session:
         snap = session.feed_start('y = fetch()\ny + 1')
@@ -161,6 +202,21 @@ def test_dump_at_suspension_then_load_and_resume(pool: Monty):
         done = loaded_snap.resume({'return_value': 41})
         assert isinstance(done, MontyComplete)
         assert done.output == snapshot(42)
+
+
+def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
+    # script_name travels inside the dump; the restored snapshot reports the
+    # dump's name, not the (differently-configured) restoring session's
+    with pool.checkout(script_name='original.py') as session:
+        snap = session.feed_start('fetch()')
+        assert isinstance(snap, FunctionSnapshot)
+        assert snap.script_name == snapshot('original.py')
+        blob = snap.dump()
+
+    with pool.checkout(script_name='different.py') as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.script_name == snapshot('original.py')
 
 
 def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):

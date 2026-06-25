@@ -415,6 +415,12 @@ message ChildEvent {
   // restored a session via `Load` (where the limits travel inside the opaque
   // state bytes) still learns the budget.
   optional uint64 max_duration_micros = 13;
+
+  // The session's script name, surfaced on a `Load` reply so a parent that
+  // restored a session (whose script name, like the limits above, travels
+  // inside the opaque dump bytes) learns it without parsing the dump. Set only
+  // on a successful `Load` reply; unset on all other events.
+  optional string restored_script_name = 14;
 }
 
 enum PrintStream {
