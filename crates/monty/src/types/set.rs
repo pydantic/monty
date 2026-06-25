@@ -7,13 +7,13 @@ use smallvec::SmallVec;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem,
-        HeapRead, HeapReadOutput, RecursionToken, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
     resource::ResourceTracker,
@@ -281,7 +281,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(elem) = iter.next(vm)? {
             if !other.contains(elem, vm)? {
                 return Ok(false);
@@ -339,7 +339,7 @@ pub(crate) struct SetIter<'a, 'h> {
 impl<'a, 'h> SetIter<'a, 'h> {
     fn new<R: ResourceTracker>(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = storage.get(vm.heap).entries.len();
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.incr_recursion()?;
         Ok(Self {
             storage,
             index: 0,
@@ -372,10 +372,13 @@ impl<'a, 'h> SetIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for SetIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for SetIter<'_, 'h> {
+    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
+    where
+        'h: 'c,
+    {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -515,10 +518,10 @@ impl<'h> HeapRead<'h, SetStorage> {
         }
 
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("{...}")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -1279,7 +1282,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let mut hash: u64 = 0;
         let storage = self.storage();
         let iter = storage.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             hash ^= set_element_hash(item, vm)?;
         }

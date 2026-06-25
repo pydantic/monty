@@ -553,8 +553,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // Count this task's recursion depth contribution and subtract it from
         // the global counter so the next task gets a clean budget.
         let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
-        let global_depth = self.heap.get_recursion_depth();
-        self.heap.set_recursion_depth(global_depth - task_depth);
+        self.recursion_depth -= task_depth;
 
         // Save VM state into the task
         let task = self.scheduler.get_task_mut(task_id);
@@ -591,8 +590,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         // Restore this task's recursion depth contribution to the global counter
         let task_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to recursion depth
-        let global_depth = self.heap.get_recursion_depth();
-        self.heap.set_recursion_depth(global_depth + task_depth);
+        self.recursion_depth += task_depth;
 
         self.heap.track_shrink(saved_size);
 

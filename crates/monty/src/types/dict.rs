@@ -13,13 +13,10 @@ use smallvec::{SmallVec, smallvec};
 use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
-    heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        RecursionToken,
-    },
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
@@ -236,7 +233,7 @@ impl<'h> HeapRead<'h, Dict> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((key, value)) = iter.next(vm)? {
             let Some(other_value) = other.dict_get(key, vm)? else {
                 return Ok(false);
@@ -542,7 +539,7 @@ impl<'h> HeapRead<'h, Dict> {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 let iter = src.iter(vm)?;
-                defer_drop_mut!(iter, vm);
+                defer_drop_vm_mut!(iter, vm);
                 while let Some((key, value)) = iter.next_owned(vm)? {
                     let old_value = self.set(key, value, vm)?;
                     old_value.drop_with_heap(vm);
@@ -715,7 +712,7 @@ pub(crate) struct DictIter<'a, 'h> {
 impl<'a, 'h> DictIter<'a, 'h> {
     fn new<R: ResourceTracker>(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = dict.get(vm.heap).entries.len();
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.incr_recursion()?;
         Ok(Self {
             dict,
             index: 0,
@@ -788,11 +785,14 @@ impl<'a, 'h> DictIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for DictIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current_key.drop_with_heap(heap);
-        self.current_value.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for DictIter<'_, 'h> {
+    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
+    where
+        'h: 'c,
+    {
+        self.current_key.drop_with_heap(container);
+        self.current_value.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -832,10 +832,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         }
 
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("{...}")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         f.write_char('{')?;
         let len = self.get(vm.heap).len();

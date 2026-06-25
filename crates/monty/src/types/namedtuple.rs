@@ -27,11 +27,11 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithHeap, HeapId, HeapItem, HeapRead, HeapReadOutput, RecursionToken},
+    heap::{HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::Type,
@@ -186,7 +186,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
@@ -221,7 +221,7 @@ pub(crate) struct NamedTupleIter<'a, 'h> {
 
 impl<'a, 'h> NamedTupleIter<'a, 'h> {
     fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, NamedTuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.incr_recursion()?;
         Ok(Self {
             tuple,
             index: 0,
@@ -263,10 +263,13 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for NamedTupleIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for NamedTupleIter<'_, 'h> {
+    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
+    where
+        'h: 'c,
+    {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -306,7 +309,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
                     return Ok(Some(false));
                 }
                 let iter = self.iter(vm)?;
-                defer_drop_mut!(iter, vm);
+                defer_drop_vm_mut!(iter, vm);
                 while let Some((i, a)) = iter.next_with_index(vm)? {
                     let b = other.clone_item(i, vm);
                     defer_drop!(b, vm);
@@ -331,7 +334,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
         let mut hasher = DefaultHasher::new();
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
@@ -354,10 +357,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         write!(f, "{}(", self.get(vm.heap).name.as_str(vm.interns))?;
 

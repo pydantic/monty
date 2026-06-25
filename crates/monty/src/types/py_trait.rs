@@ -102,8 +102,8 @@ pub trait PyTrait<'h> {
     /// the recursion limit is exceeded while hashing nested containers.`
     ///
     /// Container implementations should track recursion depth via
-    /// `heap.incr_recursion_depth()` and recurse through `Value::py_hash` for
-    /// nested values.
+    /// `vm.recursion_guard()` (or `vm.incr_recursion()` when iterating) and
+    /// recurse through `Value::py_hash` for nested values.
     ///
     /// `self_id` is the heap ID of this value; it is required for types like
     /// `Cell` that hash by identity. Most implementations ignore it.
@@ -130,7 +130,7 @@ pub trait PyTrait<'h> {
     /// heap to resolve nested references; `&mut VM` allows lazy hash computation
     /// for dict key lookups and access to interned string content.
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`; returns
+    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>>;
 
@@ -140,7 +140,7 @@ pub trait PyTrait<'h> {
     /// to resolve nested references. Takes `&mut VM` to allow lazy hash
     /// computation for dict key lookups and access to interned string content.
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
     /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
     /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
@@ -161,7 +161,7 @@ pub trait PyTrait<'h> {
     /// visited heap IDs. When a cycle is detected (ID already in `heap_ids`), implementations
     /// should write an ellipsis (e.g., `[...]` for lists, `{...}` for dicts).
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
     /// # Arguments
     /// * `f` - The formatter to write to

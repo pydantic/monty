@@ -6,7 +6,7 @@ use smallvec::smallvec;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
@@ -99,7 +99,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let dict = self.dict(vm);
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((key, value)) = iter.next_owned(vm)? {
             value.drop_with_heap(vm);
             result.add(key, vm)?;
@@ -261,7 +261,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let dict = self.dict(vm);
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((key, value)) = iter.next_owned(vm)? {
             let item = allocate_tuple(smallvec![key, value], vm.heap)?;
             result.add(item, vm)?;
@@ -439,8 +439,8 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
         return Ok(false);
     }
 
-    let token = vm.heap.incr_recursion_depth()?;
-    defer_drop!(token, vm);
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     let len = dict.get(vm.heap).len();
     for i in 0..len {
         vm.heap.check_time()?;
@@ -464,8 +464,8 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
         return Ok(false);
     }
 
-    let token = vm.heap.incr_recursion_depth()?;
-    defer_drop!(token, vm);
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     let len = dict.get(vm.heap).len();
     for i in 0..len {
         vm.heap.check_time()?;
@@ -487,7 +487,7 @@ fn write_dict_keys_contents<'h>(
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     let mut first = true;
     while let Some((key, _value)) = iter.next(vm)? {
         if !first {
@@ -507,7 +507,7 @@ fn write_dict_items_contents<'h>(
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     let mut first = true;
     while let Some((key, value)) = iter.next(vm)? {
         if !first {
@@ -531,7 +531,7 @@ fn write_dict_values_contents<'h>(
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     let mut first = true;
     while let Some((_key, value)) = iter.next(vm)? {
         if !first {

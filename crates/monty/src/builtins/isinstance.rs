@@ -51,8 +51,8 @@ fn isinstance_check_tuple<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<bool> {
     let len = tuple.get(vm.heap).as_slice().len();
-    let token = vm.heap.incr_recursion_depth()?;
-    defer_drop!(token, vm);
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     for i in 0..len {
         match &tuple.get(vm.heap).as_slice()[i] {
             Value::Builtin(Builtins::Type(t)) => {

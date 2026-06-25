@@ -184,8 +184,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         if !self.get(vm.heap).frozen {
             return Ok(None);
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        crate::defer_drop!(token, vm);
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.get(vm.heap).name.hash(&mut hasher);
@@ -218,10 +218,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes
