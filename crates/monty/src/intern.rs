@@ -941,21 +941,105 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
 /// the value with its precomputed [`HashValue`] — populated eagerly at
 /// intern time by [`InternerBuilder`]. `str_hash` / `bytes_hash` /
 /// `long_int_hash` are plain index lookups.
+///
+/// # Reverse string lookup
+///
+/// [`get_string_id_by_name`](Self::get_string_id_by_name) returns the
+/// `StringId` for a host-supplied `&str`. It is backed by an in-memory
+/// `String → StringId` map that is rebuilt deterministically at construction
+/// time (and after deserialization, via [`InternsWire`]). REPL hot paths
+/// such as [`MontyRepl::call_function`](crate::MontyRepl::call_function)
+/// and [`MontyRepl::has_function`](crate::MontyRepl::has_function) call this
+/// per host-supplied name, so the lookup must be O(1) — not the previous
+/// linear scan over `strings`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(into = "InternsWire", from = "InternsWire")]
 pub(crate) struct Interns {
+    strings: Vec<WithHash<String>>,
+    bytes: Vec<WithHash<Vec<u8>>>,
+    long_ints: Vec<WithHash<BigInt>>,
+    functions: Vec<Function>,
+    /// `String → StringId` reverse lookup for [`Self::get_string_id_by_name`].
+    ///
+    /// Built from `strings` at construction and after deserialization, so
+    /// the structure is purely additive on the wire (`InternsWire` carries
+    /// no reverse map). Single-ASCII and `StaticStrings` ids are NOT stored
+    /// here — those are resolved by the cheap branches at the top of
+    /// `get_string_id_by_name`.
+    string_id_by_name: AHashMap<String, StringId>,
+}
+
+/// On-the-wire representation of [`Interns`].
+///
+/// Carries only the canonical storage vectors; the `string_id_by_name`
+/// reverse map is rebuilt deterministically from `strings` after load.
+/// Keeping it off the wire avoids an attacker-controlled inconsistency
+/// between the forward and reverse directions.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct InternsWire {
     strings: Vec<WithHash<String>>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,
     functions: Vec<Function>,
 }
 
+impl From<Interns> for InternsWire {
+    fn from(interns: Interns) -> Self {
+        Self {
+            strings: interns.strings,
+            bytes: interns.bytes,
+            long_ints: interns.long_ints,
+            functions: interns.functions,
+        }
+    }
+}
+
+impl From<InternsWire> for Interns {
+    fn from(wire: InternsWire) -> Self {
+        let string_id_by_name = build_string_id_by_name(&wire.strings);
+        Self {
+            strings: wire.strings,
+            bytes: wire.bytes,
+            long_ints: wire.long_ints,
+            functions: wire.functions,
+            string_id_by_name,
+        }
+    }
+}
+
+/// Builds the `String → StringId` reverse map from the `strings` vector.
+///
+/// Used both at fresh [`Interns::new`] time and after deserialization. The
+/// ids start at [`INTERN_STRING_ID_OFFSET`] because slots `< OFFSET` are
+/// reserved for ASCII single-character strings and the [`StaticStrings`]
+/// table — those are handled by the cheap branches at the top of
+/// [`Interns::get_string_id_by_name`] and never enter this map.
+fn build_string_id_by_name(strings: &[WithHash<String>]) -> AHashMap<String, StringId> {
+    strings
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let id = StringId(
+                u32::try_from(INTERN_STRING_ID_OFFSET + index)
+                    .expect("StringId overflow while building reverse interns map"),
+            );
+            (entry.value().clone(), id)
+        })
+        .collect()
+}
+
 impl Interns {
     pub fn new(interner: InternerBuilder, functions: Vec<Function>) -> Self {
+        // `InternerBuilder` already maintains the `String → StringId` map
+        // during the parse/prepare phase to deduplicate `intern` calls;
+        // we move it across so `Interns::get_string_id_by_name` doesn't
+        // have to rebuild the same table from `strings`.
         Self {
             strings: interner.strings,
             bytes: interner.bytes,
             long_ints: interner.long_ints,
             functions,
+            string_id_by_name: interner.string_map,
         }
     }
 
@@ -1065,27 +1149,29 @@ impl Interns {
 
     /// Looks up the `StringId` for a string, checking ASCII, static strings, and interned strings.
     ///
-    /// This is the reverse of `get_str`: given a string, find its StringId.
-    /// Used when the host provides a name (e.g., from a NameLookup response) that was
-    /// previously interned during preparation.
+    /// This is the reverse of [`Self::get_str`]: given a string, find its
+    /// `StringId`. The interned-string branch is O(1) via the
+    /// `string_id_by_name` reverse map (built once at construction /
+    /// deserialization), so the entire lookup stays O(1) regardless of how
+    /// many strings have been interned.
     ///
-    /// Error if the string was never interned.
+    /// Used when the host provides a name (e.g., from a `NameLookup` response,
+    /// [`MontyRepl::call_function`](crate::MontyRepl::call_function),
+    /// [`MontyRepl::has_function`](crate::MontyRepl::has_function), or input
+    /// injection) that was previously interned during preparation.
+    ///
+    /// Returns `None` if the string was never interned.
     pub fn get_string_id_by_name(&self, s: &str) -> Option<StringId> {
-        // Check single ASCII char
+        // Single ASCII char and `StaticStrings` ids live in reserved slot
+        // ranges below `INTERN_STRING_ID_OFFSET`, never in the interned
+        // pool — keep the cheap branches at the top.
         if s.len() == 1 {
             return Some(StringId::from_ascii(s.as_bytes()[0]));
         }
-        // Check static strings
         if let Ok(ss) = StaticStrings::from_str(s) {
             return Some(ss.into());
         }
-        // Check interned strings
-        for (i, interned) in self.strings.iter().enumerate() {
-            if interned.value() == s {
-                return u32::try_from(INTERN_STRING_ID_OFFSET + i).ok().map(StringId);
-            }
-        }
-        None
+        self.string_id_by_name.get(s).copied()
     }
 
     /// Sets the compiled functions.

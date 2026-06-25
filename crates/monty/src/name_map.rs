@@ -37,12 +37,72 @@ use crate::{
 ///
 /// Used for module globals, function locals, and any other scope that
 /// needs a stable string → bytecode-slot mapping.
+///
+/// # Serialization
+///
+/// Only `slots` is serialized; `by_name` is reconstructed deterministically
+/// on deserialization (see [`NameMapWire`]). Putting only the canonical
+/// forward direction on the wire ensures untrusted snapshot input cannot
+/// desync the two halves — every load goes through `try_from`, which also
+/// enforces the `NamespaceId` (`u16`) upper bound on `slots.len()`.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(into = "NameMapWire", try_from = "NameMapWire")]
 pub(crate) struct NameMap {
     /// Name interned at each slot, indexed by `NamespaceId::index()`.
     slots: Vec<StringId>,
     /// Reverse lookup so `ensure_slot` is O(1).
     by_name: AHashMap<StringId, NamespaceId>,
+}
+
+/// On-the-wire representation of a [`NameMap`].
+///
+/// Carries only the canonical `slots` direction so a deserialized `NameMap`
+/// always has a `by_name` map that is a deterministic function of `slots`.
+/// This eliminates an attacker-controlled inconsistency between the two
+/// halves that the previous derive-based deserialization would have
+/// accepted unconditionally.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct NameMapWire {
+    slots: Vec<StringId>,
+}
+
+impl From<NameMap> for NameMapWire {
+    fn from(map: NameMap) -> Self {
+        Self { slots: map.slots }
+    }
+}
+
+impl TryFrom<NameMapWire> for NameMap {
+    type Error = String;
+
+    fn try_from(wire: NameMapWire) -> Result<Self, Self::Error> {
+        // Refuse oversized slot vectors at the wire boundary: `NamespaceId`
+        // is `u16`, so the bytecode slot operand cannot reach indices past
+        // `u16::MAX + 1`. Without this check a malicious snapshot could
+        // hand us an arbitrarily large vector and the subsequent
+        // `NamespaceId::new` panic would surface as an internal error.
+        let max_slots = usize::from(u16::MAX) + 1;
+        if wire.slots.len() > max_slots {
+            return Err(format!(
+                "NameMap has too many slots: {} (maximum is {max_slots})",
+                wire.slots.len(),
+            ));
+        }
+        let mut by_name = AHashMap::with_capacity(wire.slots.len());
+        for (idx, &name_id) in wire.slots.iter().enumerate() {
+            // Safe by the length check above.
+            let slot = NamespaceId::new(idx).expect("slot index fits in NamespaceId by length check");
+            // First occurrence wins, matching the live `ensure_slot` /
+            // `push_aliased_slot` invariant where a function parameter
+            // shadows any later cell/free-var slot that reuses its
+            // `StringId`.
+            by_name.entry(name_id).or_insert(slot);
+        }
+        Ok(Self {
+            slots: wire.slots,
+            by_name,
+        })
+    }
 }
 
 impl NameMap {

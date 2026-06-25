@@ -147,7 +147,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             &input_script_name,
             this.global_names.clone(),
             &this.interns,
-            input_names,
+            &input_names,
         ) {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
@@ -219,7 +219,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             &input_script_name,
             self.global_names.clone(),
             &self.interns,
-            input_names,
+            &input_names,
         )?;
 
         self.ensure_globals_size(executor.namespace_size());
@@ -993,27 +993,21 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 
 /// Injects input values into the VM's global namespace slots.
 ///
-/// Converts each `MontyObject` to a `Value` while the VM is alive, then stores
-/// it in the global slot that the compiler assigned for the corresponding input name.
+/// Converts each `MontyObject` to a `Value` while the VM is alive, then
+/// stores it at the namespace slot that `Executor::new_repl_snippet`
+/// pre-resolved for the corresponding input name. Each store is O(1) — the
+/// per-input name → slot lookup happens once at snippet construction, not
+/// here on the call path.
 fn inject_inputs_into_vm(
     executor: &Executor,
     input_values: Vec<MontyObject>,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
-    for (name, obj) in executor.input_names.iter().zip(input_values) {
-        let name_id = executor
-            .interns
-            .get_string_id_by_name(name)
-            .expect("input name should be interned");
-        let slot = executor
-            .globals
-            .get(name_id)
-            .expect("input name should have a namespace slot")
-            .index();
+    for (&slot, obj) in executor.input_slots.iter().zip(input_values) {
         let value = obj
             .to_value(vm)
             .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
-        let old = mem::replace(&mut vm.globals[slot], value);
+        let old = mem::replace(&mut vm.globals[slot.index()], value);
         old.drop_with_heap(vm);
     }
     Ok(())

@@ -11,6 +11,7 @@ use crate::{
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
     name_map::NameMap,
+    namespace::NamespaceId,
     object::MontyObject,
     parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
@@ -201,11 +202,14 @@ pub(crate) struct Executor {
     pub(crate) interns: Interns,
     /// Source code for error reporting (extracting preview lines for tracebacks).
     pub(crate) code: String,
-    /// Input variable names that were injected for this snippet.
+    /// Namespace slots that the REPL input-injection path writes into.
     ///
-    /// Used by the REPL path to look up namespace slots for injected inputs.
+    /// Pre-resolved at snippet-construction time so the per-call hot path
+    /// (`inject_inputs_into_vm`) is an O(1) slot index instead of an
+    /// O(N-interns) `Interns::get_string_id_by_name` lookup per input.
+    /// One entry per input value, in the order the embedder passed them.
     /// Empty for the standard (non-REPL) execution path.
-    pub(crate) input_names: Vec<String>,
+    pub(crate) input_slots: Vec<NamespaceId>,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -218,7 +222,7 @@ impl Clone for Executor {
             module_code: self.module_code.clone(),
             interns: self.interns.clone(),
             code: self.code.clone(),
-            input_names: self.input_names.clone(),
+            input_slots: self.input_slots.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -249,7 +253,7 @@ impl Executor {
             module_code: compile_result.code,
             interns,
             code,
-            input_names: Vec::new(),
+            input_slots: Vec::new(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -276,20 +280,26 @@ impl Executor {
         script_name: &str,
         mut existing_globals: NameMap,
         existing_interns: &Interns,
-        input_names: Vec<String>,
+        input_names: &[String],
     ) -> Result<Self, MontyException> {
-        check_identifier(&input_names)?;
+        check_identifier(input_names)?;
 
         let mut seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
-        // Pre-register input names so they get stable slots before preparation.
-        // Surfaced via the standard parse/prepare error path; if the embedder
-        // hands over more than `u16::MAX + 1` names the bytecode encoding
-        // can't represent them all.
-        for name in &input_names {
+        // Pre-register input names so they get stable slots before
+        // preparation, and capture each input's slot index so injection
+        // doesn't have to perform an O(N-interns) name→StringId scan at
+        // call time (one slot per input value, in order).
+        //
+        // Surfaced via the standard parse/prepare error path; if the
+        // embedder hands over more than `u16::MAX + 1` names the bytecode
+        // encoding can't represent them all.
+        let mut input_slots = Vec::with_capacity(input_names.len());
+        for name in input_names {
             let name_id = seeded_interner.intern(name);
-            existing_globals
+            let slot = existing_globals
                 .ensure_slot(name_id, CodeRange::default())
                 .map_err(|e| e.into_python_exc(script_name, &code))?;
+            input_slots.push(slot);
         }
 
         let parse_result = parse_with_interner(&code, script_name, seeded_interner)
@@ -309,7 +319,7 @@ impl Executor {
             module_code: compile_result.code,
             interns,
             code,
-            input_names,
+            input_slots,
             heap_capacity: AtomicUsize::new(0),
         })
     }
