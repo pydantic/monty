@@ -180,30 +180,29 @@ impl Checkout {
         }
     }
 
-    /// Restores a dumped session into this checkout's worker, replacing its
-    /// current (non-suspended) session, and returns the re-announced suspension
-    /// event when the dump was taken mid-feed (`None` for an idle dump).
+    /// Restores a dumped session into this checkout's freshly configured (but
+    /// not-yet-fed) worker, returning the re-announced suspension event when the
+    /// dump was taken mid-feed (`None` for an idle, between-feeds dump).
     ///
-    /// Intended to initialize a freshly created checkout by loading instead of
-    /// feeding: the worker is `Ready` with an empty session, and `Load`
-    /// overwrites it (no `Reset` round-trip). It is the caller's job to only do
-    /// this on a checkout that has not been fed (a suspended worker rejects
-    /// `Load`).
+    /// This is the low-level restore both `session.load` (idle dumps) and
+    /// `session.load_snapshot` (suspended dumps) drive: the caller inspects the
+    /// returned `Option` to tell which kind of dump it was and reject a
+    /// mismatch. Only valid before the worker has been fed (the child rejects a
+    /// `Load` once a repl exists).
     ///
-    /// `mounts` re-establish the suspended feed's mounts (which are never part
-    /// of the dump). They must match the mounts the original feed used; pass an
-    /// empty `Vec` for an idle dump or to deliberately resume without mounts
-    /// (its mount-covered OS calls then bubble up). The session's resource
-    /// budget is taken from the dump, so the prior `Configure` limits are
-    /// dropped here and re-adopted from the worker's reply.
-    pub fn load_snapshot(
+    /// `mounts` re-establish a suspended feed's mounts (which are never part of
+    /// the dump). They must match the mounts the original feed used; pass an
+    /// empty `Vec` for an idle dump. The session's resource budget is taken
+    /// from the dump, so the prior `Configure` limits are dropped here and
+    /// re-adopted from the worker's reply.
+    pub fn restore(
         &mut self,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
         on_print: OnPrint<'_>,
     ) -> Result<Option<TurnEvent>, PoolError> {
         // the dump carries its own limits/consumed time — forget what the
-        // replaced session.s Configure established and re-adopt from the reply
+        // worker's Configure established and re-adopt from the reply
         self.pending = None;
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;

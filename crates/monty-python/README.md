@@ -113,9 +113,8 @@ with Monty() as pool:
 ```
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
-`load_snapshot` restores it and returns the snapshot to resume (`load_snapshot`
-is valid only on a fresh session, before any feed). This lets you checkpoint
-execution and continue it later, even in a different process:
+`load_snapshot` restores it and returns the snapshot to resume. This lets you
+checkpoint execution and continue it later, even in a different process:
 
 ```python
 from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
@@ -139,8 +138,12 @@ with Monty() as pool:
 
 If the paused feed used filesystem `mount`s, re-supply the same ones to
 `load_snapshot(blob, mount=...)` — their host paths are not stored in the dump.
-`AsyncMonty` sessions expose the same `feed_start` / `load_snapshot`, with
-awaitable `resume(...)`.
+
+`session.dump()` between feeds serializes an idle session instead; restore it
+with `session.load(blob)` (which returns `None`) and keep feeding. Both `load`
+and `load_snapshot` are valid only on a fresh session, before any feed; using
+the wrong one for a dump's kind raises. `AsyncMonty` sessions expose the same
+`feed_start` / `load` / `load_snapshot`, with awaitable `resume(...)`.
 
 ### Resource limits
 

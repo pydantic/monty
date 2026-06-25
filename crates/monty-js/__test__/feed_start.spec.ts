@@ -106,7 +106,7 @@ test('dump at a suspension, then loadSnapshot and resume', async (t) => {
   }
 })
 
-test('loadSnapshot of an idle dump returns null', async (t) => {
+test('load restores an idle session', async (t) => {
   let blob: Buffer
   {
     const session = await pool().checkout()
@@ -116,20 +116,54 @@ test('loadSnapshot of an idle dump returns null', async (t) => {
   }
   const session = await pool().checkout()
   try {
-    t.is(await session.loadSnapshot(blob), null)
+    await session.load(blob)
     t.is(await session.feedRun('kept + 1'), 8)
   } finally {
     await session.close()
   }
 })
 
-test('loadSnapshot after a feed is rejected', async (t) => {
+test('load and loadSnapshot reject the wrong dump kind', async (t) => {
+  let idle: Buffer
+  let suspended: Buffer
+  {
+    const session = await pool().checkout()
+    idle = await session.dump()
+    await session.close()
+  }
+  {
+    const session = await pool().checkout()
+    await session.feedStart('f()')
+    suspended = await session.dump()
+    await session.close()
+  }
+  {
+    const session = await pool().checkout()
+    await t.throwsAsync(() => session.loadSnapshot(idle), {
+      message: 'this dump is an idle session — use load() to restore it',
+    })
+    // the failed load poisons the session — it is not retryable
+    await t.throwsAsync(() => session.feedRun('1 + 1'))
+    await session.close()
+  }
+  {
+    const session = await pool().checkout()
+    await t.throwsAsync(() => session.load(suspended), {
+      message: 'this dump is a suspended snapshot — use loadSnapshot() to resume it',
+    })
+    await t.throwsAsync(() => session.feedRun('1 + 1'))
+    await session.close()
+  }
+})
+
+test('load after a feed is rejected', async (t) => {
   const session = await pool().checkout()
   try {
     const blob = await session.dump()
     await session.feedRun('x = 1')
     await t.throwsAsync(() => session.loadSnapshot(blob), {
-      message: 'loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / loadSnapshot',
+      message:
+        'load / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / load / loadSnapshot',
     })
   } finally {
     await session.close()
@@ -159,10 +193,11 @@ test('mounts are re-supplied to loadSnapshot and validated', async (t) => {
     await session.close()
   }
 
-  // omitted: validation rejects the load
+  // omitted: validation rejects the load and poisons the session
   {
     const session = await pool().checkout()
     await t.throwsAsync(() => session.loadSnapshot(blob), { instanceOf: MontyRuntimeError })
+    await t.throwsAsync(() => session.feedRun('1 + 1'))
     await session.close()
   }
 })

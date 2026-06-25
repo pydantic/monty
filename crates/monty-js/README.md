@@ -95,11 +95,10 @@ if (snap instanceof FunctionSnapshot) {
 }
 ```
 
-`snapshot.dump()` (or `session.dump()`) serializes the paused worker to bytes;
-a fresh session's `loadSnapshot` restores it and returns the snapshot to resume
-(`loadSnapshot` is valid only before any feed, and resolves to `null` for a
-dump taken between feeds). Re-supply the same `mount`s the paused feed used —
-their host paths are not stored in the dump.
+`snapshot.dump()` serializes the paused worker to bytes; a fresh session's
+`loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
+same `mount`s the paused feed used — their host paths are not stored in the
+dump.
 
 ```ts
 const blob = await snap.dump()
@@ -107,6 +106,11 @@ const blob = await snap.dump()
 const restored = await session.loadSnapshot(blob)
 if (restored instanceof FunctionSnapshot) await restored.resume('value')
 ```
+
+`session.dump()` between feeds serializes an idle session instead; restore it
+with `await session.load(blob)` (which resolves to `void`) and keep feeding.
+Both `load` and `loadSnapshot` are valid only on a fresh session, before any
+feed; using the wrong one for a dump's kind throws.
 
 ## Print Output
 

@@ -372,12 +372,12 @@ impl NativeSession {
         })
     }
 
-    /// Restores a dump into this session's worker in place of starting it
-    /// fresh, replacing the worker's (non-suspended) session. Resolves to a
-    /// turn object: a suspension when the dump was mid-feed, or `loaded` for an
-    /// idle dump. The TypeScript layer enforces "fresh session only".
+    /// Restores a dump into this session's freshly configured worker. Resolves
+    /// to a turn object: a suspension when the dump was mid-feed, or `loaded`
+    /// for an idle dump. The TypeScript `load` / `loadSnapshot` split inspects
+    /// the kind and enforces "fresh session only".
     #[napi]
-    pub fn load<'env>(
+    pub fn restore<'env>(
         &self,
         env: &'env Env,
         state: Buffer,
@@ -390,7 +390,7 @@ impl NativeSession {
             .collect::<Result<Vec<_>>>()?;
         let state = state.to_vec();
         self.run_outcome(env, on_print, move |checkout, on_print| {
-            match checkout.load_snapshot(state, mounts, on_print) {
+            match checkout.restore(state, mounts, on_print) {
                 Ok(Some(event)) => TurnOutcome::Event(event),
                 Ok(None) => TurnOutcome::LoadedIdle,
                 Err(err) => TurnOutcome::from(Err(err)),

@@ -133,21 +133,27 @@ the *host API* surface.
   callback.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker of the same version, via
-  `session.load_snapshot` (Rust `Checkout::load_in_place`).
+  `session.load` / `session.load_snapshot` (Rust `Checkout::restore`).
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
   state lives in the worker, so only one suspension is live per session, each
   snapshot may be resumed at most once (a second resume raises
   `RuntimeError`), and feeding while suspended raises. This differs from the
   pre-subprocess in-process API, where a snapshot owned freely-copyable state.
-- **`load_snapshot` is a session method, valid only on a fresh session.** The
-  old module-level `load_snapshot` / `load_repl_snapshot` are replaced by
-  `session.load_snapshot(state) -> snapshot | None` (the snapshot is `None` for
-  a dump taken between feeds). It restores a dump *into* a freshly checked-out
-  session in place of starting it fresh, so it is rejected (`RuntimeError`)
-  after any `feed_run` / `feed_start` / `load_snapshot` — it would otherwise
-  silently discard work. The dump restores its own `script_name` / limits /
-  type-check state (the `checkout()` config for those is not applied); the
-  dataclass registry from `checkout()` is reused.
+- **Restoring a dump is a session method, split by dump kind.** The old
+  module-level `load_snapshot` / `load_repl_snapshot` are replaced by two
+  fresh-session-only methods: `session.load(state)` restores a dump taken
+  between feeds (an idle session) so you can keep feeding it, and
+  `session.load_snapshot(state, *, mount=…)` restores a dump taken mid-feed and
+  returns the re-announced snapshot to resume. The caller knows which kind it
+  dumped (`session.dump()` between feeds vs `snapshot.dump()`); using the wrong
+  method raises. Both restore *into* a freshly checked-out worker, so they are
+  rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load` /
+  `load_snapshot` — restoring would otherwise discard work. The dump restores
+  its own `script_name` / limits / type-check state (the `checkout()` config
+  for those is not applied); the dataclass registry from `checkout()` is reused.
+  A *failed* load (wrong dump kind, or a restore error such as a missing mount)
+  poisons the session — its worker is discarded, so every later feed fails too;
+  the load is not retryable and the caller must check out a fresh session.
 - **`resume` takes no `mount=`.** Mounts are fixed for the whole feed (passed
   to `feed_start`), so there is no per-`resume` mount argument.
 - **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
@@ -156,12 +162,13 @@ the *host API* surface.
   could otherwise be crafted to mount an arbitrary host directory on load. To
   resume a suspended feed with its mounts, pass the same `mount=` the original
   `feed_start` used to `load_snapshot`; the worker rebuilds the mount table.
+  (`load` takes no `mount` — an idle session has no in-flight feed; the next
+  feed supplies its own.)
 - **`load_snapshot` validates the re-supplied mounts.** The dump records the
   suspended feed's mount *requirements* (virtual path + mode + write limit, no
   host path). `load_snapshot` must supply mounts that match them exactly (host
   paths may differ); a missing, extra, or altered mount raises rather than
-  silently dropping the feed's mounts. An idle dump records no requirements, so
-  it takes no `mount=` (supplying one raises).
+  silently dropping the feed's mounts.
 - **`'overlay'` writes are not preserved across a dump.** A restored overlay
   mount starts empty; `read-only` / `read-write` mounts hold no in-worker state
   and restore fully.

@@ -273,19 +273,35 @@ impl PyMontySession {
         feed_start_sync(py, args, self.repl_config.script_name.clone())
     }
 
-    /// Restores a dump (from `session.dump()` / `snapshot.dump()`) into this
-    /// session instead of starting it fresh, returning the re-announced
-    /// snapshot to resume — or `None` when the dump was taken between feeds.
+    /// Restores a dumped **idle** session — bytes from `session.dump()` taken
+    /// between feeds — so you can keep feeding it. Use
+    /// [`load_snapshot`](Self::load_snapshot) for a dump taken mid-execution.
     ///
-    /// Valid only on a fresh session, before any `feed_run` / `feed_start` /
-    /// `load_snapshot` (it replaces the whole session, so it would otherwise
-    /// silently discard work); raises `RuntimeError` otherwise.
+    /// Valid only on a fresh session, before any feed or load; raises
+    /// `RuntimeError` otherwise. The dump restores its own `script_name` /
+    /// limits / type-check state (the `checkout()` config for those is not
+    /// applied); the dataclass registry from `checkout()` is reused. Raises if
+    /// the dump is actually a suspended snapshot.
+    fn load(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
+        if self.restore_turn(py, state, Vec::new())?.is_some() {
+            py.detach(|| discard_checkout(&self.checkout));
+            return Err(PyRuntimeError::new_err(
+                "this dump is a suspended snapshot — use load_snapshot() to resume it",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Restores a dumped **suspended** snapshot — bytes from `feed_start` +
+    /// `snapshot.dump()` — and returns the re-announced snapshot to resume. Use
+    /// [`load`](Self::load) for a dump taken between feeds.
     ///
-    /// The dump restores its own `script_name` / limits / type-check state —
-    /// the `checkout()` config for those is not applied. `mount` re-establishes
-    /// the suspended feed's mounts (whose host paths are not in the dump) and
-    /// is validated against the dump's recorded mount requirements; the
-    /// session's dataclass registry from `checkout()` is reused.
+    /// Valid only on a fresh session, before any feed or load; raises
+    /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
+    /// mounts (whose host paths are not in the dump), validated against the
+    /// dump's recorded requirements. The dump restores its own config; the
+    /// dataclass registry from `checkout()` is reused. Raises if the dump is
+    /// actually an idle session.
     #[pyo3(signature = (state, *, mount=None, print_callback=None))]
     fn load_snapshot(
         &self,
@@ -293,36 +309,25 @@ impl PyMontySession {
         state: Vec<u8>,
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Option<Py<PyAny>>> {
+    ) -> PyResult<Py<PyAny>> {
         // extract args before committing the session, so a bad-args error
-        // leaves it loadable; then claim it (a failed load is not retryable on
-        // the same session — checkout a fresh one), matching the async path.
+        // leaves it loadable (a failed load is not retryable — checkout a fresh
+        // session — matching the async path)
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
-        if self.used.swap(true, Ordering::Relaxed) {
-            return Err(load_snapshot_used_err());
-        }
-        let checkout = Arc::clone(&self.checkout);
-        let event = py
-            .detach(|| {
-                let mut guard = lock(&checkout);
-                guard
-                    .as_mut()
-                    .ok_or(PoolError::Finished)?
-                    .load_snapshot(state, mounts, &mut |_, _| {})
-            })
-            .map_err(|e| pool_err_to_py(py, e))?;
-        event
-            .map(|event| {
-                let ctx = DriveContext::new(
-                    checkout,
-                    self.dc_registry.clone_ref(py),
-                    print_target,
-                    self.repl_config.script_name.clone(),
-                );
-                build_snapshot(py, ctx, event, false)
-            })
-            .transpose()
+        let Some(event) = self.restore_turn(py, state, mounts)? else {
+            py.detach(|| discard_checkout(&self.checkout));
+            return Err(PyRuntimeError::new_err(
+                "this dump is an idle session — use load() to restore it",
+            ));
+        };
+        let ctx = DriveContext::new(
+            Arc::clone(&self.checkout),
+            self.dc_registry.clone_ref(py),
+            print_target,
+            self.repl_config.script_name.clone(),
+        );
+        build_snapshot(py, ctx, event, false)
     }
 
     /// Serializes the worker's session state (idle or suspended) into opaque
@@ -343,6 +348,35 @@ impl PyMontySession {
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
         try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
+    }
+}
+
+impl PyMontySession {
+    /// Claims the fresh session (rejecting a reused one) and runs the low-level
+    /// restore off the GIL, returning the re-announced suspension (`Some`) or
+    /// `None` for an idle dump. The restore turn runs no sandbox code, so it
+    /// needs no print sink. Shared by [`load`](Self::load) and
+    /// [`load_snapshot`](Self::load_snapshot).
+    fn restore_turn(&self, py: Python<'_>, state: Vec<u8>, mounts: Vec<MountSpec>) -> PyResult<Option<TurnEvent>> {
+        if self.used.swap(true, Ordering::Relaxed) {
+            // non-destructive: an already-running session keeps its worker
+            return Err(session_used_err());
+        }
+        let checkout = Arc::clone(&self.checkout);
+        let result = py.detach(|| {
+            let mut guard = lock(&checkout);
+            guard
+                .as_mut()
+                .ok_or(PoolError::Finished)?
+                .restore(state, mounts, &mut |_, _| {})
+        });
+        // a failed restore (bad mount, protocol desync, ...) leaves the worker
+        // in an untrusted state: discard it so a later feed fails fast rather
+        // than running on a half-restored session
+        if result.is_err() {
+            py.detach(|| discard_checkout(&checkout));
+        }
+        result.map_err(|e| pool_err_to_py(py, e))
     }
 }
 
@@ -567,9 +601,37 @@ impl PyAsyncMontySession {
         feed_start_async(py, args, self.repl_config.script_name.clone())
     }
 
+    /// Async counterpart of [`PyMontySession::load`]: the coroutine restores a
+    /// dumped idle session, resolving to `None`. Valid only on a fresh session;
+    /// raises if the dump is actually a suspended snapshot.
+    fn load<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        // claim the session in the synchronous prologue (which completes before
+        // the future), so a concurrent call is rejected at call time and the
+        // off-thread restore can't race onto a fresh session
+        if self.used.swap(true, Ordering::Relaxed) {
+            return Err(session_used_err());
+        }
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            if restore_turn_async(Arc::clone(&checkout), state, Vec::new())
+                .await?
+                .is_some()
+            {
+                spawn_blocking(move || discard_checkout(&checkout))
+                    .await
+                    .map_err(join_error_to_py)?;
+                return Err(PyRuntimeError::new_err(
+                    "this dump is a suspended snapshot — use load_snapshot() to resume it",
+                ));
+            }
+            Ok(())
+        })
+    }
+
     /// Async counterpart of [`PyMontySession::load_snapshot`]: the coroutine
-    /// resolves to the re-announced snapshot (whose `resume(...)` is awaitable)
-    /// or `None` for a between-feeds dump. Valid only on a fresh session.
+    /// restores a dumped suspended snapshot and resolves to it (whose
+    /// `resume(...)` is awaitable). Valid only on a fresh session; raises if the
+    /// dump is actually an idle session.
     #[pyo3(signature = (state, *, mount=None, print_callback=None))]
     fn load_snapshot<'py>(
         &self,
@@ -578,37 +640,28 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // extract args before committing the session, then claim it in the
-        // synchronous prologue (which runs to completion before the future):
-        // a second concurrent call sees `used` set and is rejected at call
-        // time, and the off-thread load can't race onto a fresh session.
+        // extract args before committing the session (a bad-args error leaves
+        // it loadable), then claim it in the synchronous prologue
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
         if self.used.swap(true, Ordering::Relaxed) {
-            return Err(load_snapshot_used_err());
+            return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
         let dc_registry = self.dc_registry.clone_ref(py);
         let script_name = self.repl_config.script_name.clone();
         future_into_py(py, async move {
-            let load_checkout = Arc::clone(&checkout);
-            let event = spawn_blocking(move || {
-                let mut guard = lock(&load_checkout);
-                guard
-                    .as_mut()
-                    .ok_or(PoolError::Finished)?
-                    .load_snapshot(state, mounts, &mut |_, _| {})
-            })
-            .await
-            .map_err(join_error_to_py)?
-            .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            let Some(event) = restore_turn_async(Arc::clone(&checkout), state, mounts).await? else {
+                spawn_blocking(move || discard_checkout(&checkout))
+                    .await
+                    .map_err(join_error_to_py)?;
+                return Err(PyRuntimeError::new_err(
+                    "this dump is an idle session — use load() to restore it",
+                ));
+            };
             Python::attach(|py| {
-                event
-                    .map(|event| {
-                        let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
-                        build_snapshot(py, ctx, event, true)
-                    })
-                    .transpose()
+                let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
+                build_snapshot(py, ctx, event, true)
             })
         })
     }
@@ -670,12 +723,52 @@ fn parse_pool_config(
     Ok(config)
 }
 
-/// The error raised when `load_snapshot` is called on a session that has
-/// already been fed or restored (it would otherwise silently discard work).
-fn load_snapshot_used_err() -> PyErr {
+/// The error raised when `load` / `load_snapshot` is called on a session that
+/// has already been fed or restored (it would otherwise silently discard work).
+fn session_used_err() -> PyErr {
     PyRuntimeError::new_err(
-        "load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_snapshot",
+        "load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot",
     )
+}
+
+/// Runs the low-level restore off the event loop (via `spawn_blocking`),
+/// returning the re-announced suspension (`Some`) or `None` for an idle dump.
+/// The restore turn runs no sandbox code, so it needs no print sink. Shared by
+/// the async [`PyAsyncMontySession::load`] / `load_snapshot`.
+async fn restore_turn_async(
+    checkout: SharedCheckout,
+    state: Vec<u8>,
+    mounts: Vec<MountSpec>,
+) -> PyResult<Option<TurnEvent>> {
+    spawn_blocking(move || {
+        let result = {
+            let mut guard = lock(&checkout);
+            guard
+                .as_mut()
+                .ok_or(PoolError::Finished)
+                .and_then(|checkout| checkout.restore(state, mounts, &mut |_, _| {}))
+        };
+        // discard the worker on failure (the lock is released above) so a later
+        // feed fails fast — a failed load is not retryable
+        if result.is_err() {
+            discard_checkout(&checkout);
+        }
+        result
+    })
+    .await
+    .map_err(join_error_to_py)?
+    .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))
+}
+
+/// Kills the session's worker and empties its checkout slot after a failed
+/// load. Any subsequent feed then fails with [`PoolError::Finished`] — like a
+/// crashed session — enforcing that a failed load is not retryable (callers
+/// must check out a fresh session). Does no protocol I/O, so it never blocks.
+fn discard_checkout(checkout: &SharedCheckout) {
+    // take in its own statement so the lock is released before the worker is
+    // dropped (its `Drop` kills the process)
+    let taken = lock(checkout).take();
+    drop(taken);
 }
 
 /// Builds the worker-side REPL session config from the (shared) `checkout`

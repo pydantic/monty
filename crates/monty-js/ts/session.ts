@@ -193,30 +193,86 @@ export class MontySession {
   }
 
   /**
-   * Restores a dump (from `session.dump()` / `snapshot.dump()`) into this
-   * session instead of starting it fresh, resolving to the re-announced
-   * snapshot to resume — or `null` when the dump was taken between feeds.
+   * Restores a dumped **idle** session — bytes from `session.dump()` taken
+   * between feeds — so you can keep feeding it. Use [`loadSnapshot`] for a dump
+   * taken mid-execution.
    *
-   * Valid only on a fresh session, before any `feedRun` / `feedStart` /
-   * `loadSnapshot` (it replaces the whole session); throws otherwise. The dump
-   * restores its own resource limits and type-check state. Re-supply the same
-   * `mount`s the paused feed used (their host paths are not in the dump);
-   * a missing, extra, or altered mount throws.
+   * Valid only on a fresh session, before any feed or load (it replaces the
+   * whole session); throws otherwise. The dump restores its own resource limits
+   * and type-check state. Throws if the dump is actually a suspended snapshot.
    */
-  async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot | null> {
-    this.ensureUsable()
-    if (this.driven) {
-      throw new Error('loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / loadSnapshot')
+  async load(state: Uint8Array): Promise<void> {
+    this.claimFresh()
+    const printTarget = new PrintTarget(undefined)
+    const turn = (await this.native.restore(Buffer.from(state), [], printTarget.write.bind(printTarget))) as
+      | NativeTurn
+      | LoadedTurn
+    switch (turn.kind) {
+      case 'loaded':
+        return
+      case 'crashed':
+        throw await this.failedLoad(new MontyCrashedError(turn.message, turn))
+      case 'protocol':
+        throw await this.failedLoad(new ProtocolError(turn.message))
+      case 'error':
+        throw await this.failedLoad(montyErrorFromNative(turn.exception))
+      default:
+        throw await this.failedLoad(new Error('this dump is a suspended snapshot — use loadSnapshot() to resume it'))
     }
-    this.driven = true
+  }
+
+  /**
+   * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
+   * `snapshot.dump()` — and resolves to the snapshot to resume. Use [`load`]
+   * for a dump taken between feeds.
+   *
+   * Valid only on a fresh session, before any feed or load; throws otherwise.
+   * Re-supply the same `mount`s the paused feed used (their host paths are not
+   * in the dump); a missing, extra, or altered mount throws. Throws if the dump
+   * is actually an idle session.
+   */
+  async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
+    this.claimFresh()
     const driver = this.newDriver(options)
-    const turn = (await this.native.load(Buffer.from(state), mountsToNative(options.mount), driver.onPrint)) as
+    const turn = (await this.native.restore(Buffer.from(state), mountsToNative(options.mount), driver.onPrint)) as
       | NativeTurn
       | LoadedTurn
     if (turn.kind === 'loaded') {
-      return null
+      throw await this.failedLoad(new Error('this dump is an idle session — use load() to restore it'))
     }
-    return driver.advance(turn)
+    try {
+      return await driver.advance(turn)
+    } catch (err) {
+      // any failure restoring the snapshot (bad mount, crash, protocol desync)
+      // leaves the session unusable — poison it and release the worker
+      throw await this.failedLoad(err instanceof Error ? err : new Error(String(err)))
+    }
+  }
+
+  /** Claims a fresh session for a load (rejecting a reused one). */
+  private claimFresh(): void {
+    this.ensureUsable()
+    if (this.driven) {
+      throw new Error(
+        'load / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / load / loadSnapshot',
+      )
+    }
+    this.driven = true
+  }
+
+  /**
+   * Poisons the session and releases its worker after a failed load, so any
+   * later op fails like a crashed session — a failed load is not retryable.
+   * Returns the error to throw.
+   */
+  private async failedLoad(err: Error): Promise<Error> {
+    this.poison(err)
+    try {
+      await this.native.finish()
+    } catch {
+      // the worker was already discarded (e.g. it crashed) — nothing to release
+    }
+    return err
   }
 
   /** Builds the per-feed snapshot driver (print target, os handler, poison). */

@@ -391,29 +391,40 @@ class MontySession:
         `load_snapshot` to restore it.
         """
 
+    def load(self, state: bytes) -> None:
+        """
+        Restore a dumped **idle** session — bytes from `session.dump()` taken
+        between feeds — so you can keep feeding it. Use `load_snapshot` for a
+        dump taken mid-execution.
+
+        Valid only on a fresh session, before any feed or load; raises
+        `RuntimeError` otherwise. The dump restores its own `script_name` /
+        limits / type-check state (the `checkout()` config for those is not
+        applied); the dataclass registry from `checkout()` is reused. Raises if
+        the dump is actually a suspended snapshot.
+        """
+
     def load_snapshot(
         self,
         state: bytes,
         *,
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
-    ) -> SyncSnapshot | None:
+    ) -> SyncSnapshot:
         """
-        Restore a dump (from `session.dump()` / `snapshot.dump()`) into this
-        session instead of starting it fresh, returning the re-announced
-        snapshot to resume — or `None` when the dump was taken between feeds.
+        Restore a dumped **suspended** snapshot — bytes from `feed_start` +
+        `snapshot.dump()` — and return the re-announced snapshot to resume. Use
+        `load` for a dump taken between feeds.
 
-        Valid only on a fresh session, before any `feed_run` / `feed_start` /
-        `load_snapshot` (it replaces the whole session, so it would otherwise
-        silently discard work); raises `RuntimeError` otherwise.
-
-        The dump restores its own `script_name` / limits / type-check state, so
-        the `checkout()` config for those is not applied; the dataclass registry
-        from `checkout()` is reused. `mount` re-establishes the suspended feed's
-        mounts (whose host paths are not in the dump) and is validated against
-        the dump's recorded requirements — a missing, extra, or altered mount
-        raises. An idle dump takes no `mount`. `'overlay'` writes made before
-        the dump are not preserved (the restored overlay starts empty).
+        Valid only on a fresh session, before any feed or load; raises
+        `RuntimeError` otherwise. The dump restores its own `script_name` /
+        limits / type-check state (the `checkout()` config for those is not
+        applied); the dataclass registry from `checkout()` is reused. `mount`
+        re-establishes the suspended feed's mounts (whose host paths are not in
+        the dump), validated against the dump's recorded requirements — a
+        missing, extra, or altered mount raises. `'overlay'` writes made before
+        the dump are not preserved (the restored overlay starts empty). Raises
+        if the dump is actually an idle session.
 
         A re-announced OS-call snapshot carries only its `not_handled_error`,
         not the original `args`/`kwargs` (those were consumed before the dump).
@@ -532,17 +543,25 @@ class AsyncMontySession:
         (whose `resume(...)` is awaitable) or a `MontyComplete`.
         """
 
+    async def load(self, state: bytes) -> None:
+        """
+        Async counterpart of `MontySession.load`: restores a dumped idle
+        session. Valid only on a fresh session; raises if the dump is actually a
+        suspended snapshot.
+        """
+
     async def load_snapshot(
         self,
         state: bytes,
         *,
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
-    ) -> AsyncSnapshot | None:
+    ) -> AsyncSnapshot:
         """
-        Async counterpart of `MontySession.load_snapshot`: resolves to the
-        re-announced snapshot (whose `resume(...)` is awaitable) or `None` for a
-        between-feeds dump. Valid only on a fresh session.
+        Async counterpart of `MontySession.load_snapshot`: restores a dumped
+        suspended snapshot and resolves to it (whose `resume(...)` is
+        awaitable). Valid only on a fresh session; raises if the dump is
+        actually an idle session.
         """
 
     async def dump(self) -> bytes:
@@ -611,7 +630,7 @@ class FunctionSnapshot:
         """Resume an OS-call snapshot with monty's default unhandled behaviour."""
 
     def dump(self) -> bytes:
-        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
 
     def __repr__(self) -> str: ...
 
@@ -632,7 +651,7 @@ class NameLookupSnapshot:
         """Resume with `value` to define the name, or nothing to raise `NameError`."""
 
     def dump(self) -> bytes:
-        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
 
     def __repr__(self) -> str: ...
 
@@ -653,7 +672,7 @@ class FutureSnapshot:
         """Resume with results for one or more pending futures (by `call_id`)."""
 
     def dump(self) -> bytes:
-        """Serialize the suspended worker; restore via `Monty.load_snapshot`."""
+        """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
 
     def __repr__(self) -> str: ...
 
