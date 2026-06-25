@@ -346,22 +346,28 @@ impl SnapshotState {
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
-        // a resumed snapshot is a spent cursor: the worker has advanced past
-        // this suspension, so dumping now would serialize the *current* session
-        // state mislabeled as this snapshot. Reject it, matching `claim`.
-        if self.resumed.load(Ordering::SeqCst) {
-            return Err(PyRuntimeError::new_err(
-                "cannot dump a snapshot that has already been resumed",
-            ));
-        }
+        // Check resumed only under the checkout lock
         let checkout = SharedCheckout::clone(&self.ctx.checkout);
+        let resumed = &self.resumed;
         let state = py
             .detach(|| {
                 let mut guard = lock(&checkout);
-                guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
+                if resumed.load(Ordering::SeqCst) {
+                    return Ok(None);
+                }
+                guard
+                    .as_mut()
+                    .ok_or(PoolError::Finished)
+                    .and_then(Checkout::dump)
+                    .map(Some)
             })
             .map_err(|e| pool_err_to_py(py, e))?;
-        Ok(PyBytes::new(py, &state).unbind())
+        match state {
+            Some(state) => Ok(PyBytes::new(py, &state).unbind()),
+            None => Err(PyRuntimeError::new_err(
+                "cannot dump a snapshot that has already been resumed",
+            )),
+        }
     }
 }
 
