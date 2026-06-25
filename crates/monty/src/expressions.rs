@@ -352,26 +352,35 @@ pub enum Expr {
     },
 }
 
-/// Target for tuple unpacking - can be a single name, nested tuple, or starred target.
+/// Target for tuple unpacking. Used in assignment LHS, `for`-loop, and
+/// comprehension `for` clauses.
 ///
-/// Supports recursive structures like `(a, b), c` or `a, (b, c)`.
-/// Also supports starred targets like `first, *rest = [1, 2, 3, 4]`.
-/// Used in assignment statements, for loop targets, and comprehension targets.
+/// `Name`/`Starred` introduce bindings; `Subscript`/`Attribute` mutate existing
+/// state and bind nothing (scope analysis must skip them as binding sites but
+/// still walk their sub-expressions for walrus targets). The matching leaves
+/// on `AssignTarget` carry identical shapes.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum UnpackTarget {
-    /// Single identifier: `a`
     Name(Identifier),
-    /// Nested tuple: `(a, b)` - can contain further nested tuples
+    /// Nested tuple — can recurse via `targets`.
     Tuple {
-        /// The targets to unpack into (can be names or nested tuples)
         targets: Vec<Self>,
-        /// Source position covering all targets (for error caret placement)
         position: CodeRange,
     },
-    /// Starred target: `*rest` - captures remaining values into a list.
-    ///
-    /// Only one starred target is allowed per unpacking level.
+    /// `*rest`. At most one per unpacking level.
     Starred(Identifier),
+    /// `container[index]`. Sub-expressions evaluated at store time.
+    Subscript {
+        target: ExprLoc,
+        index: ExprLoc,
+        target_position: CodeRange,
+    },
+    /// `obj.attr`. Sub-expression evaluated at store time.
+    Attribute {
+        object: ExprLoc,
+        attr: EitherStr,
+        target_position: CodeRange,
+    },
 }
 
 /// Target of a single assignment step within a chained assignment.

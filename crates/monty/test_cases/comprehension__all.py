@@ -206,3 +206,25 @@ for s in ['hello']:
         [int(c) for c in s]
     except ValueError:
         pass
+
+# === Subscript target as comprehension `for` variable (issue #408) ===
+# CPython allows `for x[i] in iter:` inside comprehensions. The store leaks
+# out of the comprehension's transient scope into the surrounding container
+# (subscript targets mutate, they don't allocate a fresh comp-var).
+box = [None]
+result = [box[0] for box[0] in (1, 2, 3)]
+assert result == [1, 2, 3], 'comp subscript target visible inside body'
+assert box[0] == 3, 'comp subscript target final write persists'
+
+# Generator with subscript target — each emitted value passes through the
+# subscript store; the slot holds the last write after exhaustion.
+a = [0, 0]
+i = 0
+list(a[i] for a[i] in (5, 6, 7))
+assert a == [7, 0], 'generator subscript target stores final value'
+
+# Subscript target inside nested tuple in a comprehension
+a = [0]
+out = [(a[0], y) for a[0], y in [(1, 'x'), (2, 'y')]]
+assert out == [(1, 'x'), (2, 'y')], 'comp nested subscript target reads-through'
+assert a == [2], 'comp nested subscript target final write persists'
