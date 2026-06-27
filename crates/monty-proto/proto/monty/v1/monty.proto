@@ -297,14 +297,15 @@ message NamedValue {
 message ParentRequest {
   oneof kind {
     Configure configure = 1;
-    Feed feed = 2;
-    ResumeCall resume_call = 3;
-    ResumeNameLookup resume_name_lookup = 4;
-    ResumeFutures resume_futures = 5;
-    Dump dump = 6;
-    Load load = 7;
-    Reset reset = 8;
-    Shutdown shutdown = 9;
+    InstallDependencies install_dependencies = 2;
+    Feed feed = 3;
+    ResumeCall resume_call = 4;
+    ResumeNameLookup resume_name_lookup = 5;
+    ResumeFutures resume_futures = 6;
+    Dump dump = 7;
+    Load load = 8;
+    Reset reset = 9;
+    Shutdown shutdown = 10;
   }
   // Old oneof field names from before the session-control arms were renamed.
   // proto3 reserves names within the enclosing message, not the oneof, so the
@@ -391,6 +392,18 @@ message Reset {}
 
 // The child replies `Ok` and exits cleanly.
 message Shutdown {}
+
+// Installs third-party Python packages into the session before further feeds,
+// using `uv pip install --target` against the worker's interpreter. Only the
+// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+// an `Error` (it has no host interpreter to install for). Repeatable between
+// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
+// failure. Valid only once a session exists (after `Configure`).
+message InstallDependencies {
+  // PEP 508 requirement strings, e.g. "httpx>=0.27", "numpy". An empty list is
+  // a no-op that replies `Ok`.
+  repeated string requirements = 1;
+}
 
 // ============================================================================
 // Events (child -> parent)

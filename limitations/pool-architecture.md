@@ -140,6 +140,24 @@ the *host API* surface.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are handled inside the worker and never reach the
   callback.
+- **Dependency installation is only available on the embedded-CPython worker.**
+  `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
+  `session.installDependencies([...])` in `@pydantic/monty`) makes the
+  `monty-cpython` worker `uv pip install --target` the PEP 508 requirements into
+  a session-scoped directory it adds to `sys.path`, so later feeds can import
+  them. It is session-scoped and repeatable; an empty list is a no-op; it
+  requires `uv` on `PATH` (override: `MONTY_UV`) and network access, and the
+  packages are discarded when the session ends. It is bounded by the pool's
+  `request_timeout` (raise it for large dependency sets). The Monty sandbox
+  worker (`monty subprocess`) has no host interpreter to install for, so the
+  call raises `MontyRuntimeError` (the session stays usable). See
+  `crates/monty-cpython/README.md`.
+- **PEP 723 inline dependencies are auto-installed by the CPython worker.**
+  Before running a feed, the `monty-cpython` worker scans the snippet for a
+  PEP 723 `# /// script` block and installs its `dependencies` (same `uv` path
+  as above) so the imports resolve — no protocol involvement, mirroring
+  `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
+  block is just a comment and its dependencies are never installed.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker of the same version, via
   `session.load` / `session.load_snapshot` (Rust `Checkout::restore`).

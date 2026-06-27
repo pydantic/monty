@@ -15,6 +15,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
     rc::Rc,
+    sync::{Mutex, PoisonError},
 };
 
 use monty::{ExtFunctionResult, MontyObject};
@@ -25,6 +26,19 @@ use monty_cpython::{
 use monty_proto::pb;
 
 type External = Box<dyn Fn(&[MontyObject]) -> ExtFunctionResult>;
+
+/// Serializes the tests: they share a single process-wide embedded interpreter,
+/// and the GIL switches threads mid-execution, so two sessions running at once
+/// would race on global interpreter state (`sys.stdout`, `sys.path`). Each test
+/// drives the child under this lock via [`drive`].
+static INTERPRETER: Mutex<()> = Mutex::new(());
+
+/// Runs `parent`'s scripted session to completion while holding [`INTERPRETER`]
+/// (poison is ignored — a panicking test leaves no shared invariant broken).
+fn drive(parent: ScriptedParent) {
+    let _guard = INTERPRETER.lock().unwrap_or_else(PoisonError::into_inner);
+    let _ = run_with_transport(Box::new(parent));
+}
 
 /// An in-memory parent: replays a request script and answers `FunctionCall`s
 /// from `externals`, capturing every event the child sends for assertions.
@@ -86,7 +100,7 @@ fn drives_a_full_session() {
 
     // Runs to the scripted Shutdown and returns (exit code is not asserted —
     // `ExitCode` is opaque; the captured events below prove the behavior).
-    let _ = run_with_transport(Box::new(parent));
+    drive(parent);
 
     let events = events.borrow();
     let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
@@ -175,7 +189,7 @@ fn supports_top_level_await() {
         events: events.clone(),
     };
 
-    let _ = run_with_transport(Box::new(parent));
+    drive(parent);
 
     let events = events.borrow();
     let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
@@ -201,10 +215,199 @@ fn supports_top_level_await() {
     assert_eq!(error.exc_type, "TypeError");
 }
 
+/// `InstallDependencies` before `Configure` has no session to install into, so
+/// the child rejects it with a protocol-violation `Error` and keeps serving.
+#[test]
+fn install_without_session_is_rejected() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([install(&["anything"])]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .find_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Error(err)) => err.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some("protocol violation: InstallDependencies without a session")
+    );
+}
+
+/// An empty requirement list is a no-op that acknowledges with `Ok` without
+/// running uv or creating an install directory.
+#[test]
+fn empty_install_is_a_noop() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), install(&[]), shutdown()]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    // Configure, empty install, and Shutdown each acknowledge with Ok.
+    let oks = events
+        .iter()
+        .filter(|e| matches!(e.kind, Some(pb::child_event::Kind::Ok(_))))
+        .count();
+    assert_eq!(oks, 3, "Configure + empty install + Shutdown all ack with Ok");
+}
+
+/// End-to-end install of a real package with `uv`, then importing it in a feed.
+///
+/// Ignored by default: it requires `uv` on `PATH` (or `MONTY_UV`) and network
+/// access to a package index. Run explicitly with
+/// `cargo test -p monty-cpython -- --ignored installs_and_imports_a_package`.
+#[test]
+#[ignore = "requires uv on PATH and network access to a package index"]
+fn installs_and_imports_a_package() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            install(&["six==1.16.0"]),
+            feed("import six\nsix.__version__"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+
+    // The install acknowledged with Ok (no Error from uv).
+    assert!(
+        !kinds.iter().any(|k| matches!(k, pb::child_event::Kind::Error(_))),
+        "no Error events: {kinds:?}"
+    );
+    // The feed imported the freshly installed package and returned its version.
+    let complete = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::String("1.16.0".to_string()));
+}
+
+/// An ordinary `#` comment is not a PEP 723 block, so no install is attempted
+/// and the feed runs offline (a false trigger would shell out to uv and fail).
+#[test]
+fn ordinary_comments_do_not_trigger_pep723() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed("# just a comment\nx = 41\nx + 1"), shutdown()]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let complete = events
+        .iter()
+        .find_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Complete(c)) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::Int(42));
+}
+
+/// PEP 723 permits at most one `script` block; a snippet with two ends the feed
+/// with a `ValueError` before any install or execution.
+#[test]
+fn pep723_multiple_blocks_is_an_error() {
+    // A blank line between the blocks keeps them separate matches (without it the
+    // greedy regex merges them into one, which is a TOML error instead).
+    let code = "# /// script\n# dependencies = [\"a\"]\n# ///\n\n# /// script\n# dependencies = [\"b\"]\n# ///\n";
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed(code), shutdown()]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .find_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Error(err)) => err.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(error.message.as_deref(), Some("multiple PEP 723 script blocks found"));
+}
+
+/// End-to-end PEP 723: a feed declaring a dependency in its inline metadata has
+/// it installed (via `uv`) before the snippet runs, so the import resolves.
+///
+/// Ignored by default: requires `uv` on `PATH` (or `MONTY_UV`) and network
+/// access. Run with `cargo test -p monty-cpython -- --ignored feed_installs_pep723`.
+#[test]
+#[ignore = "requires uv on PATH and network access to a package index"]
+fn feed_installs_pep723_dependencies() {
+    let code = "# /// script\n# dependencies = [\"six==1.16.0\"]\n# ///\nimport six\nsix.__version__";
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed(code), shutdown()]),
+        pending_resume: None,
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+    assert!(
+        !kinds.iter().any(|k| matches!(k, pb::child_event::Kind::Error(_))),
+        "no Error events: {kinds:?}"
+    );
+    let complete = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::String("1.16.0".to_string()));
+}
+
 fn configure() -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         monty_version: env!("CARGO_PKG_VERSION").to_string(),
         ..Default::default()
+    }))
+}
+
+fn install(requirements: &[&str]) -> pb::ParentRequest {
+    request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+        requirements: requirements.iter().map(ToString::to_string).collect(),
     }))
 }
 

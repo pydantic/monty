@@ -429,6 +429,26 @@ fn child_enforces_time_limit() {
     child.shutdown();
 }
 
+#[test]
+fn install_dependencies_is_rejected_but_session_survives() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    // The Monty sandbox has no host interpreter to install packages for, so it
+    // refuses `InstallDependencies` with a recoverable error.
+    child.send(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+        requirements: vec!["numpy".to_owned()],
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some("dependency installation is only supported by the CPython worker")
+    );
+    // The session is intact: subsequent feeds still work.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 // =============================================================================
 // Type checking
 // =============================================================================

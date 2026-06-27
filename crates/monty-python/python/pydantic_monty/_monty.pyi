@@ -445,6 +445,23 @@ class MontySession:
         bytes using monty's existing dump format. The session stays usable.
         """
 
+    def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Install third-party Python packages into the session, making them
+        importable by subsequent `feed_run` calls. Session-scoped and
+        repeatable; an empty list is a no-op.
+
+        Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+        Against the pure-Monty sandbox worker, or on a `uv` install failure
+        (the error carries uv's stderr), raises `MontyRuntimeError`; the
+        session stays usable. Bounded by the pool's `request_timeout`, so raise
+        it for large dependency sets.
+
+        Requirements are PEP 508 strings, e.g. `["httpx>=0.27", "numpy"]`.
+        Dependencies a script declares inline via PEP 723 (`# /// script`) are
+        installed automatically on `feed_run` and need no call here.
+        """
+
     @property
     def worker_pid(self) -> int | None:
         """OS process id of this session's worker (diagnostics/tests).
@@ -640,6 +657,19 @@ class AsyncMontySession:
         """
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
+        """
+
+    async def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Async counterpart of `MontySession.install_dependencies`: install
+        third-party packages into the session (off the event loop) so later
+        `feed_run` calls can import them. Session-scoped and repeatable; an
+        empty list is a no-op.
+
+        Only supported by an embedded-CPython worker. Against the pure-Monty
+        sandbox worker, or on a `uv` install failure, raises
+        `MontyRuntimeError`; the session stays usable. PEP 723 inline
+        dependencies are installed automatically on `feed_run`.
         """
 
     @property

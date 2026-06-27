@@ -108,6 +108,12 @@ export interface LoadedTurn {
   kind: 'loaded'
 }
 
+/** A non-feed request succeeded with no value or suspension. Only produced by
+ *  `NativeSession.installDependencies`. */
+export interface OkTurn {
+  kind: 'ok'
+}
+
 /** Everything one protocol turn can resolve to. */
 export type NativeTurn =
   | CompleteTurn

@@ -17,8 +17,14 @@
 //! `README.md`.
 
 mod events;
-pub mod pyexec;
-pub mod session;
+mod install;
+mod pyexec;
+mod session;
+// `pep_723` and `transport` are `pub` only because the integration tests in
+// `tests/` are separate crates and reach them directly (`pep_723::dependencies`,
+// the `transport::Transport` trait an in-memory test parent implements). The
+// rest of the worker's modules are crate-internal.
+pub mod pep_723;
 pub mod transport;
 
 use std::{cell::RefCell, process::ExitCode, rc::Rc};

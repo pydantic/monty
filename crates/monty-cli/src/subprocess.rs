@@ -216,6 +216,13 @@ impl Child {
                 self.handle_configure(configure)
             }
             pb::parent_request::Kind::Feed(feed) => self.handle_repl_feed(feed),
+            // The Monty sandbox has no host interpreter to install packages for;
+            // dependency installation is only supported by the CPython worker.
+            // Answer with a session-preserving error rather than a hard failure.
+            pb::parent_request::Kind::InstallDependencies(_) => error_event(
+                ExcType::RuntimeError,
+                "dependency installation is only supported by the CPython worker",
+            ),
             pb::parent_request::Kind::ResumeCall(resume) => self.handle_resume_call(resume),
             pb::parent_request::Kind::ResumeNameLookup(resume) => self.handle_resume_name_lookup(resume),
             pb::parent_request::Kind::ResumeFutures(resume) => self.handle_resume_futures(resume),

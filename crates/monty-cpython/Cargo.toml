@@ -35,6 +35,11 @@ tungstenite = { workspace = true }
 # Pulled in only so `main()` can call `install_default()` on the rustls
 # CryptoProvider before the first `wss://` dial.
 rustls = { workspace = true }
+# PEP 723 inline script-metadata extraction (`src/pep_723.rs`): `regex` applies
+# the block matcher from the spec, `toml` parses the metadata body. Both are
+# already built elsewhere in the workspace (ruff pulls `toml`).
+regex = "1.12"
+toml = "1.1"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

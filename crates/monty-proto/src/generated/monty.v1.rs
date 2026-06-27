@@ -275,7 +275,7 @@ pub struct NamedValue {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParentRequest {
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -285,20 +285,22 @@ pub mod parent_request {
         #[prost(message, tag = "1")]
         Configure(super::Configure),
         #[prost(message, tag = "2")]
-        Feed(super::Feed),
+        InstallDependencies(super::InstallDependencies),
         #[prost(message, tag = "3")]
-        ResumeCall(super::ResumeCall),
+        Feed(super::Feed),
         #[prost(message, tag = "4")]
-        ResumeNameLookup(super::ResumeNameLookup),
+        ResumeCall(super::ResumeCall),
         #[prost(message, tag = "5")]
-        ResumeFutures(super::ResumeFutures),
+        ResumeNameLookup(super::ResumeNameLookup),
         #[prost(message, tag = "6")]
-        Dump(super::Dump),
+        ResumeFutures(super::ResumeFutures),
         #[prost(message, tag = "7")]
-        Load(super::Load),
+        Dump(super::Dump),
         #[prost(message, tag = "8")]
-        Reset(super::Reset),
+        Load(super::Load),
         #[prost(message, tag = "9")]
+        Reset(super::Reset),
+        #[prost(message, tag = "10")]
         Shutdown(super::Shutdown),
     }
 }
@@ -404,6 +406,19 @@ pub struct Reset {}
 /// The child replies `Ok` and exits cleanly.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Shutdown {}
+/// Installs third-party Python packages into the session before further feeds,
+/// using `uv pip install --target` against the worker's interpreter. Only the
+/// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+/// an `Error` (it has no host interpreter to install for). Repeatable between
+/// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
+/// failure. Valid only once a session exists (after `Configure`).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InstallDependencies {
+    /// PEP 508 requirement strings, e.g. "httpx>=0.27", "numpy". An empty list is
+    /// a no-op that replies `Ok`.
+    #[prost(string, repeated, tag = "1")]
+    pub requirements: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in

@@ -415,6 +415,28 @@ impl NativeSession {
         })
     }
 
+    /// Installs third-party Python packages into the session via the worker's
+    /// `uv`, making them importable by later feeds. Session-scoped and
+    /// repeatable. Resolves to a turn object: `{kind:'ok'}` on success, or an
+    /// `error` / `crashed` / `protocol` outcome the TypeScript layer raises
+    /// (a uv failure, or the `monty` sandbox worker rejecting the request,
+    /// arrives as `error`). Streams no prints, but takes `on_print` to share the
+    /// turn machinery; the callback is never invoked.
+    #[napi]
+    pub fn install_dependencies<'env>(
+        &self,
+        env: &'env Env,
+        requirements: Vec<String>,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, move |checkout, _on_print| {
+            match checkout.install_dependencies(requirements) {
+                Ok(()) => TurnOutcome::Ok,
+                Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+            }
+        })
+    }
+
     /// Ends the session and returns the worker to the pool (best effort — a
     /// crashed worker has already been discarded and replaced).
     #[napi]
@@ -531,6 +553,9 @@ enum TurnOutcome {
     /// A `load` restored an idle (between-feeds) session — there is no
     /// suspension to resume. Only produced by [`NativeSession::load`].
     LoadedIdle,
+    /// A non-feed request succeeded with no value or suspension. Produced by
+    /// [`NativeSession::install_dependencies`].
+    Ok,
 }
 
 impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
@@ -629,6 +654,9 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         }
         TurnOutcome::LoadedIdle => {
             obj.set("kind", "loaded")?;
+        }
+        TurnOutcome::Ok => {
+            obj.set("kind", "ok")?;
         }
     }
     Ok(obj)

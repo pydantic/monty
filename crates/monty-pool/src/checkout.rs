@@ -366,6 +366,37 @@ impl Checkout {
         self.expect_turn(&request, on_print)
     }
 
+    /// Installs third-party Python packages into the session, making them
+    /// importable by subsequent feeds. Session-scoped and repeatable; an empty
+    /// `requirements` list is a no-op.
+    ///
+    /// Only the embedded-CPython worker (`monty-cpython`) honors this. The
+    /// `monty` sandbox worker has no host interpreter to install for and a uv
+    /// install failure both surface as [`PoolError::Runtime`] (the latter
+    /// carrying uv's stderr); the session stays usable in either case. Bounded
+    /// by the pool's `request_timeout`, so raise it for large dependency sets.
+    pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
+        if self.pending.is_some() {
+            return Err(PoolError::Protocol(
+                "install_dependencies called while a suspension is awaiting an answer".to_owned(),
+            ));
+        }
+        // Installing nothing trivially succeeds on any worker — including the
+        // sandbox worker, which would otherwise reject the request outright.
+        if requirements.is_empty() {
+            return Ok(());
+        }
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+                requirements,
+            })),
+        };
+        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
+            ControlEvent::Ok => Ok(()),
+            other => Err(self.protocol_violation(&format!("unexpected reply to InstallDependencies: {other:?}"))),
+        }
+    }
+
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`crate::Pool::checkout_load`] can restore — including into a
     /// different worker after this one crashes. The session stays live.

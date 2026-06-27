@@ -21,6 +21,8 @@ use pyo3::{prelude::*, types::PyModule};
 
 use crate::{
     events::{complete_event, error_event, error_from_exception, fatal_event, ok_event, violation},
+    install::InstallEnv,
+    pep_723,
     pyexec::{HostBridge, init_runner},
     transport::{Incoming, SharedTransport},
 };
@@ -47,8 +49,12 @@ enum State {
     /// A session is open: `namespace` persists across feeds. The `HostBridge`
     /// that bridges undefined names and `print()` is kept alive by Python (the
     /// namespace's `_host` and `sys.stdout` both reference it), so it needs no
-    /// Rust-side handle here.
-    Ready { namespace: Py<PyAny> },
+    /// Rust-side handle here. `install` holds the session's `uv` install dir,
+    /// created lazily on the first `InstallDependencies`.
+    Ready {
+        namespace: Py<PyAny>,
+        install: Option<InstallEnv>,
+    },
 }
 
 /// All child state for one connection.
@@ -132,8 +138,9 @@ impl Session {
                 Flow::Reply(self.handle_configure(py, &configure))
             }
             pb::parent_request::Kind::Feed(feed) => Flow::Reply(self.handle_feed(py, feed)),
+            pb::parent_request::Kind::InstallDependencies(req) => Flow::Reply(self.handle_install(py, &req)),
             pb::parent_request::Kind::Reset(_) => {
-                self.state = State::Idle;
+                self.reset_session(py);
                 Flow::Reply(ok_event())
             }
             pb::parent_request::Kind::Shutdown(_) => Flow::Exit {
@@ -177,13 +184,75 @@ impl Session {
             .call1((host.clone_ref(py),))?
             .unbind();
         py.import("sys")?.setattr("stdout", host.bind(py))?;
-        self.state = State::Ready { namespace };
+        self.state = State::Ready {
+            namespace,
+            install: None,
+        };
         Ok(())
     }
 
+    /// Installs the requested packages into the session and replies `Ok`, or
+    /// `Error` (carrying uv's stderr) on failure; an empty request is a no-op.
+    /// Valid only once a session exists.
+    fn handle_install(&mut self, py: Python<'_>, req: &pb::InstallDependencies) -> pb::ChildEvent {
+        if !matches!(self.state, State::Ready { .. }) {
+            return violation("InstallDependencies without a session");
+        }
+        if req.requirements.is_empty() {
+            return ok_event();
+        }
+        match self.install_requirements(py, &req.requirements) {
+            Ok(()) => ok_event(),
+            Err(message) => error_event(ExcType::RuntimeError, &message),
+        }
+    }
+
+    /// Installs `requirements` with `uv` into the session's install dir (created
+    /// lazily on first use) and makes them importable. Shared by explicit
+    /// `InstallDependencies` requests and the per-feed PEP 723 auto-install.
+    /// Returns `Err(message)` (uv's stderr, or a setup failure) on failure.
+    fn install_requirements(&mut self, py: Python<'_>, requirements: &[String]) -> Result<(), String> {
+        let State::Ready { install, .. } = &mut self.state else {
+            return Err("no session".to_owned());
+        };
+        if install.is_none() {
+            let env = InstallEnv::create().map_err(|err| format!("failed to create install directory: {err}"))?;
+            *install = Some(env);
+        }
+        let env = install.as_mut().expect("install dir was just created");
+        env.install(py, requirements)
+    }
+
+    /// Ends the current session: unlinks any install dir from `sys.path` (the
+    /// dir itself is removed when the `InstallEnv` drops) and returns to `Idle`.
+    fn reset_session(&mut self, py: Python<'_>) {
+        if let State::Ready { install: Some(env), .. } = &self.state {
+            env.remove_from_path(py);
+        }
+        self.state = State::Idle;
+    }
+
     /// Runs one snippet to completion, returning `Complete` (the trailing
-    /// expression's value) or `Error`.
+    /// expression's value) or `Error`. Before executing, any dependencies the
+    /// snippet declares in a PEP 723 `# /// script` block are installed.
     fn handle_feed(&mut self, py: Python<'_>, feed: pb::Feed) -> pb::ChildEvent {
+        if !matches!(self.state, State::Ready { .. }) {
+            return violation("Feed without a session");
+        }
+
+        // PEP 723: install dependencies declared inline in the snippet before
+        // running it, so its imports resolve. A snippet without a metadata block
+        // yields an empty list (the common, fast path).
+        match pep_723::dependencies(&feed.code) {
+            Ok(deps) if !deps.is_empty() => {
+                if let Err(message) = self.install_requirements(py, &deps) {
+                    return error_event(ExcType::RuntimeError, &message);
+                }
+            }
+            Ok(_) => {}
+            Err(err) => return error_event(ExcType::ValueError, &err.to_string()),
+        }
+
         let State::Ready { namespace, .. } = &self.state else {
             return violation("Feed without a session");
         };

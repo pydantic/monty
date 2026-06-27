@@ -20,6 +20,15 @@ global that is not a builtin or dunder into a proxy; calling that proxy emits a
 `FunctionCall` and blocks for the `ResumeCall`. All value conversion and transport
 work happens in Rust; the Python glue is tiny (see `src/pyexec.rs`).
 
+## Docker image
+
+This crate ships a `Dockerfile` (with `Dockerfile.dockerignore`) that builds an
+OCI image of the worker on `python:3.14-slim-trixie` and bundles the `uv` binary
+on `PATH` for dependency installs. Build it with `make build-image` from the
+workspace root (the build context must be the workspace root — the crate has
+path-local deps), or see the header of `Dockerfile` for the raw `docker buildx`
+invocation.
+
 ## SECURITY: not a sandbox
 
 Full CPython is **not** a security boundary. A fed snippet can `import os`, open
@@ -32,8 +41,9 @@ outside an externally-enforced jail.
 
 ## Supported vs rejected protocol requests
 
-Supported: `StartSession`, `Feed`, `ResumeCall` (consumed inline during a feed,
-never at the top level), `Reset`, `Shutdown`.
+Supported: `StartSession`, `Feed`, `InstallDependencies` (see below),
+`ResumeCall` (consumed inline during a feed, never at the top level), `Reset`,
+`Shutdown`.
 
 Rejected with a turn-ending `Error` (the session survives):
 
@@ -59,6 +69,47 @@ that differ from CPython:
   value and the turn ends with an `Error`.
 - `not_found` from the parent raises `NameError` (matching CPython for a genuinely
   undefined *call*).
+
+## Installing dependencies (`InstallDependencies`)
+
+A parent can install third-party packages into a session before (or between)
+feeds with the `InstallDependencies` request, carrying a list of PEP 508
+requirement strings. The child shells out to:
+
+```
+uv pip install --target <per-session dir> --python <X.Y> <requirements...>
+```
+
+then prepends `<per-session dir>` to `sys.path` (once) and calls
+`importlib.invalidate_caches()`, so subsequent feeds can `import` the packages.
+The turn ends with `Ok` on success or `Error` (carrying uv's stderr, truncated)
+on failure. An empty requirement list is a no-op `Ok`.
+
+- **`uv` must be on `PATH`** (the deployment's Docker image installs it),
+  overridable with the `MONTY_UV` env var.
+- **Network access is required** — uv fetches from a package index.
+- The `--python` request is the embedded interpreter's `major.minor` version
+  (e.g. `3.14`), *not* `sys.executable`: in an embedded runtime `sys.executable`
+  is this worker binary, not a Python uv can query. uv locates (or fetches) a
+  matching interpreter, whose ABI tag matches the embedded one.
+- **Installs are session-scoped.** The target dir is created lazily on the first
+  install, removed from disk when the session ends, and unlinked from `sys.path`
+  on `Reset`, so a reused worker never leaks one session's packages into the next.
+- The Monty sandbox child (`monty subprocess`) rejects `InstallDependencies`
+  with a session-preserving `Error` — it has no host interpreter to install for,
+  and would never shell out to the host.
+
+### PEP 723 inline dependencies
+
+Independently of the `InstallDependencies` request, every `Feed` is scanned for
+a [PEP 723](https://peps.python.org/pep-0723/) `# /// script` … `# ///` metadata
+block before it runs; the `dependencies` it declares are installed (via the same
+session-scoped `uv` path) so the snippet's imports resolve. This needs no
+protocol support — it is entirely a worker concern, mirroring `uv run`.
+Extraction is pure Rust (the spec's block regex + the `toml` crate), so it does
+not depend on the embedded interpreter. A snippet with no metadata block is the
+common fast path (a single regex, no uv). A malformed or duplicated block ends
+the feed with an `Error` before execution. See `src/pep_723.rs`.
 
 ## One blocking host call at a time
 

@@ -19,6 +19,7 @@ import type {
   NameLookupTurn,
   NativeFutureResult,
   NativeTurn,
+  OkTurn,
   OsCallTurn,
   ResolveFuturesTurn,
 } from './native.js'
@@ -289,6 +290,40 @@ export class MontySession {
   async dump(): Promise<Buffer> {
     this.ensureUsable()
     return Buffer.from(await this.native.dump())
+  }
+
+  /**
+   * Installs third-party Python packages into the session via the worker's
+   * `uv`, making them importable by later `feedRun` calls. Session-scoped and
+   * repeatable; an empty list is a no-op.
+   *
+   * Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+   * Against the pure-Monty sandbox worker, or on a `uv` install failure (the
+   * error carries uv's stderr), throws `MontyRuntimeError`; the session stays
+   * usable. Dependencies a script declares inline via PEP 723 (`# /// script`)
+   * are installed automatically on `feedRun` and need no call here.
+   */
+  async installDependencies(requirements: string[]): Promise<void> {
+    this.ensureUsable()
+    // mark the session driven so a later load/loadSnapshot is rejected — it
+    // would discard the freshly installed environment
+    this.driven = true
+    const printTarget = new PrintTarget(undefined)
+    const turn = (await this.native.installDependencies(requirements, printTarget.write.bind(printTarget))) as
+      | NativeTurn
+      | OkTurn
+    switch (turn.kind) {
+      case 'ok':
+        return
+      case 'error':
+        throw montyErrorFromNative(turn.exception)
+      case 'crashed':
+        throw this.poison(new MontyCrashedError(turn.message, turn))
+      case 'protocol':
+        throw this.poison(new ProtocolError(turn.message))
+      default:
+        throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
+    }
   }
 
   /**

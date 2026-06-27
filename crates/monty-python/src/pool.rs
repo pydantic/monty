@@ -343,6 +343,20 @@ impl PyMontySession {
         Ok(PyBytes::new(py, &state))
     }
 
+    /// Installs third-party Python packages into the session via the worker's
+    /// `uv`, making them importable by subsequent `feed_run` calls.
+    /// Session-scoped and repeatable; an empty list is a no-op.
+    ///
+    /// Only the embedded-CPython worker supports this. Against the `monty`
+    /// sandbox worker, or on a uv install failure (carrying uv's stderr), this
+    /// raises `MontyRuntimeError`; the session stays usable. Blocks the calling
+    /// thread with the GIL released, bounded by the pool's `request_timeout`.
+    fn install_dependencies(&self, py: Python<'_>, requirements: Vec<String>) -> PyResult<()> {
+        self.used.store(true, Ordering::Relaxed);
+        py.detach(|| install_deps_checkout(&self.checkout, requirements))
+            .map_err(|e| pool_err_to_py(py, e))
+    }
+
     /// OS process id of this session's worker, or `None` when no worker is
     /// attached or a turn is in flight (diagnostics/tests).
     ///
@@ -790,6 +804,24 @@ impl PyAsyncMontySession {
         })
     }
 
+    /// Async counterpart of [`PyMontySession::install_dependencies`]: the
+    /// coroutine installs the packages off the event loop, resolving to `None`.
+    /// Raises `MontyRuntimeError` against the `monty` sandbox worker or on a uv
+    /// install failure; the session stays usable.
+    fn install_dependencies<'py>(&self, py: Python<'py>, requirements: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            spawn_blocking(move || install_deps_checkout(&checkout, requirements))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            // resolve to None (whereas `()` would convert to an empty tuple) to
+            // match the `-> None` stub and the sync method
+            Ok(None::<()>)
+        })
+    }
+
     /// OS process id of this session's worker, or `None` when no worker is
     /// attached or a turn is in flight (diagnostics/tests). Non-blocking for
     /// the same reason as the sync getter.
@@ -932,6 +964,16 @@ pub(crate) fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
 fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
     let mut guard = lock(checkout);
     guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
+}
+
+/// Installs dependencies into a live checkout's session (shared by the sync and
+/// async `install_dependencies` methods; runs without the GIL).
+fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<String>) -> Result<(), PoolError> {
+    let mut guard = lock(checkout);
+    guard
+        .as_mut()
+        .ok_or(PoolError::Finished)?
+        .install_dependencies(requirements)
 }
 
 /// Everything a feed needs, extracted from Python arguments up front so the

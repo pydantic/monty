@@ -59,6 +59,24 @@ build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-t
 test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
 	cd crates/monty-js && NAPI_RS_FORCE_WASI=1 npx ava "__test__/wasm_*.spec.ts"
 
+# OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
+# `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
+MONTY_CPYTHON_IMAGE ?= monty-cpython
+
+.PHONY: build-cpython-image
+build-cpython-image: ## Build the monty-cpython docker image and upload it to ghcr.io
+	# context is the workspace root so the crate's path deps resolve; the
+	# Dockerfile is selected with -f and uses crates/monty-cpython/Dockerfile.dockerignore
+	# tag with the commit sha so the build is pinnable
+	$(eval IMAGE_TAG := $(MONTY_CPYTHON_IMAGE):$(shell git rev-parse --short HEAD))
+	docker buildx build --platform linux/amd64 \
+		-t $(IMAGE_TAG) \
+		-t $(MONTY_CPYTHON_IMAGE):latest \
+		-f crates/monty-cpython/Dockerfile \
+		--load \
+		.
+	@echo "built image: $(IMAGE_TAG)"
+
 .PHONY: dev-py-pgo
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
 	$(eval PROFDATA := $(shell mktemp -d))

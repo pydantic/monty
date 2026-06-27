@@ -2057,7 +2057,9 @@ dependencies = [
  "pydantic-monty",
  "pyo3",
  "pyo3-build-config",
+ "regex",
  "rustls",
+ "toml",
  "tungstenite",
 ]
 
