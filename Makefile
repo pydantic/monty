@@ -63,8 +63,12 @@ test-wasm: ## Test the in-process API against the wasm build (requires a prior b
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
 MONTY_CPYTHON_IMAGE ?= monty-cpython
 
+# `--load` puts the built image into the local docker daemon; `--push` sends
+# it to a registry. Overridden by `upload-cpython-image` below.
+BUILDX_OUTPUT ?= --load
+
 .PHONY: build-cpython-image
-build-cpython-image: ## Build the monty-cpython docker image and upload it to ghcr.io
+build-cpython-image: ## Build the monty-cpython docker image (locally by default; overridden by upload-cpython-image)
 	# context is the workspace root so the crate's path deps resolve; the
 	# Dockerfile is selected with -f and uses crates/monty-cpython/Dockerfile.dockerignore
 	# tag with the commit sha so the build is pinnable
@@ -73,9 +77,15 @@ build-cpython-image: ## Build the monty-cpython docker image and upload it to gh
 		-t $(IMAGE_TAG) \
 		-t $(MONTY_CPYTHON_IMAGE):latest \
 		-f crates/monty-cpython/Dockerfile \
-		--load \
+		$(BUILDX_OUTPUT) \
 		.
-	@echo "built image: $(IMAGE_TAG)"
+	@echo "built image: $(IMAGE_TAG) ($(BUILDX_OUTPUT))"
+
+.PHONY: upload-cpython-image
+upload-cpython-image: ## Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
+	$(MAKE) build-cpython-image \
+		MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython \
+		BUILDX_OUTPUT=--push
 
 .PHONY: dev-py-pgo
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
