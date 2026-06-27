@@ -120,8 +120,10 @@ impl Session {
                 // Version skew is fatal: the protocol has no in-band negotiation,
                 // and a mismatched build can frame differently.
                 if configure.monty_version != CHILD_VERSION {
-                    let message =
-                        format!("version skew: parent={:?} child={CHILD_VERSION:?}", configure.monty_version);
+                    let message = format!(
+                        "version skew: parent={:?} child={CHILD_VERSION:?}",
+                        configure.monty_version
+                    );
                     return Flow::Exit {
                         event: Some(fatal_event(&message)),
                         code: ExitCode::from(4),

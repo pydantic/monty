@@ -20,7 +20,10 @@ monty-proto = { workspace = true }
 # Blocking WebSocket client for the remote (Websocket) transport. The pool is
 # blocking/threaded, so a synchronous client fits; rustls gives `wss://` support
 # without a system TLS dependency.
-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tungstenite = { workspace = true }
+# Pulled in only so the pool can install a process-level rustls `CryptoProvider`
+# before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
+rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

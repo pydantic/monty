@@ -2114,6 +2114,7 @@ version = "0.0.18"
 dependencies = [
  "monty",
  "monty-proto",
+ "rustls",
  "tempfile",
  "tungstenite",
 ]

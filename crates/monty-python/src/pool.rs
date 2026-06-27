@@ -507,13 +507,18 @@ pub struct PyAsyncMontyWebsocket {
 impl PyAsyncMontyWebsocket {
     /// Creates the pool configuration; connections are made by `async with` and
     /// each checkout (no workers are pre-warmed).
+    ///
+    /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
+    /// remote relay that accepts the connection but never produces a worker
+    /// would otherwise leave each turn blocked on the socket until the far end
+    /// closes it. Pass `None` to wait indefinitely.
     #[new]
     #[pyo3(signature = (
         url,
         *,
         max_processes = None,
         checkout_timeout = None,
-        request_timeout = None,
+        request_timeout = 10.0,
     ))]
     fn new(
         url: String,

@@ -31,12 +31,10 @@ pydantic-monty = { path = "../monty-python" }
 pyo3 = { version = "0.28", features = ["auto-initialize", "indexmap", "num-bigint"] }
 # Blocking WebSocket transport for the `websocket` subcommand: dial a relay
 # (or a parent-as-server), with rustls for `wss://`. Matches the pool client.
-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tungstenite = { workspace = true }
 # Pulled in only so `main()` can call `install_default()` on the rustls
-# CryptoProvider. rustls 0.23 panics on first TLS use when its dep tree has
-# both `aws-lc-rs` and `ring` providers compiled in (or neither) — naming
-# one explicitly here removes the ambiguity.
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# CryptoProvider before the first `wss://` dial.
+rustls = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

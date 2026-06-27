@@ -14,12 +14,13 @@ use std::{
     net::{Shutdown, TcpStream},
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, Once, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
 };
 
 use monty_proto::{FrameError, FrameReader, decode_frame, encode_to_capped_vec, pb, write_frame};
+use rustls::crypto::aws_lc_rs::default_provider;
 use tungstenite::{Error as WsError, Message, WebSocket, stream::MaybeTlsStream};
 
 use crate::{MontyTransport, PoolConfig, PoolError};
@@ -148,6 +149,7 @@ impl Worker {
                 "internal error: connect_ws called for a non-websocket transport".to_owned(),
             ));
         };
+        install_crypto_provider();
         let (socket, _response) = tungstenite::connect(url).map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
         // Clone the underlying TCP socket up front for the watchdog's shutdown
         // handle (reaching it through the TLS stream once connected).
@@ -308,6 +310,19 @@ fn underlying_tcp(stream: &MaybeTlsStream<TcpStream>) -> Option<&TcpStream> {
         MaybeTlsStream::Rustls(tls) => Some(tls.get_ref()),
         _ => None,
     }
+}
+
+/// Installs the process-level rustls `CryptoProvider` exactly once before the
+/// first `wss://` dial. rustls 0.23 panics on first TLS use when it can't pick a
+/// provider automatically (both `aws-lc-rs` and `ring`, or neither, compiled
+/// in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and the
+/// install error is ignored: another part of the process (e.g. a host embedding
+/// the pool) may have already installed a provider, which is fine.
+fn install_crypto_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = default_provider().install_default();
+    });
 }
 
 /// Locks a possibly poisoned mutex; a panic elsewhere must not stop us from

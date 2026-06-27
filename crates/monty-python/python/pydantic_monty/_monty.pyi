@@ -526,7 +526,7 @@ class AsyncMontyWebsocket:
         *,
         max_processes: int | None = None,
         checkout_timeout: float | None = None,
-        request_timeout: float | None = None,
+        request_timeout: float | None = 10.0,
     ) -> Self:
         """
         Configure a remote worker pool; connections are made by `async with` and
@@ -541,9 +541,11 @@ class AsyncMontyWebsocket:
                 count); checkouts beyond it wait.
             checkout_timeout: Seconds `checkout()` waits for capacity before
                 raising `TimeoutError`. `None` waits forever.
-            request_timeout: Hard per-call deadline in seconds — a worker that
-                exceeds it has its connection killed and the call raises
-                `MontyCrashedError` with `timed_out=True`.
+            request_timeout: Hard per-call deadline in seconds (default 10.0) — a
+                worker that exceeds it has its connection killed and the call
+                raises `MontyCrashedError` with `timed_out=True`. This also
+                bounds the wait when a relay accepts the connection but never
+                produces a worker. Pass `None` to wait indefinitely.
         """
 
     async def __aenter__(self) -> Self: ...

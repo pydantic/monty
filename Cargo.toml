@@ -96,6 +96,14 @@ sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
+# Blocking WebSocket client with rustls for `wss://`, shared by the pool's
+# remote transport (monty-pool) and the relay child (monty-cpython).
+tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Pulled in only to install a process-level rustls `CryptoProvider` before the
+# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
+# provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
+# tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
