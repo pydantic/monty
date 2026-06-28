@@ -77,6 +77,22 @@ impl ParsedSignature {
             .chain(self.kwargs.iter().map(|p| p.name))
             .chain(self.var_kwargs.iter().copied())
     }
+
+    /// Returns an iterator over every default-value expression in the signature.
+    ///
+    /// Defaults are evaluated at *definition* time in the **enclosing** scope,
+    /// not inside the function being defined. Closure analysis relies on this:
+    /// a name referenced by a default (e.g. `def inner(b=a)`) is a capture of
+    /// the enclosing scope, so the cell-var pre-pass must scan these as well as
+    /// the body (see `collect_cell_vars_from_node`). `*args`/`**kwargs` never
+    /// carry defaults, so they are not included.
+    pub fn default_exprs(&self) -> impl Iterator<Item = &ExprLoc> + '_ {
+        self.pos_args
+            .iter()
+            .chain(self.args.iter())
+            .chain(self.kwargs.iter())
+            .filter_map(|p| p.default.as_ref())
+    }
 }
 
 /// A raw (unprepared) function definition from the parser.

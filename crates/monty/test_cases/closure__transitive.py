@@ -257,6 +257,68 @@ def with_default(a):
 assert with_default(11) == 11, 'default argument uses a transitively captured variable'
 
 
+# === Owner reads the var BEFORE a nested default captures it ===
+# Pins the pre-pass bug: a transitive capture hidden in a nested function's
+# default expression must promote the variable to a cell up front, otherwise the
+# earlier `a + 1` read resolves it as a plain local and diverges at runtime.
+def default_after_read(a):
+    y = a + 1  # owner reads `a` before `mid`/`inner` are defined
+
+    def mid():
+        def inner(b=a):  # default evaluated in mid; `a` captured from outer
+            return b
+
+        return inner()
+
+    return y, mid()
+
+
+assert default_after_read(10) == (11, 10), 'default capture stays consistent with earlier owner read'
+
+
+# === Single-level default capture with an earlier owner read ===
+def default_one_level(a):
+    y = a + 1
+
+    def mid(x=a):  # default evaluated in outer; `a` captured one level up
+        return x
+
+    return y, mid()
+
+
+assert default_one_level(10) == (11, 10), 'one-level default capture consistent with earlier read'
+
+
+# === `def f(a=a)` gotcha: default RHS captures the enclosing name ===
+# The right-hand `a` is evaluated in the enclosing scope (capturing the param),
+# even though the nested function also has a parameter named `a`.
+def same_name_default(a):
+    def inner(a=a):  # RHS `a` is outer's param (10); param `a` shadows inside
+        return a
+
+    return inner()
+
+
+assert same_name_default(10) == 10, 'default RHS captures the enclosing same-named variable'
+
+
+# === Intermediate rebind shadows a default capture ===
+# `mid` rebinds `a`, so `inner`'s default captures mid's `a`, not outer's.
+def default_shadowed(a):
+    def mid():
+        a = 99
+
+        def inner(b=a):  # captures mid's a (99), not outer's
+            return b
+
+        return inner()
+
+    return (mid(), a)
+
+
+assert default_shadowed(1) == (99, 1), 'intermediate rebind shadows a default capture'
+
+
 # === `global` in an intermediate scope is not a capture candidate ===
 # A name declared `global` is not a local binding, so a nested function reading
 # it resolves to the module global rather than capturing a (non-existent) cell.

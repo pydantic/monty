@@ -446,8 +446,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
         let namespace_size = name_map.len();
 
-        // Namespace layout: [params][cell_vars][free_vars][locals]
-        // This predictable layout allows sequential namespace construction at runtime.
+        // Namespace layout: params occupy slots `0..namespace_size`, then cell
+        // vars, captured free vars, and ordinary locals follow. This pass assigns
+        // slots in that *order*, but the regions are no longer guaranteed
+        // contiguous: a transitively captured (pass-through) free var can be
+        // discovered late and assigned a slot in the locals region. Slots are
+        // therefore carried explicitly (`cell_var_slots`/`free_var_slots` on
+        // `Function`) and installed individually at frame setup rather than by
+        // sequential construction (see `install_closure_cells`).
 
         // Pre-populate cell_var_map with cell variables FIRST (right after params).
         // Excludes pass-through variables (names that are both nonlocal and captured by
@@ -2472,6 +2478,22 @@ fn collect_cell_vars_from_node(
 ) {
     match node {
         Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+            // This nested function's *default* expressions are evaluated in OUR
+            // scope at definition time, not inside the nested function — so any
+            // name they reference that is one of our locals is captured by us,
+            // regardless of the nested function's own params/assignments (cf.
+            // the `def f(a=a)` gotcha, where the right-hand `a` is enclosing).
+            // Body references are filtered below; defaults are not.
+            for default in signature.default_exprs() {
+                let mut default_referenced = AHashSet::new();
+                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+                for name in &default_referenced {
+                    if our_locals.contains(name) {
+                        cell_vars.insert(name.clone());
+                    }
+                }
+            }
+
             // Find what names are referenced inside this nested function
             let mut referenced = AHashSet::new();
             for n in body {
@@ -2667,21 +2689,9 @@ fn collect_cell_vars_from_expr(
             // Find what names are referenced in the lambda body
             let mut referenced = AHashSet::new();
             collect_referenced_names_from_expr(body, &mut referenced, interner);
-            // Also collect from default expressions
-            for param in &signature.pos_args {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
-            }
-            for param in &signature.args {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
-            }
-            for param in &signature.kwargs {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
+            // Also collect from default expressions (evaluated in our scope).
+            for default in signature.default_exprs() {
+                collect_referenced_names_from_expr(default, &mut referenced, interner);
             }
 
             // Extract param names from signature
