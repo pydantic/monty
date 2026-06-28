@@ -14,8 +14,11 @@ use std::{
     rc::Rc,
 };
 
-use monty_proto::{FrameError, FrameReader, decode_frame, encode_to_capped_vec, pb, write_frame};
-use tungstenite::{Error as WsError, Message, WebSocket, stream::MaybeTlsStream};
+use monty_proto::{FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, pb, write_frame};
+use tungstenite::{
+    Error as WsError, Message, WebSocket, client::connect_with_config, protocol::WebSocketConfig,
+    stream::MaybeTlsStream,
+};
 
 /// A transport shared between the session loop (which reads requests and writes
 /// turn-enders) and the in-feed [`crate::pyexec::HostBridge`] (which sends
@@ -114,8 +117,15 @@ pub struct WsTransport {
 }
 
 /// Dials `url` (a relay, or a parent-as-server) as a WebSocket client.
+///
+/// The frame/message size limits are raised to monty's [`MAX_FRAME_LEN`] so the
+/// WebSocket layer never rejects a frame the protocol itself would accept —
+/// tungstenite's defaults (16 MiB frame / 64 MiB message) are well below it.
 pub fn connect(url: &str) -> io::Result<WsTransport> {
-    let (socket, _response) = tungstenite::connect(url).map_err(ws_io_error)?;
+    let config = WebSocketConfig::default()
+        .max_frame_size(Some(MAX_FRAME_LEN as usize))
+        .max_message_size(Some(MAX_FRAME_LEN as usize));
+    let (socket, _response) = connect_with_config(url, Some(config), 3).map_err(ws_io_error)?;
     Ok(WsTransport { socket })
 }
 
@@ -127,7 +137,12 @@ impl Transport for WsTransport {
                     return match decode_frame::<pb::ParentRequest>(data.as_ref()) {
                         Ok(request) => Incoming::Request(request),
                         // A framed-but-undecodable payload leaves the stream synced.
-                        Err(FrameError::Decode(err)) => Incoming::Malformed(err.to_string()),
+                        // An oversize message is self-contained (the WS boundary is
+                        // intact), so it is recoverable too — answer with an error
+                        // and keep serving, unlike a desynced stdio length prefix.
+                        Err(err @ (FrameError::Decode(_) | FrameError::FrameTooLarge { .. })) => {
+                            Incoming::Malformed(err.to_string())
+                        }
                         Err(err) => Incoming::Fatal(err.to_string()),
                     };
                 }

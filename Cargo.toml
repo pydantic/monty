@@ -99,6 +99,8 @@ clap = { version = "4", features = ["derive"] }
 # Blocking WebSocket client with rustls for `wss://`, shared by the pool's
 # remote transport (monty-pool) and the relay child (monty-cpython).
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Unique, exclusively-created temp dirs (monty-cpython install dirs; pool tests).
+tempfile = "3"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep

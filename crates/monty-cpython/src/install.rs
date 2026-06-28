@@ -3,9 +3,14 @@
 //! A parent drives this via the `InstallDependencies` request: the child shells
 //! out to `uv pip install --target <dir>` and then adds `<dir>` to the embedded
 //! interpreter's `sys.path` so subsequent feeds can import the packages. The
-//! target dir is per-session and lives under the OS temp dir; it is removed from
-//! disk when the [`InstallEnv`] is dropped (on `Reset`/teardown) and unlinked
-//! from `sys.path` via [`InstallEnv::remove_from_path`].
+//! target dir lives under the OS temp dir and is removed from disk when the
+//! [`InstallEnv`] (a [`TempDir`]) is dropped at session teardown.
+//!
+//! A worker serves exactly one session per process, so there is one install dir
+//! per process: its `sys.path` entry and any imported modules die with the
+//! process and never leak into another session. The dir is created with
+//! [`TempDir`], i.e. a unique random name created exclusively (an attacker
+//! cannot pre-create or reuse a predictable path).
 //!
 //! `uv` is expected on `PATH` (the deployment's Docker image installs it),
 //! overridable with the `MONTY_UV` env var for non-standard images.
@@ -15,16 +20,10 @@
 //! the embedded-CPython worker, which is explicitly **not** a sandbox (see the
 //! crate `README.md`); the Monty sandbox child rejects `InstallDependencies`.
 
-use std::{
-    env,
-    ffi::OsString,
-    fs, io,
-    path::PathBuf,
-    process::{Command, id},
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{env, ffi::OsString, io, process::Command};
 
 use pyo3::prelude::*;
+use tempfile::{Builder, TempDir};
 
 /// Env var overriding the `uv` binary invoked for installs (default: `uv` on `PATH`).
 const UV_ENV: &str = "MONTY_UV";
@@ -32,31 +31,26 @@ const UV_ENV: &str = "MONTY_UV";
 /// Cap on how much of uv's stderr is echoed back in a failure `Error`, in bytes.
 const MAX_STDERR: usize = 8192;
 
-/// Process-unique counter feeding per-session install-dir names, so a worker
-/// that serves several sessions (across `Reset`) never reuses a directory.
-static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// A session's package-install location: a `uv pip install --target` directory
 /// that is also placed on the interpreter's `sys.path`.
 ///
 /// Created lazily on the first non-empty install and torn down with the session:
-/// `Drop` removes the directory from disk, and [`Self::remove_from_path`] (which
-/// needs the interpreter) unlinks it from `sys.path` first.
+/// dropping the [`TempDir`] removes the directory from disk. The `sys.path`
+/// entry needs no explicit cleanup because the worker process exits at the end
+/// of its single session.
 pub struct InstallEnv {
-    /// The `--target` directory uv installs into; also added to `sys.path`.
-    target: PathBuf,
-    /// Whether `target` has already been pushed onto `sys.path`.
+    /// The `--target` directory uv installs into; also added to `sys.path`. A
+    /// uniquely named temp dir, removed from disk when this `TempDir` drops.
+    dir: TempDir,
+    /// Whether the dir has already been pushed onto `sys.path`.
     on_path: bool,
 }
 
 impl InstallEnv {
-    /// Creates a fresh, empty per-session install directory under the OS temp dir.
+    /// Creates a fresh, uniquely named install directory under the OS temp dir.
     pub fn create() -> io::Result<Self> {
-        let n = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut target = env::temp_dir();
-        target.push(format!("monty-cpython-deps-{}-{n}", id()));
-        fs::create_dir_all(&target)?;
-        Ok(Self { target, on_path: false })
+        let dir = Builder::new().prefix("monty-cpython-deps-").tempdir()?;
+        Ok(Self { dir, on_path: false })
     }
 
     /// Installs `requirements` (PEP 508 strings) with `uv`, then ensures the
@@ -65,7 +59,7 @@ impl InstallEnv {
     pub fn install(&mut self, py: Python<'_>, requirements: &[String]) -> Result<(), String> {
         let uv = env::var_os(UV_ENV).unwrap_or_else(|| OsString::from("uv"));
         let mut cmd = Command::new(&uv);
-        cmd.arg("pip").arg("install").arg("--target").arg(&self.target);
+        cmd.arg("pip").arg("install").arg("--target").arg(self.dir.path());
         // Pin resolution to the embedded interpreter's Python version so uv picks
         // wheels with a matching ABI tag (which is minor-version based). We pass
         // the bare `X.Y` rather than `sys.executable` because, in an embedded
@@ -94,37 +88,12 @@ impl InstallEnv {
     /// freshly installed packages are discoverable on the next import.
     fn ensure_importable(&mut self, py: Python<'_>) -> PyResult<()> {
         if !self.on_path {
-            let target = self.target.to_string_lossy().into_owned();
+            let target = self.dir.path().to_string_lossy().into_owned();
             py.import("sys")?.getattr("path")?.call_method1("insert", (0, target))?;
             self.on_path = true;
         }
         py.import("importlib")?.call_method0("invalidate_caches")?;
         Ok(())
-    }
-
-    /// Removes the target dir from `sys.path` so a later session in the same
-    /// worker does not see this session's packages. Best-effort: a missing entry
-    /// (never installed into) is ignored. Call before dropping, while the
-    /// interpreter is still available.
-    pub fn remove_from_path(&self, py: Python<'_>) {
-        if !self.on_path {
-            return;
-        }
-        let target = self.target.to_string_lossy().into_owned();
-        // list.remove raises ValueError if absent; ignore either way.
-        if let Ok(sys) = py.import("sys")
-            && let Ok(path) = sys.getattr("path")
-        {
-            let _ = path.call_method1("remove", (target,));
-        }
-    }
-}
-
-impl Drop for InstallEnv {
-    /// Removes the install directory from disk. `sys.path` is unlinked separately
-    /// by [`Self::remove_from_path`], which needs the interpreter `Drop` lacks.
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.target);
     }
 }
 

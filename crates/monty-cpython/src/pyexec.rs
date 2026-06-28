@@ -220,7 +220,9 @@ impl HostBridge {
                 .send(&event)
                 .map_err(|err| send_error_to_py(&err))?;
         }
-        Ok(text.len())
+        // CPython's `TextIOBase.write` returns the number of *characters*
+        // written, not bytes, so count chars (matters for non-ASCII text).
+        Ok(text.chars().count())
     }
 
     /// `sys.stdout.flush`: a no-op — each write is already flushed to the parent.

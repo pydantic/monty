@@ -42,7 +42,7 @@ pub use crate::{
 #[derive(Debug, Clone)]
 pub enum MontyTransport {
     /// Spawn a local `monty subprocess` child and talk to it over framed
-    /// stdio pipes. Takes ath to the `monty` (or compatible child) binary.
+    /// stdio pipes. Takes path to the `monty` (or compatible child) binary.
     Subprocess(PathBuf),
     /// Connect *out* to a remote child over a WebSocket — either a relay (which
     /// pairs this connection with a child that dialed in with the same session

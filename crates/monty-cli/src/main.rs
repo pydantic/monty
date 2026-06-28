@@ -101,6 +101,28 @@ impl Cli {
     /// Returns `Ok(None)` when no resource flags were provided, which lets the
     /// caller fall back to `NoLimitTracker` for zero-overhead execution.
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
+    /// The name of the first execution flag that conflicts with the `subprocess`
+    /// subcommand, if any. `subprocess` reads all its configuration from the
+    /// protocol, so any normal-execution flag passed alongside it is a
+    /// misconfiguration we reject rather than silently ignore.
+    fn subprocess_conflict(&self) -> Option<&'static str> {
+        if self.interactive {
+            Some("--interactive")
+        } else if self.command.is_some() {
+            Some("-c")
+        } else if self.file.is_some() {
+            Some("a file argument")
+        } else if self.type_check {
+            Some("--type-check")
+        } else if !self.mounts.is_empty() {
+            Some("--mount")
+        } else if self.resource_limits().ok().flatten().is_some() {
+            Some("a resource-limit flag")
+        } else {
+            None
+        }
+    }
+
     fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
         if self.max_allocations.is_none()
             && self.max_duration.is_none()
@@ -139,6 +161,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if let Some(Command::Subprocess) = cli.subcommand {
+        if let Some(flag) = cli.subprocess_conflict() {
+            eprintln!("{BOLD_RED}error{RESET}: `subprocess` cannot be combined with {flag}");
+            return ExitCode::FAILURE;
+        }
         return subprocess::run();
     }
 

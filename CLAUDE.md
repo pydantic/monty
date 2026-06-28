@@ -270,7 +270,8 @@ make test-js              Test the JS package (builds the monty binary the worke
 make dev-py-release       Install the python package for development with a release build
 make build-wasm           Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
 make test-wasm            Test the in-process API against the wasm build (requires a prior build-wasm)
-make build-image          Build the monty-cpython sandbox OCI image (context = workspace root)
+make build-cpython-image  Build the monty-cpython docker image (locally by default)
+make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!

@@ -24,7 +24,7 @@ use crate::{
     install::InstallEnv,
     pep_723,
     pyexec::{HostBridge, init_runner},
-    transport::{Incoming, SharedTransport},
+    transport::{Incoming, SendError, SharedTransport},
 };
 
 /// The child's version tag, compared against `Configure.monty_version`.
@@ -82,11 +82,24 @@ impl Session {
             let incoming = self.transport.borrow_mut().recv();
             match incoming {
                 Incoming::Request(request) => match self.handle(py, request) {
-                    Flow::Reply(event) => {
-                        if self.transport.borrow_mut().send(&event).is_err() {
-                            return ExitCode::from(3);
+                    Flow::Reply(event) => match self.transport.borrow_mut().send(&event) {
+                        Ok(()) => {}
+                        // The turn-ender itself didn't fit the wire frame (e.g. a
+                        // huge `Complete` value). This is recoverable: replace it
+                        // with a small error and keep serving rather than crashing
+                        // the whole session over one oversized result.
+                        Err(SendError::TooLarge { len, max }) => {
+                            let replacement = error_event(
+                                ExcType::RuntimeError,
+                                &format!("result value of {len} bytes exceeds the maximum frame of {max} bytes"),
+                            );
+                            if self.transport.borrow_mut().send(&replacement).is_err() {
+                                return ExitCode::from(3);
+                            }
                         }
-                    }
+                        // The peer is gone — nothing left to do.
+                        Err(SendError::Io(_)) => return ExitCode::from(3),
+                    },
                     Flow::Exit { event, code } => {
                         if let Some(event) = event {
                             let _ = self.transport.borrow_mut().send(&event);
@@ -135,14 +148,18 @@ impl Session {
                         code: ExitCode::from(4),
                     };
                 }
-                Flow::Reply(self.handle_configure(py, &configure))
+                self.handle_configure(py, &configure)
             }
             pb::parent_request::Kind::Feed(feed) => Flow::Reply(self.handle_feed(py, feed)),
             pb::parent_request::Kind::InstallDependencies(req) => Flow::Reply(self.handle_install(py, &req)),
-            pb::parent_request::Kind::Reset(_) => {
-                self.reset_session(py);
-                Flow::Reply(ok_event())
-            }
+            // A monty-cpython worker serves exactly one session per process — there
+            // is no in-process reuse (a checkout dials a fresh worker). `Reset`
+            // therefore ends the session: acknowledge it and exit, letting the OS
+            // reclaim the interpreter, its `sys.modules`, and any install dir.
+            pb::parent_request::Kind::Reset(_) => Flow::Exit {
+                event: Some(ok_event()),
+                code: ExitCode::SUCCESS,
+            },
             pb::parent_request::Kind::Shutdown(_) => Flow::Exit {
                 event: Some(ok_event()),
                 code: ExitCode::SUCCESS,
@@ -165,13 +182,21 @@ impl Session {
 
     /// Opens a fresh CPython session: a new namespace whose undefined names route
     /// to the parent, with `sys.stdout` pointed at the bridge.
-    fn handle_configure(&mut self, py: Python<'_>, _configure: &pb::Configure) -> pb::ChildEvent {
+    ///
+    /// A failed open is fatal: the interpreter could not be initialised, which is
+    /// not recoverable on this worker, so we honour the `fatal_event` contract and
+    /// exit after telling the parent (which discards and replaces the worker)
+    /// rather than emitting a fatal event yet continuing to serve.
+    fn handle_configure(&mut self, py: Python<'_>, _configure: &pb::Configure) -> Flow {
         if !matches!(self.state, State::Idle) {
-            return violation("Configure while a session already exists");
+            return Flow::Reply(violation("Configure while a session already exists"));
         }
         match self.open_session(py) {
-            Ok(()) => ok_event(),
-            Err(err) => fatal_event(&format!("failed to start CPython session: {err}")),
+            Ok(()) => Flow::Reply(ok_event()),
+            Err(err) => Flow::Exit {
+                event: Some(fatal_event(&format!("failed to start CPython session: {err}"))),
+                code: ExitCode::from(5),
+            },
         }
     }
 
@@ -221,15 +246,6 @@ impl Session {
         }
         let env = install.as_mut().expect("install dir was just created");
         env.install(py, requirements)
-    }
-
-    /// Ends the current session: unlinks any install dir from `sys.path` (the
-    /// dir itself is removed when the `InstallEnv` drops) and returns to `Idle`.
-    fn reset_session(&mut self, py: Python<'_>) {
-        if let State::Ready { install: Some(env), .. } = &self.state {
-            env.remove_from_path(py);
-        }
-        self.state = State::Idle;
     }
 
     /// Runs one snippet to completion, returning `Complete` (the trailing
@@ -290,7 +306,12 @@ fn bind_inputs(
     inputs: Vec<pb::NamedValue>,
 ) -> Option<pb::ChildEvent> {
     for input in inputs {
-        let Some(value) = input.value else { continue };
+        // A `None` payload is an *absent* protobuf field, not Python `None`
+        // (which arrives as a present `MontyObject`). A named input with no
+        // value is a malformed frame, so surface it rather than binding nothing.
+        let Some(value) = input.value else {
+            return Some(violation(&format!("input '{}' has no value", input.name)));
+        };
         let object = match value.into_object() {
             Ok(value) => match monty_to_py(py, &value, dc) {
                 Ok(object) => object,

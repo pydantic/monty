@@ -11,17 +11,24 @@
 
 use std::{
     env,
-    net::{Shutdown, TcpStream},
+    net::{Shutdown, TcpStream, ToSocketAddrs},
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, Once, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
-use monty_proto::{FrameError, FrameReader, decode_frame, encode_to_capped_vec, pb, write_frame};
+use monty_proto::{FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, pb, write_frame};
 use rustls::crypto::aws_lc_rs::default_provider;
-use tungstenite::{Error as WsError, Message, WebSocket, stream::MaybeTlsStream};
+use tungstenite::{
+    Error as WsError, Message, WebSocket,
+    client::{IntoClientRequest, uri_mode},
+    client_tls_with_config,
+    protocol::WebSocketConfig,
+    stream::{MaybeTlsStream, Mode},
+};
 
 use crate::{MontyTransport, PoolConfig, PoolError};
 
@@ -150,7 +157,11 @@ impl Worker {
             ));
         };
         install_crypto_provider();
-        let (socket, _response) = tungstenite::connect(url).map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
+        // Bound the dial by `request_timeout`: `checkout_timeout` only covers
+        // waiting for capacity, not the synchronous handshake that follows, so a
+        // hung DNS/TCP/TLS/WS dial would otherwise stall the checkout forever.
+        let timeout = config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT);
+        let socket = dial_ws(url, timeout)?;
         // Clone the underlying TCP socket up front for the watchdog's shutdown
         // handle (reaching it through the TLS stream once connected).
         let tcp = underlying_tcp(socket.get_ref()).and_then(|tcp| tcp.try_clone().ok());
@@ -299,6 +310,83 @@ fn ws_to_frame_error(err: WsError) -> FrameError {
         WsError::Io(err) => FrameError::Io(err),
         _ => FrameError::Truncated,
     }
+}
+
+/// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
+/// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.
+const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Dials `url` as a blocking WebSocket client, bounding both the TCP connect and
+/// the TLS/WS handshake by `timeout` so a stuck peer cannot hang a checkout. DNS
+/// resolution is left to the OS resolver (typically fast); everything after it is
+/// time-boxed. Frame/message limits are raised to monty's [`MAX_FRAME_LEN`] so
+/// the transport never rejects a frame the protocol itself would accept.
+///
+/// The handshake's socket read/write timeouts are cleared once connected: during
+/// a session, reads block and are interrupted only by the watchdog shutting the
+/// socket down, never by a per-read deadline.
+fn dial_ws(url: &str, timeout: Duration) -> Result<WsSocket, PoolError> {
+    let spawn_err = |msg: String| PoolError::Spawn(format!("{url}: {msg}"));
+
+    let request = url
+        .into_client_request()
+        .map_err(|err| spawn_err(format!("invalid WebSocket URL: {err}")))?;
+    let uri = request.uri();
+    let mode = uri_mode(uri).map_err(|err| spawn_err(err.to_string()))?;
+    let host = uri.host().ok_or_else(|| spawn_err("URL has no host".to_owned()))?;
+    // Strip the brackets from an IPv6 literal host (`[::1]` -> `::1`).
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    let port = uri.port_u16().unwrap_or(match mode {
+        Mode::Plain => 80,
+        Mode::Tls => 443,
+    });
+
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|err| spawn_err(format!("could not resolve {host}:{port}: {err}")))?;
+
+    // Try each resolved address in turn, bounding the *total* connect time by
+    // `timeout` so a list of dead addresses cannot multiply the budget.
+    let deadline = Instant::now() + timeout;
+    let mut stream = None;
+    let mut last_err = None;
+    for addr in addrs {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match TcpStream::connect_timeout(&addr, remaining) {
+            Ok(tcp) => {
+                stream = Some(tcp);
+                break;
+            }
+            Err(err) => last_err = Some(err),
+        }
+    }
+    let stream = stream.ok_or_else(|| {
+        spawn_err(match last_err {
+            Some(err) => format!("connect failed: {err}"),
+            None => "connect timed out".to_owned(),
+        })
+    })?;
+    let _ = stream.set_nodelay(true);
+    // Time-box the handshake I/O too, else a peer that completes the TCP connect
+    // but stalls the TLS/WS handshake would hang the dial indefinitely.
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let ws_config = WebSocketConfig::default()
+        .max_frame_size(Some(MAX_FRAME_LEN as usize))
+        .max_message_size(Some(MAX_FRAME_LEN as usize));
+    let (socket, _response) = client_tls_with_config(request, stream, Some(ws_config), None)
+        .map_err(|err| spawn_err(format!("handshake failed: {err}")))?;
+
+    // Restore blocking reads for the session (see the fn doc).
+    if let Some(tcp) = underlying_tcp(socket.get_ref()) {
+        let _ = tcp.set_read_timeout(None);
+        let _ = tcp.set_write_timeout(None);
+    }
+    Ok(socket)
 }
 
 /// Reaches the raw `TcpStream` behind a (possibly TLS-wrapped) WebSocket stream,

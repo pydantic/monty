@@ -524,7 +524,10 @@ class AsyncMonty:
 class AsyncMontyWebsocket:
     """
     Async context manager owning a pool of remote `monty` workers reached over a
-    WebSocket — a relay, or a child running a server (e.g. `monty-cpython`).
+    WebSocket. The dialed peer is the server side — a relay that pairs this
+    connection with a child (such as `monty-cpython websocket`, which dials the
+    relay from the other end), or any server that accepts the connection and
+    bridges to a worker.
 
     Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
     dials the configured URL. There is no sync counterpart — remote turns are
@@ -550,8 +553,8 @@ class AsyncMontyWebsocket:
         each checkout (no workers are pre-warmed).
 
         Arguments:
-            url: `ws://`/`wss://` URL to dial — a relay or a child running a
-                server. Dialed verbatim; any session/rendezvous routing the URL
+            url: `ws://`/`wss://` URL to dial — a relay, or any server that
+                bridges to a worker. Dialed verbatim; any session/rendezvous routing the URL
                 needs (e.g. a `/<uuid>/parent` path for a relay) must already be
                 in it.
             max_processes: Cap on concurrent connections (defaults to the CPU
