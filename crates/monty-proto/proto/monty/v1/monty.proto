@@ -307,10 +307,6 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
   }
-  // Old oneof field names from before the session-control arms were renamed.
-  // proto3 reserves names within the enclosing message, not the oneof, so the
-  // old names cannot be reused by a future field. Tag numbers are unchanged.
-  reserved "repl_create", "repl_feed";
 }
 
 // Configures the REPL session this child will serve until `Reset`, sent once
