@@ -24,6 +24,13 @@ mod frame;
 mod generated;
 mod wire;
 
+/// The monty version this build speaks the wire protocol as, used for the
+/// `Configure.monty_version` skew check. Parent and child must be deployed in
+/// lockstep (the protocol has no in-band negotiation), so both sides compare
+/// against this single constant instead of each reading `CARGO_PKG_VERSION`
+/// independently. Equals the workspace version, since every crate shares it.
+pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub use convert::{
     MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
 };

@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{FrameError, exceeds_max_value_depth, pb};
+use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -182,7 +182,7 @@ impl Checkout {
                 // version is always what the child expects. The child rejects a
                 // mismatch with a `FatalError` (relevant when a remote driver
                 // built against a different version reuses the wire format).
-                monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+                monty_version: MONTY_VERSION.to_owned(),
             })),
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {

@@ -16,7 +16,7 @@ use _monty::{
     exceptions::exc_py_to_monty,
 };
 use monty::ExcType;
-use monty_proto::{exceeds_max_value_depth, pb};
+use monty_proto::{MONTY_VERSION, exceeds_max_value_depth, pb};
 use pyo3::{prelude::*, types::PyModule};
 
 use crate::{
@@ -28,8 +28,8 @@ use crate::{
 };
 
 /// The child's version tag, compared against `Configure.monty_version`.
-/// Workspace-versioned so it matches the pool that drives it.
-const CHILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Shared with the rest of the protocol so all sides agree on one value.
+const CHILD_VERSION: &str = MONTY_VERSION;
 
 /// What the run loop should do after handling one request.
 enum Flow {

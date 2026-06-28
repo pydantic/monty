@@ -19,8 +19,8 @@ use monty::{
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
-    FrameReader, MAX_FRAME_LEN, WireFunctionCall, WireOsCall, build_mount_table, exceeds_max_value_depth,
-    future_results_from_proto, pb, write_frame,
+    FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, WireOsCall, build_mount_table,
+    exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
@@ -205,10 +205,9 @@ impl Child {
                 // layout, so we fail fast with a `FatalError` rather than risk
                 // a silent desync. `fatal` sends the event; returning an exit
                 // code stops the loop so the parent sees a clean cause.
-                let expected = env!("CARGO_PKG_VERSION");
-                if configure.monty_version != expected {
+                if configure.monty_version != MONTY_VERSION {
                     self.fatal(&format!(
-                        "version skew: parent={:?} child={expected:?}",
+                        "version skew: parent={:?} child={MONTY_VERSION:?}",
                         configure.monty_version
                     ));
                     return Ok(Some(ExitCode::from(4)));
