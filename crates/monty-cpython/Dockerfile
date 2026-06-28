@@ -81,9 +81,19 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 # ABI, no surprise interpreter fetch on the first install.
 ENV UV_PYTHON_PREFERENCE=only-system
 
+# The worker installs a session's dependencies into a virtualenv at `./.venv`,
+# relative to its working directory. Pre-create it here (and pin it to this
+# image's Python 3.14, matching the embedded libpython) so the first install
+# does not pay venv-creation cost. WORKDIR fixes the runtime CWD so the worker
+# resolves `./.venv` to this directory. A per-session sandbox gives each worker
+# its own writable copy, so installs into the venv stay session-local.
+WORKDIR /app
+RUN uv venv .venv --python 3.14
+
 # Smoke test at build time — fails the build if the binary cannot dlopen
-# libpython or otherwise refuses to start, or if uv is not runnable.
-RUN monty-cpython --help >/dev/null && uv --version >/dev/null
+# libpython or otherwise refuses to start, if uv is not runnable, or if the
+# virtualenv was not created.
+RUN monty-cpython --help >/dev/null && uv --version >/dev/null && test -d /app/.venv
 
 # sandbox-control execs the binary directly with argv
 # ["monty-cpython", "websocket", "<url>"], so an ENTRYPOINT is optional but

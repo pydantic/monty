@@ -40,8 +40,6 @@ rustls = { workspace = true }
 # already built elsewhere in the workspace (ruff pulls `toml`).
 regex = "1.12"
 toml = "1.1"
-# Unique, exclusively-created temp dir for a session's `uv` install target.
-tempfile = { workspace = true }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }

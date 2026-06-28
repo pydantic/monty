@@ -1,16 +1,21 @@
-//! Installing third-party Python packages into a session with `uv`.
+//! Installing third-party Python packages into a session's virtualenv with `uv`.
 //!
-//! A parent drives this via the `InstallDependencies` request: the child shells
-//! out to `uv pip install --target <dir>` and then adds `<dir>` to the embedded
-//! interpreter's `sys.path` so subsequent feeds can import the packages. The
-//! target dir lives under the OS temp dir and is removed from disk when the
-//! [`InstallEnv`] (a [`TempDir`]) is dropped at session teardown.
+//! A parent drives this via the `InstallDependencies` request (and the per-feed
+//! PEP 723 auto-install): the child shells out to
+//! `uv pip install --python <venv> <reqs>` to install into a virtualenv at
+//! `./.venv` (relative to the worker's working directory), then makes that
+//! venv's `site-packages` importable on the embedded interpreter via
+//! `site.addsitedir` — which, unlike a bare `sys.path` insert, runs the venv's
+//! `.pth` files (legacy namespace packages rely on this).
 //!
-//! A worker serves exactly one session per process, so there is one install dir
-//! per process: its `sys.path` entry and any imported modules die with the
-//! process and never leak into another session. The dir is created with
-//! [`TempDir`], i.e. a unique random name created exclusively (an attacker
-//! cannot pre-create or reuse a predictable path).
+//! The venv is created once at image build time (`uv venv`, see the crate
+//! `Dockerfile`), pinned to the same Python the worker embeds. It is a deployment
+//! contract: if it is missing at install time the request fails with a clear
+//! error rather than creating one on the fly (which, under a wrong working
+//! directory or an unpinned interpreter, would silently land in the wrong place
+//! or with a mismatched ABI). A worker serves exactly one session per process
+//! inside a per-session sandbox, so the venv lives for that single session and is
+//! reclaimed when the sandbox is torn down — nothing leaks into another session.
 //!
 //! `uv` is expected on `PATH` (the deployment's Docker image installs it),
 //! overridable with the `MONTY_UV` env var for non-standard images.
@@ -20,10 +25,15 @@
 //! the embedded-CPython worker, which is explicitly **not** a sandbox (see the
 //! crate `README.md`); the Monty sandbox child rejects `InstallDependencies`.
 
-use std::{env, ffi::OsString, io, process::Command};
+use std::{
+    env,
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-use pyo3::prelude::*;
-use tempfile::{Builder, TempDir};
+use pyo3::{exceptions::PyRuntimeError, prelude::*};
 
 /// Env var overriding the `uv` binary invoked for installs (default: `uv` on `PATH`).
 const UV_ENV: &str = "MONTY_UV";
@@ -31,65 +41,62 @@ const UV_ENV: &str = "MONTY_UV";
 /// Cap on how much of uv's stderr is echoed back in a failure `Error`, in bytes.
 const MAX_STDERR: usize = 8192;
 
-/// A session's package-install location: a `uv pip install --target` directory
-/// that is also placed on the interpreter's `sys.path`.
+/// A session's package-install location: the `./.venv` virtualenv into which uv
+/// installs and whose `site-packages` is placed on the embedded interpreter's
+/// `sys.path`.
 ///
-/// Created lazily on the first non-empty install and torn down with the session:
-/// dropping the [`TempDir`] removes the directory from disk. The `sys.path`
-/// entry needs no explicit cleanup because the worker process exits at the end
-/// of its single session.
+/// The deployment (the image's `uv venv`) must have created the venv; an install
+/// against a missing venv fails. It needs no explicit cleanup: the worker process
+/// exits at the end of its single session and the per-session sandbox holding the
+/// venv is discarded.
 pub struct InstallEnv {
-    /// The `--target` directory uv installs into; also added to `sys.path`. A
-    /// uniquely named temp dir, removed from disk when this `TempDir` drops.
-    dir: TempDir,
-    /// Whether the dir has already been pushed onto `sys.path`.
+    /// The virtualenv directory (`./.venv` in the worker's working directory).
+    venv: PathBuf,
+    /// Whether the venv's `site-packages` has been added to `sys.path` yet.
     on_path: bool,
 }
 
 impl InstallEnv {
-    /// Creates a fresh, uniquely named install directory under the OS temp dir.
+    /// Resolves the session virtualenv path: `.venv` in the worker's current
+    /// working directory (the image sets the working dir and pre-creates it).
     pub fn create() -> io::Result<Self> {
-        let dir = Builder::new().prefix("monty-cpython-deps-").tempdir()?;
-        Ok(Self { dir, on_path: false })
+        let venv = env::current_dir()?.join(".venv");
+        Ok(Self { venv, on_path: false })
     }
 
-    /// Installs `requirements` (PEP 508 strings) with `uv`, then ensures the
-    /// target dir is importable. Returns `Err(message)` carrying uv's stderr on
-    /// a failed install, or a description of any spawn/`sys.path` failure.
+    /// Installs `requirements` (PEP 508 strings) into the venv with `uv`, then
+    /// makes the venv importable. The venv must already exist (the image creates
+    /// it); a missing one is a deployment error, not something to paper over.
+    /// Returns `Err(message)` carrying uv's stderr on a failed install, or a
+    /// description of a missing venv / spawn / `sys.path` failure.
     pub fn install(&mut self, py: Python<'_>, requirements: &[String]) -> Result<(), String> {
+        if !self.venv.is_dir() {
+            return Err(format!(
+                "no virtualenv at {}; the deployment must create it with `uv venv` (see the crate Dockerfile)",
+                self.venv.display()
+            ));
+        }
         let uv = env::var_os(UV_ENV).unwrap_or_else(|| OsString::from("uv"));
-        let mut cmd = Command::new(&uv);
-        cmd.arg("pip").arg("install").arg("--target").arg(self.dir.path());
-        // Pin resolution to the embedded interpreter's Python version so uv picks
-        // wheels with a matching ABI tag (which is minor-version based). We pass
-        // the bare `X.Y` rather than `sys.executable` because, in an embedded
-        // runtime, `sys.executable` is this worker binary, not a Python uv can
-        // query; `X.Y` lets uv locate (or fetch) a matching real interpreter.
-        if let Some(version) = interpreter_version(py) {
-            cmd.arg("--python").arg(version);
-        }
-        cmd.args(requirements);
-
-        let output = cmd.output().map_err(|err| {
-            format!(
-                "failed to run uv ({}): {err}; ensure uv is installed and on PATH, or set {UV_ENV} to its absolute path",
-                uv.to_string_lossy()
-            )
-        })?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("uv pip install failed: {}", truncate(&stderr)));
-        }
+        let mut cmd = Command::new(uv);
+        cmd.arg("pip")
+            .arg("install")
+            .arg("--python")
+            .arg(venv_python(&self.venv))
+            .args(requirements);
+        run_uv(cmd, "uv pip install")?;
         self.ensure_importable(py)
             .map_err(|err| format!("install succeeded but updating sys.path failed: {err}"))
     }
 
-    /// Adds the target dir to `sys.path` (once) and invalidates import caches so
-    /// freshly installed packages are discoverable on the next import.
+    /// Adds the venv's `site-packages` to `sys.path` (once, via `site.addsitedir`
+    /// so its `.pth` files run) and invalidates import caches so freshly
+    /// installed packages are discoverable on the next import.
     fn ensure_importable(&mut self, py: Python<'_>) -> PyResult<()> {
         if !self.on_path {
-            let target = self.dir.path().to_string_lossy().into_owned();
-            py.import("sys")?.getattr("path")?.call_method1("insert", (0, target))?;
+            let version = interpreter_version(py)
+                .ok_or_else(|| PyRuntimeError::new_err("could not read the embedded interpreter version"))?;
+            let site_packages = venv_site_packages(&self.venv, &version).to_string_lossy().into_owned();
+            py.import("site")?.call_method1("addsitedir", (site_packages,))?;
             self.on_path = true;
         }
         py.import("importlib")?.call_method0("invalidate_caches")?;
@@ -97,8 +104,46 @@ impl InstallEnv {
     }
 }
 
-/// The embedded interpreter's `major.minor` version (e.g. `"3.14"`) for uv's
-/// `--python` request, or `None` if it cannot be read.
+/// Runs a prepared `uv` command, mapping a spawn failure or non-zero exit (with
+/// uv's truncated stderr) onto an `Err(message)`. `action` names the step for the
+/// error text (e.g. `"uv pip install"`).
+fn run_uv(mut cmd: Command, action: &str) -> Result<(), String> {
+    let output = cmd.output().map_err(|err| {
+        format!(
+            "failed to run {action}: {err}; ensure uv is installed and on PATH, or set {UV_ENV} to its absolute path"
+        )
+    })?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{action} failed: {}",
+            truncate(&String::from_utf8_lossy(&output.stderr))
+        ))
+    }
+}
+
+/// The venv's Python executable: `bin/python`, or `Scripts\python.exe` on Windows.
+fn venv_python(venv: &Path) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
+/// The venv's `site-packages` directory for interpreter version `X.Y`:
+/// `lib/pythonX.Y/site-packages`, or `Lib\site-packages` on Windows.
+fn venv_site_packages(venv: &Path, version: &str) -> PathBuf {
+    if cfg!(windows) {
+        venv.join("Lib").join("site-packages")
+    } else {
+        venv.join("lib").join(format!("python{version}")).join("site-packages")
+    }
+}
+
+/// The embedded interpreter's `major.minor` version (e.g. `"3.14"`), used to
+/// locate the venv's `site-packages` (`lib/pythonX.Y/...`). `None` if unreadable.
 fn interpreter_version(py: Python<'_>) -> Option<String> {
     let info = py.import("sys").ok()?.getattr("version_info").ok()?;
     let major: u8 = info.getattr("major").ok()?.extract().ok()?;

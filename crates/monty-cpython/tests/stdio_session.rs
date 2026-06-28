@@ -14,6 +14,9 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    env,
+    path::Path,
+    process::Command,
     rc::Rc,
     sync::{Mutex, PoisonError},
 };
@@ -275,6 +278,7 @@ fn empty_install_is_a_noop() {
 #[test]
 #[ignore = "requires uv on PATH and network access to a package index"]
 fn installs_and_imports_a_package() {
+    ensure_test_venv();
     let events = Rc::new(RefCell::new(Vec::new()));
     let parent = ScriptedParent {
         script: VecDeque::from([
@@ -371,6 +375,7 @@ fn pep723_multiple_blocks_is_an_error() {
 #[test]
 #[ignore = "requires uv on PATH and network access to a package index"]
 fn feed_installs_pep723_dependencies() {
+    ensure_test_venv();
     let code = "# /// script\n# dependencies = [\"six==1.16.0\"]\n# ///\nimport six\nsix.__version__";
     let events = Rc::new(RefCell::new(Vec::new()));
     let parent = ScriptedParent {
@@ -409,6 +414,22 @@ fn install(requirements: &[&str]) -> pb::ParentRequest {
     request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
         requirements: requirements.iter().map(ToString::to_string).collect(),
     }))
+}
+
+/// Creates `./.venv` if absent, standing in for the deployment image's `uv venv`
+/// (the worker installs into — and refuses to create — `./.venv`). Assumes uv's
+/// default Python matches the interpreter this test process embeds, so the venv's
+/// `site-packages` is the one the worker adds to `sys.path`. Only the `#[ignore]`d
+/// install tests (which already need uv + network) call this.
+fn ensure_test_venv() {
+    if !Path::new(".venv").is_dir() {
+        let uv = env::var("MONTY_UV").unwrap_or_else(|_| "uv".to_string());
+        let status = Command::new(uv)
+            .args(["venv", ".venv"])
+            .status()
+            .expect("spawn uv venv");
+        assert!(status.success(), "uv venv failed to create ./.venv");
+    }
 }
 
 fn feed(code: &str) -> pb::ParentRequest {

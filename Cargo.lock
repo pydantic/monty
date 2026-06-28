@@ -2059,7 +2059,6 @@ dependencies = [
  "pyo3-build-config",
  "regex",
  "rustls",
- "tempfile",
  "toml",
  "tungstenite",
 ]

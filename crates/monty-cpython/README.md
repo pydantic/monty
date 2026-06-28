@@ -39,6 +39,22 @@ relay-provisioned sandbox). This is the fundamental difference from the Monty
 interpreter, which *is* a sandbox. Do not run `monty-cpython` on untrusted code
 outside an externally-enforced jail.
 
+## One session per sandbox
+
+A `monty-cpython` worker serves **exactly one session per process**. There is no
+in-process reuse: a parent's checkout (`with pool.checkout() as session: ...`)
+dials a fresh worker, and when that context manager exits, the session — and the
+per-session sandbox holding the worker — is torn down. `Reset` and `Shutdown` are
+therefore equivalent: both acknowledge, then exit the process, letting the OS /
+sandbox reclaim the interpreter, its `sys.modules`, and the session's installed
+packages. Nothing leaks from one session into the next, because in the same
+process there *is* no next session.
+
+This one-shot model assumes the deployment provisions a **per-session sandbox**
+(the relay-provisioned sandbox above) with a **writable filesystem** — the worker
+writes a session's dependencies into a virtualenv (see below). Pausing and
+resuming a session would need extra protocol support and is not implemented.
+
 ## Supported vs rejected protocol requests
 
 Supported: `StartSession`, `Feed`, `InstallDependencies` (see below),
@@ -77,24 +93,28 @@ feeds with the `InstallDependencies` request, carrying a list of PEP 508
 requirement strings. The child shells out to:
 
 ```
-uv pip install --target <per-session dir> --python <X.Y> <requirements...>
+uv pip install --python .venv/bin/python <requirements...>
 ```
 
-then prepends `<per-session dir>` to `sys.path` (once) and calls
-`importlib.invalidate_caches()`, so subsequent feeds can `import` the packages.
-The turn ends with `Ok` on success or `Error` (carrying uv's stderr, truncated)
-on failure. An empty requirement list is a no-op `Ok`.
+then makes the venv importable on the embedded interpreter —
+`site.addsitedir(<.venv site-packages>)` (so the venv's `.pth` files run, which
+legacy namespace packages need) plus `importlib.invalidate_caches()` — so
+subsequent feeds can `import` the packages. The turn ends with `Ok` on success or
+`Error` (carrying uv's stderr, truncated) on failure. An empty requirement list
+is a no-op `Ok`.
 
 - **`uv` must be on `PATH`** (the deployment's Docker image installs it),
   overridable with the `MONTY_UV` env var.
 - **Network access is required** — uv fetches from a package index.
-- The `--python` request is the embedded interpreter's `major.minor` version
-  (e.g. `3.14`), *not* `sys.executable`: in an embedded runtime `sys.executable`
-  is this worker binary, not a Python uv can query. uv locates (or fetches) a
-  matching interpreter, whose ABI tag matches the embedded one.
-- **Installs are session-scoped.** The target dir is created lazily on the first
-  install, removed from disk when the session ends, and unlinked from `sys.path`
-  on `Reset`, so a reused worker never leaks one session's packages into the next.
+- **Packages install into a virtualenv at `./.venv`**, relative to the worker's
+  working directory. The image pre-creates it with `uv venv` (see the
+  `Dockerfile`), pinned to the same Python 3.14 the worker embeds — so its
+  `site-packages` is ABI-compatible — and sets the working directory so `./.venv`
+  resolves. The venv is a deployment contract: if it is missing, the install
+  fails with a clear error rather than silently creating one.
+- **Installs are session-scoped.** The worker serves one session then exits, and
+  the per-session sandbox (with its `.venv`) is discarded — so packages never
+  leak into another session (see *One session per sandbox*).
 - The Monty sandbox child (`monty subprocess`) rejects `InstallDependencies`
   with a session-preserving `Error` — it has no host interpreter to install for,
   and would never shell out to the host.

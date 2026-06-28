@@ -144,11 +144,12 @@ the *host API* surface.
 - **Dependency installation is only available on the embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
   `session.installDependencies([...])` in `@pydantic/monty`) makes the
-  `monty-cpython` worker `uv pip install --target` the PEP 508 requirements into
-  a session-scoped directory it adds to `sys.path`, so later feeds can import
-  them. It is session-scoped and repeatable; an empty list is a no-op; it
-  requires `uv` on `PATH` (override: `MONTY_UV`) and network access, and the
-  packages are discarded when the session ends. It is bounded by the pool's
+  `monty-cpython` worker `uv pip install` the PEP 508 requirements into a
+  virtualenv at `./.venv` (pre-created in the image, see the crate `Dockerfile`)
+  and add its `site-packages` to `sys.path`, so later feeds can import them. It
+  is session-scoped and repeatable; an empty list is a no-op; it requires `uv` on
+  `PATH` (override: `MONTY_UV`) and network access, and the packages are discarded
+  with the per-session sandbox when the session ends. It is bounded by the pool's
   `request_timeout` (raise it for large dependency sets). The Monty sandbox
   worker (`monty subprocess`) has no host interpreter to install for, so the
   call raises `MontyRuntimeError` (the session stays usable). See
