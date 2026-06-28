@@ -2,6 +2,8 @@
 name = "pydantic-monty"
 description = "Python bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
+# Distributed as a PyO3 extension wheel on PyPI, not as a crate on crates.io.
+publish = false
 version = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
@@ -18,8 +20,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ahash = { workspace = true }
-monty-pool = { path = "../monty-pool" }
-monty = { path = "../monty" }
+monty-pool = { workspace = true }
+monty = { workspace = true }
 pyo3 = { version = "0.28", features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }

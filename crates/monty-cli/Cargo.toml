@@ -17,9 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
-monty_type_checking = { path = "../monty-type-checking" }
+monty = { workspace = true }
+monty-proto = { workspace = true }
+monty-type-checking = { workspace = true }
 prost = { workspace = true }
 rustyline = "15"
 

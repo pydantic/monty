@@ -9,8 +9,8 @@ description = "Benchmarks for the Monty interpreter — compares Monty vs CPytho
 publish = false
 
 [dependencies]
-monty = { path = "../monty", features = ["test-hooks"] }
-monty-pool = { path = "../monty-pool" }
+monty = { workspace = true, features = ["test-hooks"] }
+monty-pool = { workspace = true }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"

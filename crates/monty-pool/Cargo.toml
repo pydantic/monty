@@ -15,8 +15,8 @@ repository = { workspace = true }
 name = "monty_pool"
 
 [dependencies]
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
+monty = { workspace = true }
+monty-proto = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

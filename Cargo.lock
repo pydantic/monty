@@ -1982,7 +1982,7 @@ dependencies = [
  "clap",
  "monty",
  "monty-proto",
- "monty_type_checking",
+ "monty-type-checking",
  "prost",
  "rustyline",
  "tempfile",
@@ -2017,7 +2017,7 @@ version = "0.0.18"
 dependencies = [
  "monty",
  "monty-pool",
- "monty_type_checking",
+ "monty-type-checking",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2056,13 +2056,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty_type_checking"
+name = "monty-type-checking"
 version = "0.0.18"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "insta",
- "monty_typeshed",
+ "monty-typeshed",
  "pprof",
  "pretty_assertions",
  "ruff_db",
@@ -2075,7 +2075,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty_typeshed"
+name = "monty-typeshed"
 version = "0.0.18"
 dependencies = [
  "path-slash",
