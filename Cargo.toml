@@ -15,9 +15,6 @@ members = [
     "crates/fuzz"
 ]
 default-members = ["crates/monty-cli"]
-# `squat/` is a separate throwaway workspace of 0.0.0 placeholder crates used to
-# reserve crate names on crates.io; it must not be part of the real workspace.
-exclude = ["squat"]
 
 [workspace.package]
 edition = "2024"
