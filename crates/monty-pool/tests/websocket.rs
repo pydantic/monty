@@ -1,7 +1,7 @@
 //! Drives the pool's WebSocket transport against a mock child server: a thread
 //! that accepts one WebSocket connection and serves a scripted protocol
-//! session. This exercises `Worker::connect_ws` and the WS send/recv path
-//! end-to-end without needing a real remote child.
+//! session. This exercises `Worker::websocket` (the `dial_ws` dial) and the WS
+//! send/recv path end-to-end without needing a real remote child.
 
 use std::{net::TcpListener, thread, time::Duration};
 

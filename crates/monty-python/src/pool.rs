@@ -528,6 +528,11 @@ impl PyAsyncMontyWebsocket {
     /// remote relay that accepts the connection but never produces a worker
     /// would otherwise leave each turn blocked on the socket until the far end
     /// closes it. Pass `None` to wait indefinitely.
+    ///
+    /// Note that `install_dependencies` is also a turn, so the default 10.0 is
+    /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
+    /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
+    /// `None`) when installing dependencies over the WebSocket transport.
     #[new]
     #[pyo3(signature = (
         url,

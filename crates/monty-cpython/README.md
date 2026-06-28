@@ -27,7 +27,7 @@ glue is tiny (see `src/pyexec.rs`).
 
 This crate ships a `Dockerfile` (with `Dockerfile.dockerignore`) that builds an
 OCI image of the worker on `python:3.14-slim-trixie` and bundles the `uv` binary
-on `PATH` for dependency installs. Build it with `make build-image` from the
+on `PATH` for dependency installs. Build it with `make build-cpython-image` from the
 workspace root (the build context must be the workspace root — the crate has
 path-local deps), or see the header of `Dockerfile` for the raw `docker buildx`
 invocation.
@@ -60,7 +60,7 @@ resuming a session would need extra protocol support and is not implemented.
 
 ## Supported vs rejected protocol requests
 
-Supported: `StartSession`, `Feed`, `InstallDependencies` (see below),
+Supported: `Configure`, `Feed`, `InstallDependencies` (see below),
 `ResumeNameLookup` and `ResumeCall` (both consumed inline during a feed, never at
 the top level), `Reset`, `Shutdown`.
 
@@ -70,7 +70,7 @@ Rejected with a turn-ending `Error` (the session survives):
   `__call__`, which cannot be serialized; snapshots are not supported.
 - **`ResumeFutures`** — there is no async-future suspension (see async, below).
 
-`StartSession` with a mismatched `monty_version` is fatal (`FatalError` + exit 4),
+`Configure` with a mismatched `monty_version` is fatal (`FatalError` + exit 4),
 exactly like the Monty child; both are workspace-versioned so they match.
 
 ## Undefined-name model
@@ -159,17 +159,17 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
 
 ## Other behaviour notes
 
-- **Resource limits / timeouts** in `StartSession.limits` are ignored: the child
+- **Resource limits / timeouts** in `Configure.limits` are ignored: the child
   has no `ResourceTracker`. Wall-clock timeouts are still enforced by the
   parent's watchdog (it kills the connection). `total_execution_micros` /
   `max_duration_micros` on events are always zero.
-- **Type checking** (`StartSession.type_check`, `Feed.skip_type_check`) is
+- **Type checking** (`Configure.type_check`, `Feed.skip_type_check`) is
   ignored — snippets are always executed, never type-checked.
 - **Mounts** (`Feed.mounts`) are ignored; the child performs no virtual
   filesystem mapping. Real filesystem access goes straight to the host FS
   (see the security note above).
-- **`print()`**: only `stdout` is streamed as `Print` events. Output a snippet
-  writes to `sys.stderr` goes to the worker process's real stderr, not the parent.
+- **`print()`**: both `sys.stdout` and `sys.stderr` are streamed to the parent
+  as `Print` events, each tagged with its stream (`Stdout` / `Stderr`).
 - **Values**: the Python ↔ wire value model is `pydantic_monty`'s shared
   conversion layer, so the supported types and their divergences (e.g.
   dataclasses do not round-trip to their original type) match `pydantic_monty`.

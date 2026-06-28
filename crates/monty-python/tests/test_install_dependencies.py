@@ -39,6 +39,30 @@ def test_install_dependencies_empty_is_a_noop(session: MontySession):
     assert session.feed_run('1 + 1') == snapshot(2)
 
 
+@pytest.mark.parametrize(
+    'requirement,message',
+    [
+        (
+            '--index-url=http://evil',
+            'invalid requirement "--index-url=http://evil": must not start with \'-\' (it would be parsed as a uv option)',
+        ),
+        (
+            '-r /etc/hosts',
+            'invalid requirement "-r /etc/hosts": must not start with \'-\' (it would be parsed as a uv option)',
+        ),
+        ('   ', 'invalid requirement "   ": must not be empty'),
+    ],
+)
+def test_install_dependencies_validates_requirements(session: MontySession, requirement: str, message: str):
+    # the pool rejects flag-like / empty requirements before sending anything to
+    # the worker, so this fails the same way on the sandbox and CPython workers
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        session.install_dependencies([requirement])
+    assert exc_info.value.display(format='msg') == message
+    # the session survives the rejection and keeps working
+    assert session.feed_run('1 + 1') == snapshot(2)
+
+
 async def test_async_install_dependencies_rejected_on_sandbox_worker(asession: AsyncMontySession):
     with pytest.raises(MontyRuntimeError) as exc_info:
         await asession.install_dependencies(['numpy'])

@@ -566,6 +566,11 @@ class AsyncMontyWebsocket:
                 raises `MontyCrashedError` with `timed_out=True`. This also
                 bounds the wait when a relay accepts the connection but never
                 produces a worker. Pass `None` to wait indefinitely.
+
+                Note that `install_dependencies` is a turn too, so the default
+                10.0 is often too low for it — a real `uv pip install` can exceed
+                it. Raise `request_timeout` (or pass `None`) when installing
+                dependencies over the WebSocket transport.
         """
 
     async def __aenter__(self) -> Self: ...

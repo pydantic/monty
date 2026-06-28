@@ -24,10 +24,10 @@ semantics inside a worker are identical to embedding the interpreter directly
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
-- **The session `StartSession` request carries the parent's `monty_version`, and
+- **The session `Configure` request carries the parent's `monty_version`, and
   the worker rejects a mismatch.** The protocol has no in-band negotiation and
   assumes parent and child are deployed in lockstep, so a child whose version
-  differs from the `monty_version` in `StartSession` replies `FatalError` (with a
+  differs from the `monty_version` in `Configure` replies `FatalError` (with a
   `version skew: parent=… child=…` message) and exits non-zero rather than
   risk a frame desync. A local subprocess child is built in lockstep with the
   parent, so this mostly matters for the WebSocket transport, where the remote

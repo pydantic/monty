@@ -96,11 +96,6 @@ enum Command {
 }
 
 impl Cli {
-    /// Builds `ResourceLimits` from the parsed CLI arguments.
-    ///
-    /// Returns `Ok(None)` when no resource flags were provided, which lets the
-    /// caller fall back to `NoLimitTracker` for zero-overhead execution.
-    /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     /// The name of the first execution flag that conflicts with the `subprocess`
     /// subcommand, if any. `subprocess` reads all its configuration from the
     /// protocol, so any normal-execution flag passed alongside it is a
@@ -136,6 +131,11 @@ impl Cli {
             || self.max_recursion_depth.is_some()
     }
 
+    /// Builds `ResourceLimits` from the parsed CLI arguments.
+    ///
+    /// Returns `Ok(None)` when no resource flags were provided, which lets the
+    /// caller fall back to `NoLimitTracker` for zero-overhead execution.
+    /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
         if !self.any_resource_limit_flag() {
             return Ok(None);

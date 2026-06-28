@@ -9,7 +9,7 @@
 #         -f crates/monty-cpython/Dockerfile \
 #         --push .
 #
-# Or just `make build-image` from the workspace root.
+# Or just `make build-cpython-image` from the workspace root.
 #
 # Both stages share the same `python:3.14-slim-trixie` base so libpython at
 # build time and runtime are exactly the same. PyO3 `auto-initialize` links

@@ -375,6 +375,11 @@ impl Checkout {
     /// install failure both surface as [`PoolError::Runtime`] (the latter
     /// carrying uv's stderr); the session stays usable in either case. Bounded
     /// by the pool's `request_timeout`, so raise it for large dependency sets.
+    ///
+    /// Each requirement is validated here, at the pool boundary, before any
+    /// frame is sent: a string that uv would parse as an option rather than a
+    /// package specifier is rejected with [`PoolError::Runtime`] (a
+    /// `ValueError`). See [`validate_requirement`] for the rationale.
     pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
@@ -385,6 +390,9 @@ impl Checkout {
         // sandbox worker, which would otherwise reject the request outright.
         if requirements.is_empty() {
             return Ok(());
+        }
+        for requirement in &requirements {
+            validate_requirement(requirement)?;
         }
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
@@ -738,6 +746,32 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
     } else {
         Ok(())
     }
+}
+
+/// Rejects a requirement string that uv would interpret as a command-line
+/// option rather than a package specifier.
+///
+/// The CPython worker runs `uv pip install <requirements...>`, appending each
+/// string as its own argument. A valid PEP 508 requirement never begins with
+/// `-`, so a string that does (e.g. `--index-url=…`, `-r /etc/hosts`, `-e .`)
+/// would be smuggled onto uv's command line as a flag — redirecting the index,
+/// reading an arbitrary file as a requirements list, etc. Validating at the
+/// pool boundary means every transport and binding gets the same guard before
+/// anything reaches a worker. Empty/whitespace-only entries are also rejected
+/// since uv has no use for them and they only signal caller confusion.
+fn validate_requirement(requirement: &str) -> Result<(), PoolError> {
+    let trimmed = requirement.trim();
+    let problem = if trimmed.is_empty() {
+        "must not be empty"
+    } else if trimmed.starts_with('-') {
+        "must not start with '-' (it would be parsed as a uv option)"
+    } else {
+        return Ok(());
+    };
+    Err(PoolError::Runtime(MontyException::new(
+        ExcType::ValueError,
+        Some(format!("invalid requirement {requirement:?}: {problem}")),
+    )))
 }
 
 /// The tighter of two optional deadlines (`None` means no deadline).
