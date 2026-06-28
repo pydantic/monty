@@ -264,7 +264,13 @@ impl Worker {
             }
             WorkerKind::WebSocket(w) => {
                 w.closed.store(true, Ordering::SeqCst);
-                let _ = w.socket.close(None);
+                // Shut the TCP socket down directly rather than writing a
+                // WebSocket Close frame: the socket's write timeout was cleared
+                // after the handshake, so `socket.close()` could block
+                // indefinitely on a peer that has stopped draining — and this
+                // runs on the caller's thread on the normal single-use teardown
+                // path. A FIN is read by the child as a clean EOF and it exits,
+                // so the graceful Close frame buys nothing here.
                 self.interrupt.kill();
                 None
             }

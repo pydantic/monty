@@ -9,9 +9,18 @@ run everything in workers driven over a protobuf protocol
 (`crates/monty-proto`) and expose no in-process execution API. By default the
 worker is a local `monty subprocess` child; the Python package additionally
 offers `pydantic_monty.AsyncMontyWebsocket`, which reaches a remote child over
-a WebSocket instead (the JS package is subprocess-only). The language
-semantics inside a worker are identical to embedding the interpreter directly
-(it is the same interpreter); the notes below are about the *host API* surface.
+a WebSocket instead (the JS package is subprocess-only). For a `monty subprocess`
+worker the language semantics are identical to embedding the interpreter directly
+(it is the same interpreter), and the notes below are about the *host API* surface.
+
+A WebSocket worker is whatever the relay bridges to, and need not be a Monty
+sandbox at all: the reference remote child is `monty-cpython`, which runs the
+snippet in **real CPython with no sandbox, no resource limits, and full host
+filesystem/network/subprocess access** (it relies on the deployment — a
+container/VM per session — for isolation, not on the language). So none of
+Monty's in-process safety guarantees hold for that transport; treat the remote
+as a trusted-deployment execution surface, not a sandbox. Its CPython-specific
+divergences are documented in `crates/monty-cpython/README.md`.
 
 ## Execution model
 
