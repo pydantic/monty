@@ -24,6 +24,13 @@ divergences are documented in `crates/monty-cpython/README.md`.
 
 ## Execution model
 
+The guarantees below describe a **Monty sandbox worker** (`monty subprocess`).
+A WebSocket/`monty-cpython` remote honours the *protocol* shape (REPL turns,
+version-skew check, value encoding) but **none** of the sandbox guarantees —
+resource limits, the no-subprocess invariant (`monty-cpython` itself shells out
+to `uv` for installs), and the empty-environment property are Monty-sandbox
+properties that real CPython does not provide, per the caveat above.
+
 - The protocol (and `pydantic_monty`) is **REPL-only**: a pool checkout is a
   REPL session in a dedicated worker, and a one-shot run is a checkout plus a
   single feed. `feed_run` drives external function calls, OS callbacks, and

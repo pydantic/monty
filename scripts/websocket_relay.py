@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ipaddress
 import os
 import shutil
 import struct
@@ -72,15 +73,27 @@ async def bridge_connection(websocket: ServerConnection, monty_bin: str) -> None
             (length,) = _LENGTH_PREFIX.unpack(await stdout.readexactly(_LENGTH_PREFIX.size))
             await websocket.send(await stdout.readexactly(length))
 
+    ws_task = asyncio.create_task(ws_to_child())
+    child_task = asyncio.create_task(child_to_ws())
     try:
-        await asyncio.gather(ws_to_child(), child_to_ws())
-    except (asyncio.IncompleteReadError, ConnectionError, ConnectionClosed):
-        # the child exited (clean EOF on close) or the peer hung up — both
-        # expected, including the abrupt TCP shutdown the pool uses to end a
-        # single-use worker (no WebSocket close frame), which surfaces here as
-        # ConnectionClosed.
-        pass
+        # Stop as soon as *either* direction ends, so a clean close on one side
+        # tears the child down promptly instead of blocking on the other pump.
+        done, _ = await asyncio.wait({ws_task, child_task}, return_when=asyncio.FIRST_COMPLETED)
+        # Surface an unexpected failure from whichever pump finished first; a
+        # clean EOF (the child exited on close) or a hung-up peer is expected —
+        # including the abrupt TCP shutdown the pool uses to end a single-use
+        # worker (no WebSocket close frame), which surfaces as ConnectionClosed.
+        for task in done:
+            try:
+                task.result()
+            except (asyncio.IncompleteReadError, ConnectionError, ConnectionClosed):
+                pass
     finally:
+        # Cancel the still-running pump and reap both so neither is left as an
+        # orphan task with an unretrieved exception, then tear the child down.
+        for task in (ws_task, child_task):
+            task.cancel()
+        await asyncio.gather(ws_task, child_task, return_exceptions=True)
         if child.returncode is None:
             child.kill()
         await child.wait()
@@ -95,8 +108,27 @@ async def serve_relay(host: str, port: int, monty_bin: str) -> None:
     # max_size=None: never reject a frame the monty protocol itself would accept.
     async with serve(handler, host, port, max_size=None) as server:
         bound_host, bound_port = server.sockets[0].getsockname()[:2]
-        print(f'ws://{bound_host}:{bound_port}', flush=True)
+        print(format_ws_url(bound_host, bound_port), flush=True)
         await asyncio.get_running_loop().create_future()  # run until cancelled
+
+
+def format_ws_url(host: str, port: int) -> str:
+    """Builds a dialable `ws://` URL from a bound `getsockname()` address.
+
+    Handles the two address shapes a bind can produce that a naive
+    `ws://{host}:{port}` gets wrong: IPv6 literals must be bracketed in a URI
+    (`ws://[::1]:port`), and a wildcard bind (`0.0.0.0` / `::`) is not a usable
+    destination, so it's mapped to the matching loopback address. A plain
+    hostname is left untouched.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return f'ws://{host}:{port}'  # a hostname, not an IP literal
+    if ip.is_unspecified:
+        ip = ipaddress.ip_address('::1' if ip.version == 6 else '127.0.0.1')
+    host_part = f'[{ip}]' if ip.version == 6 else str(ip)
+    return f'ws://{host_part}:{port}'
 
 
 def resolve_monty_bin(explicit: str | None) -> str:
