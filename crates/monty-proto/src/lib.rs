@@ -22,6 +22,7 @@
 mod convert;
 mod frame;
 mod generated;
+mod requirement;
 mod wire;
 
 /// The monty version this build speaks the wire protocol as, used for the
@@ -38,4 +39,5 @@ pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, write_frame,
 };
 pub use generated::pb;
+pub use requirement::validate_requirement;
 pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};

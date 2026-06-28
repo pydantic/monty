@@ -22,8 +22,8 @@ path = "src/lib.rs"
 [dependencies]
 ahash = { workspace = true }
 clap = { workspace = true }
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
+monty = { workspace = true }
+monty-proto = { workspace = true }
 # `pydantic-monty`'s lib (`_monty`) is linked as an rlib purely for its
 # Python ↔ MontyObject value-conversion layer (`convert`/`dataclass`/`exceptions`).
 # This works because that crate does not enable pyo3's `extension-module` feature

@@ -18,7 +18,7 @@ use _monty::{
     exceptions::exc_py_to_monty,
 };
 use monty::ExcType;
-use monty_proto::{MONTY_VERSION, exceeds_max_value_depth, pb};
+use monty_proto::{MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use pyo3::prelude::*;
 
 use crate::{
@@ -232,6 +232,9 @@ impl Session {
         if req.requirements.is_empty() {
             return ok_event();
         }
+        if let Err(message) = validate_requirements(&req.requirements) {
+            return error_event(ExcType::ValueError, &message);
+        }
         match self.install_requirements(py, &req.requirements) {
             Ok(()) => ok_event(),
             Err(message) => error_event(ExcType::RuntimeError, &message),
@@ -267,6 +270,9 @@ impl Session {
         // yields an empty list (the common, fast path).
         match pep_723::dependencies(&feed.code) {
             Ok(deps) if !deps.is_empty() => {
+                if let Err(message) = validate_requirements(&deps) {
+                    return error_event(ExcType::ValueError, &message);
+                }
                 if let Err(message) = self.install_requirements(py, &deps) {
                     return error_event(ExcType::RuntimeError, &message);
                 }
@@ -297,6 +303,18 @@ impl Session {
             Err(err) => error_from_exception(&exc_py_to_monty(py, &err)),
         }
     }
+}
+
+/// Validates all requirement strings before they reach uv.
+///
+/// The Rust pool validates explicit `InstallDependencies` requests before
+/// sending them, but the CPython worker also validates both explicit requests
+/// and PEP 723 auto-installs so non-Rust parents get the same guard.
+fn validate_requirements(requirements: &[String]) -> Result<(), String> {
+    for requirement in requirements {
+        validate_requirement(requirement)?;
+    }
+    Ok(())
 }
 
 /// Binds the feed's input globals into the namespace, returning `Some(event)`

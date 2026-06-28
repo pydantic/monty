@@ -81,9 +81,8 @@ divergences are documented in `crates/monty-cpython/README.md`.
   never in a worker's memory, where a sandbox escape or memory disclosure
   could reach them. This is invisible to sandbox code — `os.getenv` etc. are
   OS calls answered by the host, never reads of the worker's own
-  environment. In Rust, `monty_pool::PoolConfig::extra_args` is the only
-  worker configuration channel outside the protocol; Python and JS do not
-  expose that knob.
+  environment. The public Python and JS bindings expose no worker
+  configuration channel outside the protocol.
 - **Worker binary resolution is part of the host trust boundary.** Python and
   JS resolve the worker from an explicit constructor path first, then
   `MONTY_BIN`, then their bundled platform package (or Python scripts

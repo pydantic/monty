@@ -466,6 +466,36 @@ fn empty_install_is_a_noop() {
     assert_eq!(oks, 3, "Configure + empty install + Shutdown all ack with Ok");
 }
 
+/// Requirement strings that uv would parse as command-line options are rejected
+/// before the worker shells out.
+#[test]
+fn install_rejects_flag_like_requirement() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), install(&["-r /etc/hosts"]), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .find_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Error(err)) => err.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some("invalid requirement \"-r /etc/hosts\": must not start with '-' (it would be parsed as a uv option)")
+    );
+}
+
 /// End-to-end install of a real package with `uv`, then importing it in a feed.
 ///
 /// Ignored by default: it requires `uv` on `PATH` (or `MONTY_UV`) and network
@@ -564,6 +594,39 @@ fn pep723_multiple_blocks_is_an_error() {
         .expect("an Error event");
     assert_eq!(error.exc_type, "ValueError");
     assert_eq!(error.message.as_deref(), Some("multiple PEP 723 script blocks found"));
+}
+
+/// PEP 723 dependencies use the same validation as explicit
+/// `InstallDependencies`, so inline metadata cannot smuggle uv options.
+#[test]
+fn pep723_rejects_flag_like_requirement() {
+    let code = "# /// script\n# dependencies = [\"--index-url=http://evil\"]\n# ///\nprint('never runs')";
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed(code), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .find_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Error(err)) => err.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some(
+            "invalid requirement \"--index-url=http://evil\": must not start with '-' (it would be parsed as a uv option)"
+        )
+    );
 }
 
 /// End-to-end PEP 723: a feed declaring a dependency in its inline metadata has

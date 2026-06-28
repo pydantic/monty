@@ -83,6 +83,7 @@ impl InstallEnv {
             .arg("install")
             .arg("--python")
             .arg(venv_python(&self.venv))
+            .arg("--")
             .args(requirements);
         run_uv(cmd, "uv pip install")?;
         self.ensure_importable(py)

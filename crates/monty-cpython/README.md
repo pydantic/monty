@@ -165,6 +165,8 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
   `max_duration_micros` on events are always zero.
 - **Type checking** (`Configure.type_check`, `Feed.skip_type_check`) is
   ignored — snippets are always executed, never type-checked.
+- **`Configure.script_name`** is ignored for execution tracebacks today: CPython
+  snippets compile with the internal filename `'<sandbox>'`.
 - **Mounts** (`Feed.mounts`) are ignored; the child performs no virtual
   filesystem mapping. Real filesystem access goes straight to the host FS
   (see the security note above).

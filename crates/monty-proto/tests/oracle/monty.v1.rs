@@ -497,7 +497,8 @@ pub struct Reset {}
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Shutdown {}
 /// Installs third-party Python packages into the session before further feeds,
-/// using `uv pip install --target` against the worker's interpreter. Only the
+/// using `uv pip install --python <venv-python>` against the worker's session
+/// virtualenv. Only the
 /// embedded-CPython worker honors this; the Monty sandbox child rejects it with
 /// an `Error` (it has no host interpreter to install for). Repeatable between
 /// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
