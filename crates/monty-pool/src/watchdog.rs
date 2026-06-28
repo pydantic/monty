@@ -9,15 +9,12 @@
 use std::{
     collections::BTreeMap,
     io,
-    sync::{
-        Arc, Condvar, Mutex, PoisonError,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, PoisonError},
     thread,
     time::{Duration, Instant},
 };
 
-use crate::worker::{Killable, Worker, lock_ignore_poison};
+use crate::worker::{Interrupt, Worker, lock_ignore_poison};
 
 /// Deadline registry plus the thread that enforces it.
 pub(crate) struct Watchdog {
@@ -32,19 +29,11 @@ struct Shared {
 
 #[derive(Default)]
 struct State {
-    /// Armed deadlines, ordered by expiry. The `u64` disambiguates equal
-    /// instants.
-    deadlines: BTreeMap<(Instant, u64), KillTarget>,
+    /// Armed deadlines, ordered by expiry. The value is the worker's shared
+    /// kill channel; the `u64` disambiguates equal instants.
+    deadlines: BTreeMap<(Instant, u64), Arc<Interrupt>>,
     next_id: u64,
     shutdown: bool,
-}
-
-/// What to do when a deadline fires: kill the worker (transport-agnostic via
-/// [`Killable`]) and flag it so the owner classifies the resulting I/O failure
-/// as a timeout.
-struct KillTarget {
-    kill: Arc<dyn Killable>,
-    killed_for_timeout: Arc<AtomicBool>,
 }
 
 impl Watchdog {
@@ -69,18 +58,12 @@ impl Watchdog {
     /// returned guard drops (i.e. when the turn ends first).
     pub(crate) fn arm(&self, worker: &Worker, timeout: Option<Duration>) -> Option<DeadlineGuard> {
         let timeout = timeout?;
-        let (kill, killed_for_timeout) = worker.kill_handles();
+        let interrupt = Arc::clone(worker.interrupt());
         let key = {
             let mut state = lock_ignore_poison(&self.shared.state);
             let key = (Instant::now() + timeout, state.next_id);
             state.next_id += 1;
-            state.deadlines.insert(
-                key,
-                KillTarget {
-                    kill,
-                    killed_for_timeout,
-                },
-            );
+            state.deadlines.insert(key, interrupt);
             key
         };
         self.shared.condvar.notify_one();
@@ -127,10 +110,10 @@ fn watchdog_loop(shared: &Shared) {
             if at > now {
                 break;
             }
-            let (_, target) = state.deadlines.pop_first().expect("checked non-empty");
+            let (_, interrupt) = state.deadlines.pop_first().expect("checked non-empty");
             // flag BEFORE killing so the owner's failed read always sees it
-            target.killed_for_timeout.store(true, Ordering::SeqCst);
-            target.kill.kill();
+            interrupt.flag_timeout();
+            interrupt.kill();
         }
         state = match state.deadlines.first_key_value().map(|(&(at, _), _)| at) {
             Some(at) => {

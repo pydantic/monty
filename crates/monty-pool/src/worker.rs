@@ -36,17 +36,15 @@ use crate::{MontyTransport, PoolConfig, PoolError};
 /// The synchronous WebSocket client socket type for a remote worker.
 type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
-/// Something the watchdog can kill from another thread while the owning thread
-/// is blocked in a read. A boxed `dyn Killable` lets the watchdog stay ignorant
-/// of the transport (kill a process vs. shut down a socket).
-pub(crate) trait Killable: Send + Sync {
-    fn kill(&self);
-}
-
-/// A worker plus its recycle counter. The transport-specific state lives in
+/// A worker plus its recycle counter. The transport-specific I/O state lives in
 /// [`WorkerKind`]; `checkouts_served` is shared logic.
 pub(crate) struct Worker {
     kind: WorkerKind,
+    /// Shared kill channel: the watchdog clones it to interrupt this worker's
+    /// blocked read on a deadline, and the worker reads/resets the timeout flag
+    /// and kills through it during teardown. Identical for both transports, so
+    /// it lives here rather than being duplicated inside each [`WorkerKind`].
+    interrupt: Arc<Interrupt>,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
 }
@@ -64,45 +62,52 @@ enum WorkerKind {
 /// The `Child` handle lives behind `Arc<Mutex<..>>` so the watchdog can kill the
 /// process while the owning thread is blocked reading from it.
 struct SubprocessWorker {
+    /// The child handle, shared (`Arc`) with the worker's [`Interrupt`] so the
+    /// watchdog can kill the process while the owner is blocked reading it.
     child: Arc<Mutex<Child>>,
     writer: ChildStdin,
     reader: FrameReader<ChildStdout>,
-    killed_for_timeout: Arc<AtomicBool>,
 }
 
 /// A remote child reached over a WebSocket. One binary message per protocol
-/// frame (no length prefix — the message boundary is the frame).
+/// frame (no length prefix — the message boundary is the frame). The watchdog
+/// interrupts a blocked read by shutting down the raw TCP socket the worker's
+/// [`Interrupt`] holds a clone of (the WebSocket analogue of killing a child).
 struct WebSocketWorker {
     socket: WsSocket,
-    /// A clone of the underlying TCP socket, handed to the watchdog so it can
-    /// `shutdown(Both)` — and thereby unblock a blocked `read` — *without*
-    /// taking the `socket` the owner holds. This is the WebSocket analogue of
-    /// killing the subprocess child via its separate `Arc<Mutex<Child>>`.
-    shutdown: Arc<WsShutdown>,
-    killed_for_timeout: Arc<AtomicBool>,
     /// Set once the connection is closed/killed, so `is_dead` reports it.
     closed: Arc<AtomicBool>,
 }
 
-/// Kill handle for a subprocess worker: kills the child process.
-struct SubprocessKill(Arc<Mutex<Child>>);
-
-impl Killable for SubprocessKill {
-    fn kill(&self) {
-        let _ = lock_ignore_poison(&self.0).kill();
+impl WebSocketWorker {
+    /// Sends one event as a single binary WebSocket message (no length prefix), and
+    /// flushes — the protocol is strict alternation, so the frame must hit the wire.
+    fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+        let body = encode_to_capped_vec(request)?;
+        self.socket
+            .write(Message::Binary(body.into()))
+            .map_err(ws_to_frame_error)?;
+        self.socket.flush().map_err(ws_to_frame_error)?;
+        Ok(())
     }
-}
 
-/// Kill handle for a WebSocket worker: shuts down the underlying TCP socket,
-/// which unblocks a blocked `read` with an I/O error.
-struct WsShutdown {
-    tcp: Option<TcpStream>,
-}
-
-impl Killable for WsShutdown {
-    fn kill(&self) {
-        if let Some(tcp) = &self.tcp {
-            let _ = tcp.shutdown(Shutdown::Both);
+    /// Reads one `ChildEvent` from the WebSocket, skipping control frames. A
+    /// close/EOF *without* a prior turn-ender means the child died — surfaced as
+    /// [`FrameError::Truncated`], mirroring the stdio crash contract.
+    fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
+        loop {
+            match self.socket.read() {
+                Ok(Message::Binary(data)) => return decode_frame::<pb::ChildEvent>(data.as_ref()),
+                // tungstenite auto-queues the Pong; flush it and keep reading.
+                Ok(Message::Ping(_)) => {
+                    let _ = self.socket.flush();
+                }
+                Ok(Message::Pong(_)) => {}
+                // A clean close, or text/raw frames the protocol never uses.
+                Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_)) => return Err(FrameError::Truncated),
+                Err(WsError::Io(err)) => return Err(FrameError::Io(err)),
+                Err(_) => return Err(FrameError::Truncated),
+            }
         }
     }
 }
@@ -146,12 +151,12 @@ impl Worker {
 
         let writer = child.stdin.take().expect("piped stdin");
         let reader = FrameReader::new(child.stdout.take().expect("piped stdout"));
-        Ok(Self::with_kind(WorkerKind::Subprocess(SubprocessWorker {
-            child: Arc::new(Mutex::new(child)),
-            writer,
-            reader,
-            killed_for_timeout: Arc::new(AtomicBool::new(false)),
-        })))
+        let child = Arc::new(Mutex::new(child));
+        let interrupt = Interrupt::new(InterruptKind::Subprocess(Arc::clone(&child)));
+        Ok(Self::with_kind(
+            WorkerKind::Subprocess(SubprocessWorker { child, writer, reader }),
+            interrupt,
+        ))
     }
 
     /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
@@ -163,20 +168,32 @@ impl Worker {
     fn websocket(url: &str, timeout: Duration) -> Result<Self, PoolError> {
         install_crypto_provider();
         let socket = dial_ws(url, timeout)?;
-        // Clone the underlying TCP socket up front for the watchdog's shutdown
-        // handle (reaching it through the TLS stream once connected).
-        let tcp = underlying_tcp(socket.get_ref()).and_then(|tcp| tcp.try_clone().ok());
-        Ok(Self::with_kind(WorkerKind::WebSocket(Box::new(WebSocketWorker {
-            socket,
-            shutdown: Arc::new(WsShutdown { tcp }),
-            killed_for_timeout: Arc::new(AtomicBool::new(false)),
-            closed: Arc::new(AtomicBool::new(false)),
-        }))))
+        // Clone the underlying TCP socket up front for the watchdog's interrupt
+        // handle (reaching it through the TLS stream once connected). Without it
+        // the watchdog could never unblock a hung read, silently voiding the
+        // hard-timeout guarantee — so refuse the worker rather than build one we
+        // can't kill.
+        let tcp = underlying_tcp(socket.get_ref())
+            .and_then(|tcp| tcp.try_clone().ok())
+            .ok_or_else(|| {
+                PoolError::Spawn(format!(
+                    "{url}: could not clone the connection socket for timeout enforcement"
+                ))
+            })?;
+        let interrupt = Interrupt::new(InterruptKind::WebSocket(tcp));
+        Ok(Self::with_kind(
+            WorkerKind::WebSocket(Box::new(WebSocketWorker {
+                socket,
+                closed: Arc::new(AtomicBool::new(false)),
+            })),
+            interrupt,
+        ))
     }
 
-    fn with_kind(kind: WorkerKind) -> Self {
+    fn with_kind(kind: WorkerKind, interrupt: Arc<Interrupt>) -> Self {
         Self {
             kind,
+            interrupt,
             checkouts_served: 0,
         }
     }
@@ -184,7 +201,7 @@ impl Worker {
     pub(crate) fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => write_frame(&mut w.writer, request),
-            WorkerKind::WebSocket(w) => ws_send(&mut w.socket, request),
+            WorkerKind::WebSocket(w) => w.send(request),
         }
     }
 
@@ -193,7 +210,7 @@ impl Worker {
     pub(crate) fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => w.reader.read::<pb::ChildEvent>()?.ok_or(FrameError::Truncated),
-            WorkerKind::WebSocket(w) => ws_recv(&mut w.socket),
+            WorkerKind::WebSocket(w) => w.recv(),
         }
     }
 
@@ -206,24 +223,16 @@ impl Worker {
         }
     }
 
-    /// Watchdog handles: the kill target and the timeout flag.
-    pub(crate) fn kill_handles(&self) -> (Arc<dyn Killable>, Arc<AtomicBool>) {
-        match &self.kind {
-            WorkerKind::Subprocess(w) => (
-                Arc::new(SubprocessKill(Arc::clone(&w.child))),
-                Arc::clone(&w.killed_for_timeout),
-            ),
-            WorkerKind::WebSocket(w) => (
-                Arc::clone(&w.shutdown) as Arc<dyn Killable>,
-                Arc::clone(&w.killed_for_timeout),
-            ),
-        }
+    /// The worker's shared kill channel. The watchdog clones it to arm a
+    /// deadline; the worker reads and resets the timeout flag through it.
+    pub(crate) fn interrupt(&self) -> &Arc<Interrupt> {
+        &self.interrupt
     }
 
     /// Whether the watchdog killed this worker (consumes the flag's meaning:
     /// call once when classifying a read failure).
     pub(crate) fn was_killed_for_timeout(&self) -> bool {
-        self.killed_for_timeout().load(Ordering::SeqCst)
+        self.interrupt().was_killed_for_timeout()
     }
 
     /// Clears the sticky timeout flag at the start of a turn, scoping it to the
@@ -231,14 +240,7 @@ impl Worker {
     /// so without this reset a stale kill could misclassify the next turn's
     /// first I/O failure as a timeout.
     pub(crate) fn reset_killed_for_timeout(&self) {
-        self.killed_for_timeout().store(false, Ordering::SeqCst);
-    }
-
-    fn killed_for_timeout(&self) -> &Arc<AtomicBool> {
-        match &self.kind {
-            WorkerKind::Subprocess(w) => &w.killed_for_timeout,
-            WorkerKind::WebSocket(w) => &w.killed_for_timeout,
-        }
+        self.interrupt().reset_killed_for_timeout();
     }
 
     /// Whether the worker has already died (used to discard workers that died
@@ -263,7 +265,7 @@ impl Worker {
             WorkerKind::WebSocket(w) => {
                 w.closed.store(true, Ordering::SeqCst);
                 let _ = w.socket.close(None);
-                w.shutdown.kill();
+                self.interrupt.kill();
                 None
             }
         }
@@ -273,35 +275,6 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.kill_and_reap();
-    }
-}
-
-/// Sends one event as a single binary WebSocket message (no length prefix), and
-/// flushes — the protocol is strict alternation, so the frame must hit the wire.
-fn ws_send(socket: &mut WsSocket, request: &pb::ParentRequest) -> Result<(), FrameError> {
-    let body = encode_to_capped_vec(request)?;
-    socket.write(Message::Binary(body.into())).map_err(ws_to_frame_error)?;
-    socket.flush().map_err(ws_to_frame_error)?;
-    Ok(())
-}
-
-/// Reads one `ChildEvent` from the WebSocket, skipping control frames. A
-/// close/EOF *without* a prior turn-ender means the child died — surfaced as
-/// [`FrameError::Truncated`], mirroring the stdio crash contract.
-fn ws_recv(socket: &mut WsSocket) -> Result<pb::ChildEvent, FrameError> {
-    loop {
-        match socket.read() {
-            Ok(Message::Binary(data)) => return decode_frame::<pb::ChildEvent>(data.as_ref()),
-            // tungstenite auto-queues the Pong; flush it and keep reading.
-            Ok(Message::Ping(_)) => {
-                let _ = socket.flush();
-            }
-            Ok(Message::Pong(_)) => {}
-            // A clean close, or text/raw frames the protocol never uses.
-            Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_)) => return Err(FrameError::Truncated),
-            Err(WsError::Io(err)) => return Err(FrameError::Io(err)),
-            Err(_) => return Err(FrameError::Truncated),
-        }
     }
 }
 
@@ -392,7 +365,8 @@ fn dial_ws(url: &str, timeout: Duration) -> Result<WsSocket, PoolError> {
 
 /// Reaches the raw `TcpStream` behind a (possibly TLS-wrapped) WebSocket stream,
 /// so it can be cloned for the watchdog's shutdown handle. Returns `None` for an
-/// unknown stream variant (the watchdog then cannot interrupt a blocked read).
+/// unknown stream variant; [`Worker::websocket`] treats that as a dial failure
+/// (a worker the watchdog can't interrupt is worse than none).
 fn underlying_tcp(stream: &MaybeTlsStream<TcpStream>) -> Option<&TcpStream> {
     match stream {
         MaybeTlsStream::Plain(tcp) => Some(tcp),
@@ -418,4 +392,71 @@ fn install_crypto_provider() {
 /// killing/reaping children.
 pub(crate) fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Shared kill channel between a worker and the watchdog thread.
+///
+/// Bundles the transport-specific way to interrupt the owner's blocked read
+/// with the sticky flag that lets the owner classify the resulting I/O failure
+/// as a timeout rather than a crash. The two always travel together — the
+/// watchdog sets the flag *immediately before* killing — so they live in one
+/// `Arc` the worker creates and the watchdog clones when it arms a deadline. A
+/// plain `enum` (the transport set is closed) keeps the watchdog
+/// transport-agnostic without dynamic dispatch or a per-arm allocation.
+pub(crate) struct Interrupt {
+    kind: InterruptKind,
+    /// Set by the watchdog right before it kills; read by the owner to tell a
+    /// timeout-kill from a crash. Sticky: the checkout resets it per turn so a
+    /// previous turn's kill cannot misclassify this one.
+    killed_for_timeout: AtomicBool,
+}
+
+/// Transport-specific way to unblock a worker's blocked read from another
+/// thread: kill the child process, or shut down the socket under it.
+enum InterruptKind {
+    /// Kill the child process.
+    Subprocess(Arc<Mutex<Child>>),
+    /// The raw TCP socket under the (possibly TLS-wrapped) WebSocket stream;
+    /// `shutdown(Both)` surfaces an I/O error in the owner's blocked `read`.
+    /// A WebSocket worker that can't expose this socket cannot be interrupted,
+    /// so the dial refuses to build one (see [`Worker::websocket`]) — the
+    /// socket is therefore always present here.
+    WebSocket(TcpStream),
+}
+
+impl Interrupt {
+    fn new(kind: InterruptKind) -> Arc<Self> {
+        Arc::new(Self {
+            kind,
+            killed_for_timeout: AtomicBool::new(false),
+        })
+    }
+
+    /// Interrupts the worker's blocked read. Best-effort and idempotent: any
+    /// failure is ignored because the worker is being discarded regardless.
+    pub(crate) fn kill(&self) {
+        match &self.kind {
+            InterruptKind::Subprocess(child) => {
+                let _ = lock_ignore_poison(child).kill();
+            }
+            InterruptKind::WebSocket(tcp) => {
+                let _ = tcp.shutdown(Shutdown::Both);
+            }
+        }
+    }
+
+    /// Flags the imminent kill as a deadline timeout. The watchdog MUST call
+    /// this *before* [`Interrupt::kill`] so the owner's failed read always
+    /// observes the flag.
+    pub(crate) fn flag_timeout(&self) {
+        self.killed_for_timeout.store(true, Ordering::SeqCst);
+    }
+
+    fn was_killed_for_timeout(&self) -> bool {
+        self.killed_for_timeout.load(Ordering::SeqCst)
+    }
+
+    fn reset_killed_for_timeout(&self) {
+        self.killed_for_timeout.store(false, Ordering::SeqCst);
+    }
 }
