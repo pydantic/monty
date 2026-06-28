@@ -46,7 +46,7 @@ pub(crate) struct Function {
     /// late-allocated pass-through slots land correctly.
     pub free_var_slots: Vec<NamespaceId>,
     /// This frame's slots for owned cell variables (locals captured by nested
-    /// functions); a fresh cell is created at each at call time. Parallel to
+    /// functions); a fresh cell is created for each at call time. Parallel to
     /// [`Self::cell_param_indices`].
     pub cell_var_slots: Vec<NamespaceId>,
     /// Maps each cell variable (parallel to [`Self::cell_var_slots`]) to its

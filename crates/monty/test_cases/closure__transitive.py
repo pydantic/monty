@@ -255,3 +255,44 @@ def with_default(a):
 
 
 assert with_default(11) == 11, 'default argument uses a transitively captured variable'
+
+
+# === `global` in an intermediate scope is not a capture candidate ===
+# A name declared `global` is not a local binding, so a nested function reading
+# it resolves to the module global rather than capturing a (non-existent) cell.
+g_counter = 100
+
+
+def uses_global():
+    global g_counter
+    g_counter = 20
+
+    def inner():
+        return g_counter  # the module global, not a captured cell
+
+    return inner()
+
+
+assert uses_global() == 20, 'nested read of a global-declared name hits the module global'
+assert g_counter == 20, 'the global write is visible at module scope'
+
+
+# The intermediate `global` even overrides an enclosing local of the same name.
+g_shadowed = 100
+
+
+def outer_with_global_mid():
+    g_shadowed = 1  # outer local, shadowed for mid's chain by mid's `global`
+
+    def mid():
+        global g_shadowed
+
+        def inner():
+            return g_shadowed  # module global (100), not outer's local (1)
+
+        return inner()
+
+    return mid()
+
+
+assert outer_with_global_mid() == 100, 'global in mid routes inner past the outer local'

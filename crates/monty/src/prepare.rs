@@ -253,6 +253,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// levels up: without it, an intermediate scope that doesn't itself mention
     /// the variable would hide it from its own children. Empty at module scope
     /// (module globals are reached via `global`, not closure capture).
+    ///
+    /// Names this scope declares `global` are excluded: such a name is not a
+    /// local binding here, so a nested function referencing it must resolve to
+    /// the module global rather than capture a (non-existent) cell — e.g.
+    /// `def mid(): global x; x = 1; def inner(): return x` reads the global `x`.
     fn child_enclosing_locals(&self) -> AHashSet<String> {
         if self.is_module_scope() {
             AHashSet::new()
@@ -264,6 +269,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             if let Some(ref enclosing) = self.enclosing_locals {
                 locals.extend(enclosing.iter().cloned());
             }
+            locals.retain(|name| !self.global_names.contains(name));
             locals
         }
     }
