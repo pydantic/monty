@@ -723,20 +723,30 @@ pub struct PreparedFunctionDef {
     pub namespace_size: usize,
     /// Enclosing namespace slots for variables captured from enclosing scopes.
     ///
-    /// At definition time: look up cell HeapId from enclosing namespace at each slot.
-    /// At call time: captured cells are pushed sequentially (our slots are implicit).
+    /// At definition time the enclosing frame looks up the cell `HeapId` from
+    /// its own namespace at each slot and bundles them into the `Closure`.
+    /// Parallel (same index/order) to [`Self::free_var_slots`].
     pub free_var_enclosing_slots: Vec<NamespaceId>,
-    /// Number of cell variables (captured by nested functions).
+    /// This function's own namespace slots that receive the captured free-var
+    /// cells, parallel to [`Self::free_var_enclosing_slots`]: cell `i` (gathered
+    /// from `free_var_enclosing_slots[i]` in the enclosing frame) is installed
+    /// at `free_var_slots[i]` when this frame is created.
     ///
-    /// At call time, this many cells are created and pushed right after params.
-    /// Their slots are implicitly params.len()..params.len()+cell_var_count.
-    pub cell_var_count: usize,
-    /// Maps cell variable indices to their corresponding parameter indices, if any.
+    /// Slots are explicit rather than positional because a transitively
+    /// captured (pass-through) variable's slot is allocated late during
+    /// preparation and so does not fall in the contiguous param/cell/free
+    /// region the namespace layout otherwise follows.
+    pub free_var_slots: Vec<NamespaceId>,
+    /// This function's own namespace slots for cell variables (locals captured
+    /// by nested functions). A fresh cell is created for each at call time and
+    /// stored at `cell_var_slots[i]`. Parallel to [`Self::cell_param_indices`].
+    pub cell_var_slots: Vec<NamespaceId>,
+    /// Maps each cell variable (parallel to [`Self::cell_var_slots`]) to its
+    /// parameter index, if the cell is for a captured parameter.
     ///
-    /// When a parameter is also captured by nested functions (cell variable), its value
-    /// must be copied into the cell after binding. Each entry corresponds to a cell
-    /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
-    /// a parameter, or `None` otherwise.
+    /// When a parameter is also captured by nested functions, its bound value
+    /// must be copied into the cell after argument binding; `Some(param_index)`
+    /// names that parameter, `None` means the cell starts `Undefined`.
     pub cell_param_indices: Vec<Option<usize>>,
     /// Prepared default value expressions, evaluated at function definition time.
     ///
