@@ -1,4 +1,4 @@
-# Subprocess execution (`monty subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
+# Worker execution (`monty subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
 
 The monty type checker, compiler, and interpreter should run in a separate
 process, except in environments where that's not possible (like wasm), so
@@ -6,11 +6,12 @@ that sandbox crashes that cannot be fully prevented — stack overflow aborts
 and allocator aborts — kill only the worker. The Python package
 (`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
 run everything in workers driven over a protobuf protocol
-(`crates/monty-proto`) — local `monty subprocess` children by default, or
-remote children reached over a WebSocket (`pydantic_monty.AsyncMontyWebsocket`)
-— and expose no in-process execution API. The language semantics inside a worker are identical to embedding the
-interpreter directly (it is the same interpreter); the notes below are about
-the *host API* surface.
+(`crates/monty-proto`) and expose no in-process execution API. By default the
+worker is a local `monty subprocess` child; the Python package additionally
+offers `pydantic_monty.AsyncMontyWebsocket`, which reaches a remote child over
+a WebSocket instead (the JS package is subprocess-only). The language
+semantics inside a worker are identical to embedding the interpreter directly
+(it is the same interpreter); the notes below are about the *host API* surface.
 
 ## Execution model
 

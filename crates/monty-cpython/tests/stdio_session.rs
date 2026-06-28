@@ -282,6 +282,45 @@ fn supports_top_level_await() {
     assert_eq!(error.exc_type, "TypeError");
 }
 
+/// A cell's body and its trailing expression run on a *single* event loop, so an
+/// async object the body binds to the loop is still usable from the trailing
+/// expression. Two `asyncio.run` calls (one per half) would bind the queue to a
+/// loop closed before `get()` runs, raising "bound to a different event loop".
+#[test]
+fn top_level_await_shares_one_event_loop() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            // `q` is bound to the loop by `put` in the body; `get` in the trailing
+            // expression must see the same loop to return the queued value.
+            feed("import asyncio\nq = asyncio.Queue()\nawait q.put(7)\nawait q.get()"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+    assert!(
+        !kinds.iter().any(|k| matches!(k, pb::child_event::Kind::Error(_))),
+        "no Error events (a split loop would raise a RuntimeError): {kinds:?}"
+    );
+    let complete = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::Int(7));
+}
+
 /// `InstallDependencies` before `Configure` has no session to install into, so
 /// the child rejects it with a protocol-violation `Error` and keeps serving.
 #[test]

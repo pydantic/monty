@@ -116,20 +116,28 @@ impl Cli {
             Some("--type-check")
         } else if !self.mounts.is_empty() {
             Some("--mount")
-        } else if self.resource_limits().ok().flatten().is_some() {
+        } else if self.any_resource_limit_flag() {
             Some("a resource-limit flag")
         } else {
             None
         }
     }
 
+    /// Whether any resource-limit flag was *supplied* (regardless of whether its
+    /// value is valid). Used for the `subprocess` conflict check: we must not go
+    /// through `resource_limits()` there, because its parse errors (e.g. a
+    /// `--max-duration` that fails `Duration::try_from_secs_f64`) would be
+    /// swallowed and let an invalid flag slip past the conflict guard.
+    fn any_resource_limit_flag(&self) -> bool {
+        self.max_allocations.is_some()
+            || self.max_duration.is_some()
+            || self.max_memory.is_some()
+            || self.gc_interval.is_some()
+            || self.max_recursion_depth.is_some()
+    }
+
     fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
-        if self.max_allocations.is_none()
-            && self.max_duration.is_none()
-            && self.max_memory.is_none()
-            && self.gc_interval.is_none()
-            && self.max_recursion_depth.is_none()
-        {
+        if !self.any_resource_limit_flag() {
             return Ok(None);
         }
 

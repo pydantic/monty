@@ -1,19 +1,35 @@
-//! Pool of `monty subprocess` worker processes.
+//! Pool of monty worker processes driving the wire protocol.
 //!
 //! Monty executes untrusted Python, and a monty process can never be made
 //! fully crash-proof against memory errors (stack overflow, allocator
-//! aborts). This crate isolates those crashes by running the interpreter in
-//! child processes: a crashed worker kills only itself, the pool detects the
-//! death and replaces it, and the parent process is never at risk.
+//! aborts). This crate isolates those crashes by running the interpreter in a
+//! separate worker reached over the protocol: a crashed worker kills only
+//! itself, the pool detects the death and replaces it, and the parent process
+//! is never at risk.
+//!
+//! # Transports
+//!
+//! A worker is reached one of two ways (see [`MontyTransport`]):
+//!
+//! - [`MontyTransport::Subprocess`] — a local `monty subprocess` child over
+//!   framed stdio. These are the *poolable* workers: prewarmed, reused across
+//!   checkouts, and replaced on crash.
+//! - [`MontyTransport::Websocket`] — a remote child dialed over a WebSocket.
+//!   These workers are **single-use**: dialed fresh per checkout, never
+//!   prewarmed (`min_processes` is forced to 0) and never returned to the
+//!   pool. Isolation is the remote host's responsibility — a remote crash is
+//!   observed as the connection dropping, not a local process death.
 //!
 //! # Model
 //!
-//! A [`Pool`] keeps an elastic set of prewarmed workers (`min_processes` up
-//! to `max_processes`). [`Pool::checkout`] dedicates one worker to one REPL
+//! A [`Pool`] keeps an elastic set of workers (`min_processes` up to
+//! `max_processes`; subprocess workers are prewarmed, WebSocket workers are
+//! dialed on demand). [`Pool::checkout`] dedicates one worker to one REPL
 //! session: the caller feeds snippets and answers suspension events
 //! ([`TurnEvent`]) until done, then [`Checkout::finish`] returns the worker
-//! to the pool. A [`Checkout`] dropped without `finish` kills its worker —
-//! mid-execution state cannot be trusted back into the pool.
+//! to the pool (or, for a single-use WebSocket worker, drops it). A
+//! [`Checkout`] dropped without `finish` kills its worker — mid-execution
+//! state cannot be trusted back into the pool.
 //!
 //! # Crash semantics
 //!

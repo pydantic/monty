@@ -4,9 +4,10 @@
 //! PEP 723 auto-install): the child shells out to
 //! `uv pip install --python <venv> <reqs>` to install into a virtualenv at
 //! `./.venv` (relative to the worker's working directory), then makes that
-//! venv's `site-packages` importable on the embedded interpreter via
-//! `site.addsitedir` — which, unlike a bare `sys.path` insert, runs the venv's
-//! `.pth` files (legacy namespace packages rely on this).
+//! venv's `site-packages` importable on the embedded interpreter by prepending
+//! it to `sys.path` (so installs take precedence over the base environment) and
+//! also passing it to `site.addsitedir` (so the venv's `.pth` files run — legacy
+//! namespace packages rely on this).
 //!
 //! The venv is created once at image build time (`uv venv`, see the crate
 //! `Dockerfile`), pinned to the same Python the worker embeds. It is a deployment
@@ -88,14 +89,23 @@ impl InstallEnv {
             .map_err(|err| format!("install succeeded but updating sys.path failed: {err}"))
     }
 
-    /// Adds the venv's `site-packages` to `sys.path` (once, via `site.addsitedir`
-    /// so its `.pth` files run) and invalidates import caches so freshly
-    /// installed packages are discoverable on the next import.
+    /// Makes the venv's `site-packages` importable (once) and invalidates import
+    /// caches so freshly installed packages are discoverable on the next import.
+    ///
+    /// The dir is both prepended to `sys.path` (so the session's installs take
+    /// precedence over anything already on the embedded interpreter's path,
+    /// rather than being shadowed by it) *and* passed to `site.addsitedir` (so
+    /// the venv's `.pth` files run — legacy namespace packages rely on this).
+    /// Because the front insert happens first, `addsitedir` sees the dir already
+    /// on `sys.path` and does not append a second, lower-priority copy.
     fn ensure_importable(&mut self, py: Python<'_>) -> PyResult<()> {
         if !self.on_path {
             let version = interpreter_version(py)
                 .ok_or_else(|| PyRuntimeError::new_err("could not read the embedded interpreter version"))?;
             let site_packages = venv_site_packages(&self.venv, &version).to_string_lossy().into_owned();
+            py.import("sys")?
+                .getattr("path")?
+                .call_method1("insert", (0, &site_packages))?;
             py.import("site")?.call_method1("addsitedir", (site_packages,))?;
             self.on_path = true;
         }
