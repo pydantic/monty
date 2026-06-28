@@ -75,16 +75,15 @@ impl Runner {
     }
 }
 
-/// The sandbox's execution `globals`, and its bridge to everything it cannot do
-/// itself: resolving undefined names (`NameLookup`), calling host functions
-/// (`FunctionCall`), and `print()` output.
+/// The sandbox's execution `globals`, and its bridge to the host for the names it
+/// cannot resolve itself: resolving undefined names (`NameLookup`) and calling
+/// host functions (`FunctionCall`). (`print()` output goes through [`Stdio`].)
 ///
 /// It is a `dict` subclass (`extends=PyDict`) used directly as the feed's
 /// `globals`: CPython routes any unbound global name through its
 /// [`__missing__`](SandboxGlobals::__missing__), so no separate namespace wrapper
-/// is needed. The same object is also installed as the sandbox's `sys.stdout` (it
-/// implements `write`/`flush`). Owns the shared transport, the per-session
-/// call-id counter, and a cache of resolved external-function proxies.
+/// is needed. Owns the shared transport, the per-session call-id counter, and a
+/// cache of resolved external-function proxies.
 #[pyclass(extends=PyDict, unsendable)]
 pub struct SandboxGlobals {
     transport: SharedTransport,
@@ -211,11 +210,32 @@ impl SandboxGlobals {
             NameLookupResult::Undefined => Err(PyNameError::new_err(format!("name '{name}' is not defined"))),
         }
     }
+}
 
-    /// `sys.stdout.write`: stream a `print()` chunk as a `Print` event.
+/// A sandbox output stream, installed as `sys.stdout` and `sys.stderr`. A minimal
+/// text sink: each `write` forwards the chunk to the parent as a `Print` event
+/// tagged with its [`stream`](pb::PrintStream), and `flush` is a no-op (every
+/// write is already flushed to the parent). Holds its own clone of the shared
+/// transport, independent of the [`SandboxGlobals`] namespace.
+#[pyclass(unsendable)]
+pub struct Stdio {
+    transport: SharedTransport,
+    stream: pb::PrintStream,
+}
+
+impl Stdio {
+    /// Builds a stream sink that tags its `Print` events as `stream`.
+    pub fn new(transport: SharedTransport, stream: pb::PrintStream) -> Self {
+        Self { transport, stream }
+    }
+}
+
+#[pymethods]
+impl Stdio {
+    /// `write`: stream a `print()` chunk as a `Print` event on this stream.
     fn write(&self, text: &str) -> PyResult<usize> {
         if !text.is_empty() {
-            let event = print_event(text.to_owned());
+            let event = print_event(self.stream, text.to_owned());
             self.transport
                 .borrow_mut()
                 .send(&event)
@@ -226,7 +246,7 @@ impl SandboxGlobals {
         Ok(text.chars().count())
     }
 
-    /// `sys.stdout.flush`: a no-op — each write is already flushed to the parent.
+    /// `flush`: a no-op — each write is already flushed to the parent.
     fn flush(&self) {
         let _ = self;
     }

@@ -27,6 +27,7 @@ use monty_cpython::{
     transport::{Incoming, SendError, Transport},
 };
 use monty_proto::pb;
+use pyo3::{Py, PyAny, Python, prelude::*};
 
 type External = Box<dyn Fn(&[MontyObject]) -> ExtFunctionResult>;
 
@@ -38,9 +39,27 @@ static INTERPRETER: Mutex<()> = Mutex::new(());
 
 /// Runs `parent`'s scripted session to completion while holding [`INTERPRETER`]
 /// (poison is ignored — a panicking test leaves no shared invariant broken).
+///
+/// A session installs thread-bound (`unsendable`) `Stdio` sinks as
+/// `sys.stdout`/`sys.stderr`. In the real worker the process exits after one
+/// session, but here the interpreter is shared across the harness's threads, so a
+/// later test's GC of this session's objects could write a warning to a stale
+/// sink from the wrong thread and panic. Snapshot the real streams and restore
+/// them after the run — both to leave thread-safe streams installed between tests
+/// and to drop this session's `Stdio` sinks on their own thread.
 fn drive(parent: ScriptedParent) {
     let _guard = INTERPRETER.lock().unwrap_or_else(PoisonError::into_inner);
+    let saved = Python::attach(|py| {
+        let sys = py.import("sys").expect("import sys");
+        let get = |name: &str| -> Py<PyAny> { sys.getattr(name).expect("sys stream").unbind() };
+        (get("stdout"), get("stderr"))
+    });
     let _ = run_with_transport(Box::new(parent));
+    Python::attach(|py| {
+        let sys = py.import("sys").expect("import sys");
+        sys.setattr("stdout", saved.0.bind(py)).expect("restore stdout");
+        sys.setattr("stderr", saved.1.bind(py)).expect("restore stderr");
+    });
 }
 
 /// An in-memory parent: replays a request script, answers `NameLookup`s from
@@ -160,11 +179,11 @@ fn drives_a_full_session() {
         .collect();
     assert_eq!(completes, vec![MontyObject::Int(43), MontyObject::Int(7)]);
 
-    // The print streamed through as a stdout event.
+    // The print streamed through as a stdout-tagged Print event.
     let printed: String = kinds
         .iter()
         .filter_map(|k| match k {
-            pb::child_event::Kind::Print(p) => Some(p.text.clone()),
+            pb::child_event::Kind::Print(p) if p.stream == pb::PrintStream::Stdout as i32 => Some(p.text.clone()),
             _ => None,
         })
         .collect();
@@ -179,6 +198,44 @@ fn drives_a_full_session() {
         })
         .expect("an Error event");
     assert_eq!(error.exc_type, "ZeroDivisionError");
+}
+
+/// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams
+/// as a `Print` event tagged with its stream, so the parent can tell them apart.
+#[test]
+fn stdout_and_stderr_are_separate_streams() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            feed("import sys\nprint('out')\nprint('err', file=sys.stderr)"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let prints: Vec<(i32, String)> = events
+        .iter()
+        .filter_map(|e| match e.kind.as_ref() {
+            Some(pb::child_event::Kind::Print(p)) => Some((p.stream, p.text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        prints,
+        vec![
+            (pb::PrintStream::Stdout as i32, "out".to_string()),
+            (pb::PrintStream::Stdout as i32, "\n".to_string()),
+            (pb::PrintStream::Stderr as i32, "err".to_string()),
+            (pb::PrintStream::Stderr as i32, "\n".to_string()),
+        ]
+    );
 }
 
 /// Sandboxed code runs as the top-level script: `__name__` is `'__main__'`

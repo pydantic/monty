@@ -25,7 +25,7 @@ use crate::{
     events::{complete_event, error_event, error_from_exception, fatal_event, ok_event, violation},
     install::InstallEnv,
     pep_723,
-    pyexec::{Runner, SandboxGlobals},
+    pyexec::{Runner, SandboxGlobals, Stdio},
     transport::{Incoming, SendError, SharedTransport},
 };
 
@@ -46,10 +46,10 @@ enum State {
     /// No session; only `Configure` / `Reset` / `Shutdown` are valid.
     Idle,
     /// A session is open: `namespace` persists across feeds. It *is* the
-    /// `SandboxGlobals` (a `dict` subclass that bridges undefined names and
-    /// `print()`), which `sys.stdout` also references — so it needs no separate
-    /// Rust-side handle here. `install` holds the session's `uv` install dir,
-    /// created lazily on the first `InstallDependencies`.
+    /// `SandboxGlobals` (a `dict` subclass that bridges undefined names to the
+    /// host). `sys.stdout`/`sys.stderr` are separate `Stdio` sinks kept alive by
+    /// the interpreter, so they need no Rust-side handle here. `install` holds the
+    /// session's `uv` install dir, created lazily on the first `InstallDependencies`.
     Ready {
         namespace: Py<SandboxGlobals>,
         install: Option<InstallEnv>,
@@ -194,10 +194,11 @@ impl Session {
         }
     }
 
-    /// Builds the namespace and routes sandbox stdout through it. The namespace
-    /// *is* the [`SandboxGlobals`]: a `dict` subclass whose `__missing__` resolves
-    /// undefined globals through the host, so there is no separate namespace
-    /// object to wire up.
+    /// Builds the namespace and routes sandbox stdout/stderr to the parent. The
+    /// namespace *is* the [`SandboxGlobals`]: a `dict` subclass whose `__missing__`
+    /// resolves undefined globals through the host. `sys.stdout`/`sys.stderr` are
+    /// separate [`Stdio`] sinks (each `print()` chunk becomes a `Print` event
+    /// tagged with its stream).
     fn open_session(&mut self, py: Python<'_>) -> PyResult<()> {
         let globals = Bound::new(py, SandboxGlobals::new(py, self.transport.clone()))?;
         // Sandboxed code runs as the top-level script, so `__name__` is
@@ -205,7 +206,15 @@ impl Session {
         // a real dict entry — like CPython's `__main__` module — so it resolves
         // from the namespace, not through the host `__missing__` path.
         globals.set_item("__name__", "__main__")?;
-        py.import("sys")?.setattr("stdout", &globals)?;
+        let sys = py.import("sys")?;
+        sys.setattr(
+            "stdout",
+            Bound::new(py, Stdio::new(self.transport.clone(), pb::PrintStream::Stdout))?,
+        )?;
+        sys.setattr(
+            "stderr",
+            Bound::new(py, Stdio::new(self.transport.clone(), pb::PrintStream::Stderr))?,
+        )?;
         self.state = State::Ready {
             namespace: globals.unbind(),
             install: None,

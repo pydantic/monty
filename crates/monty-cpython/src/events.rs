@@ -79,10 +79,10 @@ pub fn name_lookup_event(name: String) -> pb::ChildEvent {
     event(pb::child_event::Kind::NameLookup(pb::NameLookup { name }))
 }
 
-/// A streamed `print()` chunk on stdout.
-pub fn print_event(text: String) -> pb::ChildEvent {
+/// A streamed `print()` chunk on `stream` (stdout or stderr).
+pub fn print_event(stream: pb::PrintStream, text: String) -> pb::ChildEvent {
     event(pb::child_event::Kind::Print(pb::Print {
-        stream: pb::PrintStream::Stdout as i32,
+        stream: stream as i32,
         text,
     }))
 }

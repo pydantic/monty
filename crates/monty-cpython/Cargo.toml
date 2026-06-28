@@ -42,6 +42,11 @@ rustls = { workspace = true }
 regex = "1.12"
 toml = "1.1"
 
+[dev-dependencies]
+# Used only by the integration tests to snapshot/restore `sys.stdout`/`sys.stderr`
+# around each run (the shared embedded interpreter outlives a single session).
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+
 [build-dependencies]
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 
