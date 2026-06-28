@@ -21,7 +21,7 @@ use tungstenite::{
 };
 
 /// A transport shared between the session loop (which reads requests and writes
-/// turn-enders) and the in-feed [`crate::pyexec::HostBridge`] (which sends
+/// turn-enders) and the in-feed [`crate::pyexec::SandboxGlobals`] (which sends
 /// `FunctionCall`s and reads `ResumeCall`s). `Rc<RefCell<…>>` is sound because
 /// the child is single-threaded: the two never borrow it at the same time.
 pub type SharedTransport = Rc<RefCell<Box<dyn Transport>>>;

@@ -5,7 +5,7 @@
 //! or more `Print` events, then exactly one turn-ender) but uses a *blocking*
 //! host-call model: an undefined name suspends and resumes entirely inside the
 //! feed (a `NameLookup` to resolve it, then a `FunctionCall` if it is called —
-//! see [`crate::pyexec::HostBridge`]), so the top-level loop only ever sees
+//! see [`crate::pyexec::SandboxGlobals`]), so the top-level loop only ever sees
 //! `Feed → Complete/Error`. `ResumeCall` and `ResumeNameLookup` therefore never
 //! reach the top level (they are consumed inline), and Dump/Load/ResumeFutures
 //! are not supported.
@@ -19,13 +19,13 @@ use _monty::{
 };
 use monty::ExcType;
 use monty_proto::{MONTY_VERSION, exceeds_max_value_depth, pb};
-use pyo3::{prelude::*, types::PyModule};
+use pyo3::prelude::*;
 
 use crate::{
     events::{complete_event, error_event, error_from_exception, fatal_event, ok_event, violation},
     install::InstallEnv,
     pep_723,
-    pyexec::{HostBridge, init_runner},
+    pyexec::{Runner, SandboxGlobals},
     transport::{Incoming, SendError, SharedTransport},
 };
 
@@ -45,13 +45,13 @@ enum Flow {
 enum State {
     /// No session; only `Configure` / `Reset` / `Shutdown` are valid.
     Idle,
-    /// A session is open: `namespace` persists across feeds. The `HostBridge`
-    /// that bridges undefined names and `print()` is kept alive by Python (the
-    /// namespace's `_host` and `sys.stdout` both reference it), so it needs no
+    /// A session is open: `namespace` persists across feeds. It *is* the
+    /// `SandboxGlobals` (a `dict` subclass that bridges undefined names and
+    /// `print()`), which `sys.stdout` also references — so it needs no separate
     /// Rust-side handle here. `install` holds the session's `uv` install dir,
     /// created lazily on the first `InstallDependencies`.
     Ready {
-        namespace: Py<PyAny>,
+        namespace: Py<SandboxGlobals>,
         install: Option<InstallEnv>,
     },
 }
@@ -59,8 +59,8 @@ enum State {
 /// All child state for one connection.
 pub struct Session {
     transport: SharedTransport,
-    /// Compiled `PREAMBLE` module (`_CallbackGlobals`, `_run`).
-    runner: Py<PyModule>,
+    /// Compiled `RUNNER` module providing the REPL runner (`run`).
+    runner: Runner,
     state: State,
 }
 
@@ -69,7 +69,7 @@ impl Session {
     pub fn new(py: Python<'_>, transport: SharedTransport) -> PyResult<Self> {
         Ok(Self {
             transport,
-            runner: init_runner(py)?,
+            runner: Runner::new(py)?,
             state: State::Idle,
         })
     }
@@ -194,17 +194,20 @@ impl Session {
         }
     }
 
-    /// Builds the bridge + namespace and routes sandbox stdout through it.
+    /// Builds the namespace and routes sandbox stdout through it. The namespace
+    /// *is* the [`SandboxGlobals`]: a `dict` subclass whose `__missing__` resolves
+    /// undefined globals through the host, so there is no separate namespace
+    /// object to wire up.
     fn open_session(&mut self, py: Python<'_>) -> PyResult<()> {
-        let host = Py::new(py, HostBridge::new(py, self.transport.clone()))?;
-        let runner = self.runner.bind(py);
-        let namespace = runner
-            .getattr("_CallbackGlobals")?
-            .call1((host.clone_ref(py),))?
-            .unbind();
-        py.import("sys")?.setattr("stdout", host.bind(py))?;
+        let globals = Bound::new(py, SandboxGlobals::new(py, self.transport.clone()))?;
+        // Sandboxed code runs as the top-level script, so `__name__` is
+        // `'__main__'` (lets `if __name__ == '__main__':` guards fire). Seed it as
+        // a real dict entry — like CPython's `__main__` module — so it resolves
+        // from the namespace, not through the host `__missing__` path.
+        globals.set_item("__name__", "__main__")?;
+        py.import("sys")?.setattr("stdout", &globals)?;
         self.state = State::Ready {
-            namespace,
+            namespace: globals.unbind(),
             install: None,
         };
         Ok(())
@@ -273,11 +276,7 @@ impl Session {
             return event;
         }
 
-        let runner = self.runner.bind(py);
-        match runner
-            .getattr("_run")
-            .and_then(|run| run.call1((feed.code, &namespace)))
-        {
+        match self.runner.run(py, feed.code, &namespace) {
             Ok(value) => match py_to_monty_value(&value, &dc) {
                 Ok(value) if exceeds_max_value_depth(&value) => error_event(
                     ExcType::RuntimeError,
@@ -295,7 +294,7 @@ impl Session {
 /// with the `Error` to send if an input value is malformed, else `None`.
 fn bind_inputs(
     py: Python<'_>,
-    namespace: &Bound<'_, PyAny>,
+    namespace: &Bound<'_, SandboxGlobals>,
     dc: &DcRegistry,
     inputs: Vec<pb::NamedValue>,
 ) -> Option<pb::ChildEvent> {

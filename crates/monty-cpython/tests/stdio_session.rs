@@ -4,7 +4,7 @@
 //! external-function table (and a host-value table), exactly as a real parent would.
 //!
 //! These tests share one `auto-initialize` interpreter across the cargo test
-//! harness's threads, so you may see a stray `HostBridge is unsendable, but is
+//! harness's threads, so you may see a stray `SandboxGlobals is unsendable, but is
 //! being dropped on another thread` line on stderr when the interpreter's cyclic
 //! GC reclaims a session's objects on a harness thread other than the one that
 //! created them. It is harmless (PyO3 skips the drop; the test still passes) and
@@ -181,8 +181,42 @@ fn drives_a_full_session() {
     assert_eq!(error.exc_type, "ZeroDivisionError");
 }
 
+/// Sandboxed code runs as the top-level script: `__name__` is `'__main__'`
+/// (seeded as a real namespace entry, so it resolves from the dict and never
+/// triggers a host `NameLookup`), letting `if __name__ == '__main__':` fire.
+#[test]
+fn name_is_dunder_main() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed("ran = __name__ == '__main__'\n__name__"), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+
+    // `__name__` resolved from the namespace, not via a host NameLookup.
+    assert!(
+        !kinds.iter().any(|k| matches!(k, pb::child_event::Kind::NameLookup(_))),
+        "no NameLookup for __name__: {kinds:?}"
+    );
+    let complete = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::String("__main__".to_string()));
+}
+
 /// An undefined name the host resolves to a plain *value* (not a function) is
-/// returned by `get` directly and used as a value, no `FunctionCall` involved.
+/// returned by `__missing__` directly and used as a value, no `FunctionCall` involved.
 #[test]
 fn resolves_a_name_to_a_host_value() {
     let events = Rc::new(RefCell::new(Vec::new()));

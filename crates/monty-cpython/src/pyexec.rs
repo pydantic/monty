@@ -1,15 +1,15 @@
-//! Running fed snippets in embedded CPython, and the bridge the sandbox uses to
-//! reach the parent.
+//! Running fed snippets in embedded CPython, and the namespace the sandbox runs
+//! in and reaches the parent through.
 //!
-//! The execution `globals` is a `dict` subclass (`_CallbackGlobals`, defined in
-//! [`PREAMBLE`]) so CPython resolves every unbound global name through
-//! `__missing__`, which calls [`HostBridge::get`]. `get` resolves the name
-//! *eagerly* with a `NameLookup` round trip and branches on the parent's answer:
-//! a host **function** becomes an [`ExternalFunction`] proxy (whose `__call__`
-//! round-trips a `FunctionCall`), any other **value** is converted and returned
-//! directly, and an **unknown** name raises `NameError`. All the real work —
-//! value conversion and the transport round trips — happens in Rust on
-//! [`HostBridge`]; the Python glue is intentionally tiny.
+//! The execution `globals` *is* the [`SandboxGlobals`] — a `dict` subclass, so
+//! CPython resolves every unbound global name through its `__missing__`. That
+//! resolves the name *eagerly* with a `NameLookup` round trip and branches on the
+//! parent's answer: a host **function** becomes an [`ExternalFunction`] proxy
+//! (whose `__call__` round-trips a `FunctionCall`), any other **value** is
+//! converted and returned directly, and an **unknown** name raises `NameError`.
+//! All the real work — name resolution, value conversion, the transport round
+//! trips — happens in Rust on [`SandboxGlobals`]; the Python glue is intentionally
+//! tiny (just the REPL runner `run`).
 //!
 //! SECURITY: this runs untrusted code in *full CPython*, which is not itself a
 //! sandbox (the code can `import os` and do anything this process can). Isolation
@@ -29,8 +29,9 @@ use ahash::AHashMap;
 use monty::{ExtFunctionResult, MontyObject, NameLookupResult};
 use monty_proto::{exceeds_max_value_depth, pb};
 use pyo3::{
-    exceptions::{PyNameError, PyRuntimeError, PyValueError},
+    exceptions::{PyKeyError, PyNameError, PyRuntimeError, PyValueError},
     prelude::*,
+    sync::PyOnceLock,
     types::{PyDict, PyModule, PyString, PyTuple},
 };
 
@@ -39,33 +40,53 @@ use crate::{
     transport::{Incoming, SendError, SharedTransport},
 };
 
-/// Python glue, executed once per process. Defines the sandbox namespace type
-/// (`_CallbackGlobals`) and the REPL runner (`_run`); everything else lives in
-/// Rust via the `host` object.
+/// Python glue, executed once per process. Defines just the REPL runner (`run`);
+/// everything else — the namespace, name resolution, host calls — lives in Rust
+/// on [`SandboxGlobals`].
 ///
-/// The source lives in `preamble.py` (so it reads/edits/lints as real Python) and
+/// The source lives in `runner.py` (so it reads/edits/lints as real Python) and
 /// is inlined here at compile time as a `&CStr` — `include_str!` embeds the file,
 /// `concat!` appends the NUL `PyModule::from_code` requires, and the conversion is
 /// `const`, so there is no runtime allocation or fallible parse.
-const PREAMBLE: &CStr = match CStr::from_bytes_with_nul(concat!(include_str!("preamble.py"), "\0").as_bytes()) {
-    Ok(preamble) => preamble,
-    Err(_) => panic!("preamble.py must not contain a NUL byte"),
+const RUNNER: &CStr = match CStr::from_bytes_with_nul(concat!(include_str!("runner.py"), "\0").as_bytes()) {
+    Ok(runner) => runner,
+    Err(_) => panic!("runner.py must not contain a NUL byte"),
 };
 
-/// Compiles [`PREAMBLE`] into a module whose `_CallbackGlobals` and `_run`
-/// the session uses to build namespaces and execute feeds.
-pub fn init_runner(py: Python<'_>) -> PyResult<Py<PyModule>> {
-    let module = PyModule::from_code(py, PREAMBLE, c"<monty-cpython-runner>", c"_monty_runner")?;
-    Ok(module.unbind())
+pub struct Runner(Py<PyAny>);
+
+impl Runner {
+    /// Compiles [`RUNNER`] into a module whose `run` the session uses to execute
+    /// feeds.
+    pub fn new(py: Python<'_>) -> PyResult<Self> {
+        let module = PyModule::from_code(py, RUNNER, c"runner.py", c"runner")?;
+        let run_function = module.getattr("run")?;
+        Ok(Self(run_function.unbind()))
+    }
+
+    pub fn run<'py>(
+        &self,
+        py: Python<'py>,
+        code: String,
+        namespace: &Bound<'py, SandboxGlobals>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let run_function = self.0.bind(py);
+        run_function.call1((code, namespace))
+    }
 }
 
-/// The bridge the sandbox calls into for everything it cannot do itself:
-/// resolving undefined names (`NameLookup`), calling host functions
-/// (`FunctionCall`), and `print()` output. Also serves as the sandbox's
-/// `sys.stdout`. Owns the shared transport, the per-session call-id counter, and
-/// a cache of resolved external-function proxies.
-#[pyclass(unsendable)]
-pub struct HostBridge {
+/// The sandbox's execution `globals`, and its bridge to everything it cannot do
+/// itself: resolving undefined names (`NameLookup`), calling host functions
+/// (`FunctionCall`), and `print()` output.
+///
+/// It is a `dict` subclass (`extends=PyDict`) used directly as the feed's
+/// `globals`: CPython routes any unbound global name through its
+/// [`__missing__`](SandboxGlobals::__missing__), so no separate namespace wrapper
+/// is needed. The same object is also installed as the sandbox's `sys.stdout` (it
+/// implements `write`/`flush`). Owns the shared transport, the per-session
+/// call-id counter, and a cache of resolved external-function proxies.
+#[pyclass(extends=PyDict, unsendable)]
+pub struct SandboxGlobals {
     transport: SharedTransport,
     dc: DcRegistry,
     next_call_id: Cell<u32>,
@@ -75,7 +96,7 @@ pub struct HostBridge {
     functions: RefCell<AHashMap<String, Py<ExternalFunction>>>,
 }
 
-impl HostBridge {
+impl SandboxGlobals {
     /// Builds a bridge over `transport` for one session.
     pub fn new(py: Python<'_>, transport: SharedTransport) -> Self {
         Self {
@@ -151,19 +172,25 @@ impl HostBridge {
 }
 
 #[pymethods]
-impl HostBridge {
-    /// Resolves the undefined global `name` eagerly with a `NameLookup` round trip
-    /// and branches on the parent's answer:
+impl SandboxGlobals {
+    /// CPython calls this for any global name missing from the namespace (this
+    /// object is the `dict` subclass used as `globals`). Builtins and dunders are
+    /// not host names, so they raise `KeyError` to fall through to CPython's normal
+    /// builtins resolution; every other name is resolved eagerly with a
+    /// `NameLookup` round trip and branches on the parent's answer:
     /// - a host **function** → an [`ExternalFunction`] proxy whose `__call__`
     ///   round-trips a `FunctionCall` (cached so repeated references skip the
     ///   lookup; the parent signals "function" as `MontyObject::Function`);
     /// - any other **value** → the converted Python value (re-read live on every
     ///   reference, never cached);
     /// - **undefined** → `NameError` (matching CPython, which raises on reference).
-    ///
-    /// Called by `_CallbackGlobals.__missing__`, which stays a dumb passthrough.
-    fn get(slf: &Bound<'_, Self>, name: String) -> PyResult<Py<PyAny>> {
+    fn __missing__(slf: &Bound<'_, Self>, name: String) -> PyResult<Py<PyAny>> {
         let py = slf.py();
+        // Dunders and builtins fall through to normal resolution: raising
+        // `KeyError` makes CPython's global lookup consult the real builtins.
+        if name.starts_with("__") || import_builtins(py)?.bind(py).hasattr(name.as_str())? {
+            return Err(PyKeyError::new_err(name));
+        }
         let host = slf.borrow();
         if let Some(cached) = host.functions.borrow().get(&name) {
             return Ok(cached.clone_ref(py).into_any());
@@ -205,14 +232,21 @@ impl HostBridge {
     }
 }
 
-/// A proxy for a host **function**, returned by [`HostBridge::get`] when a
-/// `NameLookup` resolves the name to a `MontyObject::Function`. It keeps a
-/// reference to its [`HostBridge`] and the name; calling it (`__call__`) converts
+pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
+    static BUILTINS: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
+
+    BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
+}
+
+/// A proxy for a host **function**, returned by [`SandboxGlobals::__missing__`] when
+/// a `NameLookup` resolves the name to a `MontyObject::Function`. It keeps a
+/// reference to its [`SandboxGlobals`] and the name; calling it (`__call__`) converts
 /// the arguments and round-trips a `FunctionCall` to the parent. Host *values*
-/// and unknown names never produce one — they are returned/raised by `get`.
+/// and unknown names never produce one — they are returned/raised by
+/// `__missing__` directly.
 #[pyclass(unsendable)]
 pub struct ExternalFunction {
-    host: Py<HostBridge>,
+    host: Py<SandboxGlobals>,
     name: String,
 }
 
