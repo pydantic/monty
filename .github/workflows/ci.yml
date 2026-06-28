@@ -32,20 +32,24 @@ jobs:
         with:
           persist-credentials: false
 
+      # nightly is only used for `cargo +nightly fmt` (make format-rs); clippy must
+      # run on stable. Install both toolchains, then explicitly set stable as the
+      # default so bare `cargo clippy` (make lint-rs) resolves to stable — dtolnay's
+      # install order alone does not reliably control which toolchain is the default.
+      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: nightly
+          components: rustfmt
+
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
           components: clippy
 
-      # nightly is only used for `cargo +nightly fmt` (make format-rs); clippy must
-      # run on stable. Install both toolchains: the last dtolnay invocation sets the
-      # default, so stable below is what bare `cargo clippy` (make lint-rs) uses.
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: nightly
-          components: rustfmt
+      - name: Set stable as the default toolchain (clippy on stable; fmt pins +nightly)
+        run: rustup default stable
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
