@@ -30,6 +30,7 @@ use crate::{
     types::{
         Bytes, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
+        instance::{instance_getattr, instance_repr, instance_str},
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
         path,
         slice::slice_collect_iterator,
@@ -342,6 +343,13 @@ impl PyTrait<'_> for Value {
                         // Other types don't typically have cycles, but handle gracefully
                         _ => Ok(f.write_str("...")?),
                     }
+                } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
+                    // Instances dispatch to a user `__repr__` (or the default), which
+                    // needs the heap id to pass `self` — handled here, not at the heap
+                    // level. Recursion through nested attrs is bounded by the frame
+                    // recursion-depth limit, so no `heap_ids` insertion is needed.
+                    let s = instance_repr(*id, vm)?;
+                    Ok(f.write_str(&s)?)
                 } else {
                     heap_ids.insert(*id);
                     let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
@@ -357,6 +365,8 @@ impl PyTrait<'_> for Value {
     fn py_str(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned().into()),
+            // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
+            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
             _ => self.py_repr(vm),
         }
@@ -1750,6 +1760,12 @@ impl Value {
     /// Returns `AttributeError` for other types or unknown attributes.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<CallResult> {
         match self {
+            // Instances resolve attributes (instance dict → class methods/vars,
+            // binding methods) in a dedicated path that has the heap id needed to
+            // build bound methods.
+            Self::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
+                return instance_getattr(*heap_id, attr, vm);
+            }
             Self::Ref(heap_id) => {
                 if let Some(call_result) = vm.heap.read(*heap_id).py_getattr(attr, vm)? {
                     return Ok(call_result);
@@ -1793,6 +1809,15 @@ impl Value {
                         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
                     };
                     let old_value = dc.set_attr(name_value, value, vm)?;
+                    old_value.drop_with_heap(vm);
+                    Ok(())
+                }
+                HeapReadOutput::Instance(mut instance) => {
+                    let name_value = match name {
+                        EitherStr::Interned(string_id) => Self::InternString(*string_id),
+                        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
+                    };
+                    let old_value = instance.set_attr(name_value, value, vm)?;
                     old_value.drop_with_heap(vm);
                     Ok(())
                 }

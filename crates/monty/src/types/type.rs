@@ -50,6 +50,13 @@ pub enum Type {
     Set,
     FrozenSet,
     Dataclass,
+    /// An instance of a user-defined class (`class Foo: ...`).
+    ///
+    /// The `Type` enum cannot carry the concrete class name, so this is a generic
+    /// marker. Code that needs the real class name (attribute errors, `repr`,
+    /// `__name__`) sources it from the instance's class object instead. The class
+    /// object itself reports [`Type::Type`] (matching `type(Foo) is type`).
+    Instance,
     Exception(ExcType),
     Function,
     BuiltinFunction,
@@ -111,6 +118,8 @@ impl fmt::Display for Type {
             Self::Set => f.write_str("set"),
             Self::FrozenSet => f.write_str("frozenset"),
             Self::Dataclass => f.write_str("dataclass"),
+            // Generic fallback; concrete error paths use the real class name.
+            Self::Instance => f.write_str("object"),
             Self::Exception(exc_type) => write!(f, "{exc_type}"),
             Self::Function => f.write_str("function"),
             Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
@@ -266,6 +275,8 @@ impl Type {
             "set" => Some(Self::Set),
             "frozenset" => Some(Self::FrozenSet),
             "dataclass" => Some(Self::Dataclass),
+            // User-defined class instances render as the generic "object".
+            "object" => Some(Self::Instance),
             "function" => Some(Self::Function),
             "builtin_function_or_method" => Some(Self::BuiltinFunction),
             "cell" => Some(Self::Cell),

@@ -637,6 +637,24 @@ pub enum Node<F> {
         or_else: Vec<Self>,
     },
     FunctionDef(F),
+    /// Class definition (e.g. `class Foo: ...`).
+    ///
+    /// Only the restricted subset Monty supports is represented: instance
+    /// methods (each rides the same `F` = Raw→Prepared pipeline as
+    /// [`Node::FunctionDef`], with `self` as an ordinary first parameter) and
+    /// simple class-level variables (`name = <expr>`). Inheritance, metaclasses,
+    /// decorators and `classmethod`/`staticmethod`/`property` are rejected at
+    /// parse time — see `limitations/classes.md`.
+    ClassDef {
+        /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
+        name: Identifier,
+        /// Method definitions in source order.
+        methods: Vec<F>,
+        /// Class-level variable assignments (`name = <expr>`) in source order.
+        class_vars: Vec<(Identifier, ExprLoc)>,
+        /// Source position of the `class` statement (for error reporting).
+        position: CodeRange,
+    },
     /// Global variable declaration. Only present in parsed form, consumed during prepare.
     ///
     /// Declares that the listed names refer to module-level (global) variables,

@@ -7,12 +7,13 @@ any code runs.
 
 ## Statements rejected at parse time
 
-- **`class` definitions** — bare `class Foo: ...` is not supported. There
-  is no in-sandbox class factory: `@dataclass`, `typing.NamedTuple`, and
-  `collections.namedtuple` are all unavailable inside the sandbox (and
-  `collections` is not importable). Host-supplied dataclass / namedtuple
-  values can be passed in and used; use a plain function or a host-defined
-  type for new structured data. See [classes.md](classes.md).
+- **`class` definitions** — simple classes are supported (instance methods,
+  `__init__`/`__repr__`/`__str__`, literal class variables). Rejected at parse
+  time: base classes / metaclasses (`class Foo(Bar):`), class and method
+  decorators (so `@dataclass`, `@classmethod`, `@staticmethod`, `@property`
+  are unavailable), and class-body statements other than `def`, a simple
+  `name = <literal>` assignment, `pass`, or a docstring. There is no
+  inheritance and no general dunder protocol. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator
   *expressions* (`(x for x in ...)`) parse but currently materialize to a

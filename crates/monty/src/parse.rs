@@ -283,48 +283,8 @@ impl<'a> Parser<'a> {
 
     fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
-            Stmt::FunctionDef(function) => {
-                let params = &function.parameters;
-
-                // Parse positional-only parameters (before /)
-                let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
-
-                // Parse positional-or-keyword parameters
-                let args = self.parse_params_with_defaults(&params.args)?;
-
-                // Parse *args
-                let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
-
-                // Parse keyword-only parameters (after * or *args)
-                let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
-
-                // Parse **kwargs
-                let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
-
-                let signature = ParsedSignature {
-                    pos_args,
-                    args,
-                    var_args,
-                    kwargs,
-                    var_kwargs,
-                };
-
-                let name = self.identifier(&function.name.id, function.name.range);
-                // Parse function body recursively
-                let body = self.parse_statements(function.body)?;
-                let is_async = function.is_async;
-
-                Ok(Node::FunctionDef(RawFunctionDef {
-                    name,
-                    signature,
-                    body,
-                    is_async,
-                }))
-            }
-            Stmt::ClassDef(c) => Err(ParseError::not_implemented(
-                "class definitions",
-                self.convert_range(c.range),
-            )),
+            Stmt::FunctionDef(function) => Ok(Node::FunctionDef(self.parse_function_def(function)?)),
+            Stmt::ClassDef(c) => self.parse_class_def(c),
             Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
                 Some(value) => Some(self.parse_expression(*value)?),
                 None => None,
@@ -651,6 +611,164 @@ impl<'a> Parser<'a> {
                 "IPython escape commands",
                 self.convert_range(i.range),
             )),
+        }
+    }
+
+    /// Parses a `def` into a [`RawFunctionDef`].
+    ///
+    /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
+    /// parsing in [`parse_class_def`](Self::parse_class_def). Decorators are
+    /// accepted but ignored here (matching existing function handling); the
+    /// class-body path rejects decorated methods before calling this.
+    fn parse_function_def(&mut self, function: ast::StmtFunctionDef) -> Result<RawFunctionDef, ParseError> {
+        let params = &function.parameters;
+
+        // Parse positional-only parameters (before /)
+        let pos_args = self.parse_params_with_defaults(&params.posonlyargs)?;
+
+        // Parse positional-or-keyword parameters
+        let args = self.parse_params_with_defaults(&params.args)?;
+
+        // Parse *args
+        let var_args = params.vararg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+        // Parse keyword-only parameters (after * or *args)
+        let kwargs = self.parse_params_with_defaults(&params.kwonlyargs)?;
+
+        // Parse **kwargs
+        let var_kwargs = params.kwarg.as_ref().map(|p| self.interner.intern(&p.name.id));
+
+        let signature = ParsedSignature {
+            pos_args,
+            args,
+            var_args,
+            kwargs,
+            var_kwargs,
+        };
+
+        let name = self.identifier(&function.name.id, function.name.range);
+        // Parse function body recursively
+        let body = self.parse_statements(function.body)?;
+        let is_async = function.is_async;
+
+        Ok(RawFunctionDef {
+            name,
+            signature,
+            body,
+            is_async,
+        })
+    }
+
+    /// Parses a `class Foo: ...` definition into a [`Node::ClassDef`].
+    ///
+    /// Only the subset Monty supports is accepted: instance methods (`def`s) and
+    /// simple class-level variables (`name = <literal>` or `name: T = <literal>`).
+    /// `pass` and a leading docstring are ignored. Inheritance/metaclass syntax
+    /// (`class Foo(Bar):`), class/method decorators, and anything else in the body
+    /// are rejected with a not-implemented error, reserving the syntax for later.
+    fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
+        let position = self.convert_range(class.range);
+        if !class.decorator_list.is_empty() {
+            return Err(ParseError::not_implemented("class decorators", position));
+        }
+        // `class.arguments` carries base classes and metaclass keywords.
+        if class
+            .arguments
+            .is_some_and(|a| !a.args.is_empty() || !a.keywords.is_empty())
+        {
+            return Err(ParseError::not_implemented(
+                "class inheritance and metaclasses",
+                position,
+            ));
+        }
+
+        let name = self.identifier(&class.name.id, class.name.range);
+        let mut methods = Vec::new();
+        let mut class_vars = Vec::new();
+
+        for stmt in class.body {
+            match stmt {
+                Stmt::FunctionDef(function) => {
+                    if !function.decorator_list.is_empty() {
+                        return Err(ParseError::not_implemented(
+                            "method decorators (classmethod/staticmethod/property)",
+                            self.convert_range(function.range),
+                        ));
+                    }
+                    methods.push(self.parse_function_def(function)?);
+                }
+                // `name = <literal>` — a class-level variable.
+                Stmt::Assign(ast::StmtAssign {
+                    targets, value, range, ..
+                }) => {
+                    let [
+                        AstExpr::Name(ast::ExprName {
+                            id, range: name_range, ..
+                        }),
+                    ] = targets.as_slice()
+                    else {
+                        return Err(ParseError::not_implemented(
+                            "complex class variable targets (only `name = <literal>` is allowed)",
+                            self.convert_range(range),
+                        ));
+                    };
+                    let ident = self.identifier(id, *name_range);
+                    class_vars.push((ident, self.parse_class_var_value(*value)?));
+                }
+                // `name: T = <literal>` — an annotated class-level variable. A bare
+                // `name: T` (no value) is just an annotation and creates nothing.
+                Stmt::AnnAssign(ast::StmtAnnAssign {
+                    target, value, range, ..
+                }) => {
+                    if let Some(value) = value {
+                        let AstExpr::Name(ast::ExprName {
+                            id, range: name_range, ..
+                        }) = *target
+                        else {
+                            return Err(ParseError::not_implemented(
+                                "only simple `name = <literal>` class variables are supported",
+                                self.convert_range(range),
+                            ));
+                        };
+                        let ident = self.identifier(&id, name_range);
+                        class_vars.push((ident, self.parse_class_var_value(*value)?));
+                    }
+                }
+                // `pass` and a leading docstring are no-ops in the class body.
+                Stmt::Pass(_) => {}
+                Stmt::Expr(ast::StmtExpr { value, .. }) if matches!(*value, AstExpr::StringLiteral(_)) => {}
+                other => {
+                    return Err(ParseError::not_implemented(
+                        "class bodies containing anything other than methods and simple class variables",
+                        self.convert_range(other.range()),
+                    ));
+                }
+            }
+        }
+
+        Ok(Node::ClassDef {
+            name,
+            methods,
+            class_vars,
+            position,
+        })
+    }
+
+    /// Parses a class-variable value expression, requiring it to be a literal.
+    ///
+    /// Non-literal values (`x = some_call()`, `x = OTHER`) are rejected: class
+    /// bodies do not get their own name-resolution scope in Monty, so anything
+    /// referencing names would resolve against the enclosing scope and surprise
+    /// the user. Restricting to literals keeps semantics unambiguous for v1.
+    fn parse_class_var_value(&mut self, value: AstExpr) -> Result<ExprLoc, ParseError> {
+        let parsed = self.parse_expression(value)?;
+        if matches!(parsed.expr, Expr::Literal(_)) {
+            Ok(parsed)
+        } else {
+            Err(ParseError::not_implemented(
+                "non-literal class variables",
+                parsed.position,
+            ))
         }
     }
 

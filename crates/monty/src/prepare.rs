@@ -683,8 +683,37 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     body,
                     is_async,
                 }) => {
-                    let func_node = self.prepare_function_def(name, &signature, body, is_async)?;
-                    new_nodes.push(func_node);
+                    let func = self.prepare_function_def(name, &signature, body, is_async, true)?;
+                    new_nodes.push(Node::FunctionDef(func));
+                }
+                Node::ClassDef {
+                    name,
+                    methods,
+                    class_vars,
+                    position,
+                } => {
+                    // The class name binds in the enclosing scope, exactly like a `def`.
+                    self.names_assigned_in_order.insert(name.name_id);
+                    let name = self.get_id(name)?;
+                    // Methods are prepared as nested functions of *this* (enclosing) scope,
+                    // NOT of the class body — Python skips class scope for method free-var
+                    // resolution. `register_name = false` keeps method names out of the
+                    // enclosing scope; their values land in the class namespace instead.
+                    let methods = methods
+                        .into_iter()
+                        .map(|m| self.prepare_function_def(m.name, &m.signature, m.body, m.is_async, false))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    // Class-variable values are literals; prepare them without binding names.
+                    let class_vars = class_vars
+                        .into_iter()
+                        .map(|(var_name, value)| Ok((var_name, self.prepare_expression(value)?)))
+                        .collect::<Result<Vec<_>, ParseError>>()?;
+                    new_nodes.push(Node::ClassDef {
+                        name,
+                        methods,
+                        class_vars,
+                        position,
+                    });
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1405,10 +1434,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
-    ) -> Result<PreparedNode, ParseError> {
-        // Register the function name in the current scope; `def` binds the name.
-        self.names_assigned_in_order.insert(name.name_id);
-        let name = self.get_id(name)?;
+        register_name: bool,
+    ) -> Result<PreparedFunctionDef, ParseError> {
+        // A top-level/nested `def` binds its name in the enclosing scope. A method
+        // (`register_name = false`) does not: its value is stored into the class
+        // namespace rather than an enclosing slot, so — like a lambda — it gets a
+        // synthetic name with a placeholder slot that is never used for a store.
+        // The real `name_id` is preserved either way for repr/tracebacks.
+        let name = if register_name {
+            self.names_assigned_in_order.insert(name.name_id);
+            self.get_id(name)?
+        } else {
+            Identifier::new_with_scope(
+                name.name_id,
+                name.position,
+                NamespaceId::new(0).expect("slot 0 fits in u16"),
+                NameScope::Local,
+            )
+        };
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
@@ -1567,8 +1610,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
         }
 
-        // Return the prepared function definition inline in the AST
-        Ok(Node::FunctionDef(PreparedFunctionDef {
+        // Return the prepared function definition; the caller wraps it in a
+        // `Node::FunctionDef` or collects it into a `Node::ClassDef`'s methods.
+        Ok(PreparedFunctionDef {
             name,
             signature,
             body: prepared_body,
@@ -1579,7 +1623,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
-        }))
+        })
     }
 
     /// Prepares a lambda expression, converting it into a prepared function definition.
@@ -2159,6 +2203,11 @@ fn collect_scope_info_from_node(
             // But we don't recurse into the function body - that's a separate scope
             assigned_names.insert(name.name_id);
         }
+        Node::ClassDef { name, .. } => {
+            // A class definition binds the class name in this scope, just like a `def`.
+            // Method bodies are separate scopes (handled by the cell-var pass).
+            assigned_names.insert(name.name_id);
+        }
         Node::Try(Try {
             body,
             handlers,
@@ -2428,98 +2477,14 @@ fn collect_cell_vars_from_node(
 ) {
     match node {
         Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
-            // This nested function's *default* expressions are evaluated in OUR
-            // scope at definition time, not inside the nested function — so any
-            // name they reference that is one of our locals is captured by us,
-            // regardless of the nested function's own params/assignments (cf.
-            // the `def f(a=a)` gotcha, where the right-hand `a` is enclosing).
-            // Body references are filtered below; defaults are not.
-            for default in signature.default_exprs() {
-                let mut default_referenced = AHashSet::new();
-                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
-                for name in &default_referenced {
-                    if our_locals.contains(name) {
-                        cell_vars.insert(*name);
-                    }
-                }
-            }
-
-            // Find what names are referenced inside this nested function
-            let mut referenced = AHashSet::new();
-            for n in body {
-                collect_referenced_names_from_node(n, &mut referenced, interner);
-            }
-
-            // Extract param names from signature for scope analysis
-            let param_names: Vec<StringId> = signature.param_names().collect();
-
-            // Collect *only* this nested function's own bindings (params +
-            // assigned + global/nonlocal declarations). Use
-            // `collect_scope_info_from_node`, which does NOT descend into
-            // further-nested functions, rather than `collect_function_scope_info`:
-            // the latter re-runs this entire cell-var pass for the nested body,
-            // which — combined with the transitive recursion below — would make
-            // the analysis exponential in nesting depth (`C(d) = 2·C(d-1)`).
-            // The deeper captures are found by the explicit recursion instead.
-            let mut nested_global = AHashSet::new();
-            let mut nested_nonlocal = AHashSet::new();
-            let mut nested_assigned = AHashSet::new();
-            for n in body {
-                collect_scope_info_from_node(
-                    n,
-                    &mut nested_global,
-                    &mut nested_nonlocal,
-                    &mut nested_assigned,
-                    interner,
-                );
-            }
-
-            // Any name that is:
-            // - Referenced by the nested function
-            // - Not a local of the nested function
-            // - Not declared global in the nested function
-            // - In our locals
-            // becomes a cell_var
-            let nested_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
-            for name in &referenced {
-                if !nested_assigned.contains(name)
-                    && !nested_param_set.contains(name)
-                    && !nested_global.contains(name)
-                    && our_locals.contains(name)
-                {
-                    cell_vars.insert(*name);
-                }
-            }
-
-            // Also check what the nested function explicitly declares as nonlocal
-            for name in &nested_nonlocal {
-                if our_locals.contains(name) {
-                    cell_vars.insert(*name);
-                }
-            }
-
-            // Transitive captures: a function nested *inside* this one can also
-            // capture one of our locals (e.g. `outer` -> `mid` -> `inner`
-            // reading an `outer` variable), unless an intermediate scope rebinds
-            // the name. Recurse into this function's body with our locals minus
-            // this function's own bindings, so deeper closures over our
-            // variables are recognised as cells *before* their references are
-            // resolved — otherwise the variable would be compiled as a plain
-            // local here and then promoted inconsistently.
-            let mut deeper_locals = our_locals.clone();
-            for param_id in &param_names {
-                deeper_locals.remove(param_id);
-            }
-            for name in &nested_assigned {
-                deeper_locals.remove(name);
-            }
-            for name in &nested_global {
-                deeper_locals.remove(name);
-            }
-            if !deeper_locals.is_empty() {
-                for n in body {
-                    collect_cell_vars_from_node(n, &deeper_locals, cell_vars, interner);
-                }
+            collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
+        }
+        Node::ClassDef { methods, .. } => {
+            // Each method is a nested function of *this* scope (class scope is skipped),
+            // so a method capturing one of our locals turns that local into a cell var —
+            // exactly as a nested `def` would.
+            for method in methods {
+                collect_cell_vars_from_function(&method.signature, &method.body, our_locals, cell_vars, interner);
             }
         }
         // Recurse into control flow structures
@@ -2620,6 +2585,119 @@ fn collect_cell_vars_from_node(
         }
         // Other nodes don't contain nested function definitions or lambdas
         _ => {}
+    }
+}
+
+/// Detects which of `our_locals` a nested function (a `def` or a class method)
+/// captures — directly or transitively — marking each as a cell var of the
+/// enclosing scope.
+///
+/// Shared by the `FunctionDef` and `ClassDef` arms of
+/// [`collect_cell_vars_from_node`]: a name referenced by the nested function that
+/// is not one of its own locals/params/globals, but *is* one of `our_locals`,
+/// must be promoted to a heap cell so the nested function can capture it. The
+/// same applies to names referenced by the nested function's *default*
+/// expressions (evaluated in our scope at definition time) and to names captured
+/// by functions nested deeper still (the transitive recursion at the end).
+fn collect_cell_vars_from_function(
+    signature: &ParsedSignature,
+    body: &[ParseNode],
+    our_locals: &AHashSet<StringId>,
+    cell_vars: &mut AHashSet<StringId>,
+    interner: &InternerBuilder,
+) {
+    // This nested function's *default* expressions are evaluated in OUR
+    // scope at definition time, not inside the nested function — so any
+    // name they reference that is one of our locals is captured by us,
+    // regardless of the nested function's own params/assignments (cf.
+    // the `def f(a=a)` gotcha, where the right-hand `a` is enclosing).
+    // Body references are filtered below; defaults are not.
+    for default in signature.default_exprs() {
+        let mut default_referenced = AHashSet::new();
+        collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+        for name in &default_referenced {
+            if our_locals.contains(name) {
+                cell_vars.insert(*name);
+            }
+        }
+    }
+
+    // Find what names are referenced inside this nested function
+    let mut referenced = AHashSet::new();
+    for n in body {
+        collect_referenced_names_from_node(n, &mut referenced, interner);
+    }
+
+    // Extract param names from signature for scope analysis
+    let param_names: Vec<StringId> = signature.param_names().collect();
+
+    // Collect *only* this nested function's own bindings (params +
+    // assigned + global/nonlocal declarations). Use
+    // `collect_scope_info_from_node`, which does NOT descend into
+    // further-nested functions, rather than `collect_function_scope_info`:
+    // the latter re-runs this entire cell-var pass for the nested body,
+    // which — combined with the transitive recursion below — would make
+    // the analysis exponential in nesting depth (`C(d) = 2·C(d-1)`).
+    // The deeper captures are found by the explicit recursion instead.
+    let mut nested_global = AHashSet::new();
+    let mut nested_nonlocal = AHashSet::new();
+    let mut nested_assigned = AHashSet::new();
+    for n in body {
+        collect_scope_info_from_node(
+            n,
+            &mut nested_global,
+            &mut nested_nonlocal,
+            &mut nested_assigned,
+            interner,
+        );
+    }
+
+    // Any name that is:
+    // - Referenced by the nested function
+    // - Not a local of the nested function
+    // - Not declared global in the nested function
+    // - In our locals
+    // becomes a cell_var
+    let nested_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
+    for name in &referenced {
+        if !nested_assigned.contains(name)
+            && !nested_param_set.contains(name)
+            && !nested_global.contains(name)
+            && our_locals.contains(name)
+        {
+            cell_vars.insert(*name);
+        }
+    }
+
+    // Also check what the nested function explicitly declares as nonlocal
+    for name in &nested_nonlocal {
+        if our_locals.contains(name) {
+            cell_vars.insert(*name);
+        }
+    }
+
+    // Transitive captures: a function nested *inside* this one can also
+    // capture one of our locals (e.g. `outer` -> `mid` -> `inner`
+    // reading an `outer` variable), unless an intermediate scope rebinds
+    // the name. Recurse into this function's body with our locals minus
+    // this function's own bindings, so deeper closures over our
+    // variables are recognised as cells *before* their references are
+    // resolved — otherwise the variable would be compiled as a plain
+    // local here and then promoted inconsistently.
+    let mut deeper_locals = our_locals.clone();
+    for param_id in &param_names {
+        deeper_locals.remove(param_id);
+    }
+    for name in &nested_assigned {
+        deeper_locals.remove(name);
+    }
+    for name in &nested_global {
+        deeper_locals.remove(name);
+    }
+    if !deeper_locals.is_empty() {
+        for n in body {
+            collect_cell_vars_from_node(n, &deeper_locals, cell_vars, interner);
+        }
     }
 }
 
@@ -2936,6 +3014,10 @@ fn collect_referenced_names_from_node(
             // that doesn't itself reference a deep capture would not see it
             // — the bug behind issue #477's multi-hop closures.
             collect_nested_function_references(signature, body, referenced, interner);
+        }
+        Node::ClassDef { .. } => {
+            // Method bodies are separate scopes; the class name is a binding, not a
+            // reference. Class-variable values are literals. Nothing to collect here.
         }
         Node::Try(Try {
             body,

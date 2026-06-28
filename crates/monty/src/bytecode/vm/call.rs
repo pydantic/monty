@@ -20,7 +20,7 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     os::OsFunctionCall,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
+    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -437,8 +437,24 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
+    /// Handles calling a heap-allocated callable (closure, function with defaults,
+    /// external function, class constructor, or bound method).
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        // Calling a class constructs an instance; calling a bound method prepends
+        // its captured `self`. Both are dispatched before the closure/defaults
+        // path because they don't fit the `(func_id, cells, defaults)` shape.
+        match self.heap.get(heap_id) {
+            HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            HeapData::BoundMethod(bm) => {
+                let instance = bm.instance.clone_with_heap(self);
+                let func = bm.func.clone_with_heap(self);
+                let this = self;
+                defer_drop!(func, this);
+                return this.call_function(func, args.prepend(instance));
+            }
+            _ => {}
+        }
+
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();
@@ -824,6 +840,89 @@ impl<T: ResourceTracker> VM<'_, T> {
         ))?;
 
         Ok(CallResult::FramePushed)
+    }
+
+    /// Constructs an instance of a user-defined class — the `Foo(...)` path.
+    ///
+    /// Allocates the instance with an empty `__dict__`, then:
+    /// - **No `__init__`:** rejects any arguments (like `object()`), returns the
+    ///   instance directly.
+    /// - **With `__init__`:** pushes the instance onto the operand stack as the
+    ///   pending result, runs `__init__(self, *args)` as a real (suspendable)
+    ///   frame, and marks that frame `is_initializer`. When the initializer frame
+    ///   returns, the [`ReturnValue`](crate::bytecode::Opcode::ReturnValue) handler
+    ///   discards its `None` and leaves the already-pushed instance as the result —
+    ///   so `Foo(a)` evaluates to the new instance, not `__init__`'s return.
+    ///
+    /// Because `__init__` runs as a normal frame, it may suspend on external/OS
+    /// calls; the `is_initializer` flag is threaded through frame serialization so
+    /// a suspended initializer resumes correctly.
+    fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        // Allocate the instance. On allocation failure drop the args we own.
+        let instance_id = match self
+            .heap
+            .allocate(HeapData::Instance(Instance::new(class_id, Dict::new())))
+        {
+            Ok(id) => id,
+            Err(e) => {
+                args.drop_with_heap(self);
+                return Err(e.into());
+            }
+        };
+        // The instance now owns a reference to its class object.
+        self.heap.inc_ref(class_id);
+
+        // Look up `__init__` in the class namespace (cloned out to release the borrow).
+        let init = match self.heap.get(class_id) {
+            HeapData::Class(class) => class
+                .namespace()
+                .get_by_str("__init__", self.heap, self.interns)
+                .map(|v| v.clone_with_heap(self)),
+            _ => None,
+        };
+
+        match init {
+            None => {
+                if matches!(args, ArgValues::Empty) {
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                } else {
+                    args.drop_with_heap(self);
+                    let name = self.class_display_name(class_id);
+                    Value::Ref(instance_id).drop_with_heap(self);
+                    Err(ExcType::type_error(format!("{name}() takes no arguments")))
+                }
+            }
+            Some(init_func) => {
+                // Push the instance as the pending result, then run __init__(self, ...).
+                self.push(Value::Ref(instance_id));
+                self.heap.inc_ref(instance_id);
+                let init_args = args.prepend(Value::Ref(instance_id));
+                let this = self;
+                defer_drop!(init_func, this);
+                match this.call_function(init_func, init_args)? {
+                    CallResult::FramePushed => {
+                        // Mark the just-pushed frame so its return value (None) is
+                        // discarded and the pending instance becomes the result.
+                        this.current_frame_mut().is_initializer = true;
+                        Ok(CallResult::FramePushed)
+                    }
+                    other => {
+                        // __init__ wasn't a regular sync function (e.g. `async def`).
+                        other.drop_with_heap(this);
+                        this.pop().drop_with_heap(this);
+                        Err(ExcType::type_error("__init__() must be a regular function"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns a class object's name for error messages (or `"object"` as a defensive fallback).
+    fn class_display_name(&self, class_id: HeapId) -> String {
+        match self.heap.get(class_id) {
+            HeapData::Class(class) => self.interns.get_str(class.name_id()).to_owned(),
+            _ => "object".to_owned(),
+        }
     }
 }
 

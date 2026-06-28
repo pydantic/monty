@@ -122,6 +122,13 @@ impl CodeBuilder {
         self.emit_with_operand(op, Operand::U16U8(operand1, operand2))
     }
 
+    /// Emits an instruction with two consecutive u16 operands (little-endian).
+    ///
+    /// Used for `LoadGlobalCallable` and `BuildClass` (name const + member count).
+    pub fn emit_u16_u16(&mut self, op: Opcode, operand1: u16, operand2: u16) -> Result<(), CompileError> {
+        self.emit_with_operand(op, Operand::U16U16(operand1, operand2))
+    }
+
     /// Emits an instruction with a u16 operand followed by two u8 operands.
     ///
     /// Used for MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)

@@ -7,7 +7,9 @@ use crate::{
     heap::{HeapData, HeapGuard, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
+    types::{
+        Class, Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -43,6 +45,34 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
+        Ok(())
+    }
+
+    /// Builds a class object from `member_count` key/value pairs on the stack.
+    ///
+    /// The compiler pushes each class member as a `(name, value)` pair, then emits
+    /// `BuildClass` with the class-name constant (an interned string) and the
+    /// member count. This pops the pairs into the class namespace dict and wraps it
+    /// in a [`Class`].
+    pub(super) fn build_class(&mut self, name_const_idx: u16, member_count: usize) -> Result<(), RunError> {
+        // The class name is an interned-string constant in this frame's pool.
+        let Value::InternString(name_id) = self.current_frame().code.constants().get(name_const_idx) else {
+            return Err(RunError::internal(
+                "BuildClass: name constant is not an interned string",
+            ));
+        };
+        let name_id = *name_id;
+
+        // Pop the member pairs and build the namespace dict (ownership transfers).
+        let items = self.pop_n(member_count * 2);
+        let mut namespace = Dict::new();
+        let mut iter = items.into_iter();
+        while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+            namespace.set(key, value, self)?;
+        }
+
+        let class_id = self.heap.allocate(HeapData::Class(Class::new(name_id, namespace)))?;
+        self.push(Value::Ref(class_id));
         Ok(())
     }
 

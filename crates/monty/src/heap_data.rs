@@ -24,9 +24,9 @@ use crate::{
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
-        datetime, str::allocate_string, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
+        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice,
+        Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -78,6 +78,17 @@ pub(crate) enum HeapData {
     /// Contains a class name, a Dict of field name -> value mappings, and a set
     /// of method names that trigger external function calls when invoked.
     Dataclass(Dataclass),
+    /// A user-defined class object created by `class Foo: ...`.
+    ///
+    /// Holds the class name and a namespace of methods + class variables. Its own
+    /// `HeapId` is the type identity used by `type()`/`isinstance`.
+    Class(Class),
+    /// An instance of a user-defined class.
+    ///
+    /// Holds a reference to its `Class` and an `attrs` dict (the instance `__dict__`).
+    Instance(Instance),
+    /// A method bound to an instance, produced by `obj.method` without calling it.
+    BoundMethod(BoundMethod),
     /// An iterator for for-loop iteration and the `iter()` type constructor.
     ///
     /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
@@ -180,6 +191,9 @@ impl HeapData {
                 | Self::FunctionDefaults(_)
                 | Self::Cell(_)
                 | Self::Dataclass(_)
+                | Self::Class(_)
+                | Self::Instance(_)
+                | Self::BoundMethod(_)
                 | Self::Iter(_)
                 | Self::Module(_)
                 | Self::Coroutine(_)
@@ -217,6 +231,10 @@ impl HeapData {
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
             Self::Dataclass(_) => Type::Dataclass,
+            // A class object's type is `type`; an instance's is the generic marker.
+            Self::Class(_) => Type::Type,
+            Self::Instance(_) => Type::Instance,
+            Self::BoundMethod(_) => Type::Function,
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
@@ -254,6 +272,9 @@ impl HeapData {
             Self::Slice(s) => s.py_estimate_size(),
             Self::Exception(e) => e.py_estimate_size(),
             Self::Dataclass(dc) => dc.py_estimate_size(),
+            Self::Class(class) => class.py_estimate_size(),
+            Self::Instance(instance) => instance.py_estimate_size(),
+            Self::BoundMethod(bm) => bm.py_estimate_size(),
             Self::Iter(iter) => iter.py_estimate_size(),
             Self::LongInt(li) => li.py_estimate_size(),
             Self::Module(m) => m.py_estimate_size(),
@@ -468,6 +489,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Slice(s) => s.py_bool(vm),
             Self::Exception(_) => true,
             Self::Dataclass(dc) => dc.py_bool(vm),
+            // Classes, instances and bound methods are always truthy.
+            Self::Class(_) | Self::Instance(_) | Self::BoundMethod(_) => true,
             Self::Iter(_) => true,
             Self::LongInt(li) => !li.get(vm.heap).is_zero(),
             Self::Module(_) => true,
@@ -504,6 +527,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Set(s) => Ok(s.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::FrozenSet(fs) => Ok(fs.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dataclass(dc) => Ok(dc.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Class(class) => Ok(class.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Instance(instance) => Ok(instance.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Path(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::OpenFile(file) => Ok(file.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Module(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
@@ -582,6 +607,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Slice(s) => s.py_type(vm),
             Self::Exception(e) => e.py_type(vm),
             Self::Dataclass(dc) => dc.py_type(vm),
+            Self::Class(class) => class.py_type(vm),
+            Self::Instance(instance) => instance.py_type(vm),
+            Self::BoundMethod(bm) => bm.py_type(vm),
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
@@ -671,7 +699,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | HeapReadOutput::Module(_)
             | HeapReadOutput::Coroutine(_)
             | HeapReadOutput::GatherFuture(_)
-            | HeapReadOutput::ExternalFuture(_) => Ok(None),
+            | HeapReadOutput::ExternalFuture(_)
+            // User classes, instances and bound methods compare by identity, which
+            // `Value::py_eq_impl` resolves before reaching here.
+            | HeapReadOutput::Class(_)
+            | HeapReadOutput::Instance(_)
+            | HeapReadOutput::BoundMethod(_) => Ok(None),
             #[cfg(feature = "test-hooks")]
             HeapReadOutput::TestContextManager(a) => a.py_eq_impl(other, vm),
         }
@@ -691,6 +724,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
             Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
             Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            // Classes and instances hash by identity.
+            Self::Class(class) => class.py_hash(self_id, vm),
+            Self::Instance(instance) => instance.py_hash(self_id, vm),
             Self::Range(r) => r.py_hash(self_id, vm),
             Self::Slice(s) => s.py_hash(self_id, vm),
             Self::Path(p) => p.py_hash(self_id, vm),
@@ -757,6 +793,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
+            Self::Class(class) => class.py_repr_fmt(f, vm, heap_ids),
+            Self::Instance(instance) => instance.py_repr_fmt(f, vm, heap_ids),
+            Self::BoundMethod(bm) => bm.py_repr_fmt(f, vm, heap_ids),
             Self::Iter(_) => Ok(write!(f, "<iterator>")?),
             Self::LongInt(li) => {
                 let li = li.get(vm.heap);
@@ -976,6 +1015,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Range(r) => r.py_getattr(attr, vm),
             Self::Slice(s) => s.py_getattr(attr, vm),
             Self::Dataclass(dc) => dc.py_getattr(attr, vm),
+            Self::Class(class) => class.py_getattr(attr, vm),
             Self::ReMatch(m) => m.py_getattr(attr, vm),
             Self::RePattern(p) => p.py_getattr(attr, vm),
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),

@@ -1,41 +1,88 @@
 # Classes
 
-Sandboxed Python code in Monty cannot define new classes. The `class`
-statement is rejected at parse time (see [language.md](language.md)),
-and `type()`, `@dataclass`, `collections.namedtuple`, and `typing.NamedTuple`
-are all unavailable as class factories *inside* the sandbox.
+Sandboxed Python code in Monty can define simple classes. A `class`
+statement with instance methods, `__init__`, `__repr__`/`__str__`, and
+literal class variables works:
 
-The host can construct dataclass and namedtuple values (using the
-`MontyObject` API) and pass them in. Sandboxed code can then read fields,
-call methods, mutate (if not frozen), and round-trip them through the
-host. Methods defined on a host-supplied dataclass DO work — see
-`test_cases/dataclass__basic.py`.
+```python
+class Foo:
+    count = 0
+
+    def __init__(self, a: int) -> None:
+        self.a = a
+
+    def bar(self) -> int:
+        return self.a * 2
+
+    def __repr__(self) -> str:
+        return f'Foo(a={self.a})'
+```
+
+See `test_cases/class__basic.py` and `test_cases/class__repr.py`.
+
+The host can also construct dataclass and namedtuple values (using the
+`MontyObject` API) and pass them in; those are a separate mechanism whose
+methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
+
+## What works
+
+- `class Foo: ...` with a body of instance methods and simple class
+  variables (`name = <literal>` or `name: T = <literal>`).
+- `__init__` with arbitrary positional/keyword/default/`*args`/`**kwargs`
+  parameters (methods are ordinary functions; `self` is the first parameter).
+- Instance attribute get/set (`obj.x`, `obj.x = ...`), including attributes
+  not declared in `__init__`.
+- Instance methods, bound methods (`m = obj.method; m()`).
+- Class variables, read via the class (`Foo.count`) or an instance
+  (`obj.count`).
+- `__repr__` and `__str__` dispatch (via `repr()`, `str()`, f-strings,
+  `print`, and inside container reprs). `str()` falls back to `__repr__`.
+- `type(obj)` returns the class object; `type(obj) is Foo` and
+  `isinstance(obj, Foo)` work.
+- `Foo.__name__`.
+
+## Divergences from CPython
+
+- **Default `repr`** (no user `__repr__`) is `<Foo object at 0x..>` using the
+  **bare** class name, where CPython uses the qualified name
+  `<module.Foo object at 0x..>`.
+- **`__init__`/method argument-count errors** name the method without the
+  class qualifier — e.g. `__init__() missing 1 required positional argument:
+  'y'`, where CPython says `Foo.__init__() missing ...`.
+- **`type(obj)`** returns the class object (so identity works), but its own
+  `repr` is `<class 'Foo'>` with the bare name (CPython qualifies it).
+- **`__repr__`/`__str__` cannot suspend**: they are run to completion
+  synchronously, so a `__repr__`/`__str__` that calls an external/OS function
+  raises rather than yielding to the host. `__init__` and regular methods
+  *can* suspend on external/OS calls.
+- **Equality and hashing are identity-only**: a user `__eq__`/`__hash__` is
+  not dispatched. `a == b` is true only when `a is b`; instances hash by
+  identity. Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- A user `__str__` returning a non-`str` raises `TypeError: __str__ returned
+  non-string (type X)` (and likewise for `__repr__`); the wording may differ
+  from CPython.
 
 ## What does NOT exist for user code
 
-- `class Foo: ...` — rejected at parse time.
-- `class Foo(Bar): ...` — there is no inheritance, no MRO, no `super()`.
+- `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
+  parse time: "class inheritance and metaclasses").
 - Metaclasses, `__init_subclass__`, `__set_name__`.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
-- `@classmethod`, `@staticmethod`, `@property` decorators.
-- Dunder protocols on user-side types: `__init__`, `__new__`, `__call__`,
-  `__iter__`, `__next__`, `__getitem__`, `__setitem__`, `__contains__`,
-  `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`, `__repr__`,
-  `__str__`, `__bool__`, etc. None of these are dispatched for any value
-  the sandbox itself constructs — they are only consulted on host-supplied
-  dataclasses (and only for the methods the host attached).
-- Multiple inheritance, mixins, diamond MRO.
+- `@classmethod`, `@staticmethod`, `@property`, and any other class/method
+  decorators (rejected at parse time).
+- Dunder protocols other than `__init__`, `__repr__`, `__str__`: `__new__`,
+  `__call__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`,
+  `__contains__`, `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`,
+  `__bool__`, etc. are not dispatched for user-defined instances.
+- Non-literal class variables (`x = some_call()`, `x = OTHER`) and any
+  class-body statement other than a `def`, a simple variable assignment,
+  `pass`, or a docstring (rejected at parse time).
+- `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `FrozenInstanceError`
 
 Raised when assigning to a field of a frozen host-supplied dataclass.
 Subclass of `AttributeError` — `except AttributeError:` catches it, as in
-CPython's `dataclasses` module.
-
-## Practical consequence
-
-Code that depends on user-defined dunders — custom iterators, custom
-context managers, custom hashable wrappers, most ORM models, anything
-using `__init_subclass__` for registration — will not run on Monty.
-Define such types on the host side and pass them in.
+CPython's `dataclasses` module. (User-defined classes in the sandbox are
+never frozen.)

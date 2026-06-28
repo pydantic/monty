@@ -19,9 +19,9 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
-        datetime, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
+        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
+        TimeZone, Tuple, date, datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -226,6 +226,9 @@ pub enum HeapReadOutput<'a> {
     Slice(HeapRead<'a, Slice>),
     Exception(HeapRead<'a, SimpleException>),
     Dataclass(HeapRead<'a, Dataclass>),
+    Class(HeapRead<'a, Class>),
+    Instance(HeapRead<'a, Instance>),
+    BoundMethod(HeapRead<'a, BoundMethod>),
     Iter(HeapRead<'a, MontyIter>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
@@ -615,6 +618,9 @@ impl<'a> HeapPtr<'a> {
                 HeapReadOutput::Exception(heap_read(base, simple_exception, readers))
             }
             HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read(base, dataclass, readers)),
+            HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
+            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
+            HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
@@ -1524,6 +1530,37 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::Class(class) => {
+            // The class namespace holds method/class-variable values.
+            for (k, v) in class.namespace() {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
+        HeapData::Instance(instance) => {
+            // An instance references its class plus its attribute dict's entries.
+            on_child(instance.class());
+            for (k, v) in instance.attrs() {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
+        HeapData::BoundMethod(bm) => {
+            if let Value::Ref(id) = &bm.instance {
+                on_child(*id);
+            }
+            if let Value::Ref(id) = &bm.func {
+                on_child(*id);
+            }
+        }
         HeapData::Iter(iter) => {
             // Iterator holds a reference to the iterable being iterated
             if let Value::Ref(id) = iter.value() {
@@ -1642,6 +1679,9 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+        HeapData::Class(class) => class.py_dec_ref_ids(stack),
+        HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
+        HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {

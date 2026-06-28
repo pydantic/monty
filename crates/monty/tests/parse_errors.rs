@@ -24,10 +24,48 @@ fn yield_expressions_return_not_implemented_error() {
 }
 
 #[test]
-fn classes_return_not_implemented_error() {
-    let err = get_parse_err("class Foo: pass");
+fn simple_classes_compile_successfully() {
+    // Simple classes are supported; only the advanced forms below are rejected.
+    let result = MontyRun::new(
+        "class Foo:\n    def m(self):\n        return 1".to_owned(),
+        "test.py",
+        vec![],
+    );
+    assert!(result.is_ok(), "a simple class should compile");
+}
+
+#[test]
+fn class_inheritance_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo(Bar): pass");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class definitions");
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support class inheritance and metaclasses"
+    );
+}
+
+#[test]
+fn class_decorators_return_not_implemented_error() {
+    let err = get_parse_err("@deco\nclass Foo: pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class decorators");
+}
+
+#[test]
+fn method_decorators_return_not_implemented_error() {
+    let err = get_parse_err("class Foo:\n    @staticmethod\n    def m(): pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support method decorators (classmethod/staticmethod/property)"
+    );
+}
+
+#[test]
+fn non_literal_class_var_returns_not_implemented_error() {
+    let err = get_parse_err("class Foo:\n    x = foo()");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support non-literal class variables");
 }
 
 #[test]

@@ -133,6 +133,9 @@ pub(crate) struct SerializedTaskFrame {
     pub exception_stack_base: usize,
     /// Call site position (for tracebacks).
     pub call_position: Option<CodeRange>,
+    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    #[serde(default)]
+    pub is_initializer: bool,
 }
 
 impl Task {

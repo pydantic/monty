@@ -1,0 +1,148 @@
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
+
+use ahash::AHashSet;
+
+use super::{Dict, PyTrait, Type};
+use crate::{
+    args::ArgValues,
+    bytecode::{CallResult, VM},
+    defer_drop,
+    exception_private::{ExcType, RunResult},
+    hash::HashValue,
+    heap::{DropWithHeap, HeapId, HeapItem, HeapRead},
+    intern::{StaticStrings, StringId},
+    resource::ResourceTracker,
+    types::str::allocate_string,
+    value::{EitherStr, Value},
+};
+
+/// A user-defined class object created by a `class Foo: ...` statement.
+///
+/// Holds the class name and a `namespace` [`Dict`] mapping member names to values:
+/// methods (stored as `DefFunction`/`Closure` values) and class variables. The
+/// class's own [`HeapId`] is its type identity — `type(x) is Foo` and `isinstance`
+/// work via reference identity, so there is no separate type-id counter.
+///
+/// Calling a class (`Foo(...)`) constructs an [`Instance`](super::Instance); see
+/// `instantiate_class` in the VM's call module. Inheritance is not yet supported,
+/// but a future `bases: Vec<HeapId>` field would slot in here without disturbing
+/// the rest of the design.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Class {
+    /// Interned class name (e.g. `Foo`), used for `repr` and `__name__`.
+    name: StringId,
+    /// Members: method name / class-variable name -> value.
+    namespace: Dict,
+}
+
+impl Class {
+    /// Creates a new class object from its name and member namespace.
+    #[must_use]
+    pub fn new(name: StringId, namespace: Dict) -> Self {
+        Self { name, namespace }
+    }
+
+    /// Returns the interned class name id.
+    #[must_use]
+    pub fn name_id(&self) -> StringId {
+        self.name
+    }
+
+    /// Returns a reference to the class member namespace.
+    #[must_use]
+    pub fn namespace(&self) -> &Dict {
+        &self.namespace
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+        // The type of a class object is `type` (matching `type(Foo) is type`).
+        Type::Type
+    }
+
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // Classes compare by identity, which `Value::py_eq_impl` resolves before
+        // ever reaching here; from this side every class is `NotImplemented`.
+        Ok(None)
+    }
+
+    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        // Class objects hash by identity (like CPython type objects).
+        let mut hasher = DefaultHasher::new();
+        self_id.hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _heap_ids: &mut AHashSet<HeapId>,
+    ) -> RunResult<()> {
+        Ok(write!(f, "<class '{}'>", vm.interns.get_str(self.get(vm.heap).name))?)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        let attr_str = attr.as_str(vm.interns);
+        // `Foo.__name__` returns the class name.
+        if attr.static_string() == Some(StaticStrings::DunderName) || attr_str == "__name__" {
+            let name = vm.interns.get_str(self.get(vm.heap).name).to_owned();
+            return Ok(Some(CallResult::Value(allocate_string(name, vm.heap)?)));
+        }
+        // Otherwise look up a member (method or class variable) in the namespace.
+        match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
+            Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
+            None => Err(ExcType::attribute_error(
+                vm.interns.get_str(self.get(vm.heap).name),
+                attr_str,
+            )),
+        }
+    }
+
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        let attr_str = attr.as_str(vm.interns);
+        // `Foo.method(args)` calls the raw (unbound) member with the given args —
+        // no `self` is inserted, the caller passes the instance explicitly.
+        let member = self
+            .get(vm.heap)
+            .namespace
+            .get_by_str(attr_str, vm.heap, vm.interns)
+            .map(|v| v.clone_with_heap(vm.heap));
+        if let Some(member) = member {
+            defer_drop!(member, vm);
+            vm.call_function(member, args)
+        } else {
+            args.drop_with_heap(vm);
+            Err(ExcType::attribute_error(
+                vm.interns.get_str(self.get(vm.heap).name),
+                attr_str,
+            ))
+        }
+    }
+}
+
+impl HeapItem for Class {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.namespace.py_estimate_size()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        self.namespace.py_dec_ref_ids(stack);
+    }
+}

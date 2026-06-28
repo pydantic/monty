@@ -362,6 +362,15 @@ pub struct CallFrame<'code> {
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
     /// and return to the caller. Supports `evaluate_function`.
     should_return: bool,
+
+    /// Whether this frame is a class `__init__` running for `Foo(...)`.
+    ///
+    /// When `true`, the `ReturnValue` handler discards the frame's return value
+    /// (`__init__` returns `None`) and leaves the instance — pushed onto the
+    /// caller's operand stack before this frame was created — as the result of the
+    /// construction. Threaded through serialization (`SerializedFrame`) so a
+    /// suspended initializer resumes correctly.
+    is_initializer: bool,
 }
 
 impl<'code> CallFrame<'code> {
@@ -379,6 +388,7 @@ impl<'code> CallFrame<'code> {
             function_id: None,
             call_position: None,
             should_return: false,
+            is_initializer: false,
         }
     }
 
@@ -407,6 +417,7 @@ impl<'code> CallFrame<'code> {
             function_id: Some(function_id),
             call_position,
             should_return: false,
+            is_initializer: false,
         }
     }
 }
@@ -538,6 +549,15 @@ pub struct SerializedFrame {
 
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
+
+    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    ///
+    /// Unlike `should_return`, an initializer frame can legitimately be live
+    /// across a suspend (an `__init__` that calls an external/OS function), so it
+    /// must round-trip — otherwise the resumed frame would push `__init__`'s
+    /// `None` instead of leaving the instance on the stack.
+    #[serde(default)]
+    is_initializer: bool,
 }
 
 impl CallFrame<'_> {
@@ -554,6 +574,7 @@ impl CallFrame<'_> {
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base,
             call_position: self.call_position,
+            is_initializer: self.is_initializer,
         }
     }
 }
@@ -767,6 +788,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     function_id: sf.function_id,
                     call_position: sf.call_position,
                     should_return: false,
+                    is_initializer: sf.is_initializer,
                 }
             })
             .collect();
@@ -1229,6 +1251,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_set(count));
                 }
+                Opcode::BuildClass => {
+                    let (name_const_idx, member_count) = cached_frame.fetch_u16_u16();
+                    try_catch_sync!(
+                        self,
+                        cached_frame,
+                        self.build_class(name_const_idx, member_count as usize)
+                    );
+                }
                 Opcode::FormatValue => {
                     let flags = cached_frame.fetch_u8();
                     try_catch_sync!(self, cached_frame, self.format_value(flags));
@@ -1639,13 +1669,28 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         }
                         continue;
                     }
-                    // Pop current frame and push return value
-                    if self.pop_frame() {
+                    // Read the initializer flag before popping the frame.
+                    let is_init = self.current_frame().is_initializer;
+                    // Pop current frame; `stop` requests returning to the host
+                    // (e.g. `evaluate_function`).
+                    let stop = self.pop_frame();
+                    if is_init {
+                        // `__init__` returns None — discard it. The instance was
+                        // pushed onto the caller's stack before this frame ran and
+                        // is the real result of `Foo(...)`.
+                        value.drop_with_heap(self);
+                        if stop {
+                            let instance = self.pop();
+                            return Ok(FrameExit::Return(instance));
+                        }
+                        // Instance already on the caller's stack — push nothing.
+                    } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
                         return Ok(FrameExit::Return(value));
+                    } else {
+                        self.push(value);
                     }
-                    self.push(value);
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
                 }
