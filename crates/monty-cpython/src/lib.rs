@@ -20,6 +20,7 @@ mod events;
 mod install;
 mod pyexec;
 mod session;
+mod traceback;
 // `pep_723` and `transport` are `pub` only because the integration tests in
 // `tests/` are separate crates and reach them directly (`pep_723::dependencies`,
 // the `transport::Transport` trait an in-memory test parent implements). The

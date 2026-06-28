@@ -165,8 +165,17 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
   `max_duration_micros` on events are always zero.
 - **Type checking** (`Configure.type_check`, `Feed.skip_type_check`) is
   ignored — snippets are always executed, never type-checked.
-- **`Configure.script_name`** is ignored for execution tracebacks today: CPython
-  snippets compile with the internal filename `'<sandbox>'`.
+- **`Configure.script_name`** is the filename snippets compile under, so CPython
+  tracebacks (and `SyntaxError`s) report it. It is also how user frames are told
+  apart from the internal `runner.py` driver frames when rebuilding the traceback.
+- **Error tracebacks** are reconstructed from the CPython traceback and sent in
+  `RaisedException.traceback`, but only at reduced fidelity: one frame per *user*
+  frame (the `runner.py` driver frames — `run`/`drive_async`/`eval` — are filtered
+  out), each carrying the `script_name` filename, the line number, and the
+  function name (`<module>` for top-level code). Column ranges, source-line
+  previews, and caret markers are **not** reconstructed, so a frame's rendered
+  traceback line has no `~~~` underline. This is unlike both native Monty (which
+  attaches previews and carets) and CPython's own rich traceback output.
 - **Mounts** (`Feed.mounts`) are ignored; the child performs no virtual
   filesystem mapping. Real filesystem access goes straight to the host FS
   (see the security note above).

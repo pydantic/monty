@@ -64,14 +64,17 @@ impl Runner {
         Ok(Self(run_function.unbind()))
     }
 
+    /// Runs `code` in `namespace`, compiling it under `script_name` so CPython
+    /// tracebacks report the session's filename (see `runner.py`'s `run`).
     pub fn run<'py>(
         &self,
         py: Python<'py>,
         code: String,
         namespace: &Bound<'py, SandboxGlobals>,
+        script_name: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
         let run_function = self.0.bind(py);
-        run_function.call1((code, namespace))
+        run_function.call1((code, namespace, script_name))
     }
 }
 

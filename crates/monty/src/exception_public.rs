@@ -113,6 +113,11 @@ impl MontyException {
         }
     }
 
+    /// Appends frames to this exception's traceback.
+    pub fn add_traceback(&mut self, traceback: impl IntoIterator<Item = StackFrame>) {
+        self.traceback.extend(traceback);
+    }
+
     pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {
         Self {
             exc_type: ExcType::RuntimeError,

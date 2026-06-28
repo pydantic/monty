@@ -198,6 +198,72 @@ fn drives_a_full_session() {
         })
         .expect("an Error event");
     assert_eq!(error.exc_type, "ZeroDivisionError");
+    // The error carries the sandbox traceback: a single module-level frame for
+    // the trailing `1 / 0` expression on line 1, compiled under the configured
+    // `script_name` (driver frames are filtered).
+    let frames: Vec<(&str, u32, Option<&str>)> = error
+        .traceback
+        .iter()
+        .map(|f| {
+            (
+                f.filename.as_str(),
+                f.start.as_ref().unwrap().line,
+                f.frame_name.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(frames, vec![("main.py", 1, None)]);
+}
+
+/// A sandbox exception raised through nested user frames carries a multi-frame
+/// CPython traceback back to the parent: one `StackFrame` per user frame,
+/// outermost first, with the configured `script_name` filename, line numbers,
+/// and function names. The `runner.py` driver frames are filtered out.
+#[test]
+fn error_carries_multi_frame_traceback() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            // line 1: def f(): / line 2: raise / line 3: blank / line 4: f()
+            feed("def f():\n    raise ValueError('boom')\n\nf()"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(error.message.as_deref(), Some("boom"));
+
+    // Outermost first: the module-level `f()` call on line 4, then the `raise`
+    // inside `f` on line 2.
+    let frames: Vec<(&str, u32, Option<&str>)> = error
+        .traceback
+        .iter()
+        .map(|f| {
+            (
+                f.filename.as_str(),
+                f.start.as_ref().unwrap().line,
+                f.frame_name.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(frames, vec![("main.py", 4, None), ("main.py", 2, Some("f"))]);
 }
 
 /// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams
@@ -669,6 +735,8 @@ fn feed_installs_pep723_dependencies() {
 fn configure() -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         monty_version: env!("CARGO_PKG_VERSION").to_string(),
+        // Fed code compiles under this filename, so it appears in tracebacks.
+        script_name: "main.py".to_string(),
         ..Default::default()
     }))
 }

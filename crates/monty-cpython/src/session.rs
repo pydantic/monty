@@ -26,6 +26,7 @@ use crate::{
     install::InstallEnv,
     pep_723,
     pyexec::{Runner, SandboxGlobals, Stdio},
+    traceback::py_traceback_frames,
     transport::{Incoming, SendError, SharedTransport},
 };
 
@@ -50,9 +51,12 @@ enum State {
     /// host). `sys.stdout`/`sys.stderr` are separate `Stdio` sinks kept alive by
     /// the interpreter, so they need no Rust-side handle here. `install` holds the
     /// session's `uv` install dir, created lazily on the first `InstallDependencies`.
+    /// `script_name` is the `Configure.script_name` snippets compile under, so
+    /// CPython tracebacks report the parent's filename.
     Ready {
         namespace: Py<SandboxGlobals>,
         install: Option<InstallEnv>,
+        script_name: String,
     },
 }
 
@@ -181,11 +185,11 @@ impl Session {
     /// not recoverable on this worker, so we honour the `fatal_event` contract and
     /// exit after telling the parent (which discards and replaces the worker)
     /// rather than emitting a fatal event yet continuing to serve.
-    fn handle_configure(&mut self, py: Python<'_>, _configure: &pb::Configure) -> Flow {
+    fn handle_configure(&mut self, py: Python<'_>, configure: &pb::Configure) -> Flow {
         if !matches!(self.state, State::Idle) {
             return Flow::Reply(violation("Configure while a session already exists"));
         }
-        match self.open_session(py) {
+        match self.open_session(py, configure.script_name.clone()) {
             Ok(()) => Flow::Reply(ok_event()),
             Err(err) => Flow::Exit {
                 event: fatal_event(&format!("failed to start CPython session: {err}")),
@@ -199,7 +203,7 @@ impl Session {
     /// resolves undefined globals through the host. `sys.stdout`/`sys.stderr` are
     /// separate [`Stdio`] sinks (each `print()` chunk becomes a `Print` event
     /// tagged with its stream).
-    fn open_session(&mut self, py: Python<'_>) -> PyResult<()> {
+    fn open_session(&mut self, py: Python<'_>, script_name: String) -> PyResult<()> {
         let globals = Bound::new(py, SandboxGlobals::new(py, self.transport.clone()))?;
         // Sandboxed code runs as the top-level script, so `__name__` is
         // `'__main__'` (lets `if __name__ == '__main__':` guards fire). Seed it as
@@ -218,6 +222,7 @@ impl Session {
         self.state = State::Ready {
             namespace: globals.unbind(),
             install: None,
+            script_name,
         };
         Ok(())
     }
@@ -281,17 +286,21 @@ impl Session {
             Err(err) => return error_event(ExcType::ValueError, &err.to_string()),
         }
 
-        let State::Ready { namespace, .. } = &self.state else {
+        let State::Ready {
+            namespace, script_name, ..
+        } = &self.state
+        else {
             return violation("Feed without a session");
         };
         let namespace = namespace.bind(py).clone();
+        let script_name = script_name.clone();
         let dc = DcRegistry::new(py);
 
         if let Some(event) = bind_inputs(py, &namespace, &dc, feed.inputs) {
             return event;
         }
 
-        match self.runner.run(py, feed.code, &namespace) {
+        match self.runner.run(py, feed.code, &namespace, &script_name) {
             Ok(value) => match py_to_monty_value(&value, &dc) {
                 Ok(value) if exceeds_max_value_depth(&value) => error_event(
                     ExcType::RuntimeError,
@@ -300,7 +309,15 @@ impl Session {
                 Ok(value) => complete_event(value),
                 Err(exc) => error_from_exception(&exc),
             },
-            Err(err) => error_from_exception(&exc_py_to_monty(py, &err)),
+            Err(err) => {
+                // The sandbox raised: convert the type/message, then walk the
+                // CPython traceback to attach the user frames (those compiled
+                // under `script_name`) so the parent gets a real stack rather
+                // than a bare `Type: message`.
+                let mut exc = exc_py_to_monty(py, &err);
+                exc.add_traceback(py_traceback_frames(py, &err, &script_name));
+                error_from_exception(&exc)
+            }
         }
     }
 }

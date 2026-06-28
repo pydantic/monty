@@ -12,7 +12,7 @@ CO_COROUTINE = 0x80
 TOP_LEVEL_AWAIT = _ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
 
-def run(code: str, ns: dict[str, _typing.Any]) -> _typing.Any:
+def run(code: str, ns: dict[str, _typing.Any], script_name: str) -> _typing.Any:
     """Execute `code` REPL-style: a trailing expression becomes the value.
 
     Mirrors how IPython/the stdlib REPL split a cell — run the body in `exec`
@@ -20,21 +20,26 @@ def run(code: str, ns: dict[str, _typing.Any]) -> _typing.Any:
     can be returned. The split node keeps its original location, so a traceback
     from the trailing expression still points at the right line.
 
+    `script_name` is the filename the code is compiled under (the session's
+    `Configure.script_name`), so CPython tracebacks and `SyntaxError`s report it
+    rather than an internal placeholder. It is also how the Rust side tells user
+    frames apart from this module's driver frames when rebuilding the traceback.
+
     Top-level `await` is supported: both halves are compiled with
     `PyCF_ALLOW_TOP_LEVEL_AWAIT`. If *either* half is a coroutine, both are driven
     in a single `asyncio.run` event loop (see `drive_async`) so async objects the
     body creates keep their loop affinity in the trailing expression. Purely
     synchronous snippets never touch asyncio.
     """
-    module = _ast.parse(code, '<sandbox>', 'exec')
+    module = _ast.parse(code, script_name, 'exec')
     trailing_expr = None
     if module.body and isinstance(module.body[-1], _ast.Expr):
         trailing_expr = _typing.cast(_ast.Expr, module.body.pop()).value
-    body_code = compile(module, '<sandbox>', 'exec', flags=TOP_LEVEL_AWAIT)
+    body_code = compile(module, script_name, 'exec', flags=TOP_LEVEL_AWAIT)
     expr_code = (
         None
         if trailing_expr is None
-        else compile(_ast.Expression(trailing_expr), '<sandbox>', 'eval', flags=TOP_LEVEL_AWAIT)
+        else compile(_ast.Expression(trailing_expr), script_name, 'eval', flags=TOP_LEVEL_AWAIT)
     )
     body_async = bool(body_code.co_flags & CO_COROUTINE)
     expr_async = expr_code is not None and bool(expr_code.co_flags & CO_COROUTINE)
