@@ -35,11 +35,8 @@ const CHILD_VERSION: &str = MONTY_VERSION;
 enum Flow {
     /// Send this turn-ending event and keep serving.
     Reply(pb::ChildEvent),
-    /// Optionally send a final event, then exit with this code.
-    Exit {
-        event: Option<pb::ChildEvent>,
-        code: ExitCode,
-    },
+    /// Send this final event, then exit with this code.
+    Exit { event: pb::ChildEvent, code: ExitCode },
 }
 
 /// REPL session state.
@@ -101,9 +98,7 @@ impl Session {
                         Err(SendError::Io(_)) => return ExitCode::from(3),
                     },
                     Flow::Exit { event, code } => {
-                        if let Some(event) = event {
-                            let _ = self.transport.borrow_mut().send(&event);
-                        }
+                        let _ = self.transport.borrow_mut().send(&event);
                         return code;
                     }
                 },
@@ -144,7 +139,7 @@ impl Session {
                         configure.monty_version
                     );
                     return Flow::Exit {
-                        event: Some(fatal_event(&message)),
+                        event: fatal_event(&message),
                         code: ExitCode::from(4),
                     };
                 }
@@ -153,15 +148,12 @@ impl Session {
             pb::parent_request::Kind::Feed(feed) => Flow::Reply(self.handle_feed(py, feed)),
             pb::parent_request::Kind::InstallDependencies(req) => Flow::Reply(self.handle_install(py, &req)),
             // A monty-cpython worker serves exactly one session per process — there
-            // is no in-process reuse (a checkout dials a fresh worker). `Reset`
-            // therefore ends the session: acknowledge it and exit, letting the OS
-            // reclaim the interpreter, its `sys.modules`, and any install dir.
-            pb::parent_request::Kind::Reset(_) => Flow::Exit {
-                event: Some(ok_event()),
-                code: ExitCode::SUCCESS,
-            },
-            pb::parent_request::Kind::Shutdown(_) => Flow::Exit {
-                event: Some(ok_event()),
+            // is no in-process reuse (a checkout dials a fresh worker). So `Reset`
+            // ("end the session") and `Shutdown` ("end the worker") are the same
+            // thing: acknowledge and exit, letting the OS reclaim the interpreter,
+            // its `sys.modules`, and any install dir.
+            pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_) => Flow::Exit {
+                event: ok_event(),
                 code: ExitCode::SUCCESS,
             },
             // A blocking host call consumes its own ResumeCall, so one at the top
@@ -194,7 +186,7 @@ impl Session {
         match self.open_session(py) {
             Ok(()) => Flow::Reply(ok_event()),
             Err(err) => Flow::Exit {
-                event: Some(fatal_event(&format!("failed to start CPython session: {err}"))),
+                event: fatal_event(&format!("failed to start CPython session: {err}")),
                 code: ExitCode::from(5),
             },
         }

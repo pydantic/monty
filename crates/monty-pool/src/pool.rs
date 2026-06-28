@@ -8,7 +8,7 @@ use std::{
 use monty_proto::pb;
 
 use crate::{
-    MontyTransport, PoolConfig, PoolError,
+    PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig},
     watchdog::Watchdog,
     worker::{Worker, lock_ignore_poison},
@@ -58,9 +58,9 @@ impl Pool {
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
-        if matches!(config.transport, MontyTransport::Subprocess { .. }) {
+        if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::spawn(&config)?);
+                idle.push(Worker::new(&config)?);
             }
         }
         let total = idle.len();
@@ -108,7 +108,7 @@ impl PoolInner {
     fn acquire_worker(&self) -> Result<Worker, PoolError> {
         // WebSocket connections are single-use and never pooled idle, so the
         // idle-reuse step is skipped and each acquisition dials a fresh worker.
-        let websocket = matches!(self.config.transport, MontyTransport::Websocket { .. });
+        let websocket = self.config.transport.is_websocket();
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
         let mut state = lock_ignore_poison(&self.state);
         loop {
@@ -128,11 +128,7 @@ impl PoolInner {
                 // reserve capacity before releasing the lock to spawn/connect
                 state.total += 1;
                 drop(state);
-                let acquired = if websocket {
-                    Worker::connect_ws(&self.config)
-                } else {
-                    Worker::spawn(&self.config)
-                };
+                let acquired = Worker::new(&self.config);
                 return acquired.inspect_err(|_| self.release_capacity());
             }
             state = match deadline {
@@ -155,7 +151,7 @@ impl PoolInner {
     /// Returns a healthy worker to the idle queue (or retires it when it hit
     /// the recycle limit, or it is a single-use WebSocket connection).
     pub(crate) fn release_worker(&self, worker: Worker) {
-        let websocket = matches!(self.config.transport, MontyTransport::Websocket { .. });
+        let websocket = self.config.transport.is_websocket();
         let recycle = websocket
             || self
                 .config

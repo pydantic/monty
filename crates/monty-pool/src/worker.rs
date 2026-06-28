@@ -12,6 +12,7 @@
 use std::{
     env,
     net::{Shutdown, TcpStream, ToSocketAddrs},
+    path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard, Once, PoisonError,
@@ -107,17 +108,23 @@ impl Killable for WsShutdown {
 }
 
 impl Worker {
+    pub(crate) fn new(config: &PoolConfig) -> Result<Self, PoolError> {
+        match &config.transport {
+            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
+            // Bound the dial by `request_timeout` (see `websocket`); a missing
+            // one falls back to a generous fixed budget.
+            MontyTransport::Websocket(url) => {
+                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT))
+            }
+        }
+    }
+
     /// Spawns a local `monty subprocess` child with framed pipes.
     ///
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
     /// `Configure` of its first checkout).
-    pub(crate) fn spawn(config: &PoolConfig) -> Result<Self, PoolError> {
-        let MontyTransport::Subprocess(binary_path) = &config.transport else {
-            return Err(PoolError::Spawn(
-                "internal error: spawn called for a non-subprocess transport".to_owned(),
-            ));
-        };
+    fn subprocess(binary_path: &PathBuf) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
         command
             .arg("subprocess")
@@ -139,7 +146,7 @@ impl Worker {
 
         let writer = child.stdin.take().expect("piped stdin");
         let reader = FrameReader::new(child.stdout.take().expect("piped stdout"));
-        Ok(Self::new(WorkerKind::Subprocess(SubprocessWorker {
+        Ok(Self::with_kind(WorkerKind::Subprocess(SubprocessWorker {
             child: Arc::new(Mutex::new(child)),
             writer,
             reader,
@@ -147,25 +154,19 @@ impl Worker {
         })))
     }
 
-    /// Connects to a remote child over a WebSocket, dialing `config.transport.url`
-    /// verbatim. Any session/rendezvous routing the URL needs is the caller's
-    /// responsibility.
-    pub(crate) fn connect_ws(config: &PoolConfig) -> Result<Self, PoolError> {
-        let MontyTransport::Websocket(url) = &config.transport else {
-            return Err(PoolError::Spawn(
-                "internal error: connect_ws called for a non-websocket transport".to_owned(),
-            ));
-        };
+    /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
+    /// session/rendezvous routing the URL needs is the caller's responsibility.
+    ///
+    /// `timeout` bounds the dial (TCP connect + TLS/WS handshake): `checkout_timeout`
+    /// only covers waiting for capacity, not the synchronous handshake that follows,
+    /// so a hung dial would otherwise stall the checkout forever.
+    fn websocket(url: &str, timeout: Duration) -> Result<Self, PoolError> {
         install_crypto_provider();
-        // Bound the dial by `request_timeout`: `checkout_timeout` only covers
-        // waiting for capacity, not the synchronous handshake that follows, so a
-        // hung DNS/TCP/TLS/WS dial would otherwise stall the checkout forever.
-        let timeout = config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT);
         let socket = dial_ws(url, timeout)?;
         // Clone the underlying TCP socket up front for the watchdog's shutdown
         // handle (reaching it through the TLS stream once connected).
         let tcp = underlying_tcp(socket.get_ref()).and_then(|tcp| tcp.try_clone().ok());
-        Ok(Self::new(WorkerKind::WebSocket(Box::new(WebSocketWorker {
+        Ok(Self::with_kind(WorkerKind::WebSocket(Box::new(WebSocketWorker {
             socket,
             shutdown: Arc::new(WsShutdown { tcp }),
             killed_for_timeout: Arc::new(AtomicBool::new(false)),
@@ -173,7 +174,7 @@ impl Worker {
         }))))
     }
 
-    fn new(kind: WorkerKind) -> Self {
+    fn with_kind(kind: WorkerKind) -> Self {
         Self {
             kind,
             checkouts_served: 0,

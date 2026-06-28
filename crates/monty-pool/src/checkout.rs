@@ -415,6 +415,17 @@ impl Checkout {
     /// Consumes the checkout. On error the worker is discarded (and the
     /// error reported), but the pool remains healthy either way.
     pub fn finish(mut self) -> Result<(), PoolError> {
+        // A websocket worker is single-use — the pool discards it after every
+        // checkout — so there is no point round-tripping a `Reset` to ready it
+        // for reuse. Dropping it closes the socket, which the child reads as a
+        // clean EOF and exits. Only subprocess workers are reset and returned to
+        // the idle pool for the next checkout.
+        if self.pool.config.transport.is_websocket() {
+            if let Some(worker) = self.worker.take() {
+                self.pool.release_worker(worker);
+            }
+            return Ok(());
+        }
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Reset(pb::Reset {})),
         };

@@ -54,6 +54,14 @@ pub enum MontyTransport {
     Websocket(String),
 }
 
+impl MontyTransport {
+    /// Whether this is the remote WebSocket transport, whose workers are
+    /// single-use (dialed per checkout, never pooled idle or reused).
+    pub(crate) fn is_websocket(&self) -> bool {
+        matches!(self, Self::Websocket(_))
+    }
+}
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
