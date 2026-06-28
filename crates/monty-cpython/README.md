@@ -1,10 +1,11 @@
 # monty-cpython
 
 A Monty wire-protocol child worker (like `monty subprocess`) that executes each
-fed snippet in **embedded CPython** instead of Monty, routing undefined names back
-to the parent as `FunctionCall`s. It lets a parent (`monty-pool` /
-`pydantic_monty`) drive a *real* Python interpreter over the same protocol —
-locally over stdio, or remotely over a WebSocket.
+fed snippet in **embedded CPython** instead of Monty, resolving undefined names
+against the parent (a `NameLookup`, then a `FunctionCall` if the name is a host
+function that gets called). It lets a parent (`monty-pool` / `pydantic_monty`)
+drive a *real* Python interpreter over the same protocol — locally over stdio, or
+remotely over a WebSocket.
 
 ## Transports
 
@@ -15,10 +16,12 @@ The transport is selected by subcommand:
 - `monty-cpython websocket <ws-url>` — dial a relay (or a parent-as-server) as a
   WebSocket client.
 
-The execution `globals` is a `dict` subclass whose `__missing__` turns any unbound
-global that is not a builtin or dunder into a proxy; calling that proxy emits a
-`FunctionCall` and blocks for the `ResumeCall`. All value conversion and transport
-work happens in Rust; the Python glue is tiny (see `src/pyexec.rs`).
+The execution `globals` is a `dict` subclass whose `__missing__` resolves any
+unbound global that is not a builtin or dunder through the host: it emits a
+`NameLookup` and, based on the parent's answer, returns the host value, an
+`ExternalFunction` proxy (whose call emits a `FunctionCall`), or raises
+`NameError`. All value conversion and transport work happens in Rust; the Python
+glue is tiny (see `src/pyexec.rs`).
 
 ## Docker image
 
@@ -58,15 +61,13 @@ resuming a session would need extra protocol support and is not implemented.
 ## Supported vs rejected protocol requests
 
 Supported: `StartSession`, `Feed`, `InstallDependencies` (see below),
-`ResumeCall` (consumed inline during a feed, never at the top level), `Reset`,
-`Shutdown`.
+`ResumeNameLookup` and `ResumeCall` (both consumed inline during a feed, never at
+the top level), `Reset`, `Shutdown`.
 
 Rejected with a turn-ending `Error` (the session survives):
 
 - **`Dump` / `Load`** — a feed suspends on a live C stack inside a blocking
   `__call__`, which cannot be serialized; snapshots are not supported.
-- **`ResumeNameLookup`** — undefined names surface as `FunctionCall`s (see
-  below), never as `NameLookup` suspensions, so this can never arrive.
 - **`ResumeFutures`** — there is no async-future suspension (see async, below).
 
 `StartSession` with a mismatched `monty_version` is fatal (`FatalError` + exit 4),
@@ -74,17 +75,25 @@ exactly like the Monty child; both are workspace-versioned so they match.
 
 ## Undefined-name model
 
-The execution `globals` is a `dict` subclass whose `__missing__` turns any
-unbound global that is **not a builtin and not a dunder** into a proxy. Calling
-that proxy emits a `FunctionCall` and blocks for the `ResumeCall`. Consequences
-that differ from CPython:
+The execution `globals` is a `dict` subclass whose `__missing__` resolves any
+unbound global that is **not a builtin and not a dunder** through the host: it
+emits a `NameLookup` and branches on the parent's `ResumeNameLookup` answer:
 
-- An undefined name that is **referenced but never called** yields a proxy
-  object instead of raising `NameError`. If such a proxy is the snippet's
+- a host **value** → the converted Python value, returned directly (re-read live
+  on every reference — host values are not cached);
+- a host **function** → an `ExternalFunction` proxy whose call emits a
+  `FunctionCall` (cached per session, so repeated references/calls skip the
+  lookup);
+- **undefined** → `NameError`, raised on the reference itself.
+
+Consequences that differ from CPython:
+
+- A referenced name the host resolves to a **function** yields an
+  `ExternalFunction` proxy rather than raising. If such a proxy is the snippet's
   trailing expression (or otherwise returned), it cannot be converted to a wire
   value and the turn ends with an `Error`.
-- `not_found` from the parent raises `NameError` (matching CPython for a genuinely
-  undefined *call*).
+- A `FunctionCall` the parent answers with `not_found` raises `NameError`
+  (matching CPython for a genuinely undefined *call*).
 
 ## Installing dependencies (`InstallDependencies`)
 

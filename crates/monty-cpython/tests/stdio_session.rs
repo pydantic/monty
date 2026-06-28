@@ -1,7 +1,7 @@
 //! Drives the CPython child over an in-memory transport that plays the parent:
-//! it scripts a session (Configure → Feeds → Shutdown) and answers each
-//! `FunctionCall` the child emits from a small external-function table, exactly
-//! as a real parent would.
+//! it scripts a session (Configure → Feeds → Shutdown) and answers the
+//! `NameLookup`s and `FunctionCall`s the child emits from a small
+//! external-function table (and a host-value table), exactly as a real parent would.
 //!
 //! These tests share one `auto-initialize` interpreter across the cargo test
 //! harness's threads, so you may see a stray `HostBridge is unsendable, but is
@@ -21,7 +21,7 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
-use monty::{ExtFunctionResult, MontyObject};
+use monty::{ExtFunctionResult, MontyObject, NameLookupResult};
 use monty_cpython::{
     run_with_transport,
     transport::{Incoming, SendError, Transport},
@@ -43,12 +43,14 @@ fn drive(parent: ScriptedParent) {
     let _ = run_with_transport(Box::new(parent));
 }
 
-/// An in-memory parent: replays a request script and answers `FunctionCall`s
-/// from `externals`, capturing every event the child sends for assertions.
+/// An in-memory parent: replays a request script, answers `NameLookup`s from
+/// `name_values` (host values) and `externals` (host functions), and answers
+/// `FunctionCall`s from `externals`, capturing every event for assertions.
 struct ScriptedParent {
     script: VecDeque<pb::ParentRequest>,
     pending_resume: Option<pb::ParentRequest>,
     externals: HashMap<String, External>,
+    name_values: HashMap<String, MontyObject>,
     events: Rc<RefCell<Vec<pb::ChildEvent>>>,
 }
 
@@ -65,13 +67,31 @@ impl Transport for ScriptedParent {
 
     fn send(&mut self, event: &pb::ChildEvent) -> Result<(), SendError> {
         self.events.borrow_mut().push(event.clone());
-        // Mirror a real parent: a FunctionCall is answered with a ResumeCall.
-        if let Some(pb::child_event::Kind::FunctionCall(call)) = &event.kind {
-            let result = match self.externals.get(&call.function_name) {
-                Some(handler) => handler(&call.args),
-                None => ExtFunctionResult::NotFound(call.function_name.clone()),
-            };
-            self.pending_resume = Some(resume_call(call.call_id, result));
+        match &event.kind {
+            // Mirror a real parent: a NameLookup resolves to a host value, a host
+            // function, or undefined (see `resolve_pool_name_lookup`).
+            Some(pb::child_event::Kind::NameLookup(lookup)) => {
+                let result = if let Some(value) = self.name_values.get(&lookup.name) {
+                    NameLookupResult::Value(value.clone())
+                } else if self.externals.contains_key(&lookup.name) {
+                    NameLookupResult::Value(MontyObject::Function {
+                        name: lookup.name.clone(),
+                        docstring: None,
+                    })
+                } else {
+                    NameLookupResult::Undefined
+                };
+                self.pending_resume = Some(resume_name_lookup(result));
+            }
+            // A FunctionCall is answered with a ResumeCall.
+            Some(pb::child_event::Kind::FunctionCall(call)) => {
+                let result = match self.externals.get(&call.function_name) {
+                    Some(handler) => handler(&call.args),
+                    None => ExtFunctionResult::NotFound(call.function_name.clone()),
+                };
+                self.pending_resume = Some(resume_call(call.call_id, result));
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -97,6 +117,7 @@ fn drives_a_full_session() {
             shutdown(),
         ]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals,
         events: events.clone(),
     };
@@ -160,6 +181,48 @@ fn drives_a_full_session() {
     assert_eq!(error.exc_type, "ZeroDivisionError");
 }
 
+/// An undefined name the host resolves to a plain *value* (not a function) is
+/// returned by `get` directly and used as a value, no `FunctionCall` involved.
+#[test]
+fn resolves_a_name_to_a_host_value() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed("n + 1"), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::from([("n".to_string(), MontyObject::Int(41))]),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let kinds: Vec<_> = events.iter().filter_map(|e| e.kind.as_ref()).collect();
+
+    // `n` was resolved via a NameLookup (and never as a FunctionCall).
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, pb::child_event::Kind::NameLookup(l) if l.name == "n")),
+        "a NameLookup for n: {kinds:?}"
+    );
+    assert!(
+        !kinds
+            .iter()
+            .any(|k| matches!(k, pb::child_event::Kind::FunctionCall(_))),
+        "no FunctionCall: {kinds:?}"
+    );
+    // The host value (41) was used as a value: 41 + 1 == 42.
+    let complete = kinds
+        .iter()
+        .find_map(|k| match k {
+            pb::child_event::Kind::Complete(c) => Some(c.value.clone().unwrap().into_object().unwrap()),
+            _ => None,
+        })
+        .expect("a Complete event");
+    assert_eq!(complete, MontyObject::Int(42));
+}
+
 /// Top-level `await` is supported (`PyCF_ALLOW_TOP_LEVEL_AWAIT` + `asyncio.run`),
 /// `__missing__` still resolves host calls inside coroutines, but a host call is
 /// not itself awaitable.
@@ -188,6 +251,7 @@ fn supports_top_level_await() {
             shutdown(),
         ]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals,
         events: events.clone(),
     };
@@ -226,6 +290,7 @@ fn install_without_session_is_rejected() {
     let parent = ScriptedParent {
         script: VecDeque::from([install(&["anything"])]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -255,6 +320,7 @@ fn empty_install_is_a_noop() {
     let parent = ScriptedParent {
         script: VecDeque::from([configure(), install(&[]), shutdown()]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -288,6 +354,7 @@ fn installs_and_imports_a_package() {
             shutdown(),
         ]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -321,6 +388,7 @@ fn ordinary_comments_do_not_trigger_pep723() {
     let parent = ScriptedParent {
         script: VecDeque::from([configure(), feed("# just a comment\nx = 41\nx + 1"), shutdown()]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -349,6 +417,7 @@ fn pep723_multiple_blocks_is_an_error() {
     let parent = ScriptedParent {
         script: VecDeque::from([configure(), feed(code), shutdown()]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -381,6 +450,7 @@ fn feed_installs_pep723_dependencies() {
     let parent = ScriptedParent {
         script: VecDeque::from([configure(), feed(code), shutdown()]),
         pending_resume: None,
+        name_values: HashMap::new(),
         externals: HashMap::new(),
         events: events.clone(),
     };
@@ -447,6 +517,16 @@ fn resume_call(call_id: u32, result: ExtFunctionResult) -> pb::ParentRequest {
     request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
         call_id,
         result: Some(result.into()),
+    }))
+}
+
+fn resume_name_lookup(result: NameLookupResult) -> pb::ParentRequest {
+    let kind = match result {
+        NameLookupResult::Value(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
+        NameLookupResult::Undefined => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
+    };
+    request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+        kind: Some(kind),
     }))
 }
 

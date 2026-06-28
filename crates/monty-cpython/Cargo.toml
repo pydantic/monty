@@ -20,6 +20,7 @@ name = "monty_cpython"
 path = "src/lib.rs"
 
 [dependencies]
+ahash = { workspace = true }
 clap = { workspace = true }
 monty = { path = "../monty" }
 monty-proto = { path = "../monty-proto" }

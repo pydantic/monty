@@ -2051,6 +2051,7 @@ dependencies = [
 name = "monty-cpython"
 version = "0.0.18"
 dependencies = [
+ "ahash",
  "clap",
  "monty",
  "monty-proto",

@@ -4,9 +4,11 @@
 //! Mirrors the strict alternation of `monty subprocess` (one request in, zero
 //! or more `Print` events, then exactly one turn-ender) but uses a *blocking*
 //! host-call model: an undefined name suspends and resumes entirely inside the
-//! feed (see [`crate::pyexec::HostBridge`]), so the top-level loop only ever
-//! sees `Feed → Complete/Error`. `ResumeCall` therefore never reaches the top
-//! level, and Dump/Load/ResumeNameLookup/ResumeFutures are not supported.
+//! feed (a `NameLookup` to resolve it, then a `FunctionCall` if it is called —
+//! see [`crate::pyexec::HostBridge`]), so the top-level loop only ever sees
+//! `Feed → Complete/Error`. `ResumeCall` and `ResumeNameLookup` therefore never
+//! reach the top level (they are consumed inline), and Dump/Load/ResumeFutures
+//! are not supported.
 
 use std::process::ExitCode;
 
@@ -156,13 +158,13 @@ impl Session {
                 event: ok_event(),
                 code: ExitCode::SUCCESS,
             },
-            // A blocking host call consumes its own ResumeCall, so one at the top
-            // level means the parent is out of step.
+            // A blocking name lookup / host call consumes its own ResumeNameLookup /
+            // ResumeCall inline, so one at the top level means the parent is out of step.
             pb::parent_request::Kind::ResumeCall(_) => {
                 Flow::Reply(violation("unexpected ResumeCall: no host call is suspended"))
             }
             pb::parent_request::Kind::ResumeNameLookup(_) => {
-                Flow::Reply(violation("ResumeNameLookup is not supported by the CPython worker"))
+                Flow::Reply(violation("unexpected ResumeNameLookup: no name lookup is suspended"))
             }
             pb::parent_request::Kind::ResumeFutures(_) => {
                 Flow::Reply(violation("ResumeFutures is not supported by the CPython worker"))
