@@ -198,7 +198,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Removes all elements from the set.
     fn clear(&mut self, vm: &mut VM<'h, impl ResourceTracker>) {
-        let entries: Vec<SetEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
+        let entries = mem::take(&mut self.get_mut(vm.heap).entries);
         self.get_mut(vm.heap).indices.clear();
         entries.drop_with_heap(vm);
     }
