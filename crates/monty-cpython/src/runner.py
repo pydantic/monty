@@ -12,11 +12,6 @@ CO_COROUTINE = 0x80
 # REPL and IPython use); the compiled unit then needs driving to completion.
 TOP_LEVEL_AWAIT = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 
-# Characters that make up a caret-marker line in CPython's rendered traceback
-# (spaces plus the primary `~` / secondary `^` anchors). Used to detect whether
-# CPython chose to draw carets for a frame — see `extract_traceback`.
-_CARET_CHARS = frozenset(' ~^')
-
 # Monotonic counter and registry for the per-feed filenames fed code compiles
 # under. Each feed gets a unique `<input-N>` name so a traceback can resolve the
 # right source even for a frame from a function defined in an *earlier* feed —
@@ -138,8 +133,12 @@ def extract_traceback(tb: Any, script_name: str) -> list[Frame]:
 
 
 def _extract_rich(tb: Any, script_name: str) -> list[Frame]:
-    """Full-fidelity extraction: source previews and CPython-decided carets."""
-    from traceback import StackSummary, extract_tb
+    """Full-fidelity extraction: source previews and caret spans.
+
+    `extract_tb` is imported at call time so a sandbox that monkey-patched
+    `traceback` is observed and the rich path falls back (see `extract_traceback`).
+    """
+    from traceback import extract_tb
 
     frames: list[Frame] = []
     for fs in extract_tb(tb):
@@ -156,21 +155,27 @@ def _extract_rich(tb: Any, script_name: str) -> list[Frame]:
         start_col = 0
         end_col = 0
         hide_caret = True
-        # Carets need a same-line anchored span and a preview to render against.
+        # Carets need a same-line span and a preview to render against.
         if preview is not None and fs.colno is not None and fs.end_colno is not None and fs.end_lineno == lineno:
             # CPython reports columns as UTF-8 byte offsets; monty wants 1-based
             # character columns.
             start_col = byte_to_char(preview, fs.colno) + 1
             end_col = byte_to_char(preview, fs.end_colno) + 1
-            # Defer the show/hide decision to CPython so `raise` (no caret) and
-            # whole-line calls/binops (caret) match its renderer. The caret is
-            # hidden when CPython renders *no* marker line for the frame.
-            rendered = ''.join(StackSummary.from_list([fs]).format())
-            hide_caret = not any(
-                set(part) <= _CARET_CHARS and ('~' in part or '^' in part) for part in rendered.splitlines()
-            )
+            hide_caret = _is_raise_statement(preview)
         frames.append((script_name, lineno, start_col, lineno, end_col, frame_name, preview, hide_caret, False))
     return frames
+
+
+def _is_raise_statement(preview: str) -> bool:
+    """Whether `preview`'s first token is the `raise` keyword.
+
+    A rough caret-visibility heuristic: CPython hides carets for `raise` and shows
+    them otherwise. We mirror only that case, so CPython's other no-caret cases
+    (attribute access, bare-name lookups, full-line `x = f()` calls) over-draw a
+    whole-line underline here — cosmetic, and it keeps us off `traceback` internals.
+    """
+    head = preview.split(maxsplit=1)
+    return bool(head) and head[0] == 'raise'
 
 
 def _extract_basic(tb: Any, script_name: str) -> list[Frame]:

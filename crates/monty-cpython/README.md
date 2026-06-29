@@ -174,12 +174,15 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
   `RaisedException.traceback`: one frame per *user* frame (the `runner.py` driver
   frames — `run`/`drive_async`/`eval` — are filtered out), each with the
   `script_name` filename, line number, function name (`<module>` for top-level
-  code), source-line preview, and caret span. The caret column span and the
-  show/hide decision are taken from CPython's own renderer (so `raise` shows no
-  caret, whole-line calls do), but rendered in Monty's uniform `~~~` style rather
-  than CPython's two-tone `~~~^^^`. `SyntaxError`s raise during compilation, so
-  their frames are runner-internal and filtered out — only the type and message
-  survive.
+  code), source-line preview, and caret span. The caret column span comes from
+  CPython's reported offsets, rendered in Monty's uniform `~~~` style rather than
+  CPython's two-tone `~~~^^^`. Caret *visibility*, however, is a rough heuristic,
+  not CPython's exact anchor-aware decision: a caret line is drawn for every frame
+  except `raise` statements. So CPython's other no-caret cases — attribute access,
+  a bare-name lookup on its own line, and full-line `x = f()` / `return f()` calls
+  — get a whole-line underline here where CPython draws none. `SyntaxError`s raise
+  during compilation, so their frames are runner-internal and filtered out — only
+  the type and message survive.
 - **Mounts** (`Feed.mounts`) are ignored; the child performs no virtual
   filesystem mapping. Real filesystem access goes straight to the host FS
   (see the security note above).
