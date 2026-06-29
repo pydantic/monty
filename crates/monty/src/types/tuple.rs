@@ -33,7 +33,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, RecursionToken},
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, RecursionToken},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -319,9 +319,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // A tuple equals another tuple; `tuple == namedtuple` is handled by the
+        // reflected pass via `NamedTuple::py_eq_impl`.
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
@@ -329,10 +334,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
-                return Ok(false);
+                return Ok(Some(false));
             }
         }
-        Ok(true)
+        Ok(Some(true))
     }
 
     /// Hashes the tuple as the combined hash of its elements.

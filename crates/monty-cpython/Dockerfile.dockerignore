@@ -1,0 +1,48 @@
+# Scoped .dockerignore for crates/monty-cpython/Dockerfile.
+# BuildKit looks for `<Dockerfile-path>.dockerignore` before falling back to
+# the context-root `.dockerignore`, so this only applies to this build.
+#
+# Build context is the workspace root (see Dockerfile header). We let the
+# whole tree through and exclude only what cargo doesn't need — being too
+# aggressive risks breaking workspace resolution, which requires every member
+# crate's Cargo.toml to be readable even if it isn't built.
+
+# Rust build artifacts — 10+ GB, never wanted in a build context.
+target/
+**/target/
+
+# Python tooling caches and virtualenvs.
+.venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node / wrangler / JS deps (none of monty-cpython's build needs them).
+node_modules/
+**/node_modules/
+.wrangler/
+**/.wrangler/
+
+# Local experimentation and docs that aren't compiled.
+playground/
+examples/
+limitations/
+docs/
+.claude/
+.github/
+.git/
+
+# IDE / OS junk.
+.DS_Store
+.idea/
+.vscode/
+
+# The wire-protocol-relay submodule is unrelated to the Rust build — exclude
+# wholesale.
+wire-protocol-relay/
+
+# used by root directory for worktrees
+worktrees/

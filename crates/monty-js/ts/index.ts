@@ -10,12 +10,20 @@
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {
+  FunctionSnapshot,
+  FutureSnapshot,
+  MontyComplete,
   MontySession,
+  NameLookupSnapshot,
   NOT_HANDLED,
   type ExternalFunction,
   type FeedOptions,
+  type FeedStartOptions,
+  type FutureResolution,
+  type LoadSnapshotOptions,
   type OsCallback,
   type PrintCallback,
+  type Snapshot,
 } from './session.js'
 export { MountDir, type MountDirMode, type MountDirOptions } from './mount.js'
 export {

@@ -192,7 +192,10 @@ impl NameMap {
 #[inline(never)]
 pub(crate) fn namespace_overflow(position: CodeRange) -> ParseError {
     ParseError::syntax(
-        format!("too many distinct names in scope; maximum is {} per scope", (u16::MAX as usize) + 1),
+        format!(
+            "too many distinct names in scope; maximum is {} per scope",
+            (u16::MAX as usize) + 1
+        ),
         position,
     )
 }

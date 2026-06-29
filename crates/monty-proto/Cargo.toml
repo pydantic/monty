@@ -15,7 +15,7 @@ repository = { workspace = true }
 name = "monty_proto"
 
 [dependencies]
-monty = { path = "../monty" }
+monty = { workspace = true }
 num-bigint = { workspace = true }
 prost = { workspace = true }
 # generation-only dependencies (see src/bin/generate.rs); exact pins so the

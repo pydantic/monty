@@ -227,6 +227,28 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTra
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Element-wise equality against another dict (matching keys and values).
+    ///
+    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// the dataclasses' attribute dicts).
+    pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let Some(other_value) = other.dict_get(key, vm)? else {
+                return Ok(false);
+            };
+            defer_drop!(other_value, vm);
+            if !value.py_eq(other_value, vm)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Gets a value from the dict by key.
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
@@ -788,22 +810,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Dict(other)) => Ok(Some(self.eq_dict(&other, vm)?)),
+            _ => Ok(None),
         }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let Ok(Some(other_value)) = other.dict_get(key, vm) else {
-                return Ok(false);
-            };
-            defer_drop!(other_value, vm);
-            if !value.py_eq(other_value, vm)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

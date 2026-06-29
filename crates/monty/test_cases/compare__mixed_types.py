@@ -66,6 +66,37 @@ assert small_big < large_big, 'LongInt < LongInt'
 assert large_big > small_big, 'LongInt > LongInt'
 assert big != 'hello', 'LongInt != str'
 
+# === Float vs LongInt comparisons (exact, no precision loss) ===
+# Powers of two are exactly representable as f64, so these are exactly equal
+assert 2.0**100 == 2**100, 'float == LongInt (exact power of two)'
+assert 2**100 == 2.0**100, 'LongInt == float (exact power of two)'
+assert 2.0**100 != 2**100 + 1, 'float != LongInt off by one'
+assert 2**100 + 1 != 2.0**100, 'LongInt off by one != float'
+# Non-power-of-two big ints are not exactly representable; comparison is still exact
+assert 1e30 != 10**30, 'float != LongInt (inexact, not equal)'
+assert 10**30 != 1e30, 'LongInt != float (inexact, not equal)'
+# Non-integral float is never equal to any int
+assert 2.5 != 2**100, 'non-integral float != LongInt'
+assert 2**100 != 2.5, 'LongInt != non-integral float'
+# Ordering across float and LongInt
+assert 2.0**100 < 2**101, 'float < LongInt'
+assert 2**101 > 2.0**100, 'LongInt > float'
+assert 1e308 < 10**400, 'float < huge LongInt beyond f64 range'
+assert 10**400 > 1e308, 'huge LongInt > float'
+assert 2.5 < 2**100, 'non-integral float < LongInt'
+assert 2**100 > 2.5, 'LongInt > non-integral float'
+# Infinities compare against LongInt without overflow
+assert float('inf') > 10**400, 'inf > huge LongInt'
+assert 10**400 < float('inf'), 'huge LongInt < inf'
+assert float('-inf') < 10**400, '-inf < huge LongInt'
+assert 10**400 > float('-inf'), 'huge LongInt > -inf'
+
+# Equal float/LongInt pairs must hash equally and be interchangeable dict keys
+assert hash(2.0**100) == hash(2**100), 'equal float/LongInt hash the same'
+assert {2**100: 'a'}[2.0**100] == 'a', 'float finds LongInt dict key'
+assert {2.0**100: 'b'}[2**100] == 'b', 'LongInt finds float dict key'
+assert 2.0**100 in {2**100, 3}, 'float in LongInt set'
+
 # === Bytes ordering ===
 assert b'abc' < b'abd', 'bytes lt'
 assert b'abc' <= b'abc', 'bytes le'

@@ -90,7 +90,7 @@ fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> MontyO
 fn pool_create_session_run(bench: &mut Bencher) {
     let binary = monty_binary();
     bench.iter(|| {
-        let pool = Pool::new(PoolConfig::new(&binary)).unwrap();
+        let pool = Pool::new(PoolConfig::subprocess(&binary)).unwrap();
         let mut session = pool.checkout(&ReplConfig::default()).unwrap();
         let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
         black_box(expect_complete(event));
@@ -102,7 +102,7 @@ fn pool_create_session_run(bench: &mut Bencher) {
 /// per-session checkout handshake plus a trivial `1 + 1` feed — the overhead
 /// every request pays once the pool is warm.
 fn session_checkout_run(bench: &mut Bencher) {
-    let pool = Pool::new(PoolConfig::new(monty_binary())).unwrap();
+    let pool = Pool::new(PoolConfig::subprocess(monty_binary())).unwrap();
     bench.iter(|| {
         let mut session = pool.checkout(&ReplConfig::default()).unwrap();
         let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
@@ -124,7 +124,7 @@ for i in range(1000):
 /// protobuf channel on a single warm session. Reuses the session across
 /// iterations so only the messaging cost is measured, not checkout.
 fn ext_calls_1000(bench: &mut Bencher) {
-    let pool = Pool::new(PoolConfig::new(monty_binary())).unwrap();
+    let pool = Pool::new(PoolConfig::subprocess(monty_binary())).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     bench.iter(|| {
         let event = session

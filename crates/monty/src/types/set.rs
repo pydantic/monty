@@ -198,7 +198,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Removes all elements from the set.
     fn clear(&mut self, vm: &mut VM<'h, impl ResourceTracker>) {
-        let entries: Vec<SetEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
+        let entries = mem::take(&mut self.get_mut(vm.heap).entries);
         self.get_mut(vm.heap).indices.clear();
         entries.drop_with_heap(vm);
     }
@@ -986,8 +986,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        self.storage().eq(&other.storage(), vm)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // `set` and `frozenset` compare equal by their members, regardless of
+        // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
+        // pass via the dict-view impls.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            _ => Ok(None),
+        }
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -1249,8 +1256,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        self.storage().eq(&other.storage(), vm)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // `frozenset` and `set` compare equal by their members, regardless of
+        // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
+        // reflected pass via the dict-view impls.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            _ => Ok(None),
+        }
     }
 
     /// Hashes the frozenset by XORing all element hashes.

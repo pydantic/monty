@@ -11,22 +11,23 @@ use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace:
 ///
 /// # Namespace Layout
 ///
-/// The namespace has a predictable layout that allows sequential construction:
-/// ```text
-/// [params...][cell_vars...][free_vars...][locals...]
-/// ```
-/// - Slots 0..signature.param_count(): function parameters (see `Signature` for layout)
-/// - Slots after params: cell refs for variables captured by nested functions
-/// - Slots after cell_vars: free_var refs (captured from enclosing scope)
-/// - Remaining slots: local variables
+/// Parameters occupy slots `0..signature.param_count()` (see `Signature`).
+/// Cell variables, captured free variables, and ordinary locals follow, but
+/// their slots are **explicit** (carried in `cell_var_slots` / `free_var_slots`)
+/// rather than positional: a transitively captured (pass-through) free variable
+/// is discovered late during preparation and is assigned a slot in the locals
+/// region, so the old contiguous `[params][cells][free][locals]` invariant no
+/// longer holds. Each cell/free slot is therefore placed individually at frame
+/// setup (see `install_closure_cells`).
 ///
 /// # Closure Support
 ///
-/// - `free_var_enclosing_slots`: Enclosing namespace slots for captured variables.
-///   At definition time, cells are captured from these slots and stored in a Closure.
-///   At call time, they're pushed sequentially after cell_vars.
-/// - `cell_var_count`: Number of cells to create for variables captured by nested functions.
-///   At call time, cells are created and pushed sequentially after params.
+/// - `free_var_enclosing_slots[i]`: slot in the *enclosing* frame to read cell
+///   `i` from when building a `Closure` at definition time.
+/// - `free_var_slots[i]`: slot in *this* frame where that captured cell is
+///   installed at call time (parallel to `free_var_enclosing_slots`).
+/// - `cell_var_slots[i]`: slot in this frame for an owned cell (a local captured
+///   by a nested function); a fresh cell is created there at call time.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Function {
     /// The function name (used for error messages and repr).
@@ -37,20 +38,20 @@ pub(crate) struct Function {
     pub namespace_size: usize,
     /// Enclosing namespace slots for variables captured from enclosing scopes.
     ///
-    /// At definition time: look up cell HeapId from enclosing namespace at each slot.
-    /// At call time: captured cells are pushed sequentially (our slots are implicit).
+    /// At definition time the enclosing frame reads the cell `HeapId` at each
+    /// slot to build a `Closure`. Parallel to [`Self::free_var_slots`].
     pub free_var_enclosing_slots: Vec<NamespaceId>,
-    /// Number of cell variables (captured by nested functions).
-    ///
-    /// At call time, this many cells are created and pushed right after params.
-    /// Their slots are implicitly params.len()..params.len()+cell_var_count.
-    pub cell_var_count: usize,
-    /// Maps cell variable indices to their corresponding parameter indices, if any.
-    ///
-    /// When a parameter is also captured by nested functions (cell variable), its value
-    /// must be copied into the cell after binding. Each entry corresponds to a cell
-    /// (index 0..cell_var_count), and contains `Some(param_index)` if that cell is for
-    /// a parameter, or `None` otherwise.
+    /// This frame's slots that receive the captured free-var cells, parallel to
+    /// [`Self::free_var_enclosing_slots`]. Explicit (not positional) so
+    /// late-allocated pass-through slots land correctly.
+    pub free_var_slots: Vec<NamespaceId>,
+    /// This frame's slots for owned cell variables (locals captured by nested
+    /// functions); a fresh cell is created for each at call time. Parallel to
+    /// [`Self::cell_param_indices`].
+    pub cell_var_slots: Vec<NamespaceId>,
+    /// Maps each cell variable (parallel to [`Self::cell_var_slots`]) to its
+    /// parameter index when the cell is for a captured parameter, so the bound
+    /// value can be copied in; `None` means the cell starts `Undefined`.
     pub cell_param_indices: Vec<Option<usize>>,
     /// Number of default parameter values.
     ///
@@ -76,9 +77,10 @@ impl Function {
     /// * `name` - The function name identifier
     /// * `signature` - The function signature with parameter names and defaults
     /// * `namespace_size` - Number of local variable slots needed
-    /// * `free_var_enclosing_slots` - Enclosing namespace slots for captured variables
-    /// * `cell_var_count` - Number of cells to create for variables captured by nested functions
-    /// * `cell_param_indices` - Maps cell indices to parameter indices for captured parameters
+    /// * `free_var_enclosing_slots` - Enclosing-frame slots for captured cells
+    /// * `free_var_slots` - This frame's slots receiving the captured cells
+    /// * `cell_var_slots` - This frame's slots for owned cells
+    /// * `cell_param_indices` - Maps each owned cell to a parameter index, if any
     /// * `defaults_count` - Number of default parameter values
     /// * `is_async` - Whether this is an async function
     /// * `code` - The compiled bytecode for the function body
@@ -88,7 +90,8 @@ impl Function {
         signature: Signature,
         namespace_size: usize,
         free_var_enclosing_slots: Vec<NamespaceId>,
-        cell_var_count: usize,
+        free_var_slots: Vec<NamespaceId>,
+        cell_var_slots: Vec<NamespaceId>,
         cell_param_indices: Vec<Option<usize>>,
         defaults_count: usize,
         is_async: bool,
@@ -99,7 +102,8 @@ impl Function {
             signature,
             namespace_size,
             free_var_enclosing_slots,
-            cell_var_count,
+            free_var_slots,
+            cell_var_slots,
             cell_param_indices,
             defaults_count,
             is_async,

@@ -1,0 +1,54 @@
+[package]
+name = "monty-cpython"
+version = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+description = "A Monty wire-protocol child worker that executes fed code in embedded CPython"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "monty-cpython"
+path = "src/main.rs"
+
+[lib]
+name = "monty_cpython"
+path = "src/lib.rs"
+
+[dependencies]
+ahash = { workspace = true }
+clap = { workspace = true }
+monty = { workspace = true }
+monty-proto = { workspace = true }
+# `pydantic-monty`'s lib (`_monty`) is linked as an rlib purely for its
+# Python ↔ MontyObject value-conversion layer (`convert`/`dataclass`/`exceptions`).
+# This works because that crate does not enable pyo3's `extension-module` feature
+# in Cargo, so libpython is linked and we can embed CPython here via `auto-initialize`.
+pydantic-monty = { path = "../monty-python" }
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+# Blocking WebSocket transport for the `websocket` subcommand: dial a relay
+# (or a parent-as-server), with rustls for `wss://`. Matches the pool client.
+tungstenite = { workspace = true }
+# Pulled in only so `main()` can call `install_default()` on the rustls
+# CryptoProvider before the first `wss://` dial.
+rustls = { workspace = true }
+# PEP 723 inline script-metadata extraction (`src/pep_723.rs`): `regex` applies
+# the block matcher from the spec, `toml` parses the metadata body. Both are
+# already built elsewhere in the workspace (ruff pulls `toml`).
+regex = "1.12"
+toml = "1.1"
+
+[dev-dependencies]
+# Used only by the integration tests to snapshot/restore `sys.stdout`/`sys.stderr`
+# around each run (the shared embedded interpreter outlives a single session).
+pyo3 = { version = "0.28", features = ["auto-initialize"] }
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+
+[lints]
+workspace = true

@@ -90,7 +90,7 @@ use crate::{
         List,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, Value, eq_bytes},
 };
 
 // =============================================================================
@@ -265,8 +265,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // Heap bytes equal interned or heap bytes with the same content.
+        Ok(eq_bytes(self.get(vm.heap).as_slice(), other, vm))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

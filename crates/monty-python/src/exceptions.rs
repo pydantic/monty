@@ -429,6 +429,7 @@ impl PyFrame {
 /// Converts Monty's `MontyException` to the matching Python exception value.
 /// Traceback info is folded into the message, since PyO3 doesn't expose direct
 /// traceback manipulation.
+#[must_use]
 pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
     let exc_type = exc.exc_type();
     let msg = exc.into_message().unwrap_or_default();
@@ -518,6 +519,7 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
 }
 
 /// Converts a Python exception to Monty's `MontyObject::Exception`.
+#[must_use]
 pub fn exc_to_monty_object(exc: &Bound<'_, exceptions::PyBaseException>) -> ::monty::MontyObject {
     let exc_type = py_err_to_exc_type(exc);
     let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());

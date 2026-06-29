@@ -20,7 +20,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
@@ -210,8 +210,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(*self.get(vm.heap) == *other.get(vm.heap))
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        Ok(Some(*self.get(vm.heap) == *other.get(vm.heap)))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

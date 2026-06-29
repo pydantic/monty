@@ -334,6 +334,28 @@ impl<'i, 'g> Prepare<'i, 'g> {
         Ok(())
     }
 
+    /// Builds the parallel free-var slot vectors for a just-prepared child
+    /// scope from its `free_var_map` (`name -> the child's own slot`).
+    ///
+    /// Returns `(free_var_slots, free_var_enclosing_slots)`: the first holds the
+    /// child's own slots (where it installs each captured cell at call time);
+    /// the second holds OUR slot it reads that cell from when the closure is
+    /// built (via [`Self::lookup_captured_slot`]). Both are ordered by the
+    /// child slot so they stay index-aligned.
+    fn build_free_var_slots(
+        &self,
+        inner_free_var_map: AHashMap<StringId, NamespaceId>,
+    ) -> (Vec<NamespaceId>, Vec<NamespaceId>) {
+        let mut entries: Vec<_> = inner_free_var_map.into_iter().collect();
+        entries.sort_by_key(|(_, inner_slot)| *inner_slot);
+        let inner_slots = entries.iter().map(|(_, slot)| *slot).collect();
+        let enclosing_slots = entries
+            .into_iter()
+            .map(|(var_name, _)| self.lookup_captured_slot(var_name))
+            .collect();
+        (inner_slots, enclosing_slots)
+    }
+
     /// Constructs the module-scope preparer.
     ///
     /// The caller owns the globals `NameMap` (it survives prepare for use
@@ -399,14 +421,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
             locals.ensure_slot(name_id, position)?;
         }
 
-        // Namespace layout: [params][cell_vars][free_vars][assigned-during-body locals]
-        // The order is observable to the bytecode VM, which assumes cells
-        // live immediately after params and free vars immediately after
-        // cells. We bind every name into `locals` up front (including
-        // cells, nonlocals, and implicit captures) so the reverse map
-        // slot → name is complete from the start — that's what the VM
-        // needs to label `UnboundLocalError` / free-var `NameError`
-        // messages without consulting a separate side table.
+        // Namespace layout: params occupy slots `0..params.len()`, then cell
+        // vars, captured free vars, and ordinary body-assigned locals follow,
+        // assigned in that order below. The regions are NOT guaranteed
+        // contiguous — a late-discovered pass-through free var (see
+        // `bubble_up_captured_name`) can land in the locals region — so the
+        // runtime does not assume contiguity: cell/free slots are carried
+        // explicitly (`cell_var_slots`/`free_var_slots`) and installed
+        // individually at frame setup (see `install_closure_cells`). Every name
+        // is still bound into `locals` up front so the reverse map slot → name
+        // is complete from the start — that's what the VM needs to label
+        // `UnboundLocalError` / free-var `NameError` messages without consulting
+        // a separate side table.
 
         // Pre-populate cell_var_map with cell variables FIRST (right after params).
         // Excludes pass-through variables (names that are both nonlocal /
@@ -1416,6 +1442,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // union over ITS ancestors, so propagating it up keeps the
                 // closure visible at arbitrary depth.
                 locals.extend(state.enclosing_locals.iter().copied());
+                // Names this scope declares `global` are NOT capturable locals:
+                // a nested function reading such a name must resolve to the
+                // module global, not capture a (non-existent) cell.
+                locals.retain(|name| !state.global_names.contains(name));
                 locals
             }
         };
@@ -1483,43 +1513,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
             self.bubble_up_captured_name(captured_name, name.position)?;
         }
 
-        // Build free_var_enclosing_slots: enclosing namespace slots for captured variables
-        // At call time, cells are pushed sequentially, so we only need the enclosing slots.
-        // Sort by our slot index to ensure consistent ordering (matches namespace layout).
-        let mut free_var_entries: Vec<_> = inner_free_var_map.into_iter().collect();
-        free_var_entries.sort_by_key(|(_, our_slot)| *our_slot);
-
-        let free_var_enclosing_slots: Vec<NamespaceId> = free_var_entries
-            .into_iter()
-            .map(|(var_name, _our_slot)| self.lookup_captured_slot(var_name))
-            .collect();
-
-        // cell_var_count: number of cells to create at call time for variables captured by nested functions
-        // Slots are implicitly params.len()..params.len()+cell_var_count in the namespace layout
-        let cell_var_count = inner_cell_var_map.len();
-
-        // Build cell_param_indices: maps cell indices to parameter indices for captured parameters.
-        // When a parameter is captured by a nested function, we need to copy its value into the cell.
-        let cell_param_indices: Vec<Option<usize>> = if cell_var_count == 0 {
-            Vec::new()
-        } else {
-            // Build a map from param name (StringId) to param index
-            let param_name_to_index: AHashMap<StringId, usize> = param_names
-                .iter()
-                .enumerate()
-                .map(|(idx, &name_id)| (name_id, idx))
-                .collect();
-
-            // Sort cell_var_map entries by slot to get cells in order
-            let mut cell_entries: Vec<_> = inner_cell_var_map.iter().collect();
-            cell_entries.sort_by_key(|&(_, slot)| slot);
-
-            // For each cell (in slot order), check if it's a parameter
-            cell_entries
-                .into_iter()
-                .map(|(name, _slot)| param_name_to_index.get(name).copied())
-                .collect()
-        };
+        // Build the explicit closure-slot vectors the runtime installs at frame
+        // setup (see `install_closure_cells`): the child's own free-var slots
+        // paired with OUR slot each captured cell is read from, and the child's
+        // owned-cell slots paired with the param index each is seeded from.
+        let (free_var_slots, free_var_enclosing_slots) = self.build_free_var_slots(inner_free_var_map);
+        let (cell_var_slots, cell_param_indices) = build_cell_slots(inner_cell_var_map, &param_names);
 
         // Build the runtime Signature from the parsed signature
         let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
@@ -1576,7 +1575,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             body: prepared_body,
             namespace_size,
             free_var_enclosing_slots,
-            cell_var_count,
+            free_var_slots,
+            cell_var_slots,
             cell_param_indices,
             default_exprs,
             is_async,
@@ -1630,6 +1630,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     locals.insert(name_id);
                 }
                 locals.extend(state.enclosing_locals.iter().copied());
+                // See `prepare_function_def`: `global`-declared names are not
+                // capturable locals.
+                locals.retain(|name| !state.global_names.contains(name));
                 locals
             }
         };
@@ -1681,35 +1684,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
             self.bubble_up_captured_name(captured_name, position)?;
         }
 
-        // Build free_var_enclosing_slots
-        let mut free_var_entries: Vec<_> = inner_free_var_map.into_iter().collect();
-        free_var_entries.sort_by_key(|(_, our_slot)| *our_slot);
-
-        let free_var_enclosing_slots: Vec<NamespaceId> = free_var_entries
-            .into_iter()
-            .map(|(var_name, _our_slot)| self.lookup_captured_slot(var_name))
-            .collect();
-
-        // Build cell_param_indices
-        let cell_var_count = inner_cell_var_map.len();
-
-        let cell_param_indices: Vec<Option<usize>> = if cell_var_count == 0 {
-            Vec::new()
-        } else {
-            let param_name_to_index: AHashMap<StringId, usize> = param_names
-                .iter()
-                .enumerate()
-                .map(|(idx, &name_id)| (name_id, idx))
-                .collect();
-
-            let mut cell_entries: Vec<_> = inner_cell_var_map.iter().collect();
-            cell_entries.sort_by_key(|&(_, slot)| slot);
-
-            cell_entries
-                .into_iter()
-                .map(|(name, _slot)| param_name_to_index.get(name).copied())
-                .collect()
-        };
+        // Build the explicit closure-slot vectors the runtime installs at frame
+        // setup (see `install_closure_cells`); same shape as `prepare_function_def`.
+        let (free_var_slots, free_var_enclosing_slots) = self.build_free_var_slots(inner_free_var_map);
+        let (cell_var_slots, cell_param_indices) = build_cell_slots(inner_cell_var_map, &param_names);
 
         // Build the runtime Signature from the parsed signature
         let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
@@ -1765,7 +1743,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
             body: prepared_body,
             namespace_size,
             free_var_enclosing_slots,
-            cell_var_count,
+            free_var_slots,
+            cell_var_slots,
             cell_param_indices,
             default_exprs,
             is_async: false,
@@ -1957,6 +1936,31 @@ struct FunctionScopeInfo {
     /// OR they may be builtin/global reads. The actual implicit captures are determined
     /// by filtering against enclosing_locals in new_function.
     potential_captures: AHashSet<StringId>,
+}
+
+/// Builds the parallel owned-cell vectors for a nested scope from its cell-var
+/// map (`name -> slot`).
+///
+/// Returns `(cell_var_slots, cell_param_indices)`, ordered by slot: the slot
+/// where each fresh cell is installed at call time, and the parameter index it
+/// should be seeded from when the cell is for one of `params` (else `None`).
+fn build_cell_slots(
+    cell_var_map: AHashMap<StringId, NamespaceId>,
+    params: &[StringId],
+) -> (Vec<NamespaceId>, Vec<Option<usize>>) {
+    let param_name_to_index: AHashMap<StringId, usize> = params
+        .iter()
+        .enumerate()
+        .map(|(idx, &name_id)| (name_id, idx))
+        .collect();
+    let mut entries: Vec<_> = cell_var_map.into_iter().collect();
+    entries.sort_by_key(|(_, slot)| *slot);
+    let slots = entries.iter().map(|(_, slot)| *slot).collect();
+    let param_indices = entries
+        .iter()
+        .map(|(name, _)| param_name_to_index.get(name).copied())
+        .collect();
+    (slots, param_indices)
 }
 
 /// Scans a function body to collect scope information (first phase of preparation).
@@ -2425,6 +2429,22 @@ fn collect_cell_vars_from_node(
 ) {
     match node {
         Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+            // This nested function's *default* expressions are evaluated in OUR
+            // scope at definition time, not inside the nested function — so any
+            // name they reference that is one of our locals is captured by us,
+            // regardless of the nested function's own params/assignments (cf.
+            // the `def f(a=a)` gotcha, where the right-hand `a` is enclosing).
+            // Body references are filtered below; defaults are not.
+            for default in signature.default_exprs() {
+                let mut default_referenced = AHashSet::new();
+                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+                for name in &default_referenced {
+                    if our_locals.contains(name) {
+                        cell_vars.insert(*name);
+                    }
+                }
+            }
+
             // Find what names are referenced inside this nested function
             let mut referenced = AHashSet::new();
             for n in body {
@@ -2434,8 +2454,26 @@ fn collect_cell_vars_from_node(
             // Extract param names from signature for scope analysis
             let param_names: Vec<StringId> = signature.param_names().collect();
 
-            // Collect the nested function's own locals (params + assigned)
-            let nested_scope = collect_function_scope_info(body, &param_names, interner);
+            // Collect *only* this nested function's own bindings (params +
+            // assigned + global/nonlocal declarations). Use
+            // `collect_scope_info_from_node`, which does NOT descend into
+            // further-nested functions, rather than `collect_function_scope_info`:
+            // the latter re-runs this entire cell-var pass for the nested body,
+            // which — combined with the transitive recursion below — would make
+            // the analysis exponential in nesting depth (`C(d) = 2·C(d-1)`).
+            // The deeper captures are found by the explicit recursion instead.
+            let mut nested_global = AHashSet::new();
+            let mut nested_nonlocal = AHashSet::new();
+            let mut nested_assigned = AHashSet::new();
+            for n in body {
+                collect_scope_info_from_node(
+                    n,
+                    &mut nested_global,
+                    &mut nested_nonlocal,
+                    &mut nested_assigned,
+                    interner,
+                );
+            }
 
             // Any name that is:
             // - Referenced by the nested function
@@ -2445,9 +2483,9 @@ fn collect_cell_vars_from_node(
             // becomes a cell_var
             let nested_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
             for name in &referenced {
-                if !nested_scope.assigned_names.contains(name)
+                if !nested_assigned.contains(name)
                     && !nested_param_set.contains(name)
-                    && !nested_scope.global_names.contains(name)
+                    && !nested_global.contains(name)
                     && our_locals.contains(name)
                 {
                     cell_vars.insert(*name);
@@ -2455,9 +2493,33 @@ fn collect_cell_vars_from_node(
             }
 
             // Also check what the nested function explicitly declares as nonlocal
-            for name in &nested_scope.nonlocal_names {
+            for name in &nested_nonlocal {
                 if our_locals.contains(name) {
                     cell_vars.insert(*name);
+                }
+            }
+
+            // Transitive captures: a function nested *inside* this one can also
+            // capture one of our locals (e.g. `outer` -> `mid` -> `inner`
+            // reading an `outer` variable), unless an intermediate scope rebinds
+            // the name. Recurse into this function's body with our locals minus
+            // this function's own bindings, so deeper closures over our
+            // variables are recognised as cells *before* their references are
+            // resolved — otherwise the variable would be compiled as a plain
+            // local here and then promoted inconsistently.
+            let mut deeper_locals = our_locals.clone();
+            for param_id in &param_names {
+                deeper_locals.remove(param_id);
+            }
+            for name in &nested_assigned {
+                deeper_locals.remove(name);
+            }
+            for name in &nested_global {
+                deeper_locals.remove(name);
+            }
+            if !deeper_locals.is_empty() {
+                for n in body {
+                    collect_cell_vars_from_node(n, &deeper_locals, cell_vars, interner);
                 }
             }
         }
@@ -2575,35 +2637,34 @@ fn collect_cell_vars_from_expr(
     use crate::expressions::Expr;
     match &expr.expr {
         Expr::LambdaRaw { signature, body, .. } => {
-            // This lambda captures variables from our scope
+            // This lambda's *default* expressions are evaluated in OUR scope at
+            // definition time, not inside the lambda — so any name they
+            // reference that is one of our locals is captured by us, regardless
+            // of the lambda's own params. Crucially the default must NOT be
+            // filtered by the lambda's params: in `lambda x=(lambda: x): x()`
+            // the inner lambda captures the enclosing `x`, not the param `x`,
+            // so filtering would drop the required outer cell. Body references
+            // are filtered below; defaults are not.
+            for default in signature.default_exprs() {
+                let mut default_referenced = AHashSet::new();
+                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+                for name in &default_referenced {
+                    if our_locals.contains(name) {
+                        cell_vars.insert(*name);
+                    }
+                }
+            }
+
             // Find what names are referenced in the lambda body
             let mut referenced = AHashSet::new();
             collect_referenced_names_from_expr(body, &mut referenced, interner);
-            // Also collect from default expressions
-            for param in &signature.pos_args {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
-            }
-            for param in &signature.args {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
-            }
-            for param in &signature.kwargs {
-                if let Some(ref default) = param.default {
-                    collect_referenced_names_from_expr(default, &mut referenced, interner);
-                }
-            }
 
             // Extract param names from signature
             let param_names: Vec<StringId> = signature.param_names().collect();
 
-            // Any name that is:
-            // - Referenced by the lambda
-            // - Not a param of the lambda
-            // - In our locals
-            // becomes a cell_var
+            // A body reference becomes a cell_var if it is not one of the
+            // lambda's own params (which the lambda binds itself) and is one of
+            // our locals.
             let lambda_param_set: AHashSet<StringId> = param_names.iter().copied().collect();
             for name in &referenced {
                 if !lambda_param_set.contains(name) && our_locals.contains(name) {

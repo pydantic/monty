@@ -90,6 +90,61 @@ with Monty() as pool:
     #> 11
 ```
 
+### Snapshots: pausing and resuming execution
+
+`feed_start` is the suspendable counterpart of `feed_run`: instead of driving a
+snippet to completion, it hands control back at each external call, OS call,
+name lookup, or future resolution as a *snapshot*. You answer with
+`snapshot.resume(...)`, which returns the next snapshot or a `MontyComplete`.
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        snapshot = session.feed_start('greet(name) + "!"', inputs={'name': 'Ada'})
+        assert isinstance(snapshot, FunctionSnapshot)
+        print(snapshot.function_name, snapshot.args)
+        #> greet ('Ada',)
+        result = snapshot.resume({'return_value': 'hello Ada'})
+        assert isinstance(result, MontyComplete)
+        print(result.output)
+        #> hello Ada!
+```
+
+`snapshot.dump()` serializes the paused worker to bytes; a fresh session's
+`load_snapshot` restores it and returns the snapshot to resume. This lets you
+checkpoint execution and continue it later, even in a different process:
+
+```python
+from pydantic_monty import FunctionSnapshot, Monty, MontyComplete
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        snapshot = session.feed_start(
+            'fetch(url)', inputs={'url': 'https://example.com'}
+        )
+        blob = snapshot.dump()
+
+    # later — restore into a fresh session and resume
+    with pool.checkout() as session:
+        snapshot = session.load_snapshot(blob)
+        assert isinstance(snapshot, FunctionSnapshot)
+        result = snapshot.resume({'return_value': 'page contents'})
+        assert isinstance(result, MontyComplete)
+        print(result.output)
+        #> page contents
+```
+
+If the paused feed used filesystem `mount`s, re-supply the same ones to
+`load_snapshot(blob, mount=...)` — their host paths are not stored in the dump.
+
+`session.dump()` between feeds serializes an idle session instead; restore it
+with `session.load(blob)` (which returns `None`) and keep feeding. Both `load`
+and `load_snapshot` are valid only on a fresh session, before any feed; using
+the wrong one for a dump's kind raises. `AsyncMonty` sessions expose the same
+`feed_start` / `load` / `load_snapshot`, with awaitable `resume(...)`.
+
 ### Resource limits
 
 Limits are enforced inside the worker; the pool's `request_timeout` is a

@@ -6,7 +6,7 @@
 //! Two execution surfaces share this crate:
 //!
 //! - **The subprocess pool** ([`NativePool`]/[`NativeSession`], native targets
-//!   only): crash-isolated execution in `monty --subprocess` workers via the
+//!   only): crash-isolated execution in `monty subprocess` workers via the
 //!   `monty-pool` crate — the primary API, wrapped by `ts/` into the public
 //!   `Monty`/`MontySession` classes.
 //! - **The in-process API** ([`Monty`], [`MontyRepl`], [`MontySnapshot`],

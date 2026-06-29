@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 arbitrary = { version = "1", features = ["derive"] }
 libfuzzer-sys = "0.4"
-monty = { path = "../monty" }
+monty = { workspace = true }
 
 [[bin]]
 name = "string_input_panic"

@@ -77,6 +77,41 @@ Keyword arguments arrive as a trailing object; thrown errors cross into the
 sandbox as Python exceptions (the error's `name` is used when it matches a
 Python exception type, e.g. `TypeError`, otherwise `RuntimeError`).
 
+## Snapshots: pausing and resuming
+
+`feedStart` is the suspendable counterpart of `feedRun`: instead of driving a
+snippet to completion, it returns a snapshot at each external call, OS call, or
+name lookup. Answer it with `snapshot.resume(...)`, which resolves to the next
+snapshot or a `MontyComplete`.
+
+```ts
+import { FunctionSnapshot, MontyComplete } from '@pydantic/monty'
+
+const snap = await session.feedStart('greet(name) + "!"', { inputs: { name: 'Ada' } })
+if (snap instanceof FunctionSnapshot) {
+  // snap.functionName === 'greet', snap.args === ['Ada']
+  const done = await snap.resume('hello Ada')
+  if (done instanceof MontyComplete) console.log(done.output) // 'hello Ada!'
+}
+```
+
+`snapshot.dump()` serializes the paused worker to bytes; a fresh session's
+`loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
+same `mount`s the paused feed used — their host paths are not stored in the
+dump.
+
+```ts
+const blob = await snap.dump()
+// ...later, in a fresh session:
+const restored = await session.loadSnapshot(blob)
+if (restored instanceof FunctionSnapshot) await restored.resume('value')
+```
+
+`session.dump()` between feeds serializes an idle session instead; restore it
+with `await session.load(blob)` (which resolves to `void`) and keep feeding.
+Both `load` and `loadSnapshot` are valid only on a fresh session, before any
+feed; using the wrong one for a dump's kind throws.
+
 ## Print Output
 
 ```ts

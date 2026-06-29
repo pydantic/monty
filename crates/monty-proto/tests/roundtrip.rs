@@ -398,10 +398,10 @@ fn nest_dataclass(depth: usize) -> MontyObject {
 }
 
 /// Whether `value` decodes when shipped inside the deepest legitimate frame
-/// wrapper chain (`Request` → `ReplFeed` → `NamedValue`).
+/// wrapper chain (`Request` → `Feed` → `NamedValue`).
 fn decodes_in_frame(value: &MontyObject) -> bool {
     let request = pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: String::new(),
             inputs: vec![pb::NamedValue {
                 name: "v".to_owned(),

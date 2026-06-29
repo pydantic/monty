@@ -1,9 +1,9 @@
-//! Wire protocol shared by `monty --subprocess` children and their parents.
+//! Wire protocol shared by `monty subprocess` children and their parents.
 //!
 //! Monty executes untrusted Python, and a monty process can never be made
 //! fully crash-proof against memory errors (stack overflow, allocator
 //! aborts). The subprocess protocol isolates those crashes: a parent drives a
-//! pool of `monty --subprocess` children over stdin/stdout, and a dead child
+//! pool of `monty subprocess` children over stdin/stdout, and a dead child
 //! is simply respawned. Protobuf (rather than monty's internal postcard
 //! format) lets a parent be implemented in any language — see
 //! `proto/monty/v1/monty.proto` for the schema and protocol rules.
@@ -22,11 +22,22 @@
 mod convert;
 mod frame;
 mod generated;
+mod requirement;
 mod wire;
+
+/// The monty version this build speaks the wire protocol as, used for the
+/// `Configure.monty_version` skew check. Parent and child must be deployed in
+/// lockstep (the protocol has no in-band negotiation), so both sides compare
+/// against this single constant instead of each reading `CARGO_PKG_VERSION`
+/// independently. Equals the workspace version, since every crate shares it.
+pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use convert::{
     MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
 };
-pub use frame::{DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, write_frame};
+pub use frame::{
+    DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, write_frame,
+};
 pub use generated::pb;
-pub use wire::{WireFunctionCall, WireObject, WireOsCall};
+pub use requirement::validate_requirement;
+pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};

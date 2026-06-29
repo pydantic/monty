@@ -113,17 +113,26 @@ pub trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// Python equality comparison (`==`).
+    /// One-sided Python equality comparison (`self == other` from `self`'s side).
     ///
-    /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
-    /// computation for dict key lookups and access to interned string content.
+    /// Mirrors CPython's `__eq__`/`tp_richcompare` protocol: returns
+    /// `Ok(Some(bool))` when `self`'s type knows how to compare itself against
+    /// `other`, or `Ok(None)` for `NotImplemented` — i.e. `self`'s type does not
+    /// recognise `other`, so the caller should try the reflected `other == self`.
+    /// The reflection and the final "unequal" fallback are driven by
+    /// [`Value::py_eq`]; implementations only handle their own side and must
+    /// not attempt reflection themselves. This is the same convention as
+    /// [`py_cmp`](Self::py_cmp)'s `Option<Ordering>` (`None` = NotImplemented).
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
+    /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
+    /// directly. For containers this performs element-wise comparison using the
+    /// heap to resolve nested references; `&mut VM` allows lazy hash computation
+    /// for dict key lookups and access to interned string content.
     ///
-    /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
+    /// Recursion depth is tracked via `heap.incr_recursion_depth()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool>;
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///

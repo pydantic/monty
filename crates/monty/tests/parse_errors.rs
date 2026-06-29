@@ -659,7 +659,7 @@ fn module_with_too_many_names_returns_syntax_error() {
     assert_eq!(err.exc_type(), ExcType::SyntaxError);
     assert_eq!(
         err.message(),
-        Some("too many distinct names in scope; maximum is 65535 per scope"),
+        Some("too many distinct names in scope; maximum is 65536 per scope"),
     );
 }
 
