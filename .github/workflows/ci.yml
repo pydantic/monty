@@ -550,7 +550,14 @@ jobs:
           manylinux: ${{ matrix.manylinux || 'auto' }}
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
-          docker-options: -e CI
+          # The rustls `ring` backend ships ARMv8 `.S` assembly that `#error`s
+          # unless `__ARM_ARCH` is predefined; the old GCC in the
+          # `manylinux2014-cross:aarch64` image (used by `aarch64 - auto`) does
+          # not predefine it, so we supply it ourselves. The variable is
+          # target-triple-scoped, so it is a no-op for every other matrix entry
+          # (incl. `aarch64 - musllinux`, which is `...-linux-musl`).
+          # See https://github.com/briansmith/ring/issues/1728.
+          docker-options: -e CI -e CFLAGS_aarch64_unknown_linux_gnu=-D__ARM_ARCH=8
           working-directory: crates/monty-python
 
       # the pydantic-monty-cli wheel ships the `monty` worker binary
