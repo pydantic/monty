@@ -101,16 +101,12 @@ clap = { version = "4", features = ["derive"] }
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 # Unique, exclusively-created temp dirs (monty-cpython install dirs; pool tests).
 tempfile = "3"
-# Pulled in only to install a process-level rustls `CryptoProvider` before the
-# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
-# provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
-# tree), so naming `ring` explicitly removes the ambiguity. We use `ring` rather
-# than the default `aws-lc-rs` because aws-lc-rs's vendored C/asm fails to
-# cross-compile in our manylinux wheel containers (missing `stdatomic.h`,
-# unsupported `-march` flags). `ring` builds cleanly on every wheel target; the
-# one exception, the `aarch64 - auto` manylinux2014 cross image, is handled by a
-# `CFLAGS_aarch64_unknown_linux_gnu=-D__ARM_ARCH=8` in `.github/workflows/ci.yml`.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# Used to install a `CryptoProvider` before the first `wss://` dial (rustls 0.23
+# panics otherwise). We pick `ring` over the default `aws_lc_rs` because the
+# latter's C/asm does not cross-compile in our manylinux wheel containers.
+# `default-features = false` drops `aws_lc_rs` but also `tls12`, which we must
+# re-add or rustls negotiates TLS 1.3 only and TLS-1.2-only `wss://` servers fail.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
