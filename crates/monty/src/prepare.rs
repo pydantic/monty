@@ -2685,23 +2685,34 @@ fn collect_cell_vars_from_expr(
     use crate::expressions::Expr;
     match &expr.expr {
         Expr::LambdaRaw { signature, body, .. } => {
-            // This lambda captures variables from our scope
+            // This lambda's *default* expressions are evaluated in OUR scope at
+            // definition time, not inside the lambda — so any name they
+            // reference that is one of our locals is captured by us, regardless
+            // of the lambda's own params. Crucially the default must NOT be
+            // filtered by the lambda's params: in `lambda x=(lambda: x): x()`
+            // the inner lambda captures the enclosing `x`, not the param `x`,
+            // so filtering would drop the required outer cell. Body references
+            // are filtered below; defaults are not.
+            for default in signature.default_exprs() {
+                let mut default_referenced = AHashSet::new();
+                collect_referenced_names_from_expr(default, &mut default_referenced, interner);
+                for name in &default_referenced {
+                    if our_locals.contains(name) {
+                        cell_vars.insert(name.clone());
+                    }
+                }
+            }
+
             // Find what names are referenced in the lambda body
             let mut referenced = AHashSet::new();
             collect_referenced_names_from_expr(body, &mut referenced, interner);
-            // Also collect from default expressions (evaluated in our scope).
-            for default in signature.default_exprs() {
-                collect_referenced_names_from_expr(default, &mut referenced, interner);
-            }
 
             // Extract param names from signature
             let param_names: Vec<StringId> = signature.param_names().collect();
 
-            // Any name that is:
-            // - Referenced by the lambda
-            // - Not a param of the lambda
-            // - In our locals
-            // becomes a cell_var
+            // A body reference becomes a cell_var if it is not one of the
+            // lambda's own params (which the lambda binds itself) and is one of
+            // our locals.
             for name in &referenced {
                 if !param_names.iter().any(|p| interner.get_str(*p) == name) && our_locals.contains(name) {
                     cell_vars.insert(name.clone());

@@ -358,3 +358,37 @@ def outer_with_global_mid():
 
 
 assert outer_with_global_mid() == 100, 'global in mid routes inner past the outer local'
+
+
+# === Lambda whose default is a capturing lambda ===
+# The default `(lambda: x)` is evaluated in the enclosing scope, so its `x`
+# captures the enclosing `x` — NOT the outer lambda's same-named param. The
+# cell-var pre-pass must therefore scan lambda defaults without filtering by the
+# lambda's own params, else the enclosing cell is missed (the closure build then
+# fails). `y` reads `x` first to pin that the owner stays consistent with the
+# late-promoted cell.
+def lambda_default_capture():
+    x = 10
+    y = x + 1
+    g = lambda x=(lambda: x): x()
+    return y, g()
+
+
+assert lambda_default_capture() == (11, 10), 'lambda default captures enclosing same-named var'
+
+
+# The same capture works two levels up and survives owner mutation after the
+# inner closure is built (a shared cell, not a snapshot).
+def lambda_default_two_level():
+    v = 1
+
+    def mid():
+        g = lambda x=(lambda: v): x
+        return g()
+
+    inner = mid()
+    v = 42  # mutated after the default closure was created
+    return inner()
+
+
+assert lambda_default_two_level() == 42, 'lambda default capture two levels up sees later mutation'
