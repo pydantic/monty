@@ -21,7 +21,7 @@ use std::{
     sync::{Mutex, PoisonError},
 };
 
-use monty::{ExtFunctionResult, MontyObject, NameLookupResult};
+use monty::{ExtFunctionResult, MontyException, MontyObject, NameLookupResult};
 use monty_cpython::{
     run_with_transport,
     transport::{Incoming, SendError, Transport},
@@ -198,27 +198,27 @@ fn drives_a_full_session() {
         })
         .expect("an Error event");
     assert_eq!(error.exc_type, "ZeroDivisionError");
-    // The error carries the sandbox traceback: a single module-level frame for
-    // the trailing `1 / 0` expression on line 1, compiled under the configured
-    // `script_name` (driver frames are filtered).
-    let frames: Vec<(&str, u32, Option<&str>)> = error
-        .traceback
-        .iter()
-        .map(|f| {
-            (
-                f.filename.as_str(),
-                f.start.as_ref().unwrap().line,
-                f.frame_name.as_deref(),
-            )
-        })
-        .collect();
-    assert_eq!(frames, vec![("main.py", 1, None)]);
+    // The error carries the full sandbox traceback: a single module-level frame
+    // for the trailing `1 / 0` expression on line 1 (reported under the
+    // configured `script_name`, driver frames filtered), with a source preview
+    // and carets under the failing span.
+    let rendered = MontyException::try_from(error.clone())
+        .expect("valid exception")
+        .to_string();
+    assert_eq!(
+        rendered,
+        "Traceback (most recent call last):\n  \
+         File \"main.py\", line 1, in <module>\n    \
+         1 / 0\n    ~~~~~\n\
+         ZeroDivisionError: division by zero"
+    );
 }
 
 /// A sandbox exception raised through nested user frames carries a multi-frame
-/// CPython traceback back to the parent: one `StackFrame` per user frame,
-/// outermost first, with the configured `script_name` filename, line numbers,
-/// and function names. The `runner.py` driver frames are filtered out.
+/// CPython traceback back to the parent: one frame per user frame, outermost
+/// first, under the configured `script_name`, each with a source preview. Carets
+/// follow CPython — shown under the `f()` call, hidden for the `raise` — and the
+/// `runner.py` driver frames are filtered out.
 #[test]
 fn error_carries_multi_frame_traceback() {
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -250,20 +250,112 @@ fn error_carries_multi_frame_traceback() {
     assert_eq!(error.exc_type, "ValueError");
     assert_eq!(error.message.as_deref(), Some("boom"));
 
-    // Outermost first: the module-level `f()` call on line 4, then the `raise`
-    // inside `f` on line 2.
-    let frames: Vec<(&str, u32, Option<&str>)> = error
-        .traceback
+    // Outermost first: the module-level `f()` call on line 4 (carets shown),
+    // then the `raise` inside `f` on line 2 (carets hidden, matching CPython).
+    let rendered = MontyException::try_from(error.clone())
+        .expect("valid exception")
+        .to_string();
+    assert_eq!(
+        rendered,
+        "Traceback (most recent call last):\n  \
+         File \"main.py\", line 4, in <module>\n    \
+         f()\n    ~~~\n  \
+         File \"main.py\", line 2, in f\n    \
+         raise ValueError('boom')\n\
+         ValueError: boom"
+    );
+}
+
+/// Caret columns are character offsets, not bytes: a non-ASCII preview line
+/// still underlines the right span. CPython reports the failing span as UTF-8
+/// byte offsets (end byte 12 for the 11-character `'héllo' + 1`); the rebuilt
+/// frame converts them to characters so the carets span all 11 characters.
+#[test]
+fn traceback_carets_are_character_aligned() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed("'héllo' + 1"), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
         .iter()
-        .map(|f| {
-            (
-                f.filename.as_str(),
-                f.start.as_ref().unwrap().line,
-                f.frame_name.as_deref(),
-            )
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
         })
-        .collect();
-    assert_eq!(frames, vec![("main.py", 4, None), ("main.py", 2, Some("f"))]);
+        .expect("an Error event");
+
+    assert_eq!(error.exc_type, "TypeError");
+    let rendered = MontyException::try_from(error.clone())
+        .expect("valid exception")
+        .to_string();
+    assert_eq!(
+        rendered,
+        "Traceback (most recent call last):\n  \
+         File \"main.py\", line 1, in <module>\n    \
+         'héllo' + 1\n    ~~~~~~~~~~~\n\
+         TypeError: can only concatenate str (not \"int\") to str"
+    );
+}
+
+/// Source previews resolve across feeds: a function defined in one feed and
+/// called from a later one still renders its own source line. This is why each
+/// feed compiles under a unique internal filename with its source registered in
+/// `linecache` — a single shared filename would collide on line numbers and show
+/// the wrong (or no) preview for the earlier feed's frame.
+#[test]
+fn traceback_preview_resolves_across_feeds() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            // Feed 1 defines `boom` (the `return` is on line 2) and completes.
+            feed("def boom():\n    return undefined_xyz"),
+            // Feed 2 calls it; the NameError unwinds through feed 1's line 2.
+            feed("boom()"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+
+    assert_eq!(error.exc_type, "NameError");
+    // The `boom` frame's preview is feed 1's `return undefined_xyz`, even though
+    // the error surfaced in feed 2 (whose source has no line 2).
+    let rendered = MontyException::try_from(error.clone())
+        .expect("valid exception")
+        .to_string();
+    assert_eq!(
+        rendered,
+        "Traceback (most recent call last):\n  \
+         File \"main.py\", line 1, in <module>\n    \
+         boom()\n    ~~~~~~\n  \
+         File \"main.py\", line 2, in boom\n    \
+         return undefined_xyz\n           ~~~~~~~~~~~~~\n\
+         NameError: name 'undefined_xyz' is not defined"
+    );
 }
 
 /// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams

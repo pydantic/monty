@@ -53,28 +53,45 @@ const RUNNER: &CStr = match CStr::from_bytes_with_nul(concat!(include_str!("runn
     Err(_) => panic!("runner.py must not contain a NUL byte"),
 };
 
-pub struct Runner(Py<PyAny>);
+/// The compiled `RUNNER` module, providing the REPL runner (`run`) and the
+/// traceback rebuilder (`extract_traceback`) the session calls.
+pub struct Runner {
+    run: Py<PyAny>,
+    extract_traceback: Py<PyAny>,
+}
 
 impl Runner {
-    /// Compiles [`RUNNER`] into a module whose `run` the session uses to execute
-    /// feeds.
+    /// Compiles [`RUNNER`] into the module the session drives feeds through.
     pub fn new(py: Python<'_>) -> PyResult<Self> {
         let module = PyModule::from_code(py, RUNNER, c"runner.py", c"runner")?;
-        let run_function = module.getattr("run")?;
-        Ok(Self(run_function.unbind()))
+        Ok(Self {
+            run: module.getattr("run")?.unbind(),
+            extract_traceback: module.getattr("extract_traceback")?.unbind(),
+        })
     }
 
-    /// Runs `code` in `namespace`, compiling it under `script_name` so CPython
-    /// tracebacks report the session's filename (see `runner.py`'s `run`).
+    /// Runs `code` in `namespace`, returning the trailing expression's value.
+    /// The snippet compiles under an internal `<input-N>` filename (see
+    /// `runner.py`'s `run`); the parent-visible name is applied when a traceback
+    /// is rebuilt via [`Runner::traceback_extractor`].
     pub fn run<'py>(
         &self,
         py: Python<'py>,
         code: String,
         namespace: &Bound<'py, SandboxGlobals>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.run.bind(py).call1((code, namespace))
+    }
+
+    /// Extracts a structured traceback from the given `traceback` object, using
+    /// `script_name` as the filename for the traceback's frames.
+    pub fn extract_traceback<'py>(
+        &self,
+        py: Python<'py>,
+        traceback: &Bound<'py, PyAny>,
         script_name: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let run_function = self.0.bind(py);
-        run_function.call1((code, namespace, script_name))
+        self.extract_traceback.bind(py).call1((traceback, script_name))
     }
 }
 

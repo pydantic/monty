@@ -300,7 +300,7 @@ impl Session {
             return event;
         }
 
-        match self.runner.run(py, feed.code, &namespace, &script_name) {
+        match self.runner.run(py, feed.code, &namespace) {
             Ok(value) => match py_to_monty_value(&value, &dc) {
                 Ok(value) if exceeds_max_value_depth(&value) => error_event(
                     ExcType::RuntimeError,
@@ -310,12 +310,12 @@ impl Session {
                 Err(exc) => error_from_exception(&exc),
             },
             Err(err) => {
-                // The sandbox raised: convert the type/message, then walk the
-                // CPython traceback to attach the user frames (those compiled
-                // under `script_name`) so the parent gets a real stack rather
-                // than a bare `Type: message`.
+                // The sandbox raised: convert the type/message, then rebuild the
+                // CPython traceback into structured frames (reported under
+                // `script_name`) so the parent gets a real stack with source
+                // previews and carets rather than a bare `Type: message`.
                 let mut exc = exc_py_to_monty(py, &err);
-                exc.add_traceback(py_traceback_frames(py, &err, &script_name));
+                exc.add_traceback(py_traceback_frames(py, &self.runner, &err, &script_name));
                 error_from_exception(&exc)
             }
         }
