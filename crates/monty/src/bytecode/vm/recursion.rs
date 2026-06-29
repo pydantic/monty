@@ -138,11 +138,6 @@ impl<'h, T: ResourceTracker> ContainsVM<'h> for VM<'h, T> {
 /// There is deliberately no blanket impl over `DropWithHeap` (it would overlap
 /// the `RecursionToken` impl under coherence) — implementers drop their plain
 /// heap fields via `drop_with_heap(container)` directly (`ContainsVM: ContainsHeap`).
-///
-/// The `'h: 'c` bound is what lets [`ContainsVM::vm`] hand back a `&mut VM<'h, _>`:
-/// the returned borrow lives for `'c`, and `VM<'h, _>` is only well-formed for a
-/// borrow the brand outlives. Callers discharge it from the implied bound on
-/// [`VmGuard`]'s `&mut VM<'h, _>` phantom (`'h: 'a`), so it never surfaces.
 pub(crate) trait DropWithVM<'h>: Sized {
     fn drop_with_vm(self, container: &mut impl ContainsVM<'h>);
 }
