@@ -18,7 +18,7 @@ use crate::{
     bytecode::{VM, VMSnapshot},
     defer_drop,
     exception_private::RunError,
-    heap::{DropWithHeap, Heap, HeapReader},
+    heap::{DropWithContext, Heap, HeapReader},
     heap_data::HeapData,
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
@@ -400,7 +400,7 @@ impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
 
 impl<T: ResourceTracker> Drop for MontyRepl<T> {
     fn drop(&mut self) {
-        self.globals.drain(..).drop_with_heap(&mut self.heap);
+        self.globals.drain(..).drop_with(&mut self.heap);
     }
 }
 
@@ -722,7 +722,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                         &mut vm.stack[stack_base + slot_idx]
                     };
                     let old = mem::replace(slot, cloned);
-                    old.drop_with_heap(&mut vm);
+                    old.drop_with(&mut vm);
 
                     vm.push(value);
                     vm.run_external()
@@ -1008,7 +1008,7 @@ fn inject_inputs_into_vm(
             .to_value(vm)
             .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
         let old = mem::replace(&mut vm.globals[slot.index()], value);
-        old.drop_with_heap(vm);
+        old.drop_with(vm);
     }
     Ok(())
 }
@@ -1126,7 +1126,7 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
             match iter.next().expect("checked len").to_value(vm) {
                 Ok(b) => Ok(ArgValues::Two(a, b)),
                 Err(e) => {
-                    a.drop_with_heap(&mut *vm);
+                    a.drop_with(&mut *vm);
                     Err(MontyException::runtime_error(format!("invalid argument type: {e}")))
                 }
             }
@@ -1137,7 +1137,7 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
                 match arg.to_value(vm) {
                     Ok(value) => values.push(value),
                     Err(e) => {
-                        values.drain(..).drop_with_heap(&mut *vm);
+                        values.drain(..).drop_with(&mut *vm);
                         return Err(MontyException::runtime_error(format!("invalid argument type: {e}")));
                     }
                 }

@@ -37,7 +37,7 @@ pub(crate) enum ArgErrCtx {
 /// Coerces a `Value` into `Self`, consuming the value and handling refcount
 /// cleanup on both success and failure paths.
 ///
-/// Implementations *must* call `drop_with_heap` on the input value once any
+/// Implementations *must* call `drop_with` on the input value once any
 /// heap-allocated data has been extracted (typically: read out a primitive or
 /// `String`, then drop). The identity impl for `Value` is the only exception:
 /// it transfers ownership of the value into `Self` instead of dropping it.
@@ -60,7 +60,7 @@ pub(crate) trait FromValue: Sized {
     /// been dropped before returning.
     ///
     /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
-    /// and call `drop_with_heap` on the input; this also lets `LaxBool` route
+    /// and call `drop_with` on the input; this also lets `LaxBool` route
     /// through `PyTrait::py_bool`.
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self>;
 
@@ -121,7 +121,7 @@ impl FromValue for Value {
     }
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
-        self.drop_with_heap(heap);
+        self.drop_with(heap);
     }
 }
 
@@ -130,7 +130,7 @@ impl FromValue for i32 {
 
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = value.to_i32();
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -144,7 +144,7 @@ impl FromValue for i64 {
             Value::Int(i) => Ok(i),
             _ => Err(type_error_integer_required()),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -161,7 +161,7 @@ impl FromValue for i128 {
             Value::Int(i) => Ok(Self::from(i)),
             _ => Err(type_error_integer_required()),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -174,7 +174,7 @@ impl FromValue for bool {
             Value::Bool(b) => Ok(b),
             _ => Err(type_error_bool_required()),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -187,7 +187,7 @@ impl FromValue for String {
             Some(either) => Ok(either.into_string(vm.interns)),
             None => Err(type_error_string_required()),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -237,7 +237,7 @@ pub(crate) struct LaxBool(bool);
 impl FromValue for LaxBool {
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = value.py_bool(vm);
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         Ok(Self(result))
     }
 }

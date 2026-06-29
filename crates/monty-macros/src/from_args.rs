@@ -299,8 +299,8 @@ impl Signature {
 
     fn render(&self) -> TokenStream {
         let struct_ident = &self.struct_ident;
-        // Dedicated owning-slots struct for this signature. A `HeapGuard`
-        // around it centralises error-path cleanup in one `DropWithHeap` impl
+        // Dedicated owning-slots struct for this signature. A `DropGuard`
+        // around it centralises error-path cleanup in one `DropWithContext` impl
         // instead of re-inlining a drop for every slot at every error exit —
         // which previously made the generated code O(fields²) and dominated
         // the crate's macro-expansion compile time.
@@ -338,18 +338,18 @@ impl Signature {
         quote! {
             /// Owning slots for the corresponding `from_args`. Holds each
             /// extracted argument (and the `*args` / `**kwargs` collections)
-            /// until the final struct is built. Its `DropWithHeap` impl drops
-            /// every populated slot, so a `HeapGuard` around it keeps refcounts
+            /// until the final struct is built. Its `DropWithContext` impl drops
+            /// every populated slot, so a `DropGuard` around it keeps refcounts
             /// balanced on every error path without inlining cleanup per exit.
             struct #slots_struct_ident {
                 #slot_struct_fields
             }
 
             #[automatically_derived]
-            impl crate::heap::DropWithHeap for #slots_struct_ident {
-                fn drop_with_heap<H: crate::heap::ContainsHeap>(self, heap: &mut H) {
+            impl<__C: crate::heap::ContainsHeap> crate::heap::DropWithContext<__C> for #slots_struct_ident {
+                fn drop_with(self, heap: &mut __C) {
                     use crate::args::FromValue as _; // allow local import
-                    use crate::heap::DropWithHeap as _; // allow local import
+                    use crate::heap::DropWithContext as _; // allow local import
                     #drop_impl_body
                 }
             }
@@ -358,24 +358,24 @@ impl Signature {
             impl #struct_ident {
                 /// Extract arguments into `Self`. On any error path, every
                 /// already-extracted heap value is dropped via the slots
-                /// struct's `DropWithHeap` impl (driven by a `HeapGuard`), so
+                /// struct's `DropWithContext` impl (driven by a `DropGuard`), so
                 /// refcounts stay balanced.
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
                 ) -> crate::exception_private::RunResult<Self> {
                     use crate::args::FromValue as _; // allow local import
-                    use crate::heap::DropWithHeap as _; // allow local import
+                    use crate::heap::DropWithContext as _; // allow local import
 
                     let (mut __pos_iter, __kwargs_holder) = args.into_parts();
                     let mut __kwargs_iter = __kwargs_holder.into_iter();
 
                     // All owning slots live in `__slots`, guarded so they are
-                    // dropped on every error path by a single `DropWithHeap`
+                    // dropped on every error path by a single `DropWithContext`
                     // impl. The two iterators stay local: `__cleanup!` drains
                     // them explicitly (a fixed 2-line cost, independent of the
                     // field count), then returns so `__guard` drops `__slots`.
-                    let mut __guard = crate::heap::HeapGuard::new(
+                    let mut __guard = crate::heap::DropGuard::new(
                         #slots_struct_ident { #slot_struct_inits },
                         vm,
                     );
@@ -383,8 +383,8 @@ impl Signature {
 
                     macro_rules! __cleanup {
                         ($err:expr) => {{
-                            __pos_iter.drop_with_heap(vm);
-                            __kwargs_iter.drop_with_heap(vm);
+                            __pos_iter.drop_with(vm);
+                            __kwargs_iter.drop_with(vm);
                             return ::std::result::Result::Err($err);
                         }};
                     }
@@ -737,18 +737,18 @@ impl Signature {
         quote! { #(#inits)* }
     }
 
-    /// Body of the slots struct's `DropWithHeap` impl. Consumes `self` by value
+    /// Body of the slots struct's `DropWithContext` impl. Consumes `self` by value
     /// and drops each populated slot exactly once. Generated once per signature
     /// (not re-inlined at every error exit), so this is the sole copy of the
     /// cleanup logic the compiler has to type- and borrow-check.
     fn render_drop_impl_body(&self, slots: &[Ident]) -> TokenStream {
         let drops = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
             FieldKind::Varargs => quote! {
-                self.#slot.drop_with_heap(heap);
+                self.#slot.drop_with(heap);
             },
             FieldKind::Varkwargs => quote! {
                 for (_, __v) in self.#slot {
-                    __v.drop_with_heap(heap);
+                    __v.drop_with(heap);
                 }
             },
             _ => {
@@ -789,7 +789,7 @@ impl Signature {
             let err_expr = self.at_most_err_expr(0, &quote!(__actual));
             return quote! {
                 if let ::std::option::Option::Some(__arg) = ::std::iter::Iterator::next(&mut __pos_iter) {
-                    __arg.drop_with_heap(vm);
+                    __arg.drop_with(vm);
                     let __actual = 1
                         + ::std::iter::ExactSizeIterator::len(&__pos_iter)
                         + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
@@ -823,7 +823,7 @@ impl Signature {
                     // positionals *and* kwargs in `__actual` so the count
                     // matches CPython's "(M given)" total. `__cleanup!`
                     // drains both iterators.
-                    __arg.drop_with_heap(vm);
+                    __arg.drop_with(vm);
                     let __actual = __pos_count
                         + 1
                         + ::std::iter::ExactSizeIterator::len(&__pos_iter)
@@ -914,30 +914,30 @@ impl Signature {
             quote! {
                 let Some(__id) = __key_str.string_id() else {
                     // TODO: intern heap-string keys via `Interns` instead of rejecting.
-                    (__key, __value).drop_with_heap(vm);
+                    (__key, __value).drop_with(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
-                __key.drop_with_heap(vm);
+                __key.drop_with(vm);
                 #varkwargs_slot.push((__id, __value));
             }
         } else if defer_unknown {
             // Stash first unknown key; emit it later only if every required
             // field was filled. See `defer_unknown_kwarg`.
             quote! {
-                __value.drop_with_heap(vm);
+                __value.drop_with(vm);
                 if __unknown_kwarg.is_none() {
                     __unknown_kwarg = ::std::option::Option::Some(__key_str.as_str(vm.interns).to_owned());
                 }
-                __key.drop_with_heap(vm);
+                __key.drop_with(vm);
             }
         } else {
             // `json.dumps` uses `kwarg_error_name` to report
             // `JSONEncoder.__init__()` here while arity errors keep `dumps`.
             let func_name = self.kwarg_error_name.as_deref().unwrap_or(self.func_name.as_str());
             quote! {
-                __value.drop_with_heap(vm);
+                __value.drop_with(vm);
                 let __unexpected = __key_str.as_str(vm.interns).to_owned();
-                __key.drop_with_heap(vm);
+                __key.drop_with(vm);
                 __cleanup!(crate::exception_private::ExcType::type_error_unexpected_keyword(#func_name, &__unexpected));
             }
         };
@@ -954,7 +954,7 @@ impl Signature {
                 let func_name = &self.func_name;
                 pos_only_arms.push(quote! {
                     if __key_str.matches(#key_id_expr, vm.interns) {
-                        (__key, __value).drop_with_heap(vm);
+                        (__key, __value).drop_with(vm);
                         __cleanup!(crate::exception_private::ExcType::type_error_positional_only(#func_name, #field_name_lit));
                     } else
                 });
@@ -966,7 +966,7 @@ impl Signature {
         quote! {
             while let ::std::option::Option::Some((__key, __value)) = ::std::iter::Iterator::next(&mut __kwargs_iter) {
                 let ::std::option::Option::Some(__key_str) = __key.as_either_str(vm.heap) else {
-                    (__key, __value).drop_with_heap(vm);
+                    (__key, __value).drop_with(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
                 #(#pos_only_arms)*
@@ -985,7 +985,7 @@ impl Signature {
                 FieldKind::Varargs | FieldKind::Varkwargs => {
                     // The slot lives behind `&mut __slots`, so move its contents
                     // out with `mem::take`. This also leaves the slot empty, so
-                    // the guard's eventual `DropWithHeap` is a no-op for it.
+                    // the guard's eventual `DropWithContext` is a no-op for it.
                     if matches!(field.kind, FieldKind::Varkwargs) {
                         // Empty vec collapses to `Empty` for cheap caller checks.
                         quote! {
@@ -1062,9 +1062,9 @@ impl Signature {
         let extract = self.render_from_value_call(ty, slot, pos, &arg_name, &value_ident);
         quote! {
             if __key_str.matches(#key_id_expr, vm.interns) {
-                __key.drop_with_heap(vm);
+                __key.drop_with(vm);
                 if #slot.is_some() {
-                    __value.drop_with_heap(vm);
+                    __value.drop_with(vm);
                     __cleanup!(#conflict_expr);
                 }
                 #extract
@@ -1084,9 +1084,9 @@ impl Signature {
         let extract = self.render_from_value_call(ty, slot, 0, &arg_name, &value_ident);
         quote! {
             if __key_str.matches(#key_id_expr, vm.interns) {
-                __key.drop_with_heap(vm);
+                __key.drop_with(vm);
                 if #slot.is_some() {
-                    __value.drop_with_heap(vm);
+                    __value.drop_with(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_multiple_values(
                         #func_name,
                         #field_name_lit,

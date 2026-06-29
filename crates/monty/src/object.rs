@@ -344,12 +344,12 @@ impl MontyObject {
     /// Converts a `Value` into a `MontyObject`, properly handling reference counting.
     ///
     /// Takes ownership of the `Value`, extracts its content to create a MontyObject,
-    /// then properly drops the Value via `drop_with_heap` to maintain reference counting.
+    /// then properly drops the Value via `drop_with` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
     pub(crate) fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
         let py_obj = Self::from_value(&value, vm);
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         py_obj
     }
 

@@ -288,7 +288,7 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         }
         Some(other) => {
             let t = other.py_type(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer for 'count' argument"
             )));
@@ -457,7 +457,7 @@ fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -
         Some(Value::Bool(b)) => Ok(usize::from(b)),
         Some(other) => {
             let t = other.py_type(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             Err(ExcType::type_error(format!("expected int for maxsplit, not {t}")))
         }
     }
@@ -492,7 +492,7 @@ fn extract_flags(flags_val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>
         Some(Value::Bool(b)) => Ok(u16::from(b)),
         Some(other) => {
             let t = other.py_type(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             Err(ExcType::type_error(format!("expected int for flags, not {t}")))
         }
         None => Ok(0),
@@ -528,7 +528,7 @@ fn extract_pattern_string_flags(
     let flags = extract_flags(pos.next(), vm)?;
 
     if let Some(extra) = pos.next() {
-        extra.drop_with_heap(vm);
+        extra.drop_with(vm);
         return Err(ExcType::type_error(format!(
             "{func_name}() takes at most 3 positional arguments"
         )));

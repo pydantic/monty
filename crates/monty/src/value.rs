@@ -20,7 +20,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_python_long_int, hash_python_str},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{
@@ -90,9 +90,9 @@ pub(crate) enum Value {
     // Heap-allocated values (stored in arena)
     Ref(HeapId),
 
-    /// Sentinel value indicating this Value was properly cleaned up via `drop_with_heap`.
+    /// Sentinel value indicating this Value was properly cleaned up via `drop_with`.
     /// Only exists when `memory-model-checks` feature is enabled. Used to verify reference counting
-    /// correctness - if a `Ref` variant is dropped without calling `drop_with_heap`, the
+    /// correctness - if a `Ref` variant is dropped without calling `drop_with`, the
     /// Drop impl will panic.
     #[cfg(feature = "memory-model-checks")]
     Dereferenced,
@@ -104,14 +104,14 @@ pub(crate) enum Value {
 /// Must match the per-element unit used by `py_estimate_size` implementations.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
-/// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
+/// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with`.
 /// This helps catch reference counting bugs during development/testing.
 /// Only enabled when the `memory-model-checks` feature is active.
 #[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
         if let Self::Ref(id) = self {
-            panic!("Value::Ref({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug");
+            panic!("Value::Ref({id:?}) dropped without calling drop_with() - this is a reference counting bug");
         }
     }
 }
@@ -1376,6 +1376,18 @@ impl PyTrait<'_> for Value {
     }
 }
 
+/// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
+/// context — `Heap`, `HeapReader`, `VM`, or the json `Encoder`. Forwards to the
+/// inherent [`Value::drop_with`], which also serves direct callers.
+impl<C: ContainsHeap> DropWithContext<C> for Value {
+    #[inline]
+    fn drop_with(self, ctx: &mut C) {
+        // Resolves to the inherent `Value::drop_with` (inherent methods take
+        // priority), not this trait method — so no recursion.
+        Self::drop_with(self, ctx);
+    }
+}
+
 impl Value {
     /// Returns the Python `Type` for this value using only `&Heap` (no full VM borrow).
     ///
@@ -1617,7 +1629,7 @@ impl Value {
                         for i in 0..len {
                             let el = list.clone_item(i, vm);
                             let eq = item.py_eq(&el, vm);
-                            el.drop_with_heap(vm);
+                            el.drop_with(vm);
                             if eq? {
                                 return Ok(true);
                             }
@@ -1629,7 +1641,7 @@ impl Value {
                         for i in 0..len {
                             let el = tuple.clone_item(i, vm);
                             let eq = item.py_eq(&el, vm);
-                            el.drop_with_heap(vm);
+                            el.drop_with(vm);
                             if eq? {
                                 return Ok(true);
                             }
@@ -1649,9 +1661,9 @@ impl Value {
                         let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
                             return Ok(false);
                         };
-                        let mut key_guard = HeapGuard::new(key, vm);
+                        let mut key_guard = DropGuard::new(key, vm);
                         let (key, vm) = key_guard.as_parts_mut();
-                        let mut value_guard = HeapGuard::new(value, vm);
+                        let mut value_guard = DropGuard::new(value, vm);
                         let (value, vm) = value_guard.as_parts_mut();
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
                             panic!("dict_items view must reference a dict");
@@ -1659,7 +1671,7 @@ impl Value {
                         match dict.dict_get(key, vm) {
                             Ok(Some(existing_value)) => {
                                 let result = value.py_eq(&existing_value, vm);
-                                existing_value.drop_with_heap(vm);
+                                existing_value.drop_with(vm);
                                 result
                             }
                             Ok(None) => Ok(false),
@@ -1686,7 +1698,7 @@ impl Value {
                                 dict.get(vm.heap).value_at(i).expect("index valid").clone_immediate()
                             };
                             let eq = item.py_eq(&el, vm);
-                            el.drop_with_heap(vm);
+                            el.drop_with(vm);
                             if eq? {
                                 return Ok(true);
                             }
@@ -1793,18 +1805,18 @@ impl Value {
                         EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
                     };
                     let old_value = dc.set_attr(name_value, value, vm)?;
-                    old_value.drop_with_heap(vm);
+                    old_value.drop_with(vm);
                     Ok(())
                 }
                 other => {
                     let type_name = other.py_type(vm);
-                    value.drop_with_heap(vm);
+                    value.drop_with(vm);
                     Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
                 }
             }
         } else {
             let type_name = self.py_type(vm);
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
         }
     }
@@ -1982,7 +1994,7 @@ impl Value {
     /// a value to prevent memory leaks.
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
-    pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
+    pub fn drop_with(self, heap: &mut impl ContainsHeap) {
         if let Self::Ref(id) = self {
             heap.heap_mut().dec_ref(id);
         }
@@ -1991,7 +2003,7 @@ impl Value {
     /// the original is forgotten to prevent the Drop impl from panicking. Non-Ref variants
     /// are left unchanged since they don't trigger the Drop panic.
     #[cfg(feature = "memory-model-checks")]
-    pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
+    pub fn drop_with(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
             heap.heap_mut().dec_ref(*id);
@@ -2686,7 +2698,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests that `as_index()` correctly handles a negative LongInt that fits in i64.
@@ -2701,7 +2713,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests that `as_index()` returns IndexError for LongInt values too large for i64.
@@ -2718,7 +2730,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests that `as_int()` correctly handles a LongInt containing an i64-fitting value.
@@ -2735,7 +2747,7 @@ mod tests {
             value.as_int(&vm)
         });
         assert_eq!(result.unwrap(), 12345);
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests that `as_int()` returns an error for LongInt values too large for i64.
@@ -2751,7 +2763,7 @@ mod tests {
             value.as_int(&vm)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests boundary values: i64::MAX as a LongInt.
@@ -2766,7 +2778,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests boundary values: i64::MIN as a LongInt.
@@ -2781,7 +2793,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests boundary values: i64::MAX + 1 as a LongInt (should fail).
@@ -2797,7 +2809,7 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 
     /// Tests boundary values: i64::MIN - 1 as a LongInt (should fail).
@@ -2813,6 +2825,6 @@ mod tests {
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        value.drop_with(&mut heap);
     }
 }

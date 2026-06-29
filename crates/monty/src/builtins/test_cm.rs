@@ -45,7 +45,7 @@ pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
         defer_drop!(behavior_value, vm);
         let Some(behavior_str) = value_as_owned_str(behavior_value, vm) else {
             if let Some(p) = payload {
-                p.drop_with_heap(vm);
+                p.drop_with(vm);
             }
             return Err(ExcType::type_error(format!(
                 "_test_cm() behavior must be str, not {}",
@@ -55,7 +55,7 @@ pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
         configure(&mut cm, &behavior_str, payload, vm)?;
     } else if let Some(p) = payload {
         // payload supplied with no behavior is a usage error
-        p.drop_with_heap(vm);
+        p.drop_with(vm);
         return Err(ExcType::type_error(
             "_test_cm() payload requires a leading behavior argument".to_owned(),
         ));
@@ -91,7 +91,7 @@ fn configure(
     match behavior {
         "suppress" => {
             if let Some(p) = payload {
-                p.drop_with_heap(vm);
+                p.drop_with(vm);
                 return Err(ExcType::type_error("_test_cm('suppress') takes no payload".to_owned()));
             }
             cm.suppress = true;
@@ -119,7 +119,7 @@ fn configure(
         }
         other => {
             if let Some(p) = payload {
-                p.drop_with_heap(vm);
+                p.drop_with(vm);
             }
             return Err(ExcType::type_error(format!("_test_cm() unknown behavior '{other}'")));
         }

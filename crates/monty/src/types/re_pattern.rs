@@ -418,7 +418,7 @@ fn call_pattern_sub<'h>(
         }
         Some(other) => {
             let t = other.py_type(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             return Err(ExcType::type_error(format!("expected int for count, not {t}")));
         }
         None => 0,
@@ -498,7 +498,7 @@ fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -
         Some(Value::Bool(b)) => Ok(usize::from(b)),
         Some(other) => {
             let t = other.py_type(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             Err(ExcType::type_error(format!("expected int for maxsplit, not {t}")))
         }
     }

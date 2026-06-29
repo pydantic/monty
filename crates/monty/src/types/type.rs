@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData},
+    heap::{DropWithContext, Heap, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
@@ -383,7 +383,7 @@ impl Type {
             }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
-                args.drop_with_heap(vm.heap);
+                args.drop_with(vm.heap);
                 Err(ExcType::attribute_error(self, method_name))
             }
         }

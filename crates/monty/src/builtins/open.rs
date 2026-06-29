@@ -15,7 +15,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     os::{MontyPath, OpenCallArgs, OsFunctionCall},
     resource::ResourceTracker,
     types::{PyTrait, file::FileMode},
@@ -45,7 +45,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 
     // `mode` is already a `String` from the macro (default `"r"`); `file`
     // and the unsupported kwargs are still raw `Value`s and need cleanup.
-    let mut file = HeapGuard::new(file, vm);
+    let mut file = DropGuard::new(file, vm);
     let (file, vm) = file.as_parts_mut();
     defer_drop!(buffering, vm);
     defer_drop!(encoding, vm);

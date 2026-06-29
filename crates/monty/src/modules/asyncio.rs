@@ -132,7 +132,7 @@ pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
             #[cfg(feature = "memory-model-checks")]
             arg.dec_ref_forget();
         } else {
-            arg.drop_with_heap(vm.heap);
+            arg.drop_with(vm.heap);
             for id in items {
                 vm.heap.dec_ref(id);
             }

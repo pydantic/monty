@@ -22,7 +22,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     os::{MontyPath, build_path_os_call, is_path_os_method},
     resource::ResourceTracker,
@@ -518,7 +518,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
         };
 
@@ -599,7 +599,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 return builtin_open(vm, args);
             }
             _ => {
-                args.drop_with_heap(vm);
+                args.drop_with(vm);
                 return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
             }
         };

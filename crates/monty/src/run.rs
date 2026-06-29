@@ -7,7 +7,7 @@ use crate::{
     ExcType, MontyException,
     bytecode::{Code, Compiler, FrameExit, VM},
     exception_private::RunResult,
-    heap::{DropWithHeap, Heap, HeapReader},
+    heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
     name_map::NameMap,
@@ -386,7 +386,7 @@ impl Executor {
                         vm.set_instruction_ip(load_ip);
                     }
                     let name = function_name.as_str(&self.interns);
-                    args.drop_with_heap(vm);
+                    args.drop_with(vm);
                     let err = ExcType::name_error(name);
                     frame_exit_result = vm.resume_with_exception(err.into());
                 }
@@ -462,7 +462,7 @@ impl Executor {
 
             // Drop globals with proper ref counting
             for value in globals {
-                value.drop_with_heap(vm.heap);
+                value.drop_with(vm.heap);
             }
 
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
@@ -522,7 +522,7 @@ pub(crate) fn frame_exit_to_object(
         FrameExit::ExternalCall {
             function_name, args, ..
         } => {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             let function_name = function_name.as_str(vm.interns);
             Err(ExcType::not_implemented(format!(
                 "External function '{function_name}' not implemented with standard execution"
@@ -531,14 +531,14 @@ pub(crate) fn frame_exit_to_object(
         }
         FrameExit::OsCall { function_call, .. } => {
             let name = function_call.name();
-            function_call.drop_with_heap(vm);
+            function_call.drop_with(vm);
             Err(
                 ExcType::not_implemented(format!("OS function '{name}' not implemented with standard execution"))
                     .into(),
             )
         }
         FrameExit::MethodCall { method_name, args, .. } => {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             let name = method_name.as_str(vm.interns);
             Err(
                 ExcType::not_implemented(format!("Method call '{name}' not implemented with standard execution"))

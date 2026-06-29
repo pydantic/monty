@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::{
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithHeap, HeapId},
+    heap::{ContainsHeap, DropWithContext, HeapId},
     intern::FunctionId,
     value::Value,
 };
@@ -202,20 +202,20 @@ impl ExternalFuture {
 ///   awaitable keeps the gather alive for the in-flight window, so the
 ///   awaitable's resolution path can dispatch to it safely without
 ///   additional cleanup elsewhere. Drop the owned `Awaiter` via
-///   [`DropWithHeap`] (and clone via [`Self::clone_with_heap`]) so the
+///   [`DropWithContext`] (and clone via [`Self::clone_with_heap`]) so the
 ///   `gather` ref count stays balanced.
 ///
 /// Not `Copy` / `Clone` on purpose — the inc_ref discipline requires every
 /// duplication to go through `clone_with_heap` and every discard to go
-/// through `drop_with_heap`.
+/// through `drop_with`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Awaiter {
     Task(TaskId),
     GatherSlot { gather: HeapId, source: HeapId },
 }
 
-impl DropWithHeap for Awaiter {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
+    fn drop_with(self, heap: &mut C) {
         if let Self::GatherSlot { gather, .. } = self {
             heap.heap_mut().dec_ref(gather);
         }

@@ -12,7 +12,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::RunResult,
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait},
     value::Value,
@@ -38,11 +38,11 @@ pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     defer_drop_mut!(iter, vm);
 
     let out: Vec<Value> = Vec::new();
-    let mut out_guard = HeapGuard::new(out, vm);
+    let mut out_guard = DropGuard::new(out, vm);
     let (out, vm) = out_guard.as_parts_mut();
 
     while let Some(item) = iter.for_next(vm)? {
-        let mut item_guard = HeapGuard::new(item, vm);
+        let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {
             // No predicate - use truthiness of element
@@ -52,7 +52,7 @@ pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
             let item_for_predicate = item.clone_with_heap(vm);
             let result = vm.evaluate_function("filter()", function, ArgValues::One(item_for_predicate))?;
             let is_truthy = result.py_bool(vm);
-            result.drop_with_heap(vm);
+            result.drop_with(vm);
             is_truthy
         };
 

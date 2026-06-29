@@ -29,11 +29,11 @@ use smallvec::SmallVec;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
-    defer_drop, defer_drop_vm_mut,
+    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -212,11 +212,11 @@ impl<'h> HeapRead<'h, Tuple> {
 /// slot (using [`Value::Undefined`] as the empty sentinel) and drops the
 /// previous item at the start of each `next` call, so call sites do **not**
 /// need a per-item `defer_drop!`. The held item is also dropped when the
-/// iterator is released via [`DropWithVM`].
+/// iterator is released via [`DropWithContext`].
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
-/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released
+/// releases it via [`DropWithContext`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight item) is released
 /// on every exit path. Unlike list / dict / set iteration, tuples are
 /// immutable so size never changes during iteration, but the token still
 /// belongs here — tuple iteration almost always feeds into operations that
@@ -254,7 +254,7 @@ impl<'a, 'h> TupleIter<'a, 'h> {
     /// Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
-        mem::replace(&mut self.current, Value::Undefined).drop_with_heap(vm.heap);
+        mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
         let items = &self.tuple.get(vm.heap).items;
         if self.index >= items.len() {
@@ -279,10 +279,10 @@ impl<'a, 'h> TupleIter<'a, 'h> {
     }
 }
 
-impl<'h> DropWithVM<'h> for TupleIter<'_, 'h> {
-    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
-        self.current.drop_with_heap(container);
-        self.token.drop_with_vm(container);
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
+    fn drop_with(self, container: &mut C) {
+        self.current.drop_with(container);
+        self.token.drop_with(container);
     }
 }
 
@@ -329,7 +329,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
@@ -355,7 +355,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         }
         let mut hasher = DefaultHasher::new();
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
@@ -380,7 +380,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, av)) = iter.next_with_index(vm)? {
             if i >= min_len {
                 // `self` was longer than `other`; remaining items don't
@@ -423,7 +423,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             Some(StaticStrings::Index) => tuple_index(self, args, vm).map(CallResult::Value),
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {
-                args.drop_with_heap(vm);
+                args.drop_with(vm);
                 Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
             }
         }
@@ -515,7 +515,7 @@ fn tuple_index<'h>(
     };
 
     let iter = tuple.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
@@ -543,7 +543,7 @@ fn tuple_count<'h>(
 
     let mut count = 0usize;
     let iter = tuple.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
         if value.py_eq(item, vm)? {
             count += 1;

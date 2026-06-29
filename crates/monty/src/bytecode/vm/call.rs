@@ -15,7 +15,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
     function::Function,
-    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     os::OsFunctionCall,
@@ -78,17 +78,17 @@ pub(crate) enum CallResult {
     OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
 }
 
-impl DropWithHeap for CallResult {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for CallResult {
+    fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
+            Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall(_, args) => {
-                args.drop_with_heap(heap);
+                args.drop_with(heap);
             }
-            Self::OsCall(call) => call.drop_with_heap(heap),
+            Self::OsCall(call) => call.drop_with(heap),
             Self::FramePushed => {}
             Self::OsCallStoreBuffer { call, file_id } => {
-                call.drop_with_heap(heap);
+                call.drop_with(heap);
                 // Single pin (see `inc_ref_for_pending_oscall`): release one ref
                 // if the call is discarded before dispatch routes it to a
                 // `pending_file_effect`.
@@ -357,7 +357,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type(this);
-                args.drop_with_heap(this);
+                args.drop_with(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
@@ -387,7 +387,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 match self.run()? {
                     FrameExit::Return(v) => return Ok(v),
                     exit => {
-                        exit.drop_with_heap(self);
+                        exit.drop_with(self);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
                         while self.frames.len() >= stack_depth {
@@ -396,7 +396,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
             }
-            other => other.drop_with_heap(self),
+            other => other.drop_with(self),
         }
 
         Err(ExcType::not_implemented(format!(
@@ -430,7 +430,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 self.call_heap_callable(*heap_id, args)
             }
             _ => {
-                args.drop_with_heap(self);
+                args.drop_with(self);
                 let ty = callable.py_type(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
@@ -455,7 +455,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
-                args.drop_with_heap(self);
+                args.drop_with(self);
                 return Err(ExcType::type_error("object is not callable"));
             }
         };
@@ -695,7 +695,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
@@ -788,7 +788,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later
         let namespace = Vec::with_capacity(func.namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters

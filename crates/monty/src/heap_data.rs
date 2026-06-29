@@ -21,7 +21,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_str},
-    heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
+    heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
@@ -516,7 +516,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::TestContextManager(cm) => cm.py_call_attr(self_id, vm, attr, args),
             // Types without methods — return AttributeError
             _ => {
-                args.drop_with_heap(vm);
+                args.drop_with(vm);
                 let type_name = vm.heap.read(self_id).py_type(vm);
                 Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
             }
@@ -953,8 +953,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
             _ => {
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
+                key.drop_with(vm);
+                value.drop_with(vm);
                 Err(ExcType::type_error_not_sub_assignment(self.py_type(vm)))
             }
         }

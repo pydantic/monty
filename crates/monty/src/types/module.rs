@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{HeapGuard, HeapId, HeapItem, HeapRead},
+    heap::{DropGuard, HeapId, HeapItem, HeapRead},
     intern::StringId,
     resource::ResourceTracker,
     types::Dict,
@@ -110,8 +110,8 @@ impl<'h> HeapRead<'h, Module> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let mut args_guard = HeapGuard::new(args, vm);
-        let vm = args_guard.heap();
+        let mut args_guard = DropGuard::new(args, vm);
+        let vm = args_guard.ctx();
 
         let attr_str = match attr {
             EitherStr::Interned(id) => vm.interns.get_str(*id),

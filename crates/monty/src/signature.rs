@@ -10,7 +10,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -261,9 +261,9 @@ impl Signature {
         }
 
         // Full binding algorithm for complex signatures or kwargs
-        // Extract interns before guards since HeapGuard borrows the full VM mutably
+        // Extract interns before guards since DropGuard borrows the full VM mutably
         // but we only need mutable access to the heap portion.
-        let mut pos_iter_guard = HeapGuard::new(pos_iter, vm);
+        let mut pos_iter_guard = DropGuard::new(pos_iter, vm);
         let (pos_iter, vm) = pos_iter_guard.as_parts_mut();
 
         // Calculate how many positional params we have
@@ -329,18 +329,18 @@ impl Signature {
 
         // 3. Bind keyword args
         // Bind keywords to args and kwargs (not pos_args - those are positional-only)
-        let mut excess_kwargs_guard = HeapGuard::new(self.var_kwargs.is_some().then(Dict::new), vm);
+        let mut excess_kwargs_guard = DropGuard::new(self.var_kwargs.is_some().then(Dict::new), vm);
         let (excess_kwargs, vm) = excess_kwargs_guard.as_parts_mut();
 
         'kwargs: for (key, value) in keyword_args {
             // Guard key: dropped on most paths, consumed into **kwargs via into_parts().
-            let mut key_guard = HeapGuard::new(key, vm);
+            let mut key_guard = DropGuard::new(key, vm);
             let (key, vm) = key_guard.as_parts_mut();
 
             // Guard value: consumed into namespace/excess_kwargs via into_inner(),
             // or dropped automatically on error paths.
-            let mut value_guard = HeapGuard::new(value, vm);
-            let vm = value_guard.heap();
+            let mut value_guard = DropGuard::new(value, vm);
+            let vm = value_guard.ctx();
 
             let Some(keyword_name) = key.as_either_str(vm.heap) else {
                 return Err(ExcType::type_error("keywords must be strings"));

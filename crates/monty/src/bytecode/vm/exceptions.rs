@@ -5,7 +5,7 @@ use crate::{
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Type},
@@ -146,9 +146,9 @@ impl<T: ResourceTracker> VM<'_, T> {
             Err(e) => return Some(e),
         };
 
-        // Use HeapGuard because exc_value is conditionally consumed (pushed onto
+        // Use DropGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
-        let mut exc_guard = HeapGuard::new(exc_value, self);
+        let mut exc_guard = DropGuard::new(exc_value, self);
 
         // Search for handler in current and outer frames
         loop {
@@ -171,7 +171,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
                 // Unwind stack to target depth (drop excess values)
                 for value in this.stack.drain(target_stack_depth..).rev() {
-                    value.drop_with_heap(this.heap);
+                    value.drop_with(this.heap);
                 }
 
                 // Drop any `exception_stack` entries left behind by handlers
@@ -182,7 +182,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // later bare `raise` could resurrect it.
                 while this.exception_stack.len() > target_exc_stack_depth {
                     let value = this.exception_stack.pop().unwrap();
-                    value.drop_with_heap(this);
+                    value.drop_with(this);
                 }
 
                 // Push exception value onto stack (handler expects it)

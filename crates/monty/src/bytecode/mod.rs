@@ -20,7 +20,7 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
-pub(crate) use vm::{CallResult, ContainsVM, DropWithVM, RecursionToken, VmGuard};
+pub(crate) use vm::{CallResult, ContainsVM, RecursionToken};
 pub use vm::{FrameExit, VM, VMSnapshot};
 
 /// Module-level dunder names Monty exposes with fixed values for CPython

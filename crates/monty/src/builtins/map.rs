@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData},
+    heap::{DropWithContext, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter},
     value::Value,
@@ -44,7 +44,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         _ => true,
     };
     if args.count() < 2 && kwargs_empty {
-        args.drop_with_heap(vm.heap);
+        args.drop_with(vm.heap);
         return Err(ExcType::type_error_map_arity());
     }
     let MapArgs {
@@ -82,7 +82,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         [single] => {
             while let Some(arg1) = first_iter.for_next(vm)? {
                 let Some(arg2) = single.for_next(vm)? else {
-                    arg1.drop_with_heap(vm);
+                    arg1.drop_with(vm);
                     break;
                 };
                 let args = ArgValues::Two(arg1, arg2);
@@ -97,7 +97,7 @@ pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
                 if let Some(item) = iter.for_next(vm)? {
                     items.push(item);
                 } else {
-                    items.drop_with_heap(vm);
+                    items.drop_with(vm);
                     break 'outer;
                 }
             }

@@ -44,7 +44,7 @@ pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
-            v.drop_with_heap(vm);
+            v.drop_with(vm);
             None
         }
         other => other,
