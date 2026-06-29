@@ -268,8 +268,8 @@ make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
 make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make build-wasm           Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
-make test-wasm            Test the in-process API against the wasm build (requires a prior build-wasm)
+make build-wasm           Build the lean wasm worker module (requires the wasm32-wasip1 target)
+make test-wasm            Test the wasm worker pool/transport (requires a prior build-wasm)
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -682,22 +682,26 @@ recovery, framing and value conversion all live in Rust.
 
 ### Structure
 
-- `crates/monty-js/src/` - Rust napi crate: `pool.rs` (NativePool /
-  NativeSession over `monty-pool`), `convert.rs` (JS ↔ MontyObject),
-  `exceptions.rs`, `limits.rs`, `mount.rs`, and `monty_cls.rs` (the legacy
-  in-process API, the only surface available on wasm)
+- `crates/monty-js/src/` - Rust napi crate (native-only): `pool.rs`
+  (NativePool / NativeSession over `monty-pool`), `convert.rs`
+  (JS ↔ MontyObject), `exceptions.rs`, `limits.rs`
 - `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
   `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
-  (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings),
-  `wasm.ts` (in-process API wrapper, exported as `@pydantic/monty/wasm`)
+  (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings)
+- `crates/monty-js/ts/worker/` - the browser/wasm worker path (exported as
+  `@pydantic/monty/wasm`): `proto.ts`/`value.ts` (TS `monty-proto` codec),
+  `transport.ts` (WorkerTransport, the `NativeSession`-shaped seam),
+  `host.ts`/`channel.ts` (in-process and message-channel dispatch),
+  `pool.ts` (WorkerPool, the TS `monty-pool` analog), `nodeFactory.ts` /
+  `browserFactory.ts` (Worker backends), `index.ts` (`createWorkerPool`)
 - `index.js` / `index.d.ts` - napi-generated loader (created by
   `npm run build:napi`; gitignored)
 - `crates/monty-js/npm/` - generated platform packages shipping the napi
   `.node` library *and* the `monty` binary (`@pydantic/monty-<platform>`,
   selected via optionalDependencies; `napi create-npm-dirs` +
   `scripts/create-platform-packages.mjs`)
-- `crates/monty-js/__test__/` - Tests using ava (`wasm_*.spec.ts` cover the
-  in-process API and also run against the wasm build in CI)
+- `crates/monty-js/__test__/` - Tests using ava (`wasm_*.spec.ts` drive the
+  wasm worker pool/transport without the napi build)
 
 ### Current API
 
@@ -744,14 +748,27 @@ Tests run straight from `ts/` via `@oxc-node/core` against the locally built
 
 ## WebAssembly build (`@pydantic/monty/wasm`)
 
-The legacy in-process API (`Monty`, `MontySnapshot`, `MontyRepl`,
-`runMontyAsync`, ...) ships inside the same `@pydantic/monty` package under
-the `/wasm` subpath, for browsers and other environments where subprocesses
-are impossible (the crate's `wasm32-wasip1-threads` napi target; the
-subprocess pool is `#[cfg]`-gated off there). On Node.js, the subprocess
-pool is always preferred — a sandbox crash in the in-process API takes the
-host process with it. Built and tested in CI; building locally requires the
-wasm toolchain (`make build-wasm`).
+Browsers (and anywhere subprocesses are impossible) run the sandbox in a **Web
+Worker** instead of a subprocess, exposed under the `/wasm` subpath. The same
+pool → checkout → session → `feedRun` model and drive loop are used; only the
+transport differs. The pieces:
+
+- `crates/monty-wasm` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
+  the transport-agnostic `monty-worker` `Child` state machine, exporting one
+  `monty_dispatch_turn` (read a framed request from stdin, run one turn, write
+  framed events to stdout). No napi, no threads, no `SharedArrayBuffer`.
+- `crates/monty-js/ts/worker/` — the TS pool/transport that drives it
+  (`createWorkerPool`): a browser `Worker` backend (`browserFactory.ts`, whose
+  `Worker.terminate()` is the watchdog's hard kill), a Node `worker_threads`
+  backend (`nodeFactory.ts`), and an in-process degrade for environments with
+  no `Worker` (same API, but no crash isolation or preemption). Values cross as
+  `monty-proto` frames decoded in TypeScript (`proto.ts`/`value.ts`), not via
+  napi.
+
+The legacy in-process napi API (`Monty`/`MontySnapshot`/`MontyRepl`/
+`runMontyAsync`) and its `wasm32-wasip1-threads` napi build have been removed.
+Build the worker module locally with `make build-wasm` (needs the
+`wasm32-wasip1` target); it is built and tested in CI.
 
 ## Limitations documentation (`./limitations/`)
 

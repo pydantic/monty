@@ -10,8 +10,8 @@
 //   # copy the built artifacts (monty[.exe], monty.<triple>.node) into
 //   # npm/<triple>/ and `npm publish` each directory
 //
-// The wasm32-wasi package is left exactly as napi generated it — it ships
-// the wasm artifacts only (no subprocesses on wasm, so no binary).
+// The browser/wasm path no longer ships a napi platform package: it runs the
+// lean `crates/monty-wasm` module in a Web Worker, not a napi binding.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -25,9 +25,7 @@ const NATIVE_TRIPLES = ['darwin-x64', 'darwin-arm64', 'linux-x64-gnu', 'linux-ar
 
 // The main package must depend on every platform package at the exact same
 // version, otherwise npm installs a stale binary or shared library.
-const expected = Object.fromEntries(
-  [...NATIVE_TRIPLES, 'wasm32-wasi'].map((t) => [`@pydantic/monty-${t}`, pkg.version]),
-)
+const expected = Object.fromEntries(NATIVE_TRIPLES.map((t) => [`@pydantic/monty-${t}`, pkg.version]))
 if (JSON.stringify(pkg.optionalDependencies ?? {}) !== JSON.stringify(expected)) {
   console.error('package.json optionalDependencies are out of sync with version/targets; expected:')
   console.error(JSON.stringify(expected, null, 2))

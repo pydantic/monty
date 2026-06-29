@@ -1,0 +1,9 @@
+{
+  "name": "monty-wasm-smoke",
+  "private": true,
+  "type": "module",
+  "description": "Spike smoke test: drive the lean wasip1 worker from Node under a single-threaded WASI shim.",
+  "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.1"
+  }
+}

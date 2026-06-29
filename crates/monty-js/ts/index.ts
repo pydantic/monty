@@ -4,9 +4,9 @@
 // subprocesses via the native `monty-pool` binding — a sandbox crash can
 // never take down the host process.
 //
-// The legacy in-process API (the only option on wasm/browsers, where
-// subprocesses do not exist) is exposed separately via the
-// `@pydantic/monty/wasm` subpath.
+// Browsers (where subprocesses do not exist) run the sandbox in a Web Worker
+// via the lean wasm module; that pool/session API is exposed separately under
+// the `@pydantic/monty/wasm` subpath (see `ts/worker/`).
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {

@@ -13,9 +13,12 @@ never at risk.
 
 The native binding and the `monty` binary ship together via platform-specific
 npm packages installed automatically (like esbuild). For browsers (or anywhere
-subprocesses are impossible) the same package exposes a legacy in-process
-WebAssembly API under the `@pydantic/monty/wasm` subpath — note it has none of
-the crash isolation described here.
+subprocesses are impossible) the same package exposes a **Web Worker** pool
+under the `@pydantic/monty/wasm` subpath: it runs the sandbox in a Worker (a
+lean `wasm32-wasip1` build) with the same pool/session API, and
+`Worker.terminate()` still gives the watchdog a hard kill of a runaway turn.
+Where `Worker` is unavailable it degrades to running on the calling thread —
+same API, but without crash isolation or preemption.
 
 ## Installation
 

@@ -50,14 +50,16 @@ dev-py-release: ## Install the python package for development with a release bui
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-wasm
-build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
-	# NOTE: regenerates index.js/index.d.ts from the wasm target (which has no
-	# pool API) — run build-js afterwards to restore the native loader
+build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
 .PHONY: test-wasm
-test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
-	cd crates/monty-js && NAPI_RS_FORCE_WASI=1 npx ava "__test__/wasm_*.spec.ts"
+test-wasm: ## Test the wasm worker pool/transport (requires a prior build-wasm)
+	cd crates/monty-js && npx ava "__test__/wasm_*.spec.ts"
+
+.PHONY: test-browser
+test-browser: build-js build-wasm ## Browser (Playwright) test of the wasm worker path in a real headless browser
+	cd crates/monty-js && npx playwright install chromium && npx playwright test
 
 .PHONY: dev-py-pgo
 dev-py-pgo: ## Install the python package for development with profile-guided optimization

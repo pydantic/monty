@@ -40,13 +40,6 @@ const JS_SAFE_INT_MAX: i64 = 1_i64 << 53;
 /// napi function.
 pub struct JsMontyObject<'env>(pub(crate) Unknown<'env>);
 
-impl JsMontyObject<'_> {
-    /// Returns the raw napi value for use in low-level operations.
-    pub fn raw(&self) -> sys::napi_value {
-        self.0.raw()
-    }
-}
-
 impl ToNapiValue for JsMontyObject<'_> {
     unsafe fn to_napi_value(env: sys::napi_env, val: Self) -> Result<sys::napi_value> {
         Unknown::to_napi_value(env, val.0)

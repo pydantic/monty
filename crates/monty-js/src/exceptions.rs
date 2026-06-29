@@ -16,7 +16,6 @@
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
-use monty::ExcType;
 use monty_type_checking::TypeCheckingDiagnostics;
 use napi::{bindgen_prelude::*, JsString};
 use napi_derive::napi;
@@ -275,41 +274,4 @@ pub struct Frame<'env> {
     pub function_name: Option<String>,
     /// The source code line for preview in the traceback.
     pub source_line: Option<JsString<'env>>,
-}
-
-/// Converts a javascript error into a MontyException.
-pub fn exc_js_to_monty(js_err: napi::Error) -> ::monty::MontyException {
-    let exc = js_err_to_exc_type(js_err.status);
-    let arg = js_err.reason.clone();
-
-    ::monty::MontyException::new(exc, Some(arg))
-}
-
-fn js_err_to_exc_type(exc: napi::Status) -> ExcType {
-    match exc {
-        napi::Status::Ok => ExcType::Exception, // Should never happen
-        napi::Status::InvalidArg => ExcType::TypeError,
-        napi::Status::ObjectExpected
-        | napi::Status::StringExpected
-        | napi::Status::NameExpected
-        | napi::Status::FunctionExpected
-        | napi::Status::NumberExpected
-        | napi::Status::BooleanExpected
-        | napi::Status::ArrayExpected
-        | napi::Status::BigintExpected
-        | napi::Status::DateExpected
-        | napi::Status::ArrayBufferExpected
-        | napi::Status::DetachableArraybufferExpected
-        | napi::Status::HandleScopeMismatch
-        | napi::Status::CallbackScopeMismatch => ExcType::ValueError,
-        napi::Status::GenericFailure => ExcType::Exception,
-        napi::Status::Cancelled => ExcType::KeyboardInterrupt,
-        napi::Status::QueueFull
-        | napi::Status::Closing
-        | napi::Status::WouldDeadlock
-        | napi::Status::NoExternalBuffersAllowed
-        | napi::Status::PendingException
-        | napi::Status::EscapeCalledTwice => ExcType::RuntimeError,
-        napi::Status::Unknown => ExcType::Exception,
-    }
 }

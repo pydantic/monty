@@ -11,8 +11,10 @@
       "default": "./dist/index.js"
     },
     "./wasm": {
-      "types": "./dist/wasm.d.ts",
-      "default": "./dist/wasm.js"
+      "types": "./dist/worker/index.d.ts",
+      "node": "./dist/worker/index.node.js",
+      "browser": "./dist/worker/index.browser.js",
+      "default": "./dist/worker/index.js"
     }
   },
   "repository": {
@@ -23,12 +25,7 @@
   "files": [
     "dist",
     "index.js",
-    "index.d.ts",
-    "browser.js",
-    "monty.wasi.cjs",
-    "monty.wasi-browser.js",
-    "wasi-worker.mjs",
-    "wasi-worker-browser.mjs"
+    "index.d.ts"
   ],
   "napi": {
     "binaryName": "monty",
@@ -38,8 +35,7 @@
       "x86_64-apple-darwin",
       "x86_64-unknown-linux-gnu",
       "aarch64-apple-darwin",
-      "aarch64-unknown-linux-gnu",
-      "wasm32-wasip1-threads"
+      "aarch64-unknown-linux-gnu"
     ],
     "dtsHeaderFile": "./index-header.d.ts"
   },
@@ -55,11 +51,12 @@
     "build:debug": "run-s build:napi:debug build:ts",
     "build:napi": "napi build --platform --release --esm",
     "build:napi:debug": "napi build --platform --esm",
-    "build:wasm": "napi build --platform --release --esm --target wasm32-wasip1-threads",
+    "build:wasm": "cargo build -p monty-wasm --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
     "build:ts": "tsc",
     "format": "prettier . -w",
     "lint": "oxlint .",
     "test": "ava",
+    "test:browser": "playwright test",
     "smoke-test": "bash scripts/smoke-test.sh",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
@@ -68,15 +65,21 @@
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
     "@oxc-node/core": "^0.0.35",
+    "@playwright/test": "^1.49.1",
+    "vite": "^6.3.5",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
     "ava": "^6.4.1",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "@bjorn3/browser_wasi_shim": "^0.4.1"
   },
   "ava": {
+    "files": [
+      "__test__/*.spec.ts"
+    ],
     "extensions": {
       "ts": "module"
     },
@@ -99,7 +102,6 @@
     "@pydantic/monty-darwin-arm64": "0.0.18",
     "@pydantic/monty-linux-x64-gnu": "0.0.18",
     "@pydantic/monty-linux-arm64-gnu": "0.0.18",
-    "@pydantic/monty-win32-x64-msvc": "0.0.18",
-    "@pydantic/monty-wasm32-wasi": "0.0.18"
+    "@pydantic/monty-win32-x64-msvc": "0.0.18"
   }
 }

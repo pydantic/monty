@@ -1,30 +1,24 @@
 [package]
-name = "monty-cli"
+name = "monty-wasm"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
-description = { workspace = true }
+description = "Lean wasip1 worker module: drives a Monty protocol child one turn per call, over WASI stdio."
 keywords = { workspace = true }
 categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 
-[[bin]]
-name = "monty"
-path = "src/main.rs"
+[lib]
+# A WASI reactor (no `main`): the host calls the exported `monty_dispatch_turn`
+# once per protocol turn and keeps the instance (and its session state) alive
+# between turns.
+crate-type = ["cdylib"]
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
 monty-worker = { path = "../monty-worker" }
-monty_type_checking = { path = "../monty-type-checking" }
-rustyline = "15"
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints]
 workspace = true

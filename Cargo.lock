@@ -2040,8 +2040,8 @@ dependencies = [
  "clap",
  "monty",
  "monty-proto",
+ "monty-worker",
  "monty_type_checking",
- "prost",
  "rustyline",
  "tempfile",
 ]
@@ -2111,6 +2111,23 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+]
+
+[[package]]
+name = "monty-wasm"
+version = "0.0.18"
+dependencies = [
+ "monty-worker",
+]
+
+[[package]]
+name = "monty-worker"
+version = "0.0.18"
+dependencies = [
+ "monty",
+ "monty-proto",
+ "monty_type_checking",
+ "prost",
 ]
 
 [[package]]

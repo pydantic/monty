@@ -953,7 +953,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
-          targets: wasm32-wasip1-threads
+          targets: wasm32-wasip1
 
       - name: Cache cargo
         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning]
@@ -965,32 +965,19 @@ jobs:
             ~/.napi-rs
             .cargo-cache
             target/
-          key: wasm32-wasip1-threads-cargo-ubuntu-latest
+          key: wasm32-wasip1-cargo-ubuntu-latest
 
       # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      - name: Install dependencies
-        run: npm install
-        working-directory: crates/monty-js
-
       - name: Build
-        run: npm run build:wasm
-        working-directory: crates/monty-js
+        run: cargo build -p monty-wasm --target wasm32-wasip1 --release
 
       - name: Upload artifact
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
-          path: |
-            crates/monty-js/monty.*.wasm
-            crates/monty-js/browser.js
-            crates/monty-js/index.js
-            crates/monty-js/index.d.ts
-            crates/monty-js/monty.wasi.cjs
-            crates/monty-js/monty.wasi-browser.js
-            crates/monty-js/wasi-worker.mjs
-            crates/monty-js/wasi-worker-browser.mjs
+          path: target/wasm32-wasip1/release/monty_wasm.wasm
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'
@@ -1020,14 +1007,65 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: crates/monty-js
+          path: target/wasm32-wasip1/release
 
-      # only the in-process (wasm_*) specs: the subprocess pool cannot exist
-      # on wasm, so the pool specs are native-only
+      # place the module next to the loaders (where the specs and the turnkey
+      # loader resolve it)
+      - name: Stage wasm module
+        run: node scripts/copy-wasm.mjs
+        working-directory: crates/monty-js
+
+      # the wasm worker pool/transport specs; they need no napi binding
       - name: Test bindings
         run: npx ava "__test__/wasm_*.spec.ts"
-        env:
-          NAPI_RS_FORCE_WASI: 1
+        working-directory: crates/monty-js
+
+  test-browser:
+    name: test browser
+    needs:
+      - build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-js/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      # don't use .venv python in CI
+      - run: rm .cargo/config.toml
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      # build:debug regenerates index.d.ts and emits dist/ (the Vite app bundles
+      # the built package, exercising the browser export condition)
+      - name: Build napi + TypeScript
+        run: npm run build:debug
+        working-directory: crates/monty-js
+
+      - name: Download wasm module
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-bindings
+          path: target/wasm32-wasip1/release
+
+      - name: Stage wasm module
+        run: node scripts/copy-wasm.mjs
+        working-directory: crates/monty-js
+
+      - name: Run browser test
+        run: npx playwright install --with-deps chromium && npx playwright test
         working-directory: crates/monty-js
 
   release-js:
@@ -1039,6 +1077,7 @@ jobs:
       - test-js
       - build-js-binaries
       - test-wasm
+      - test-browser
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     permissions:
       contents: write
@@ -1088,9 +1127,10 @@ jobs:
           name: wasm-bindings
           path: crates/monty-js/artifacts/wasm
 
-      # download-artifact nests artifacts and drops the executable bit;
-      # arrange each triple's binary + .node into npm/<triple>/ and the wasm
-      # runtime files into npm/wasm32-wasi/
+      # download-artifact nests artifacts and drops the executable bit; arrange
+      # each triple's binary + .node into npm/<triple>/, and ship the lean
+      # worker module inside the main package next to its loaders (dist/ is in
+      # the package `files`)
       - name: Arrange binaries
         run: |
           for dir in artifacts/monty-bin-*; do
@@ -1098,10 +1138,9 @@ jobs:
             find "$dir" -name 'monty*' -exec mv {} "npm/$triple/" \;
           done
           chmod +x npm/*/monty npm/*/monty.exe 2>/dev/null || true
-          mv artifacts/wasm/monty.wasm32-wasi.wasm npm/wasm32-wasi/
-          mv artifacts/wasm/monty.wasi.cjs artifacts/wasm/monty.wasi-browser.js npm/wasm32-wasi/
-          mv artifacts/wasm/wasi-worker.mjs artifacts/wasm/wasi-worker-browser.mjs npm/wasm32-wasi/
-          ls -lR npm/
+          mkdir -p dist/worker
+          mv artifacts/wasm/monty_wasm.wasm dist/worker/monty_wasm.wasm
+          ls -lR npm/ dist/worker/
         working-directory: crates/monty-js
 
       - name: Publish
