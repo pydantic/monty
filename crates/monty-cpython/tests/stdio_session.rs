@@ -388,6 +388,92 @@ fn syntax_error_reports_configured_script_name() {
     assert!(error.traceback.is_empty());
 }
 
+/// A CRLF-fed snippet must not leave a carriage return in the preview line — a
+/// stray `\r` would move the cursor and misrender the caret line.
+#[test]
+fn traceback_preview_strips_carriage_returns() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        // CRLF line endings; the ZeroDivisionError is on line 2.
+        script: VecDeque::from([configure(), feed("a = 1\r\nb = a / 0"), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+
+    let frame = error.traceback.last().expect("a frame");
+    assert_eq!(frame.preview_line.as_deref(), Some("b = a / 0"));
+}
+
+/// The sandbox is full CPython, so user code can monkey-patch the `traceback`
+/// module. The runner binds the helpers it needs at import time, so a patch must
+/// not erase the reconstructed frames of an unrelated exception. A second feed
+/// restores the module — the embedded interpreter is shared across tests.
+#[test]
+fn traceback_survives_sandbox_patching_traceback_module() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([
+            configure(),
+            feed(
+                "import traceback\n\
+                 _oe, _os = traceback.extract_tb, traceback.StackSummary\n\
+                 traceback.extract_tb = None\n\
+                 traceback.StackSummary = None\n\
+                 raise ValueError('real')",
+            ),
+            feed("import traceback\ntraceback.extract_tb, traceback.StackSummary = _oe, _os"),
+            shutdown(),
+        ]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+
+    assert_eq!(error.exc_type, "ValueError");
+    assert_eq!(error.message.as_deref(), Some("real"));
+    // Frames survive via the stdlib-free fallback: the `raise` is on line 5, and
+    // the absent preview confirms the rich path was bypassed (it would set one).
+    let frames: Vec<(u32, Option<&str>, Option<&str>)> = error
+        .traceback
+        .iter()
+        .map(|f| {
+            (
+                f.start.as_ref().unwrap().line,
+                f.frame_name.as_deref(),
+                f.preview_line.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(frames, vec![(5, None, None)]);
+}
+
 /// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams
 /// as a `Print` event tagged with its stream, so the parent can tell them apart.
 #[test]

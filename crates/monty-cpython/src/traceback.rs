@@ -12,7 +12,7 @@
 //! (so `raise` and whole-line cases match exactly). This Rust side just hands it
 //! the traceback object and maps the returned tuples onto [`StackFrame`].
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use monty::{CodeLoc, StackFrame};
 use pyo3::prelude::*;
@@ -28,8 +28,12 @@ type FrameTuple = (String, u32, u32, u32, u32, Option<String>, Option<String>, b
 /// Rebuilds `err`'s traceback into Monty stack frames, outermost first, with
 /// `script_name` as every frame's reported filename.
 ///
-/// Best-effort: any failure talking to the Python extractor yields an empty
-/// traceback rather than masking the original exception.
+/// Best-effort: a failure talking to the Python extractor yields an empty
+/// traceback rather than masking the original exception. This is only a true
+/// last resort — `extract_traceback` itself already falls back to a stdlib-free
+/// walk when the rich path fails (e.g. the sandbox monkey-patched
+/// `traceback`/`linecache`), so it still returns frames rather than erasing
+/// them.
 pub fn py_traceback_frames(py: Python<'_>, runner: &Runner, err: &PyErr, script_name: &str) -> Vec<StackFrame> {
     extract(py, runner, err, script_name).unwrap_or_default()
 }
@@ -41,9 +45,19 @@ fn extract(py: Python<'_>, runner: &Runner, err: &PyErr, script_name: &str) -> P
     };
     let result = runner.extract_traceback(py, &traceback, script_name)?;
     let mut frames = Vec::new();
+    // Share one `Arc` per distinct preview line, the same sharing `StackFrame`
+    // relies on: a deep recursion on a long line would otherwise clone the whole
+    // line into every frame and amplify memory by the call depth.
+    let mut previews: HashMap<String, Arc<str>> = HashMap::new();
     for item in result.try_iter()? {
         let (filename, start_line, start_col, end_line, end_col, frame_name, preview_line, hide_caret, hide_frame_name): FrameTuple =
             item?.extract()?;
+        let preview_line = preview_line.map(|line| {
+            previews
+                .entry(line)
+                .or_insert_with_key(|line| Arc::from(line.as_str()))
+                .clone()
+        });
         frames.push(StackFrame {
             filename,
             start: CodeLoc {
@@ -55,7 +69,7 @@ fn extract(py: Python<'_>, runner: &Runner, err: &PyErr, script_name: &str) -> P
                 column: end_col,
             },
             frame_name,
-            preview_line: preview_line.map(Arc::from),
+            preview_line,
             hide_caret,
             hide_frame_name,
         });

@@ -118,26 +118,40 @@ Frame = tuple[str, int, int, int, int, str | None, str | None, bool, bool]
 def extract_traceback(tb: Any, script_name: str) -> list[Frame]:
     """Rebuild the sandbox traceback as structured frames for the Rust side.
 
-    Walks `tb`, keeping only frames from fed code (the `<input-N>` files this
-    module registered in `linecache`) so the runner's own driver frames are
-    dropped. Returns one `Frame` tuple per frame, outermost first.
+    Keeps only frames from fed code (the `<input-N>` files this module registered
+    in `linecache`) so the runner's own driver frames are dropped. Returns one
+    `Frame` tuple per frame, outermost first. `script_name` is reported as every
+    frame's filename, so a multi-feed session shows the session's name rather
+    than the internal per-feed keys.
 
-    `script_name` is reported as every frame's filename, so a multi-feed session
-    shows the session's name rather than the internal per-feed keys. Whether to
-    draw caret markers — and the exact anchored span — is taken from CPython's
-    own machinery, so `raise`/whole-line cases match CPython (and monty) exactly.
+    The rich path uses CPython's `traceback`/`linecache` machinery for source
+    previews and caret spans. The sandbox is full CPython, though, so user code
+    can monkey-patch those modules; if anything in the rich path fails, fall back
+    to a stdlib-free walk so a hostile (or merely buggy) sandbox still gets
+    frames — degraded to filename/line/function — rather than an empty traceback
+    that would erase the original exception's stack.
     """
+    try:
+        return _extract_rich(tb, script_name)
+    except Exception:
+        return _extract_basic(tb, script_name)
+
+
+def _extract_rich(tb: Any, script_name: str) -> list[Frame]:
+    """Full-fidelity extraction: source previews and CPython-decided carets."""
     from traceback import StackSummary, extract_tb
 
     frames: list[Frame] = []
     for fs in extract_tb(tb):
         if fs.filename not in _input_files:
             continue
-        # The *unstripped* source line: monty's `StackFrame` stores the full line
-        # and trims it at render time, and CPython's byte columns index into it.
+        # The *unstripped* source line (minus its line terminator): monty's
+        # `StackFrame` stores the full line and trims it at render time, and
+        # CPython's byte columns index into it. Strip `\r` as well as `\n` so a
+        # CRLF-fed snippet does not leave a stray carriage return in the preview.
         lineno = cast(int, fs.lineno)
         line = linecache.getline(fs.filename, lineno)
-        preview = line.rstrip('\n') if line else None
+        preview = line.rstrip('\r\n') if line else None
         frame_name = None if fs.name == '<module>' else fs.name
         start_col = 0
         end_col = 0
@@ -156,6 +170,23 @@ def extract_traceback(tb: Any, script_name: str) -> list[Frame]:
                 set(part) <= _CARET_CHARS and ('~' in part or '^' in part) for part in rendered.splitlines()
             )
         frames.append((script_name, lineno, start_col, lineno, end_col, frame_name, preview, hide_caret, False))
+    return frames
+
+
+def _extract_basic(tb: Any, script_name: str) -> list[Frame]:
+    """Fallback extraction using only traceback/frame/code object attributes.
+
+    Touches no stdlib module, so a sandbox that monkey-patched `traceback` or
+    `linecache` cannot make it fail. Yields filename/line/function only — no
+    source preview or caret span.
+    """
+    frames: list[Frame] = []
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if code.co_filename in _input_files:
+            frame_name = None if code.co_name == '<module>' else code.co_name
+            frames.append((script_name, tb.tb_lineno, 0, tb.tb_lineno, 0, frame_name, None, True, False))
+        tb = tb.tb_next
     return frames
 
 
