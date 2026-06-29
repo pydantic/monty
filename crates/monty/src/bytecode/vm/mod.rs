@@ -1871,7 +1871,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
         if !self.frames.is_empty()
-            && let Err(e) = self.charge_recursion()
+            && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&frame);
             return Err(e.into());

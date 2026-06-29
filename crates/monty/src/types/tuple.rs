@@ -234,7 +234,7 @@ pub(crate) struct TupleIter<'a, 'h> {
 
 impl<'a, 'h> TupleIter<'a, 'h> {
     fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, Tuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.incr_recursion()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             tuple,
             index: 0,

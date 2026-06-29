@@ -41,7 +41,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
     pub(crate) fn recursion_guard(&mut self) -> Result<RecursionGuard<'_, 'h, T>, ResourceError> {
-        self.charge_recursion()?;
+        self.incr_recursion()?;
         Ok(RecursionGuard { vm: self })
     }
 
@@ -50,18 +50,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Unlike [`recursion_guard`](Self::recursion_guard), the token does not
     /// borrow the VM, so it can be stored (e.g. inside a container iterator) and
-    /// released later with `defer_drop_vm!`. Keeping the bound inside the iterator
-    /// means callers iterating nested structures cannot forget to charge depth.
-    pub(crate) fn incr_recursion(&mut self) -> Result<RecursionToken, ResourceError> {
-        self.charge_recursion()?;
+    /// released later with `defer_drop_vm!`.
+    pub(crate) fn recursion_token(&mut self) -> Result<RecursionToken, ResourceError> {
+        self.incr_recursion()?;
         Ok(RecursionToken(()))
     }
 
     /// Checks the recursion limit against the heap's tracker and increments the
-    /// depth counter. The shared entry point behind both recursion primitives and
-    /// `push_frame`.
+    /// depth counter.
     #[inline]
-    pub(crate) fn charge_recursion(&mut self) -> Result<(), ResourceError> {
+    pub(crate) fn incr_recursion(&mut self) -> Result<(), ResourceError> {
         self.heap.tracker().check_recursion_depth(self.recursion_depth)?;
         self.recursion_depth += 1;
         Ok(())

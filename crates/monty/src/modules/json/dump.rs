@@ -456,7 +456,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     defer_drop_mut!(entries, this);
                     // Need to explicitly acquire a recursion token for the dict as we don't go
                     // via the default dict iterator.
-                    let token = this.vm.incr_recursion()?;
+                    let token = this.vm.recursion_token()?;
                     defer_drop_vm!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }

@@ -339,7 +339,7 @@ pub(crate) struct SetIter<'a, 'h> {
 impl<'a, 'h> SetIter<'a, 'h> {
     fn new<R: ResourceTracker>(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = storage.get(vm.heap).entries.len();
-        let token = vm.incr_recursion()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             storage,
             index: 0,

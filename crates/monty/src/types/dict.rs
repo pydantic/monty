@@ -712,7 +712,7 @@ pub(crate) struct DictIter<'a, 'h> {
 impl<'a, 'h> DictIter<'a, 'h> {
     fn new<R: ResourceTracker>(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = dict.get(vm.heap).entries.len();
-        let token = vm.incr_recursion()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             dict,
             index: 0,

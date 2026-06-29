@@ -270,7 +270,7 @@ pub(crate) struct ListIter<'a, 'h> {
 
 impl<'a, 'h> ListIter<'a, 'h> {
     fn new<R: ResourceTracker>(list: &'a HeapRead<'h, List>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.incr_recursion()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             list,
             index: 0,
