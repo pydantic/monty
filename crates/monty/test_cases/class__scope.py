@@ -102,21 +102,5 @@ w = factory(4)()
 assert w.scaled(5) == 20, 'method captures enclosing local with a distinct name'
 assert factory(4)().kind == 'widget', 'class member with a distinct name is unaffected'
 
-
-# === Bare-name reference to a class member raises NameError ===
-# A method referencing a class member by bare name does NOT find the class
-# attribute; with no matching global it is a NameError. (A `try`/`except`
-# message assertion is used rather than a TRACEBACK test because CPython adds a
-# "Did you mean: 'self.timeout'?" hint to the *display* that Monty does not.)
-class Settings:
-    timeout = 30
-
-    def describe(self):
-        return timeout  # no global `timeout` -> NameError, NOT Settings.timeout
-
-
-try:
-    Settings().describe()
-    assert False, 'expected NameError for a bare class-member reference'
-except NameError as exc:
-    assert str(exc) == "name 'timeout' is not defined", 'bare class-member name is not in scope'
+# The bare-name NameError case (a method referencing a class member by bare name)
+# is covered by the traceback test in class__name_error.py.

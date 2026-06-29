@@ -173,6 +173,11 @@ def format_full_traceback(e: Exception):
 
 def normalize_debug_range(line: str) -> str:
     line = line.replace('dataclasses.FrozenInstanceError:', 'FrozenInstanceError:')
+    # Strip CPython's "Did you mean: '...'?" suggestion. Monty does not implement
+    # name/attribute spelling suggestions (it only emits "Did you forget to import
+    # '...'", which both interpreters produce), so dropping this CPython-only
+    # suffix keeps tracebacks byte-for-byte comparable for all such cases.
+    line = re.sub(r"\. Did you mean: '[^']*'\?", '', line)
     if re.fullmatch(r' +[\~\^]+', line):
         return line.replace('^', '~')
     else:
