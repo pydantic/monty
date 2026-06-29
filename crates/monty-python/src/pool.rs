@@ -26,7 +26,10 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError},
+    sync::{
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -51,14 +54,15 @@ use crate::{
     limits::extract_limits,
     mount::PyMountDir,
     print_target::PrintTarget,
+    snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
 /// until the context manager is entered and again after it exits.
-type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
+pub(crate) type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
 /// The worker handle of one session. `None` before the session is entered,
 /// after it exits, and after the worker is discarded on a crash.
-type SharedCheckout = Arc<Mutex<Option<Checkout>>>;
+pub(crate) type SharedCheckout = Arc<Mutex<Option<Checkout>>>;
 
 // =============================================================================
 // Sync API: Monty / MontySession
@@ -147,6 +151,7 @@ impl PyMonty {
             repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
+            used: AtomicBool::new(false),
         })
     }
 }
@@ -159,6 +164,9 @@ pub struct PyMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
+    /// Set once the session has been fed or restored. `load_snapshot` is valid
+    /// only while this is unset (a fresh, undriven session).
+    used: AtomicBool,
 }
 
 #[pymethods]
@@ -215,6 +223,7 @@ impl PyMontySession {
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Py<PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
             py,
             &self.checkout,
@@ -229,6 +238,102 @@ impl PyMontySession {
         drive_sync(py, args, external_functions)
     }
 
+    /// Starts a snippet but, instead of driving it to completion, returns a
+    /// snapshot at each external call, OS call, name lookup, or future
+    /// resolution. The caller answers with `snapshot.resume(...)` and may
+    /// `snapshot.dump()` to checkpoint the worker mid-execution.
+    ///
+    /// Unlike [`feed_run`](Self::feed_run) there is no `external_functions`
+    /// argument — surfacing those calls is the point. An `os=` handler still
+    /// auto-dispatches uncovered OS calls until the next non-OS event.
+    #[pyo3(signature = (code, *, inputs=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[expect(clippy::too_many_arguments)]
+    fn feed_start(
+        &self,
+        py: Python<'_>,
+        code: &Bound<'_, PyString>,
+        inputs: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<Py<PyAny>>,
+        skip_type_check: bool,
+    ) -> PyResult<Py<PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
+        let args = FeedArgs::extract(
+            py,
+            &self.checkout,
+            &self.dc_registry,
+            code,
+            inputs,
+            print_callback,
+            mount,
+            os,
+            skip_type_check,
+        )?;
+        feed_start_sync(py, args, self.repl_config.script_name.clone())
+    }
+
+    /// Restores a dumped **idle** session — bytes from `session.dump()` taken
+    /// between feeds — so you can keep feeding it. Use
+    /// [`load_snapshot`](Self::load_snapshot) for a dump taken mid-execution.
+    ///
+    /// Valid only on a fresh session, before any feed or load; raises
+    /// `RuntimeError` otherwise. The dump restores its own `script_name` /
+    /// limits / type-check state (the `checkout()` config for those is not
+    /// applied); the dataclass registry from `checkout()` is reused. Raises if
+    /// the dump is actually a suspended snapshot.
+    fn load(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
+        // an idle session has no snapshot, so the restored script name is unused
+        if self.restore_turn(py, state, Vec::new())?.0.is_some() {
+            py.detach(|| discard_checkout(&self.checkout));
+            return Err(PyRuntimeError::new_err(
+                "this dump is a suspended snapshot — use load_snapshot() to resume it",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Restores a dumped **suspended** snapshot — bytes from `feed_start` +
+    /// `snapshot.dump()` — and returns the re-announced snapshot to resume. Use
+    /// [`load`](Self::load) for a dump taken between feeds.
+    ///
+    /// Valid only on a fresh session, before any feed or load; raises
+    /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
+    /// mounts (whose host paths are not in the dump), validated against the
+    /// dump's recorded requirements. The dump restores its own config; the
+    /// dataclass registry from `checkout()` is reused. Raises if the dump is
+    /// actually an idle session.
+    #[pyo3(signature = (state, *, mount=None, print_callback=None))]
+    fn load_snapshot(
+        &self,
+        py: Python<'_>,
+        state: Vec<u8>,
+        mount: Option<&Bound<'_, PyAny>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        // extract args before committing the session, so a bad-args error
+        // leaves it loadable (a failed load is not retryable — checkout a fresh
+        // session — matching the async path)
+        let mounts = extract_mount_specs(mount)?;
+        let print_target = PrintTarget::from_py(print_callback)?;
+        let (event, script_name) = self.restore_turn(py, state, mounts)?;
+        let Some(event) = event else {
+            py.detach(|| discard_checkout(&self.checkout));
+            return Err(PyRuntimeError::new_err(
+                "this dump is an idle session — use load() to restore it",
+            ));
+        };
+        let ctx = DriveContext::new(
+            Arc::clone(&self.checkout),
+            self.dc_registry.clone_ref(py),
+            print_target,
+            // the dump's own script name, falling back to the session config
+            // only if the worker did not report one (e.g. an older child)
+            script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
+        );
+        build_snapshot(py, ctx, event, false)
+    }
+
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
@@ -236,6 +341,20 @@ impl PyMontySession {
             .detach(|| dump_checkout(&self.checkout))
             .map_err(|e| pool_err_to_py(py, e))?;
         Ok(PyBytes::new(py, &state))
+    }
+
+    /// Installs third-party Python packages into the session via the worker's
+    /// `uv`, making them importable by subsequent `feed_run` calls.
+    /// Session-scoped and repeatable; an empty list is a no-op.
+    ///
+    /// Only the embedded-CPython worker supports this. Against the `monty`
+    /// sandbox worker, or on a uv install failure (carrying uv's stderr), this
+    /// raises `MontyRuntimeError`; the session stays usable. Blocks the calling
+    /// thread with the GIL released, bounded by the pool's `request_timeout`.
+    fn install_dependencies(&self, py: Python<'_>, requirements: Vec<String>) -> PyResult<()> {
+        self.used.store(true, Ordering::Relaxed);
+        py.detach(|| install_deps_checkout(&self.checkout, requirements))
+            .map_err(|e| pool_err_to_py(py, e))
     }
 
     /// OS process id of this session's worker, or `None` when no worker is
@@ -247,6 +366,41 @@ impl PyMontySession {
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
         try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
+    }
+}
+
+impl PyMontySession {
+    /// Claims the fresh session (rejecting a reused one) and runs the low-level
+    /// restore off the GIL, returning the re-announced suspension (`Some`) or
+    /// `None` for an idle dump, paired with the dump's adopted script name (for
+    /// restored snapshots' `script_name`). The restore turn runs no sandbox
+    /// code, so it needs no print sink. Shared by [`load`](Self::load) and
+    /// [`load_snapshot`](Self::load_snapshot).
+    fn restore_turn(
+        &self,
+        py: Python<'_>,
+        state: Vec<u8>,
+        mounts: Vec<MountSpec>,
+    ) -> PyResult<(Option<TurnEvent>, Option<String>)> {
+        if self.used.swap(true, Ordering::Relaxed) {
+            // non-destructive: an already-running session keeps its worker
+            return Err(session_used_err());
+        }
+        let checkout = Arc::clone(&self.checkout);
+        let result = py.detach(|| {
+            let mut guard = lock(&checkout);
+            guard
+                .as_mut()
+                .ok_or(PoolError::Finished)?
+                .restore(state, mounts, &mut |_, _| {})
+        });
+        // a failed restore (bad mount, protocol desync, ...) leaves the worker
+        // in an untrusted state: discard it so a later feed fails fast rather
+        // than running on a half-restored session
+        if result.is_err() {
+            py.detach(|| discard_checkout(&checkout));
+        }
+        result.map_err(|e| pool_err_to_py(py, e))
     }
 }
 
@@ -345,6 +499,109 @@ impl PyAsyncMonty {
             repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
+            used: AtomicBool::new(false),
+        })
+    }
+}
+
+/// Async context manager owning a pool of remote `monty` workers reached over a
+/// WebSocket. The dialed peer is the server side: a relay that pairs this
+/// connection with a child (e.g. `monty-cpython websocket`, which dials in from
+/// the other end), or any server that bridges to a worker.
+///
+/// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
+/// checkout dials the configured URL; `checkout()` yields the same
+/// [`PyAsyncMontySession`]. There is no sync counterpart — remote turns are
+/// network-bound, so the async API is the only one.
+#[pyclass(name = "AsyncMontyWebsocket", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMontyWebsocket {
+    config: PoolConfig,
+    pool: SharedPool,
+}
+
+#[pymethods]
+impl PyAsyncMontyWebsocket {
+    /// Creates the pool configuration; connections are made by `async with` and
+    /// each checkout (no workers are pre-warmed).
+    ///
+    /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
+    /// remote relay that accepts the connection but never produces a worker
+    /// would otherwise leave each turn blocked on the socket until the far end
+    /// closes it. Pass `None` to wait indefinitely.
+    ///
+    /// Note that `install_dependencies` is also a turn, so the default 10.0 is
+    /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
+    /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
+    /// `None`) when installing dependencies over the WebSocket transport.
+    #[new]
+    #[pyo3(signature = (
+        url,
+        *,
+        max_processes = None,
+        checkout_timeout = None,
+        request_timeout = 10.0,
+    ))]
+    fn new(
+        url: String,
+        max_processes: Option<usize>,
+        checkout_timeout: Option<f64>,
+        request_timeout: Option<f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            config: parse_websocket_config(url, max_processes, checkout_timeout, request_timeout)?,
+            pool: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Initializes the pool (off the event loop) and returns `self`.
+    fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        let config = slf.get().config.clone();
+        let slot = Arc::clone(&slf.get().pool);
+        future_into_py(py, async move {
+            let pool = spawn_blocking(move || Pool::new(config))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            *lock(&slot) = Some(Arc::new(pool));
+            Ok(slf)
+        })
+    }
+
+    /// Closes the pool: capacity is gone; checked-out sessions keep their
+    /// connections until finished.
+    #[pyo3(signature = (*_args))]
+    fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
+        let pool = lock(&self.pool).take();
+        future_into_py(py, async move {
+            spawn_blocking(move || drop(pool)).await.map_err(join_error_to_py)?;
+            Ok(())
+        })
+    }
+
+    /// Prepares a REPL session; the connection is opened by `async with`.
+    #[pyo3(signature = (
+        *,
+        script_name = "main.py",
+        limits = None,
+        type_check = false,
+        type_check_stubs = None,
+        dataclass_registry = None,
+    ))]
+    fn checkout(
+        &self,
+        py: Python<'_>,
+        script_name: &str,
+        limits: Option<&Bound<'_, PyDict>>,
+        type_check: bool,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
+        dataclass_registry: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyAsyncMontySession> {
+        Ok(PyAsyncMontySession {
+            pool: Arc::clone(&self.pool),
+            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
+            checkout: Arc::new(Mutex::new(None)),
+            used: AtomicBool::new(false),
         })
     }
 }
@@ -357,6 +614,9 @@ pub struct PyAsyncMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
+    /// Set once the session has been fed or restored; `load_snapshot` is valid
+    /// only while unset. See [`PyMontySession::load_snapshot`].
+    used: AtomicBool,
 }
 
 #[pymethods]
@@ -421,6 +681,7 @@ impl PyAsyncMontySession {
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
             py,
             &self.checkout,
@@ -436,6 +697,107 @@ impl PyAsyncMontySession {
         future_into_py(py, async move { drive_async(args, ext_fns).await })
     }
 
+    /// Async counterpart of [`PyMontySession::feed_start`]: the returned
+    /// coroutine resolves to a snapshot (whose `resume(...)` is awaitable) or a
+    /// `MontyComplete`. See that method for the snapshot-driven protocol.
+    #[pyo3(signature = (code, *, inputs=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[expect(clippy::too_many_arguments)]
+    fn feed_start<'py>(
+        &self,
+        py: Python<'py>,
+        code: &Bound<'_, PyString>,
+        inputs: Option<&Bound<'_, PyDict>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+        mount: Option<&Bound<'_, PyAny>>,
+        os: Option<Py<PyAny>>,
+        skip_type_check: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
+        let args = FeedArgs::extract(
+            py,
+            &self.checkout,
+            &self.dc_registry,
+            code,
+            inputs,
+            print_callback,
+            mount,
+            os,
+            skip_type_check,
+        )?;
+        feed_start_async(py, args, self.repl_config.script_name.clone())
+    }
+
+    /// Async counterpart of [`PyMontySession::load`]: the coroutine restores a
+    /// dumped idle session, resolving to `None`. Valid only on a fresh session;
+    /// raises if the dump is actually a suspended snapshot.
+    fn load<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+        // claim the session in the synchronous prologue (which completes before
+        // the future), so a concurrent call is rejected at call time and the
+        // off-thread restore can't race onto a fresh session
+        if self.used.swap(true, Ordering::Relaxed) {
+            return Err(session_used_err());
+        }
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            // an idle session has no snapshot, so the restored name is unused
+            if restore_turn_async(Arc::clone(&checkout), state, Vec::new())
+                .await?
+                .0
+                .is_some()
+            {
+                spawn_blocking(move || discard_checkout(&checkout))
+                    .await
+                    .map_err(join_error_to_py)?;
+                return Err(PyRuntimeError::new_err(
+                    "this dump is a suspended snapshot — use load_snapshot() to resume it",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    /// Async counterpart of [`PyMontySession::load_snapshot`]: the coroutine
+    /// restores a dumped suspended snapshot and resolves to it (whose
+    /// `resume(...)` is awaitable). Valid only on a fresh session; raises if the
+    /// dump is actually an idle session.
+    #[pyo3(signature = (state, *, mount=None, print_callback=None))]
+    fn load_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+        state: Vec<u8>,
+        mount: Option<&Bound<'_, PyAny>>,
+        print_callback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        // extract args before committing the session (a bad-args error leaves
+        // it loadable), then claim it in the synchronous prologue
+        let mounts = extract_mount_specs(mount)?;
+        let print_target = PrintTarget::from_py(print_callback)?;
+        if self.used.swap(true, Ordering::Relaxed) {
+            return Err(session_used_err());
+        }
+        let checkout = Arc::clone(&self.checkout);
+        let dc_registry = self.dc_registry.clone_ref(py);
+        let config_script_name = self.repl_config.script_name.clone();
+        future_into_py(py, async move {
+            let (event, restored_script_name) = restore_turn_async(Arc::clone(&checkout), state, mounts).await?;
+            let Some(event) = event else {
+                spawn_blocking(move || discard_checkout(&checkout))
+                    .await
+                    .map_err(join_error_to_py)?;
+                return Err(PyRuntimeError::new_err(
+                    "this dump is an idle session — use load() to restore it",
+                ));
+            };
+            // the dump's own script name, falling back to the session config
+            // only if the worker did not report one (e.g. an older child)
+            let script_name = restored_script_name.unwrap_or(config_script_name);
+            Python::attach(|py| {
+                let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
+                build_snapshot(py, ctx, event, true)
+            })
+        })
+    }
+
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -446,6 +808,24 @@ impl PyAsyncMontySession {
                 .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))
+        })
+    }
+
+    /// Async counterpart of [`PyMontySession::install_dependencies`]: the
+    /// coroutine installs the packages off the event loop, resolving to `None`.
+    /// Raises `MontyRuntimeError` against the `monty` sandbox worker or on a uv
+    /// install failure; the session stays usable.
+    fn install_dependencies<'py>(&self, py: Python<'py>, requirements: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            spawn_blocking(move || install_deps_checkout(&checkout, requirements))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            // resolve to None (whereas `()` would convert to an empty tuple) to
+            // match the `-> None` stub and the sync method
+            Ok(None::<()>)
         })
     }
 
@@ -462,9 +842,9 @@ impl PyAsyncMontySession {
 // Shared argument parsing
 // =============================================================================
 
-/// Builds the `monty-pool` config from the (shared) pool constructor
-/// arguments, resolving the binary via `pydantic_monty._binary` when not
-/// given explicitly.
+/// Builds the subprocess-transport `monty-pool` config from the (shared)
+/// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
+/// `pydantic_monty._binary` when not given explicitly.
 fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
@@ -482,7 +862,7 @@ fn parse_pool_config(
             .call_method0("find_monty_binary")?
             .extract()?,
     };
-    let mut config = PoolConfig::new(binary_path);
+    let mut config = PoolConfig::subprocess(binary_path);
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -493,9 +873,77 @@ fn parse_pool_config(
     Ok(config)
 }
 
+/// The error raised when `load` / `load_snapshot` is called on a session that
+/// has already been fed or restored (it would otherwise silently discard work).
+fn session_used_err() -> PyErr {
+    PyRuntimeError::new_err(
+        "load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot",
+    )
+}
+
+/// Runs the low-level restore off the event loop (via `spawn_blocking`),
+/// returning the re-announced suspension (`Some`) or `None` for an idle dump,
+/// paired with the dump's adopted script name. The restore turn runs no sandbox
+/// code, so it needs no print sink. Shared by the async
+/// [`PyAsyncMontySession::load`] / `load_snapshot`.
+async fn restore_turn_async(
+    checkout: SharedCheckout,
+    state: Vec<u8>,
+    mounts: Vec<MountSpec>,
+) -> PyResult<(Option<TurnEvent>, Option<String>)> {
+    spawn_blocking(move || {
+        let result = {
+            let mut guard = lock(&checkout);
+            guard
+                .as_mut()
+                .ok_or(PoolError::Finished)
+                .and_then(|checkout| checkout.restore(state, mounts, &mut |_, _| {}))
+        };
+        // discard the worker on failure (the lock is released above) so a later
+        // feed fails fast — a failed load is not retryable
+        if result.is_err() {
+            discard_checkout(&checkout);
+        }
+        result
+    })
+    .await
+    .map_err(join_error_to_py)?
+    .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))
+}
+
+/// Kills the session's worker and empties its checkout slot after a failed
+/// load. Any subsequent feed then fails with [`PoolError::Finished`] — like a
+/// crashed session — enforcing that a failed load is not retryable (callers
+/// must check out a fresh session). Does no protocol I/O, so it never blocks.
+fn discard_checkout(checkout: &SharedCheckout) {
+    // take in its own statement so the lock is released before the worker is
+    // dropped (its `Drop` kills the process)
+    let taken = lock(checkout).take();
+    drop(taken);
+}
+
+/// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
+/// constructor arguments. Each checkout dials `url` verbatim; there is no
+/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
+/// connections.
+fn parse_websocket_config(
+    url: String,
+    max_processes: Option<usize>,
+    checkout_timeout: Option<f64>,
+    request_timeout: Option<f64>,
+) -> PyResult<PoolConfig> {
+    let mut config = PoolConfig::websocket(url);
+    if let Some(max) = max_processes {
+        config.max_processes = max;
+    }
+    config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
+    config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
+    Ok(config)
+}
+
 /// Builds the worker-side REPL session config from the (shared) `checkout`
 /// arguments.
-fn parse_repl_config(
+pub(crate) fn parse_repl_config(
     py: Python<'_>,
     script_name: &str,
     limits: Option<&Bound<'_, PyDict>>,
@@ -512,7 +960,7 @@ fn parse_repl_config(
 
 /// Clones the live pool handle out of a shared slot, erroring when the
 /// context manager has not been entered (or already exited).
-fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
+pub(crate) fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
     lock(pool).as_ref().map(Arc::clone).ok_or_else(|| {
         PyRuntimeError::new_err("the pool is not active — enter the Monty / AsyncMonty context manager first")
     })
@@ -525,22 +973,32 @@ fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
     guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
 }
 
+/// Installs dependencies into a live checkout's session (shared by the sync and
+/// async `install_dependencies` methods; runs without the GIL).
+fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<String>) -> Result<(), PoolError> {
+    let mut guard = lock(checkout);
+    guard
+        .as_mut()
+        .ok_or(PoolError::Finished)?
+        .install_dependencies(requirements)
+}
+
 /// Everything a feed needs, extracted from Python arguments up front so the
 /// sync and async drive loops share one validation path.
-struct FeedArgs {
-    code: String,
-    inputs: Vec<(String, MontyObject)>,
-    mounts: Vec<MountSpec>,
-    skip_type_check: bool,
-    os: Option<Py<PyAny>>,
-    print_target: PrintTarget,
-    checkout: SharedCheckout,
-    dc_registry: DcRegistry,
+pub(crate) struct FeedArgs {
+    pub(crate) code: String,
+    pub(crate) inputs: Vec<(String, MontyObject)>,
+    pub(crate) mounts: Vec<MountSpec>,
+    pub(crate) skip_type_check: bool,
+    pub(crate) os: Option<Py<PyAny>>,
+    pub(crate) print_target: PrintTarget,
+    pub(crate) checkout: SharedCheckout,
+    pub(crate) dc_registry: DcRegistry,
 }
 
 impl FeedArgs {
     #[expect(clippy::too_many_arguments)]
-    fn extract(
+    pub(crate) fn extract(
         py: Python<'_>,
         checkout: &SharedCheckout,
         dc_registry: &DcRegistry,
@@ -746,7 +1204,7 @@ enum TurnAnswer {
 
 /// Runs one protocol turn against the (locked) checkout, streaming prints to
 /// `print_target` and capturing the first print-callback failure.
-fn run_turn_blocking(
+pub(crate) fn run_turn_blocking(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
     turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<TurnEvent, PoolError>,
@@ -785,7 +1243,7 @@ fn run_turn_blocking(
 }
 
 /// `spawn_blocking` wrapper around [`run_turn_blocking`] for the async loop.
-async fn run_turn_async(
+pub(crate) async fn run_turn_async(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
     turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send + 'static,
@@ -800,7 +1258,7 @@ async fn run_turn_async(
 
 /// Converts a turn outcome into the next event, surfacing print-callback
 /// failures (which take precedence — they are host-side errors).
-fn finalize_turn(
+pub(crate) fn finalize_turn(
     py: Python<'_>,
     result: Result<TurnEvent, PoolError>,
     print_err: Option<MontyException>,
@@ -817,7 +1275,7 @@ fn finalize_turn(
 
 /// Maps an `ExtFunctionResult` from callback dispatch onto the pool's resume
 /// payload.
-fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> {
+pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> {
     match result {
         ExtFunctionResult::Return(value) => Ok(ResumeValue::Return(value)),
         ExtFunctionResult::Error(exc) => Ok(ResumeValue::Error(exc)),
@@ -830,7 +1288,7 @@ fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> {
 /// Calls the Python `os=` fallback for a bubbled OS call. With no callback —
 /// or when it returns `NOT_HANDLED` — answers with the child-provided
 /// `not_handled_error`, preserving monty's per-call no-handler semantics.
-fn dispatch_os_parts(
+pub(crate) fn dispatch_os_parts(
     py: Python<'_>,
     function_name: &str,
     args: &[MontyObject],
@@ -873,7 +1331,10 @@ fn dispatch_os_parts(
 }
 
 /// Resolves a bare-name lookup against the external functions dict.
-fn resolve_pool_name_lookup(name: &str, external_functions: Option<&Bound<'_, PyDict>>) -> Option<MontyObject> {
+pub(crate) fn resolve_pool_name_lookup(
+    name: &str,
+    external_functions: Option<&Bound<'_, PyDict>>,
+) -> Option<MontyObject> {
     let value = external_functions?.get_item(name).ok().flatten()?;
     Some(MontyObject::Function {
         name: name.to_owned(),
@@ -922,7 +1383,7 @@ fn mount_spec(dir: &PyRef<'_, PyMountDir>) -> PyResult<MountSpec> {
 }
 
 /// Maps a pool failure onto the Python exception hierarchy.
-fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
+pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
     let message = err.to_string();
     match err {
         PoolError::Runtime(exc) => MontyError::new_err(py, exc),
@@ -945,7 +1406,7 @@ fn duration_from_secs(secs: f64) -> PyResult<Duration> {
 /// checkout lock for its whole duration and attaches for print callbacks, so
 /// a GIL-holding waiter deadlocks both threads — detach first, or use
 /// [`try_lock`].
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 

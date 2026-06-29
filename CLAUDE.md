@@ -75,7 +75,7 @@ the sole security boundary. **Changes to `path_security.rs` require careful secu
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
-## Subprocess isolation (`monty-proto`, `monty --subprocess`, `monty-pool`)
+## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
 
 A monty process can never be made fully crash-proof against memory errors
 (stack overflow aborts, allocator aborts), so monty can run as isolated worker
@@ -94,7 +94,7 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
-- `monty --subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+- `monty subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.
@@ -270,6 +270,8 @@ make test-js              Test the JS package (builds the monty binary the worke
 make dev-py-release       Install the python package for development with a release build
 make build-wasm           Build the lean wasm worker module (requires the wasm32-wasip1 target)
 make test-wasm            Test the wasm worker pool/transport (requires a prior build-wasm)
+make build-cpython-image  Build the monty-cpython docker image (locally by default)
+make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -287,7 +289,7 @@ make test-no-features     Run rust tests without any features enabled
 make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
-make test-type-checking   Run rust tests on monty_type_checking
+make test-type-checking   Run rust tests on monty-type-checking
 make pytest               Run Python tests with pytest
 make test-py              Build the python package (debug profile) and run tests
 make test-docs            Test docs examples only
@@ -753,7 +755,7 @@ Worker** instead of a subprocess, exposed under the `/wasm` subpath. The same
 pool → checkout → session → `feedRun` model and drive loop are used; only the
 transport differs. The pieces:
 
-- `crates/monty-wasm` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
+- `crates/monty-wasm-worker` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
   the transport-agnostic `monty-worker` `Child` state machine, exporting one
   `monty_dispatch_turn` (read a framed request from stdin, run one turn, write
   framed events to stdout). No napi, no threads, no `SharedArrayBuffer`.
@@ -765,8 +767,6 @@ transport differs. The pieces:
   `monty-proto` frames decoded in TypeScript (`proto.ts`/`value.ts`), not via
   napi.
 
-The legacy in-process napi API (`Monty`/`MontySnapshot`/`MontyRepl`/
-`runMontyAsync`) and its `wasm32-wasip1-threads` napi build have been removed.
 Build the worker module locally with `make build-wasm` (needs the
 `wasm32-wasip1` target); it is built and tested in CI.
 

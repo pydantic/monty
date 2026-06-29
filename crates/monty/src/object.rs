@@ -596,10 +596,10 @@ impl MontyObject {
     /// container during the recursive call without freeing the value mid-format.
     fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Self::Repr("<deeply nested>".to_owned());
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         let interns = vm.interns;
         match object {

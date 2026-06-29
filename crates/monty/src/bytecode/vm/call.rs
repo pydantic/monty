@@ -14,6 +14,7 @@ use crate::{
     bytecode::FrameExit,
     defer_drop,
     exception_private::{ExcType, RunError},
+    function::Function,
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
@@ -700,40 +701,56 @@ impl<T: ResourceTracker> VM<'_, T> {
         // 2. Bind arguments to parameters
         func.signature.bind(args, defaults, this, func.name, namespace)?;
 
-        // 3. Create cells for variables captured by nested functions
-        {
-            let param_count = func.signature.total_slots();
-            for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
-                let cell_slot = param_count + i;
-                let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this)
-                } else {
-                    Value::Undefined
-                };
-                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
-                namespace.resize_with(cell_slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
-            }
+        // 3. Install owned cells and captured free-var cells at their slots.
+        this.install_closure_cells(func, cells, namespace)?;
 
-            // 4. Copy captured cells (free vars) into namespace
-            let free_var_start = param_count + func.cell_var_count;
-            for (i, &cell_id) in cells.iter().enumerate() {
-                this.heap.inc_ref(cell_id);
-                let slot = free_var_start + i;
-                namespace.resize_with(slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
-            }
-
-            // 5. Fill remaining slots with Undefined
-            namespace.resize_with(func.namespace_size, || Value::Undefined);
-        }
-
-        // 6. Create Coroutine on heap
+        // 4. Create Coroutine on heap
         let (namespace, this) = namespace_guard.into_parts();
         let coroutine = Coroutine::new(func_id, namespace);
         let coroutine_id = this.heap.allocate(HeapData::Coroutine(coroutine))?;
 
         Ok(CallResult::Value(Value::Ref(coroutine_id)))
+    }
+
+    /// Installs owned cell variables and captured free-var cells into a frame's
+    /// `namespace` at their explicit slots, then fills any remaining slots with
+    /// `Undefined`.
+    ///
+    /// `namespace` enters holding only the bound parameters and leaves with
+    /// length `func.namespace_size`. Each owned cell (`cell_var_slots[i]`) is a
+    /// freshly allocated `Cell`, seeded from parameter `cell_param_indices[i]`
+    /// when that cell is for a captured parameter. Each captured cell
+    /// (`cells[i]`, gathered by the caller from the enclosing frame) is inc-ref'd
+    /// and installed at `free_var_slots[i]`.
+    ///
+    /// Slots are addressed explicitly rather than pushed sequentially because a
+    /// transitively captured (pass-through) variable is allocated a slot late
+    /// during preparation, outside the contiguous param/cell/free region — so a
+    /// positional `push` would place it wrong. Shared by sync calls and
+    /// coroutine creation.
+    fn install_closure_cells(
+        &mut self,
+        func: &Function,
+        cells: &[HeapId],
+        namespace: &mut Vec<Value>,
+    ) -> Result<(), RunError> {
+        namespace.resize_with(func.namespace_size, || Value::Undefined);
+
+        for (i, &slot) in func.cell_var_slots.iter().enumerate() {
+            let cell_value = match func.cell_param_indices[i] {
+                Some(param_idx) => namespace[param_idx].clone_with_heap(self),
+                None => Value::Undefined,
+            };
+            let cell_id = self.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+            namespace[slot.index()] = Value::Ref(cell_id);
+        }
+
+        for (i, &cell_id) in cells.iter().enumerate() {
+            self.heap.inc_ref(cell_id);
+            namespace[func.free_var_slots[i].index()] = Value::Ref(cell_id);
+        }
+
+        Ok(())
     }
 
     /// Calls a sync function by pushing a new frame.
@@ -784,33 +801,8 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
         }
 
-        // 3. Create cells for variables captured by nested functions
-        {
-            let param_count = func.signature.total_slots();
-            for (i, maybe_param_idx) in func.cell_param_indices.iter().enumerate() {
-                let cell_slot = param_count + i;
-                let cell_value = if let Some(param_idx) = maybe_param_idx {
-                    namespace[*param_idx].clone_with_heap(this)
-                } else {
-                    Value::Undefined
-                };
-                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
-                namespace.resize_with(cell_slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
-            }
-
-            // 4. Copy captured cells (free vars) into namespace
-            let free_var_start = param_count + func.cell_var_count;
-            for (i, &cell_id) in cells.iter().enumerate() {
-                this.heap.inc_ref(cell_id);
-                let slot = free_var_start + i;
-                namespace.resize_with(slot, || Value::Undefined);
-                namespace.push(Value::Ref(cell_id));
-            }
-
-            // 5. Fill remaining slots with Undefined
-            namespace.resize_with(namespace_size, || Value::Undefined);
-        }
+        // 3. Install owned cells and captured free-var cells at their slots.
+        this.install_closure_cells(func, cells, namespace)?;
 
         let code = &func.code;
 

@@ -9,7 +9,7 @@ description = "Datatest harness for Monty — runs test cases against both Monty
 publish = false
 
 [dependencies]
-monty = { path = "../monty", features = ["test-hooks"] }
+monty = { workspace = true, features = ["test-hooks"] }
 pyo3 = { version = "0.28", features = ["auto-initialize"] }
 ahash = { workspace = true }
 chrono = "0.4"

@@ -88,11 +88,25 @@ impl From<io::Error> for FrameError {
 /// *before* anything is written, keeping the stream in sync so the caller
 /// can degrade gracefully instead of desynchronizing the protocol.
 pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), FrameError> {
-    // Check the length before allocating the encoded body. This intentionally
-    // traverses once for sizing and once for encoding, but avoids building a
-    // >256 MiB Vec just to reject it.
+    let body = encode_to_capped_vec(msg)?;
+    let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(&body)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Encodes `msg` to a `Vec<u8>`, enforcing [`MAX_FRAME_LEN`] *before* encoding
+/// (so a >256 MiB message is rejected without allocating it).
+///
+/// Message-oriented transports (e.g. a WebSocket, where the message boundary is
+/// the frame) use this directly instead of [`write_frame`]: they send the bytes
+/// with no length prefix but still need the same oversize guard so the wire size
+/// cap is identical across transports.
+pub fn encode_to_capped_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError> {
+    // Size before encoding to avoid building a giant Vec just to reject it.
     let encoded_len = msg.encoded_len();
-    let len = u32::try_from(encoded_len)
+    u32::try_from(encoded_len)
         .ok()
         .filter(|&len| len <= MAX_FRAME_LEN)
         .ok_or(FrameError::FrameTooLarge {
@@ -100,11 +114,25 @@ pub fn write_frame(writer: &mut impl Write, msg: &impl Message) -> Result<(), Fr
             max: MAX_FRAME_LEN,
         })?;
     // encode_to_vec cannot fail (Vec<u8> grows as needed)
-    let body = msg.encode_to_vec();
-    writer.write_all(&len.to_le_bytes())?;
-    writer.write_all(&body)?;
-    writer.flush()?;
-    Ok(())
+    Ok(msg.encode_to_vec())
+}
+
+/// Decodes one already-deframed message from `bytes`.
+///
+/// The message-oriented counterpart to one [`FrameReader::read`]: a transport
+/// whose boundary *is* the frame (a WebSocket) hands the payload straight here.
+/// Resets the per-frame decode budget first so an untrusted peer gets the same
+/// host-memory bound as the length-prefixed reader, and rejects payloads over
+/// [`MAX_FRAME_LEN`].
+pub fn decode_frame<M: Message + Default>(bytes: &[u8]) -> Result<M, FrameError> {
+    if bytes.len() > MAX_FRAME_LEN as usize {
+        return Err(FrameError::FrameTooLarge {
+            len: u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+            max: MAX_FRAME_LEN,
+        });
+    }
+    reset_decode_budget();
+    M::decode(bytes).map_err(FrameError::Decode)
 }
 
 /// Reads length-prefixed protobuf frames from a byte stream.

@@ -28,7 +28,7 @@ use crate::{
         MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
         datetime, str::allocate_string, timedelta, timezone,
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
 
 /// HeapData captures every runtime value that must live in the arena.
@@ -622,94 +622,58 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        match (self, other) {
-            // Simple types: compare with shared borrows (no &mut VM needed)
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
-            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
-                Ok(a.get(vm.heap).as_slice() == b.get(vm.heap).as_slice())
-            }
-            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::Closure(a), HeapReadOutput::Closure(b)) => {
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
-                Ok(a.func_id == b.func_id && a.cells == b.cells)
-            }
-            (HeapReadOutput::FunctionDefaults(a), HeapReadOutput::FunctionDefaults(b)) => {
-                Ok(a.get(vm.heap).func_id == b.get(vm.heap).func_id)
-            }
-            (HeapReadOutput::Range(a), HeapReadOutput::Range(b)) => {
-                // Range::py_eq is pure data comparison — inline to avoid
-                // borrow conflict with the &mut VM signature
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
-                let len_a = a.len();
-                if len_a != b.len() {
-                    Ok(false)
-                } else if len_a == 0 {
-                    Ok(true)
-                } else {
-                    Ok(a.start == b.start && a.step == b.step)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match self {
+            HeapReadOutput::Str(a) => Ok(eq_str(a.get(vm.heap).as_str(), other, vm)),
+            HeapReadOutput::Bytes(a) => Ok(eq_bytes(a.get(vm.heap).as_slice(), other, vm)),
+            HeapReadOutput::LongInt(a) => Ok(eq_bigint(a.get(vm.heap).inner(), other, vm)),
+            HeapReadOutput::ExtFunction(a) => Ok(eq_ext_function(a.get(vm.heap).as_str(), other, vm)),
+            // `Closure`/`FunctionDefaults` have no per-type `py_eq_impl`; their
+            // value-equality (by `func_id`, and captured cells for closures) is
+            // inlined here.
+            HeapReadOutput::Closure(a) => Ok(match other.read_heap(vm) {
+                Some(HeapReadOutput::Closure(b)) => {
+                    let a = a.get(vm.heap);
+                    let b = b.get(vm.heap);
+                    Some(a.func_id == b.func_id && a.cells == b.cells)
                 }
-            }
-            // Container types: use HeapRead-specific comparison methods
-            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_eq(b, vm),
-            // Container types with HeapRead eq methods
-            (HeapReadOutput::Dict(a), HeapReadOutput::Dict(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::Set(a), HeapReadOutput::Set(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::FrozenSet(a), HeapReadOutput::FrozenSet(b)) => a.py_eq(b, vm),
-            // NamedTuple: element-wise comparison via HeapRead clone_item
-            (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => a.py_eq(b, vm),
-            // NamedTuple/Tuple cross-type comparison
-            (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
-            | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
-            // DictKeysView comparisons
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
-            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => a.eq_set(b, vm),
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => a.eq_frozenset(b, vm),
-            // DictItemsView comparisons
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
-            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => a.eq_set(b, vm),
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => a.eq_frozenset(b, vm),
-            (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
-                if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
-                    return Ok(false);
-                }
-                a.attrs().py_eq(&b.attrs(), vm)
-            }
-            // Pure data comparisons (no VM needed)
-            (HeapReadOutput::Slice(a), HeapReadOutput::Slice(b)) => {
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
-                Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
-            }
-            (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            // Datetime types
-            (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => a.py_eq(b, vm),
-            (HeapReadOutput::TimeZone(a), HeapReadOutput::TimeZone(b)) => a.py_eq(b, vm),
-            // External functions compare equal iff their names match — the
-            // same name-based identity used by `Value::py_eq`'s ExtFunction
-            // arms and `py_hash` via `hash_python_str`. (#347)
-            (HeapReadOutput::ExtFunction(a), HeapReadOutput::ExtFunction(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            // Identity-only types (handled by HeapId comparison above)
-            (HeapReadOutput::ReMatch(_), HeapReadOutput::ReMatch(_))
-            | (HeapReadOutput::Cell(_), HeapReadOutput::Cell(_))
-            | (HeapReadOutput::Exception(_), HeapReadOutput::Exception(_))
-            | (HeapReadOutput::Iter(_), HeapReadOutput::Iter(_))
-            | (HeapReadOutput::Module(_), HeapReadOutput::Module(_))
-            | (HeapReadOutput::Coroutine(_), HeapReadOutput::Coroutine(_))
-            | (HeapReadOutput::GatherFuture(_), HeapReadOutput::GatherFuture(_))
-            | (HeapReadOutput::DictValuesView(_), HeapReadOutput::DictValuesView(_)) => Ok(false),
-            // Different types are never equal
-            _ => Ok(false),
+                _ => None,
+            }),
+            HeapReadOutput::FunctionDefaults(a) => Ok(match other.read_heap(vm) {
+                Some(HeapReadOutput::FunctionDefaults(b)) => Some(a.get(vm.heap).func_id == b.get(vm.heap).func_id),
+                _ => None,
+            }),
+            HeapReadOutput::List(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Tuple(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Dict(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Set(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::FrozenSet(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictKeysView(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictItemsView(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictValuesView(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Range(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Slice(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Dataclass(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Path(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::RePattern(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::ReMatch(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::OpenFile(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::Date(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DateTime(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::TimeDelta(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::TimeZone(a) => a.py_eq_impl(other, vm),
+            // Identity-only types: equality is pure identity (handled before the
+            // heap read in `Value::py_eq_impl`), so they never define `==` themselves.
+            HeapReadOutput::Cell(_)
+            | HeapReadOutput::Exception(_)
+            | HeapReadOutput::Iter(_)
+            | HeapReadOutput::Module(_)
+            | HeapReadOutput::Coroutine(_)
+            | HeapReadOutput::GatherFuture(_)
+            | HeapReadOutput::ExternalFuture(_) => Ok(None),
+            #[cfg(feature = "test-hooks")]
+            HeapReadOutput::TestContextManager(a) => a.py_eq_impl(other, vm),
         }
     }
 

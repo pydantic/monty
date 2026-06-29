@@ -176,3 +176,12 @@ assert frozenset({1, 2}) in s, 'frozenset element lookup'
 # Duplicate frozenset should dedup
 s2 = {frozenset({1}), frozenset({1})}
 assert len(s2) == 1, 'duplicate frozensets dedup in set'
+
+# === set <-> frozenset cross-type equality (compare by members) ===
+assert frozenset({1, 2, 3}) == {1, 2, 3}, 'frozenset == set with same members'
+assert {1, 2, 3} == frozenset({1, 2, 3}), 'set == frozenset with same members'
+assert frozenset({1, 2}) != {1, 2, 3}, 'frozenset != set differing members'
+assert {1, 2, 3} != frozenset({1, 2}), 'set != frozenset differing members'
+assert frozenset() == set(), 'empty frozenset == empty set'
+assert set() == frozenset(), 'empty set == empty frozenset'
+assert {1: 'a', 2: 'b'}.keys() == frozenset({1, 2}), 'dict_keys == frozenset'

@@ -6,8 +6,9 @@ members = [
     "crates/monty-proto",
     "crates/monty-pool",
     "crates/monty-worker",
-    "crates/monty-wasm",
+    "crates/monty-wasm-worker",
     "crates/monty-python",
+    "crates/monty-cpython",
     "crates/monty-js",
     "crates/monty-datatest",
     "crates/monty-bench",
@@ -43,18 +44,33 @@ strip = false
 lto = false
 
 [workspace.dependencies]
+# Internal crates. The `path` is used for local/workspace builds; the `version`
+# is required so the crates can be published to crates.io (`cargo publish`
+# rejects path-only dependencies). These versions MUST be kept in lockstep with
+# `workspace.package.version` above and bumped together on each release — see
+# RELEASING.md.
+monty = { path = "crates/monty", version = "0.0.18" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.18" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.18" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.18" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.18" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.18" }
 # ruff, ty and related crates
-ruff_python_parser = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_parser", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_python_stdlib = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_stdlib", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_python_ast = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_python_ast", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_text_size = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_text_size", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ruff_db = { git = "https://github.com/samuelcolvin/ruff.git", package = "ruff_db", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30", features = ["serde"] }
-ty_python_semantic = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_semantic", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_python_core = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_python_core", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_module_resolver = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_module_resolver", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-ty_vendored = { git = "https://github.com/samuelcolvin/ruff.git", package = "ty_vendored", rev = "6aaa91ac2b269df1414954ccd5134f0e6f5c6d30" }
-# salsa version matches current main of ruff
-salsa = { version="0.26.1", default-features = false, features = [
+ruff_python_parser = "0.0.3"
+ruff_python_stdlib = "0.0.3"
+ruff_python_ast = "0.0.3"
+ruff_text_size = "0.0.3"
+ruff_db = { version="0.0.3" ,features = ["serde"] }
+# ty_python_semantic, ty_python_core and ty_vendored are only published at 0.0.2,
+# but those 0.0.2 crates depend on the 0.0.3 line of the ruff crates and on
+# ty_module_resolver 0.0.3, so the lower-level pins must be 0.0.3 to avoid two
+# incompatible copies of each crate ending up in the dependency tree.
+ty_python_semantic = "0.0.2"
+ty_python_core = "0.0.2"
+ty_module_resolver = "0.0.3"
+ty_vendored = "0.0.2"
+# salsa version matches the version ruff uses
+salsa = { version="0.27.0", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
@@ -81,6 +97,17 @@ prost = "=0.14.4"
 sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
+clap = { version = "4", features = ["derive"] }
+# Blocking WebSocket client with rustls for `wss://`, shared by the pool's
+# remote transport (monty-pool) and the relay child (monty-cpython).
+tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Unique, exclusively-created temp dirs (monty-cpython install dirs; pool tests).
+tempfile = "3"
+# Pulled in only to install a process-level rustls `CryptoProvider` before the
+# first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
+# provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
+# tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment

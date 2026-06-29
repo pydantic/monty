@@ -1,5 +1,5 @@
 //! napi binding over `monty-pool`: crash-isolated execution in pools of
-//! `monty --subprocess` workers, the Node.js counterpart of `pydantic_monty`.
+//! `monty subprocess` workers, the Node.js counterpart of `pydantic_monty`.
 //!
 //! The architecture mirrors the Python binding but keeps JS-shaped concerns in
 //! TypeScript: this module exposes *turn-level* primitives ([`NativePool`],
@@ -124,7 +124,7 @@ impl NativePool {
     /// [`start`](Self::start).
     #[napi(constructor)]
     pub fn new(options: NativePoolOptions) -> Result<Self> {
-        let mut config = PoolConfig::new(&options.binary_path);
+        let mut config = PoolConfig::subprocess(&options.binary_path);
         config.min_processes = options.min_processes as usize;
         config.max_processes = options.max_processes as usize;
         config.checkout_timeout = options.checkout_timeout_ms.map(duration_from_ms).transpose()?;
@@ -372,6 +372,33 @@ impl NativeSession {
         })
     }
 
+    /// Restores a dump into this session's freshly configured worker. Resolves
+    /// to a turn object: a suspension when the dump was mid-feed, or `loaded`
+    /// for an idle dump. The TypeScript `load` / `loadSnapshot` split inspects
+    /// the kind and enforces "fresh session only".
+    #[napi]
+    pub fn restore<'env>(
+        &self,
+        env: &'env Env,
+        state: Buffer,
+        mounts: Vec<NativeMount>,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        let mounts = mounts
+            .into_iter()
+            .map(MountSpec::try_from)
+            .collect::<Result<Vec<_>>>()?;
+        let state = state.to_vec();
+        self.run_outcome(env, on_print, move |checkout, on_print| {
+            // JS snapshots expose no script name, so the restored name is unused
+            match checkout.restore(state, mounts, on_print) {
+                Ok((Some(event), _)) => TurnOutcome::Event(event),
+                Ok((None, _)) => TurnOutcome::LoadedIdle,
+                Err(err) => TurnOutcome::from(Err(err)),
+            }
+        })
+    }
+
     /// Serializes the worker's session state (idle or suspended) into opaque
     /// bytes via monty's dump format. The session stays usable.
     #[napi]
@@ -385,6 +412,28 @@ impl NativeSession {
             })
             .await
             .map_err(task_error)?
+        })
+    }
+
+    /// Installs third-party Python packages into the session via the worker's
+    /// `uv`, making them importable by later feeds. Session-scoped and
+    /// repeatable. Resolves to a turn object: `{kind:'ok'}` on success, or an
+    /// `error` / `crashed` / `protocol` outcome the TypeScript layer raises
+    /// (a uv failure, or the `monty` sandbox worker rejecting the request,
+    /// arrives as `error`). Streams no prints, but takes `on_print` to share the
+    /// turn machinery; the callback is never invoked.
+    #[napi]
+    pub fn install_dependencies<'env>(
+        &self,
+        env: &'env Env,
+        requirements: Vec<String>,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, move |checkout, _on_print| {
+            match checkout.install_dependencies(requirements) {
+                Ok(()) => TurnOutcome::Ok,
+                Err(err) => TurnOutcome::from(Err::<TurnEvent, _>(err)),
+            }
         })
     }
 
@@ -431,6 +480,22 @@ impl NativeSession {
         on_print: PrintCallback<'env>,
         turn: impl FnOnce(&mut Checkout, OnPrint<'_>) -> StdResult<TurnEvent, PoolError> + Send + 'static,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, move |checkout, on_print| {
+            TurnOutcome::from(turn(checkout, on_print))
+        })
+    }
+
+    /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
+    /// checkout off the event loop, streams prints, and resolves the computed
+    /// [`TurnOutcome`] to a JS turn object. `compute` returns the outcome
+    /// directly so the `load` turn (which yields `Option<TurnEvent>`) can map
+    /// its idle case to [`TurnOutcome::LoadedIdle`].
+    fn run_outcome<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+        compute: impl FnOnce(&mut Checkout, OnPrint<'_>) -> TurnOutcome + Send + 'static,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = on_print.build_threadsafe_function().build()?;
         let slot = Arc::clone(&self.checkout);
         let pending_not_handled = Arc::clone(&self.pending_not_handled);
@@ -454,7 +519,7 @@ impl NativeSession {
                         };
                         let _ = block_on(tsfn.call_async(FnArgs::from((stream.to_owned(), text.to_owned()))));
                     };
-                    let outcome = TurnOutcome::from(turn(checkout, &mut on_print));
+                    let outcome = compute(checkout, &mut on_print);
                     if let TurnOutcome::Event(TurnEvent::OsCall { not_handled_error, .. }) = &outcome {
                         lock(&pending_not_handled).clone_from(not_handled_error);
                     }
@@ -485,6 +550,12 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
+    /// A `load` restored an idle (between-feeds) session — there is no
+    /// suspension to resume. Only produced by [`NativeSession::load`].
+    LoadedIdle,
+    /// A non-feed request succeeded with no value or suspension. Produced by
+    /// [`NativeSession::install_dependencies`].
+    Ok,
 }
 
 impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
@@ -580,6 +651,12 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         TurnOutcome::Protocol(message) => {
             obj.set("kind", "protocol")?;
             obj.set("message", message)?;
+        }
+        TurnOutcome::LoadedIdle => {
+            obj.set("kind", "loaded")?;
+        }
+        TurnOutcome::Ok => {
+            obj.set("kind", "ok")?;
         }
     }
     Ok(obj)

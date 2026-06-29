@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, heap_read_ref_as_field,
+        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -165,9 +165,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        // Dataclasses are equal if they have the same name and equal attrs
-        Ok(self.get(vm.heap).name == other.get(vm.heap).name && self.attrs().py_eq(&other.attrs(), vm)?)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        // Dataclasses are equal only if they are the same class and have equal attrs.
+        if self.get(vm.heap).type_id() != other.get(vm.heap).type_id() {
+            return Ok(Some(false));
+        }
+        Ok(Some(self.attrs().eq_dict(&other.attrs(), vm)?))
     }
 
     /// Hashes a frozen dataclass by its class name and the values of declared fields.
@@ -178,8 +184,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         if !self.get(vm.heap).frozen {
             return Ok(None);
         }
-        let token = vm.heap.incr_recursion_depth()?;
-        crate::defer_drop!(token, vm);
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         let mut hasher = DefaultHasher::new();
         // Hash the class name
         self.get(vm.heap).name.hash(&mut hasher);
@@ -212,10 +218,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         // Format: ClassName(field1=value1, field2=value2, ...)
         // Only declared fields are shown, not dynamically added attributes

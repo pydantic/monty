@@ -1,6 +1,6 @@
-// Spike smoke test for the lean wasip1 Monty worker (`crates/monty-wasm`).
+// Spike smoke test for the lean wasip1 Monty worker (`crates/monty-wasm-worker`).
 //
-// Loads `monty_wasm.wasm` under a single-threaded WASI shim in Node, drives one
+// Loads `monty_wasm_worker.wasm` under a single-threaded WASI shim in Node, drives one
 // `ReplCreate` turn and one `ReplFeed` turn over WASI stdio, and checks the
 // reply frames. This proves the three things the in-process Rust tests cannot:
 //   1. the module instantiates and runs under a browser-style WASI shim;
@@ -43,8 +43,9 @@ function frameOf(bytes) {
 
 // ParentRequest { repl_create = 1 { script_name = 1 } }
 const replCreateFrame = frameOf(lenField(1, lenField(1, utf8('main.py'))))
-// ParentRequest { repl_feed = 2 { code = 1, skip_type_check = 4 } }
-const replFeedFrame = frameOf(lenField(2, [...lenField(1, utf8('1 + 2')), ...boolField(4, true)]))
+// ParentRequest { feed = 3 { code = 1, skip_type_check = 4 } } (field 2 is
+// InstallDependencies)
+const replFeedFrame = frameOf(lenField(3, [...lenField(1, utf8('1 + 2')), ...boolField(4, true)]))
 
 // --- minimal protobuf decode ---
 
@@ -121,7 +122,7 @@ function completeInt(frameBytes) {
 // --- WASI driving: one instance, reset stdio buffers per turn ---
 
 const here = dirname(fileURLToPath(import.meta.url))
-const wasmPath = join(here, '..', '..', '..', 'target', 'wasm32-wasip1', 'release', 'monty_wasm.wasm')
+const wasmPath = join(here, '..', '..', '..', 'target', 'wasm32-wasip1', 'release', 'monty_wasm_worker.wasm')
 const wasmBytes = readFileSync(wasmPath)
 
 const wasi = new WASI([], [], [new OpenFile(new File([])), new OpenFile(new File([])), new OpenFile(new File([]))])

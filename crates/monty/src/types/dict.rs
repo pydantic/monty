@@ -13,13 +13,10 @@ use smallvec::{SmallVec, smallvec};
 use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
-    heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput,
-        RecursionToken,
-    },
+    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
@@ -227,6 +224,28 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTra
 }
 
 impl<'h> HeapRead<'h, Dict> {
+    /// Element-wise equality against another dict (matching keys and values).
+    ///
+    /// Shared by `Dict::py_eq_impl` and `Dataclass::py_eq_impl` (which compares
+    /// the dataclasses' attribute dicts).
+    pub(crate) fn eq_dict(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+            return Ok(false);
+        }
+        let iter = self.iter(vm)?;
+        defer_drop_vm_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let Some(other_value) = other.dict_get(key, vm)? else {
+                return Ok(false);
+            };
+            defer_drop!(other_value, vm);
+            if !value.py_eq(other_value, vm)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Gets a value from the dict by key.
     ///
     /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
@@ -520,7 +539,7 @@ impl<'h> HeapRead<'h, Dict> {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 let iter = src.iter(vm)?;
-                defer_drop_mut!(iter, vm);
+                defer_drop_vm_mut!(iter, vm);
                 while let Some((key, value)) = iter.next_owned(vm)? {
                     let old_value = self.set(key, value, vm)?;
                     old_value.drop_with_heap(vm);
@@ -667,8 +686,8 @@ impl IntoIterator for Dict {
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight pair) is released on
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight pair) is released on
 /// every exit path — dict iteration almost always calls back into
 /// `py_eq` / `py_hash` (membership lookups, comparison) which recurse on
 /// cyclic structures.
@@ -693,7 +712,7 @@ pub(crate) struct DictIter<'a, 'h> {
 impl<'a, 'h> DictIter<'a, 'h> {
     fn new<R: ResourceTracker>(dict: &'a HeapRead<'h, Dict>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = dict.get(vm.heap).entries.len();
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             dict,
             index: 0,
@@ -766,11 +785,11 @@ impl<'a, 'h> DictIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for DictIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current_key.drop_with_heap(heap);
-        self.current_value.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for DictIter<'_, 'h> {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
+        self.current_key.drop_with_heap(container);
+        self.current_value.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -788,22 +807,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Dict(other)) => Ok(Some(self.eq_dict(&other, vm)?)),
+            _ => Ok(None),
         }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((key, value)) = iter.next(vm)? {
-            let Ok(Some(other_value)) = other.dict_get(key, vm) else {
-                return Ok(false);
-            };
-            defer_drop!(other_value, vm);
-            if !value.py_eq(other_value, vm)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -821,10 +829,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         }
 
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("{...}")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         f.write_char('{')?;
         let len = self.get(vm.heap).len();

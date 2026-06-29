@@ -21,3 +21,7 @@
 /.zed/
 /scripts/json_files/
 .DS_Store
+/.codex/
+
+# Python virtualenvs (e.g. monty-cpython dev installs)
+.venv/

@@ -12,9 +12,9 @@ homepage = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
-monty_type_checking = { path = "../monty-type-checking" }
+monty = { workspace = true }
+monty-proto = { workspace = true }
+monty-type-checking = { workspace = true }
 prost = { workspace = true }
 
 [lints]

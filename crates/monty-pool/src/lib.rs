@@ -1,19 +1,35 @@
-//! Pool of `monty --subprocess` worker processes.
+//! Pool of monty worker processes driving the wire protocol.
 //!
 //! Monty executes untrusted Python, and a monty process can never be made
 //! fully crash-proof against memory errors (stack overflow, allocator
-//! aborts). This crate isolates those crashes by running the interpreter in
-//! child processes: a crashed worker kills only itself, the pool detects the
-//! death and replaces it, and the parent process is never at risk.
+//! aborts). This crate isolates those crashes by running the interpreter in a
+//! separate worker reached over the protocol: a crashed worker kills only
+//! itself, the pool detects the death and replaces it, and the parent process
+//! is never at risk.
+//!
+//! # Transports
+//!
+//! A worker is reached one of two ways (see [`MontyTransport`]):
+//!
+//! - [`MontyTransport::Subprocess`] — a local `monty subprocess` child over
+//!   framed stdio. These are the *poolable* workers: prewarmed, reused across
+//!   checkouts, and replaced on crash.
+//! - [`MontyTransport::Websocket`] — a remote child dialed over a WebSocket.
+//!   These workers are **single-use**: dialed fresh per checkout, never
+//!   prewarmed (`min_processes` is forced to 0) and never returned to the
+//!   pool. Isolation is the remote host's responsibility — a remote crash is
+//!   observed as the connection dropping, not a local process death.
 //!
 //! # Model
 //!
-//! A [`Pool`] keeps an elastic set of prewarmed workers (`min_processes` up
-//! to `max_processes`). [`Pool::checkout`] dedicates one worker to one REPL
+//! A [`Pool`] keeps an elastic set of workers (`min_processes` up to
+//! `max_processes`; subprocess workers are prewarmed, WebSocket workers are
+//! dialed on demand). [`Pool::checkout`] dedicates one worker to one REPL
 //! session: the caller feeds snippets and answers suspension events
 //! ([`TurnEvent`]) until done, then [`Checkout::finish`] returns the worker
-//! to the pool. A [`Checkout`] dropped without `finish` kills its worker —
-//! mid-execution state cannot be trusted back into the pool.
+//! to the pool (or, for a single-use WebSocket worker, drops it). A
+//! [`Checkout`] dropped without `finish` kills its worker — mid-execution
+//! state cannot be trusted back into the pool.
 //!
 //! # Crash semantics
 //!
@@ -38,15 +54,41 @@ pub use crate::{
     pool::Pool,
 };
 
+/// How the pool reaches its workers.
+#[derive(Debug, Clone)]
+pub enum MontyTransport {
+    /// Spawn a local `monty subprocess` child and talk to it over framed
+    /// stdio pipes. Takes path to the `monty` (or compatible child) binary.
+    Subprocess(PathBuf),
+    /// Connect *out* to a remote child over a WebSocket — either a relay (which
+    /// pairs this connection with a child that dialed in with the same session
+    /// id) or a child running a server. One binary message per protocol frame.
+    ///
+    /// The URL is dialed verbatim — if a relay needs the two ends to share a
+    /// session id in the path (`/<uuid>/parent`), the caller is responsible for
+    /// putting it there. Takes full `ws://`/`wss://` URL to dial.
+    Websocket(String),
+}
+
+impl MontyTransport {
+    /// Whether this is the remote WebSocket transport, whose workers are
+    /// single-use (dialed per checkout, never pooled idle or reused).
+    pub(crate) fn is_websocket(&self) -> bool {
+        matches!(self, Self::Websocket(_))
+    }
+}
+
 /// Configuration for a [`Pool`].
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
-    /// Workers spawned eagerly at pool creation and kept warm.
+    /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
+    /// the [`MontyTransport::Websocket`] transport (connections are made
+    /// per-checkout, not pre-warmed).
     pub min_processes: usize,
     /// Hard cap on live workers; checkouts beyond this wait.
     pub max_processes: usize,
-    /// Path to the `monty` binary.
-    pub binary_path: PathBuf,
+    /// How workers are reached (spawned locally or connected to remotely).
+    pub transport: MontyTransport,
     /// How long [`Pool::checkout`] waits for a free worker before
     /// [`PoolError::Exhausted`]. `None` waits forever.
     pub checkout_timeout: Option<Duration>,
@@ -70,14 +112,27 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
-    /// Creates a config with defaults: `min_processes = 1`, `max_processes =`
-    /// available parallelism, no timeouts, a 1s `duration_limit_grace`, no
-    /// recycling.
-    pub fn new(binary_path: impl Into<PathBuf>) -> Self {
+    /// Creates a subprocess-transport config with defaults: `min_processes = 1`,
+    /// `max_processes =` available parallelism, no timeouts, a 1s
+    /// `duration_limit_grace`, no recycling.
+    pub fn subprocess(binary_path: impl Into<PathBuf>) -> Self {
+        Self::with_transport(MontyTransport::Subprocess(binary_path.into()))
+    }
+
+    /// Creates a WebSocket-transport config dialing `url` verbatim per checkout.
+    /// `min_processes` is 0 (no pre-warming — connections are made per-checkout).
+    pub fn websocket(url: impl Into<String>) -> Self {
+        let mut config = Self::with_transport(MontyTransport::Websocket(url.into()));
+        config.min_processes = 0;
+        config
+    }
+
+    /// Shared constructor for both transports.
+    fn with_transport(transport: MontyTransport) -> Self {
         Self {
             min_processes: 1,
             max_processes: thread::available_parallelism().map_or(4, NonZero::get),
-            binary_path: binary_path.into(),
+            transport,
             checkout_timeout: None,
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),

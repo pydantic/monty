@@ -8,7 +8,7 @@
 // browser path end to end.
 //
 // Requires the release wasm build:
-//   cargo build -p monty-wasm --target wasm32-wasip1 --release
+//   cargo build -p monty-wasm-worker --target wasm32-wasip1 --release
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -23,7 +23,7 @@ import { WasmHost, inProcessDispatcher } from '../ts/worker/host.js'
 import { WorkerTransport } from '../ts/worker/transport.js'
 
 // the module copied next to the loaders by scripts/copy-wasm.mjs
-const wasmPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'ts', 'worker', 'monty_wasm.wasm')
+const wasmPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'ts', 'worker', 'monty_wasm_worker.wasm')
 
 let wasmModule: WebAssembly.Module
 

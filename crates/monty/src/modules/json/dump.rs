@@ -10,8 +10,8 @@ use std::{
 
 use crate::{
     args::{ArgValues, FromArgs},
-    bytecode::VM,
-    defer_drop, defer_drop_mut,
+    bytecode::{ContainsVM, VM},
+    defer_drop_mut, defer_drop_vm, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
     resource::ResourceTracker,
@@ -364,6 +364,17 @@ impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
     }
 }
 
+/// Lets a [`RecursionToken`](crate::bytecode::RecursionToken) (and the container
+/// iterators that hold one) be released through the encoder via `defer_drop_vm!`,
+/// reaching the VM-side recursion counter while the encoder itself stays borrowable.
+impl<'h, R: ResourceTracker> ContainsVM<'h> for Encoder<'_, 'h, R> {
+    type Tracker = R;
+
+    fn vm(&mut self) -> &mut VM<'h, Self::Tracker> {
+        self.vm
+    }
+}
+
 impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
     /// Serializes a Monty value into JSON text.
     ///
@@ -414,7 +425,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                 }
                 HeapReadOutput::List(list) => self.with_entered_container(*heap_id, |enc| {
                     let iter = list.iter(enc.vm)?;
-                    defer_drop_mut!(iter, enc);
+                    defer_drop_vm_mut!(iter, enc);
                     enc.serialize_array(depth, |enc, depth| {
                         if let Some(item) = iter.next(enc.vm)? {
                             enc.serialize_value(item, depth)?;
@@ -426,7 +437,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                 }),
                 HeapReadOutput::Tuple(tuple) => self.with_entered_container(*heap_id, |enc| {
                     let iter = tuple.iter(enc.vm)?;
-                    defer_drop_mut!(iter, enc);
+                    defer_drop_vm_mut!(iter, enc);
                     enc.serialize_array(depth, |enc, depth| {
                         if let Some(item) = iter.next(enc.vm)? {
                             enc.serialize_value(item, depth)?;
@@ -445,8 +456,8 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     defer_drop_mut!(entries, this);
                     // Need to explicitly acquire a recursion token for the dict as we don't go
                     // via the default dict iterator.
-                    let token = this.vm.heap.incr_recursion_depth()?;
-                    defer_drop!(token, this);
+                    let token = this.vm.recursion_token()?;
+                    defer_drop_vm!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }
                 _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),

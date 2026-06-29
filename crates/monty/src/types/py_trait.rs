@@ -102,8 +102,8 @@ pub trait PyTrait<'h> {
     /// the recursion limit is exceeded while hashing nested containers.`
     ///
     /// Container implementations should track recursion depth via
-    /// `heap.incr_recursion_depth()` and recurse through `Value::py_hash` for
-    /// nested values.
+    /// `vm.recursion_guard()` (or `vm.incr_recursion()` when iterating) and
+    /// recurse through `Value::py_hash` for nested values.
     ///
     /// `self_id` is the heap ID of this value; it is required for types like
     /// `Cell` that hash by identity. Most implementations ignore it.
@@ -113,17 +113,26 @@ pub trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// Python equality comparison (`==`).
+    /// One-sided Python equality comparison (`self == other` from `self`'s side).
     ///
-    /// For containers, this performs element-wise comparison using the heap
-    /// to resolve nested references. Takes `&mut VM` to allow lazy hash
-    /// computation for dict key lookups and access to interned string content.
+    /// Mirrors CPython's `__eq__`/`tp_richcompare` protocol: returns
+    /// `Ok(Some(bool))` when `self`'s type knows how to compare itself against
+    /// `other`, or `Ok(None)` for `NotImplemented` — i.e. `self`'s type does not
+    /// recognise `other`, so the caller should try the reflected `other == self`.
+    /// The reflection and the final "unequal" fallback are driven by
+    /// [`Value::py_eq`]; implementations only handle their own side and must
+    /// not attempt reflection themselves. This is the same convention as
+    /// [`py_cmp`](Self::py_cmp)'s `Option<Ordering>` (`None` = NotImplemented).
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
+    /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
+    /// directly. For containers this performs element-wise comparison using the
+    /// heap to resolve nested references; `&mut VM` allows lazy hash computation
+    /// for dict key lookups and access to interned string content.
     ///
-    /// Returns `Ok(true)` if equal, `Ok(false)` if not equal, or
+    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool>;
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -131,7 +140,7 @@ pub trait PyTrait<'h> {
     /// to resolve nested references. Takes `&mut VM` to allow lazy hash
     /// computation for dict key lookups and access to interned string content.
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
     /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
     /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
@@ -152,7 +161,7 @@ pub trait PyTrait<'h> {
     /// visited heap IDs. When a cycle is detected (ID already in `heap_ids`), implementations
     /// should write an ellipsis (e.g., `[...]` for lists, `{...}` for dicts).
     ///
-    /// Recursion depth is tracked via `heap.incr_recursion_depth()`.
+    /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
     /// # Arguments
     /// * `f` - The formatter to write to

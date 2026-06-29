@@ -76,6 +76,8 @@ pub extern "C" fn monty_dispatch_turn() -> i32 {
 
     match outcome {
         HandleOutcome::Continue => turn_status::CONTINUE,
-        HandleOutcome::Shutdown => turn_status::SHUTDOWN,
+        // a fatal child error (e.g. version skew) terminates the worker just
+        // like a clean shutdown; the emitted FatalError frame carries the cause
+        HandleOutcome::Shutdown | HandleOutcome::Fatal => turn_status::SHUTDOWN,
     }
 }

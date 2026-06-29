@@ -19,6 +19,7 @@ dev = [
     "logfire>=4.25.0",
     "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
+    "websockets>=14",
 ]
 
 # https://beta.ruff.rs/docs/configuration/

@@ -470,7 +470,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Point".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -489,7 +489,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "MutablePoint".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -509,7 +509,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "User".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["name".to_string(), "active".to_string()],
                     attrs: vec![
                         (MontyObject::String("name".to_string()), MontyObject::String(name)),
@@ -528,7 +528,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Empty".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec![],
                     attrs: vec![].into(),
 
@@ -591,7 +591,7 @@ fn dispatch_method_call(
             let dy = i64::try_from(&args[2]).expect("dy must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
@@ -609,7 +609,7 @@ fn dispatch_method_call(
             let factor = i64::try_from(&args[1]).expect("factor must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),

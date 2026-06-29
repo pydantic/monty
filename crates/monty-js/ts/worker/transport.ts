@@ -37,8 +37,10 @@ export interface WorkerSessionConfig {
   typeCheckStubs?: string
 }
 
-// ParentRequest oneof field numbers.
-const Req = { ReplCreate: 1, ReplFeed: 2, ResumeCall: 3, ResumeNameLookup: 4, ResumeFutures: 5, Dump: 6, Reset: 8 }
+// ParentRequest oneof field numbers (see proto/monty/v1/monty.proto). Note
+// field 2 is InstallDependencies (CPython-only) and field 8 is Load, neither of
+// which the wasm transport sends — hence the gaps.
+const Req = { ReplCreate: 1, ReplFeed: 3, ResumeCall: 4, ResumeNameLookup: 5, ResumeFutures: 6, Dump: 7, Reset: 9 }
 // ChildEvent oneof field numbers.
 const Ev = {
   Print: 1,

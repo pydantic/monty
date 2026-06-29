@@ -1,4 +1,4 @@
-// The worker pool: `Monty` owns a set of `monty --subprocess` children and
+// The worker pool: `Monty` owns a set of `monty subprocess` children and
 // hands them out one-per-session via `checkout()`. The pool, watchdogs and
 // crash recovery live in the native `monty-pool` crate (shared with
 // pydantic_monty); this class normalises options, resolves the worker

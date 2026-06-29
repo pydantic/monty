@@ -29,11 +29,11 @@ use smallvec::SmallVec;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, RecursionToken},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -212,11 +212,11 @@ impl<'h> HeapRead<'h, Tuple> {
 /// slot (using [`Value::Undefined`] as the empty sentinel) and drops the
 /// previous item at the start of each `next` call, so call sites do **not**
 /// need a per-item `defer_drop!`. The held item is also dropped when the
-/// iterator is released via [`DropWithHeap`].
+/// iterator is released via [`DropWithVM`].
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight item) is released
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released
 /// on every exit path. Unlike list / dict / set iteration, tuples are
 /// immutable so size never changes during iteration, but the token still
 /// belongs here — tuple iteration almost always feeds into operations that
@@ -234,7 +234,7 @@ pub(crate) struct TupleIter<'a, 'h> {
 
 impl<'a, 'h> TupleIter<'a, 'h> {
     fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, Tuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             tuple,
             index: 0,
@@ -279,10 +279,10 @@ impl<'a, 'h> TupleIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for TupleIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for TupleIter<'_, 'h> {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -319,20 +319,25 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // A tuple equals another tuple; `tuple == namedtuple` is handled by the
+        // reflected pass via `NamedTuple::py_eq_impl`.
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
-                return Ok(false);
+                return Ok(Some(false));
             }
         }
-        Ok(true)
+        Ok(Some(true))
     }
 
     /// Hashes the tuple as the combined hash of its elements.
@@ -350,7 +355,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         }
         let mut hasher = DefaultHasher::new();
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
@@ -375,7 +380,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, av)) = iter.next_with_index(vm)? {
             if i >= min_len {
                 // `self` was longer than `other`; remaining items don't
@@ -441,10 +446,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             //
             // Match `repr_sequence_fmt`'s depth handling so nested one-element
             // tuples can't bypass `max_recursion_depth` and overflow the stack.
-            let Ok(token) = vm.heap.incr_recursion_depth() else {
+            let Ok(mut guard) = vm.recursion_guard() else {
                 return Ok(f.write_str("...")?);
             };
-            defer_drop!(token, vm);
+            let vm = &mut *guard;
             write!(f, "(")?;
             let item = self.clone_item(0, vm);
             defer_drop!(item, vm);
@@ -510,7 +515,7 @@ fn tuple_index<'h>(
     };
 
     let iter = tuple.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
@@ -538,7 +543,7 @@ fn tuple_count<'h>(
 
     let mut count = 0usize;
     let iter = tuple.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
         if value.py_eq(item, vm)? {
             count += 1;

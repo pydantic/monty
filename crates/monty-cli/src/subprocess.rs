@@ -30,6 +30,9 @@ pub(crate) fn run() -> ExitCode {
             Ok(Some(request)) => match child.handle(request, &mut sink) {
                 Ok(HandleOutcome::Continue) => {}
                 Ok(HandleOutcome::Shutdown) => return ExitCode::SUCCESS,
+                // the child emitted a FatalError (e.g. version skew) and cannot
+                // keep serving — exit non-zero so the parent sees a clean cause
+                Ok(HandleOutcome::Fatal) => return ExitCode::from(4),
                 // an oversize event was rejected before any bytes hit the
                 // wire, so the stream is still in sync and the parent can
                 // receive a parseable last gasp

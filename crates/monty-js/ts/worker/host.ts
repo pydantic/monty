@@ -1,7 +1,7 @@
 // Loads the lean wasip1 worker module under a single-threaded WASI shim and
 // runs it one protocol turn at a time.
 //
-// The module (`crates/monty-wasm`) is a WASI reactor exporting
+// The module (`crates/monty-wasm-worker`) is a WASI reactor exporting
 // `monty_dispatch_turn`: it reads one framed request from stdin and writes the
 // turn's framed events to stdout. This host owns the instance (so session state
 // persists across turns) and swaps the stdin/stdout buffers around each call.

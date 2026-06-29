@@ -147,7 +147,7 @@ wrapper.js.map
 plans
 prompts
 # lean worker module copied next to the loaders by scripts/copy-wasm.mjs
-ts/worker/monty_wasm.wasm
+ts/worker/monty_wasm_worker.wasm
 
 # Playwright browser test
 test-results

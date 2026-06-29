@@ -1,5 +1,5 @@
 {
-  "name": "monty-wasm-smoke",
+  "name": "monty-wasm-worker-smoke",
   "private": true,
   "type": "module",
   "description": "Spike smoke test: drive the lean wasip1 worker from Node under a single-threaded WASI shim.",

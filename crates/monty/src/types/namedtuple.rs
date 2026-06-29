@@ -27,11 +27,11 @@ use ahash::AHashSet;
 
 use super::PyTrait;
 use crate::{
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{ContainsHeap, DropWithHeap, HeapId, HeapItem, HeapRead, RecursionToken},
+    heap::{HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::Type,
@@ -186,7 +186,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
@@ -203,7 +203,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// Same shape as [`TupleIter`](super::tuple::TupleIter): yields each item by
 /// reference, owns the most-recently-yielded item in a `Value::Undefined`
 /// sentinel slot, and holds a [`RecursionToken`] for its lifetime. MUST be
-/// wrapped in [`defer_drop_mut!`] so the token and the in-flight item are
+/// wrapped in [`defer_drop_vm_mut!`] so the token and the in-flight item are
 /// released on every exit path.
 ///
 /// `NamedTuple` is immutable, so there is no size-change detection — only
@@ -221,7 +221,7 @@ pub(crate) struct NamedTupleIter<'a, 'h> {
 
 impl<'a, 'h> NamedTupleIter<'a, 'h> {
     fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, NamedTuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             tuple,
             index: 0,
@@ -263,10 +263,10 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for NamedTupleIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for NamedTupleIter<'_, 'h> {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -295,20 +295,30 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
-            return Ok(false);
-        }
-        let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
-        while let Some((i, a)) = iter.next_with_index(vm)? {
-            let b = other.clone_item(i, vm);
-            defer_drop!(b, vm);
-            if !a.py_eq(b, vm)? {
-                return Ok(false);
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // A namedtuple equals another namedtuple element-wise, and also equals a
+        // plain tuple with the same elements (class name is ignored). Both
+        // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
+        // need not know about namedtuples.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::NamedTuple(other)) => {
+                if self.get(vm.heap).len() != other.get(vm.heap).len() {
+                    return Ok(Some(false));
+                }
+                let iter = self.iter(vm)?;
+                defer_drop_vm_mut!(iter, vm);
+                while let Some((i, a)) = iter.next_with_index(vm)? {
+                    let b = other.clone_item(i, vm);
+                    defer_drop!(b, vm);
+                    if !a.py_eq(b, vm)? {
+                        return Ok(Some(false));
+                    }
+                }
+                Ok(Some(true))
             }
+            Some(HeapReadOutput::Tuple(other)) => Ok(Some(self.eq_tuple(&other, vm)?)),
+            _ => Ok(None),
         }
-        Ok(true)
     }
 
     /// Hashes by element only (not by class name), matching `Tuple::py_hash`
@@ -321,7 +331,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
         let mut hasher = DefaultHasher::new();
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
@@ -344,10 +354,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         write!(f, "{}(", self.get(vm.heap).name.as_str(vm.interns))?;
 

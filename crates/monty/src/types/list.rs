@@ -6,13 +6,10 @@ use smallvec::SmallVec;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
-        RecursionToken,
-    },
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
@@ -246,12 +243,12 @@ impl<'h> HeapRead<'h, List> {
 /// item in its `current` slot (using [`Value::Undefined`] as the empty
 /// sentinel) and drops the previous item at the start of each `next` call.
 /// The held item is also dropped when the iterator itself is released via
-/// [`DropWithHeap`]. This means call sites do **not** need a per-item
+/// [`DropWithVM`]. This means call sites do **not** need a per-item
 /// `defer_drop!`; the iter manages every item it hands out.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight item) is released on
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released on
 /// every exit path (success, early `return`, error via `?`). The token is
 /// intentionally non-optional — every iteration of a Python container can
 /// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_cmp` /
@@ -273,7 +270,7 @@ pub(crate) struct ListIter<'a, 'h> {
 
 impl<'a, 'h> ListIter<'a, 'h> {
     fn new<R: ResourceTracker>(list: &'a HeapRead<'h, List>, vm: &mut VM<'h, R>) -> RunResult<Self> {
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             list,
             index: 0,
@@ -321,10 +318,10 @@ impl<'a, 'h> ListIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for ListIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for ListIter<'_, 'h> {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -416,20 +413,23 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         Ok(())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         if self.get(vm.heap).items.len() != other.get(vm.heap).items.len() {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
             if !a.py_eq(b, vm)? {
-                return Ok(false);
+                return Ok(Some(false));
             }
         }
-        Ok(true)
+        Ok(Some(true))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -666,7 +666,7 @@ fn list_remove<'h>(
     let mut found_idx = None;
     {
         let iter = list.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some((i, item)) = iter.next_with_index(vm)? {
             if value.py_eq(item, vm)? {
                 found_idx = Some(i);
@@ -755,7 +755,7 @@ fn list_index<'h>(
 
     // Search for the value in the specified range
     let iter = list.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
@@ -782,7 +782,7 @@ fn list_count<'h>(
 
     let mut count: usize = 0;
     let iter = list.iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop_vm_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
         if value.py_eq(item, vm)? {
             count += 1;
@@ -857,10 +857,10 @@ pub(crate) fn repr_sequence_fmt<'h, T: ResourceTracker>(
     heap_ids: &mut AHashSet<HeapId>,
 ) -> RunResult<()> {
     // Check depth limit before recursing
-    let Ok(token) = vm.heap.incr_recursion_depth() else {
+    let Ok(mut guard) = vm.recursion_guard() else {
         return Ok(f.write_str("...")?);
     };
-    defer_drop!(token, vm);
+    let vm = &mut *guard;
 
     f.write_char(start)?;
     for i in 0..len {

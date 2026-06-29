@@ -16,11 +16,11 @@ name = "monty"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-monty = { path = "../monty" }
-monty-proto = { path = "../monty-proto" }
+clap = { workspace = true }
+monty = { workspace = true }
+monty-proto = { workspace = true }
+monty-type-checking = { workspace = true }
 monty-worker = { path = "../monty-worker" }
-monty_type_checking = { path = "../monty-type-checking" }
 rustyline = "15"
 
 [dev-dependencies]

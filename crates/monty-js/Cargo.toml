@@ -2,6 +2,8 @@
 name = "monty-js"
 description = "Node.js/TypeScript bindings for the Monty sandboxed Python interpreter"
 readme = "README.md"
+# Distributed as a napi-rs native addon on npm, not as a crate on crates.io.
+publish = false
 version = { workspace = true }
 rust-version = { workspace = true }
 # napi-derive's generated code is not yet edition-2024 clean
@@ -17,9 +19,9 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-monty = { path = "../monty" }
-monty-pool = { path = "../monty-pool" }
-monty_type_checking = { path = "../monty-type-checking" }
+monty = { workspace = true }
+monty-pool = { workspace = true }
+monty-type-checking = { workspace = true }
 napi = { version = "3.8", default-features = false, features = ["napi6", "compat-mode", "tokio_rt"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }

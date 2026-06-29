@@ -9,24 +9,30 @@
 
 mod async_dispatch;
 mod build;
-mod convert;
-mod dataclass;
-mod exceptions;
+// The Python ↔ MontyObject value-conversion layer. Declared `pub` so the
+// `monty-cpython` child worker can link these conversions (it embeds CPython
+// and speaks the same value model) without duplicating them.
+pub mod convert;
+pub mod dataclass;
+pub mod exceptions;
 mod external;
 mod limits;
 mod mount;
 mod pool;
 mod print_target;
+mod snapshot;
 
 use std::sync::OnceLock;
 
-// Use `::monty` to refer to the external crate (not the pymodule)
-pub use convert::PyMontyFileHandle;
 pub use exceptions::{MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use mount::PyMountDir;
-pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyMonty, PyMontySession};
+pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
 use pyo3::{prelude::*, sync::PyOnceLock, types::PyAny};
+pub use snapshot::{
+    MontyComplete, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot, PyFunctionSnapshot,
+    PyFutureSnapshot, PyNameLookupSnapshot,
+};
 
 /// Copied from `get_pydantic_core_version` in pydantic
 fn get_version() -> &'static str {
@@ -76,6 +82,8 @@ mod _monty {
     use pyo3::prelude::*;
 
     #[pymodule_export]
+    use super::MontyComplete;
+    #[pymodule_export]
     use super::MontyCrashedError;
     #[pymodule_export]
     use super::MontyError;
@@ -86,9 +94,17 @@ mod _monty {
     #[pymodule_export]
     use super::MontyTypingError;
     #[pymodule_export]
+    use super::PyAsyncFunctionSnapshot as AsyncFunctionSnapshot;
+    #[pymodule_export]
+    use super::PyAsyncFutureSnapshot as AsyncFutureSnapshot;
+    #[pymodule_export]
     use super::PyAsyncMonty as AsyncMonty;
     #[pymodule_export]
     use super::PyAsyncMontySession as AsyncMontySession;
+    #[pymodule_export]
+    use super::PyAsyncMontyWebsocket as AsyncMontyWebsocket;
+    #[pymodule_export]
+    use super::PyAsyncNameLookupSnapshot as AsyncNameLookupSnapshot;
     #[pymodule_export]
     use super::PyCollectStreams as CollectStreams;
     #[pymodule_export]
@@ -96,14 +112,23 @@ mod _monty {
     #[pymodule_export]
     use super::PyFrame as Frame;
     #[pymodule_export]
-    use super::PyMonty as Monty;
+    use super::PyFunctionSnapshot as FunctionSnapshot;
     #[pymodule_export]
-    use super::PyMontyFileHandle as MontyFileHandle;
+    use super::PyFutureSnapshot as FutureSnapshot;
+    #[pymodule_export]
+    use super::PyMonty as Monty;
     #[pymodule_export]
     use super::PyMontySession as MontySession;
     #[pymodule_export]
     use super::PyMountDir as MountDir;
+    #[pymodule_export]
+    use super::PyNameLookupSnapshot as NameLookupSnapshot;
     use super::{get_not_handled, get_version};
+    // `MontyFileHandle` is produced by the value-conversion layer whenever a
+    // `MontyObject::FileHandle` crosses the boundary; export it as part of the
+    // `pydantic_monty` surface.
+    #[pymodule_export]
+    use crate::convert::PyMontyFileHandle as MontyFileHandle;
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -1,26 +1,54 @@
-# Subprocess execution (`monty --subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
+# Worker execution (`monty subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
 
 The monty type checker, compiler, and interpreter should run in a separate
 process, except in environments where that's not possible (like wasm), so
 that sandbox crashes that cannot be fully prevented — stack overflow aborts
 and allocator aborts — kill only the worker. The Python package
 (`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
-run everything exclusively in `monty --subprocess` workers driven over a
-protobuf protocol (`crates/monty-proto`), and expose no in-process execution
-API. The language semantics inside a worker are identical to embedding the
-interpreter directly (it is the same interpreter); the notes below are about
-the *host API* surface.
+run everything in workers driven over a protobuf protocol
+(`crates/monty-proto`) and expose no in-process execution API. By default the
+worker is a local `monty subprocess` child; the Python package additionally
+offers `pydantic_monty.AsyncMontyWebsocket`, which reaches a remote child over
+a WebSocket instead (the JS package is subprocess-only). For a `monty subprocess`
+worker the language semantics are identical to embedding the interpreter directly
+(it is the same interpreter), and the notes below are about the *host API* surface.
+
+A WebSocket worker is whatever the relay bridges to, and need not be a Monty
+sandbox at all: the reference remote child is `monty-cpython`, which runs the
+snippet in **real CPython with no sandbox, no resource limits, and full host
+filesystem/network/subprocess access** (it relies on the deployment — a
+container/VM per session — for isolation, not on the language). So none of
+Monty's in-process safety guarantees hold for that transport; treat the remote
+as a trusted-deployment execution surface, not a sandbox. Its CPython-specific
+divergences are documented in `crates/monty-cpython/README.md`.
 
 ## Execution model
 
+The guarantees below describe a **Monty sandbox worker** (`monty subprocess`).
+A WebSocket/`monty-cpython` remote honours the *protocol* shape (REPL turns,
+version-skew check, value encoding) but **none** of the sandbox guarantees —
+resource limits, the no-subprocess invariant (`monty-cpython` itself shells out
+to `uv` for installs), and the empty-environment property are Monty-sandbox
+properties that real CPython does not provide, per the caveat above.
+
 - The protocol (and `pydantic_monty`) is **REPL-only**: a pool checkout is a
   REPL session in a dedicated worker, and a one-shot run is a checkout plus a
-  single feed. There are no manual suspension snapshots in Python; external
-  function calls, OS callbacks, and print callbacks are driven automatically
-  by `feed_run` (sync or awaited). (The Rust `monty-pool::Checkout` API does
-  expose manual suspension driving and `Pool::checkout_load`.)
+  single feed. `feed_run` drives external function calls, OS callbacks, and
+  print callbacks automatically. `feed_start` instead returns a *snapshot* at
+  each suspension (`FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot`,
+  or `MontyComplete`) for the caller to inspect, `dump()`, and `resume(...)`;
+  see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
+- **The session `Configure` request carries the parent's `monty_version`, and
+  the worker rejects a mismatch.** The protocol has no in-band negotiation and
+  assumes parent and child are deployed in lockstep, so a child whose version
+  differs from the `monty_version` in `Configure` replies `FatalError` (with a
+  `version skew: parent=… child=…` message) and exits non-zero rather than
+  risk a frame desync. A local subprocess child is built in lockstep with the
+  parent, so this mostly matters for the WebSocket transport, where the remote
+  child is deployed separately — a `monty-cpython` (or `monty`) child on a
+  different version replies `FatalError` and the pool surfaces it cleanly.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
@@ -60,9 +88,8 @@ the *host API* surface.
   never in a worker's memory, where a sandbox escape or memory disclosure
   could reach them. This is invisible to sandbox code — `os.getenv` etc. are
   OS calls answered by the host, never reads of the worker's own
-  environment. In Rust, `monty_pool::PoolConfig::extra_args` is the only
-  worker configuration channel outside the protocol; Python and JS do not
-  expose that knob.
+  environment. The public Python and JS bindings expose no worker
+  configuration channel outside the protocol.
 - **Worker binary resolution is part of the host trust boundary.** Python and
   JS resolve the worker from an explicit constructor path first, then
   `MONTY_BIN`, then their bundled platform package (or Python scripts
@@ -130,13 +157,75 @@ the *host API* surface.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are handled inside the worker and never reach the
   callback.
+- **Dependency installation is only available on the embedded-CPython worker.**
+  `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
+  `session.installDependencies([...])` in `@pydantic/monty`) makes the
+  `monty-cpython` worker `uv pip install` the PEP 508 requirements into a
+  virtualenv at `./.venv` (pre-created in the image, see the crate `Dockerfile`)
+  and add its `site-packages` to `sys.path`, so later feeds can import them. It
+  is session-scoped and repeatable; an empty list is a no-op; it requires `uv` on
+  `PATH` (override: `MONTY_UV`) and network access, and the packages are discarded
+  with the per-session sandbox when the session ends. It is bounded by the pool's
+  `request_timeout` (raise it for large dependency sets). The Monty sandbox
+  worker (`monty subprocess`) has no host interpreter to install for, so the
+  call raises `MontyRuntimeError` (the session stays usable). See
+  `crates/monty-cpython/README.md`.
+- **PEP 723 inline dependencies are auto-installed by the CPython worker.**
+  Before running a feed, the `monty-cpython` worker scans the snippet for a
+  PEP 723 `# /// script` block and installs its `dependencies` (same `uv` path
+  as above) so the imports resolve — no protocol involvement, mirroring
+  `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
+  block is just a comment and its dependencies are never installed.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
-  restored into another subprocess worker (Rust `Pool::checkout_load`); there
-  is currently no Python API to restore them.
+  restored into another subprocess worker of the same version, via
+  `session.load` / `session.load_snapshot` (Rust `Checkout::restore`).
+- **`feed_start` snapshots are live cursors, not owned state.** The execution
+  state lives in the worker, so only one suspension is live per session, each
+  snapshot may be resumed at most once (a second resume raises
+  `RuntimeError`), and feeding while suspended raises. This differs from the
+  pre-subprocess in-process API, where a snapshot owned freely-copyable state.
+- **Restoring a dump is a session method, split by dump kind.** The old
+  module-level `load_snapshot` / `load_repl_snapshot` are replaced by two
+  fresh-session-only methods: `session.load(state)` restores a dump taken
+  between feeds (an idle session) so you can keep feeding it, and
+  `session.load_snapshot(state, *, mount=…)` restores a dump taken mid-feed and
+  returns the re-announced snapshot to resume. The caller knows which kind it
+  dumped (`session.dump()` between feeds vs `snapshot.dump()`); using the wrong
+  method raises. Both restore *into* a freshly checked-out worker, so they are
+  rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load` /
+  `load_snapshot` — restoring would otherwise discard work. The dump restores
+  its own `script_name` / limits / type-check state (the `checkout()` config
+  for those is not applied); the dataclass registry from `checkout()` is reused.
+  A *failed* load (wrong dump kind, or a restore error such as a missing mount)
+  poisons the session — its worker is discarded, so every later feed fails too;
+  the load is not retryable and the caller must check out a fresh session.
+- **`resume` takes no `mount=`.** Mounts are fixed for the whole feed (passed
+  to `feed_start`), so there is no per-`resume` mount argument.
+- **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
+  are host configuration, not sandbox state, so their **host paths** never enter
+  the (opaque, possibly-transmitted) dump bytes — a dump that carried host paths
+  could otherwise be crafted to mount an arbitrary host directory on load. To
+  resume a suspended feed with its mounts, pass the same `mount=` the original
+  `feed_start` used to `load_snapshot`; the worker rebuilds the mount table.
+  (`load` takes no `mount` — an idle session has no in-flight feed; the next
+  feed supplies its own.)
+- **`load_snapshot` validates the re-supplied mounts.** The dump records the
+  suspended feed's mount *requirements* (virtual path + mode + write limit, no
+  host path). `load_snapshot` must supply mounts that match them exactly (host
+  paths may differ); a missing, extra, or altered mount raises rather than
+  silently dropping the feed's mounts.
+- **`'overlay'` writes are not preserved across a dump.** A restored overlay
+  mount starts empty; `read-only` / `read-write` mounts hold no in-worker state
+  and restore fully.
+- **A re-announced OS-call snapshot after `load_snapshot` carries only its
+  `not_handled_error`** — its `args`/`kwargs` were consumed before the dump, so
+  they come back empty.
 - **Natural-JSON host serialization was removed.** Results now cross the
   subprocess boundary as structured protocol values; the old
   `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /
-  `kwargs_json()` helper format is not part of the pool API.
+  `kwargs_json()` helper format is not part of the pool API. (`feed_start`
+  snapshots and `MontyComplete` expose `args` / `kwargs` / `output` as
+  converted Python objects only.)
 
 ## JavaScript client (`@pydantic/monty`)
 
@@ -158,7 +247,17 @@ binaries shipped in platform npm packages. Everything above applies, plus:
   Return values that cannot be converted at all (e.g. a `Symbol`, or a
   malformed `__monty_type__` marker object) likewise raise a catchable
   in-sandbox `TypeError` instead of failing host-side.
-- **`dump()`** returns the opaque bytes; there is no JS restore API.
+- **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
+  returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
+  `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,
+  and `session.loadSnapshot(bytes, opts)` restores it (fresh-session-only,
+  returning the re-announced snapshot or `null`). Differences from Python: a
+  name lookup resolves only to an external *function* (`resume(functionName?)`,
+  matching `resumeNameLookup`), not an arbitrary value; resume verbs are
+  methods (`resume`, `resumeError`, `resumeNotFound`, `resumeFuture`,
+  `resumeNotHandled`) rather than a result dict; and the sandbox-future
+  mechanism is fully caller-driven (`resumeFuture()` then
+  `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.
 
@@ -166,7 +265,7 @@ binaries shipped in platform npm packages. Everything above applies, plus:
 
 Browsers cannot spawn subprocesses, so the same pool/checkout/feed model runs
 the sandbox in a **Web Worker** instead: a lean `wasm32-wasip1` module
-(`crates/monty-wasm`) wrapping the same `monty-worker` state machine the native
+(`crates/monty-wasm-worker`) wrapping the same `monty-worker` state machine the native
 subprocess uses, driven by a TypeScript reimplementation of the pool
 (`crates/monty-js/ts/worker/`). `Worker.terminate()` is the watchdog's hard
 kill, the analog of `child.kill()`. The drive loop, suspension protocol, and

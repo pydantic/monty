@@ -9,6 +9,7 @@
 //! having freestanding functions scattered across the codebase.
 
 use std::{
+    cmp::Ordering,
     fmt::{self, Display},
     mem,
     ops::{Add, Mul, Neg, Sub},
@@ -16,7 +17,7 @@ use std::{
 };
 
 use num_bigint::BigInt;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 
 use crate::{
     exception_private::{ExcType, RunResult},
@@ -133,6 +134,14 @@ impl LongInt {
         self.0.to_f64()
     }
 
+    /// Compares this integer against an `f64` *exactly* (no precision loss).
+    ///
+    /// Thin wrapper around [`bigint_cmp_f64`]; see it for the semantics. The
+    /// result is the ordering of `self` relative to `f`.
+    pub fn partial_cmp_f64(&self, f: f64) -> Option<Ordering> {
+        bigint_cmp_f64(&self.0, f)
+    }
+
     /// Tries to convert to u32.
     ///
     /// Returns `Some(u32)` if the value fits, `None` otherwise.
@@ -169,6 +178,60 @@ impl LongInt {
     /// 4301-digit values reliably raise the same error as CPython.
     pub fn check_str_digits_limit(&self) -> RunResult<()> {
         check_bigint_str_digits_limit(&self.0)
+    }
+}
+
+/// Compares a `BigInt` against an `f64` *exactly*, matching CPython's mixed
+/// `int`/`float` comparison with no precision loss in either direction
+/// (neither operand is rounded to the other's type).
+///
+/// The result is the ordering of `b` relative to `f` (e.g. `Some(Ordering::Less)`
+/// means `b < f`). Returns `None` only when `f` is NaN (unordered); an infinite
+/// `f` yields a definite ordering. Equality is `== Some(Ordering::Equal)`.
+pub fn bigint_cmp_f64(b: &BigInt, f: f64) -> Option<Ordering> {
+    if f.is_nan() {
+        None
+    } else if f.is_infinite() {
+        // +inf is greater than any finite integer, -inf is less.
+        Some(if f > 0.0 { Ordering::Less } else { Ordering::Greater })
+    } else {
+        // `f` is finite. Split it into its integer part `trunc` and the
+        // fractional remainder `f - trunc` in (-1, 1). `trunc` is integral and
+        // finite, so it converts to `BigInt` without loss.
+        let trunc = f.trunc();
+        let f_int = BigInt::from_f64(trunc).expect("finite f64 converts to BigInt");
+        match b.cmp(&f_int) {
+            // Integer parts match: the sign of `f`'s fractional part breaks the
+            // tie. A positive fraction makes `f` larger, so `b < f`.
+            Ordering::Equal => (f - trunc).partial_cmp(&0.0).map(Ordering::reverse),
+            ord => Some(ord),
+        }
+    }
+}
+
+/// Compares an `i64` against an `f64` *exactly* (no precision loss), matching
+/// CPython's mixed `int`/`float` comparison.
+///
+/// Equivalent to [`bigint_cmp_f64`] but avoids a `BigInt` allocation for the
+/// common machine-integer case. The result is the ordering of `a` relative to
+/// `f`; `None` only for NaN.
+pub fn i64_cmp_f64(a: i64, f: f64) -> Option<Ordering> {
+    // 2^63 as f64 (exactly representable): the first power of two past i64::MAX.
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    if f.is_nan() {
+        None
+    } else if f >= TWO_POW_63 {
+        Some(Ordering::Less) // f (incl. +inf) exceeds i64::MAX ≥ a
+    } else if f < -TWO_POW_63 {
+        Some(Ordering::Greater) // f (incl. -inf) is below i64::MIN ≤ a
+    } else {
+        // -2^63 ≤ f < 2^63 and finite, so `trunc` fits in i64 exactly.
+        let trunc = f.trunc();
+        #[expect(clippy::cast_possible_truncation, reason = "bounds-checked: -2^63 ≤ trunc < 2^63")]
+        match a.cmp(&(trunc as i64)) {
+            Ordering::Equal => (f - trunc).partial_cmp(&0.0).map(Ordering::reverse),
+            ord => Some(ord),
+        }
     }
 }
 

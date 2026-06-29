@@ -7,13 +7,13 @@ use smallvec::SmallVec;
 use super::{MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut, defer_drop_vm_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem,
-        HeapRead, HeapReadOutput, RecursionToken, heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
     resource::ResourceTracker,
@@ -198,7 +198,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 
     /// Removes all elements from the set.
     fn clear(&mut self, vm: &mut VM<'h, impl ResourceTracker>) {
-        let entries: Vec<SetEntry> = self.get_mut(vm.heap).entries.drain(..).collect();
+        let entries = mem::take(&mut self.get_mut(vm.heap).entries);
         self.get_mut(vm.heap).indices.clear();
         entries.drop_with_heap(vm);
     }
@@ -281,7 +281,7 @@ impl<'h> HeapRead<'h, SetStorage> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(elem) = iter.next(vm)? {
             if !other.contains(elem, vm)? {
                 return Ok(false);
@@ -315,8 +315,8 @@ impl<'h> HeapRead<'h, SetStorage> {
 /// a per-item `defer_drop!`.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight element) is released
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight element) is released
 /// on every exit path — set iteration usually feeds into `py_eq` /
 /// `py_hash` / membership checks which recurse on cyclic structures (e.g.
 /// frozensets of frozensets).
@@ -339,7 +339,7 @@ pub(crate) struct SetIter<'a, 'h> {
 impl<'a, 'h> SetIter<'a, 'h> {
     fn new<R: ResourceTracker>(storage: &'a HeapRead<'h, SetStorage>, vm: &mut VM<'h, R>) -> RunResult<Self> {
         let expected_len = storage.get(vm.heap).entries.len();
-        let token = vm.heap.incr_recursion_depth()?;
+        let token = vm.recursion_token()?;
         Ok(Self {
             storage,
             index: 0,
@@ -372,10 +372,10 @@ impl<'a, 'h> SetIter<'a, 'h> {
     }
 }
 
-impl DropWithHeap for SetIter<'_, '_> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.current.drop_with_heap(heap);
-        self.token.drop_with_heap(heap);
+impl<'h> DropWithVM<'h> for SetIter<'_, 'h> {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
+        self.current.drop_with_heap(container);
+        self.token.drop_with_vm(container);
     }
 }
 
@@ -515,10 +515,10 @@ impl<'h> HeapRead<'h, SetStorage> {
         }
 
         // Check depth limit before recursing
-        let Ok(token) = vm.heap.incr_recursion_depth() else {
+        let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("{...}")?);
         };
-        defer_drop!(token, vm);
+        let vm = &mut *guard;
 
         // frozenset needs type prefix: frozenset({...}), but set doesn't: {...}
         let needs_prefix = type_name != "set";
@@ -986,8 +986,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        self.storage().eq(&other.storage(), vm)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // `set` and `frozenset` compare equal by their members, regardless of
+        // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
+        // pass via the dict-view impls.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            _ => Ok(None),
+        }
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -1249,8 +1256,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        self.storage().eq(&other.storage(), vm)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // `frozenset` and `set` compare equal by their members, regardless of
+        // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
+        // reflected pass via the dict-view impls.
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::FrozenSet(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            Some(HeapReadOutput::Set(other)) => Ok(Some(self.storage().eq(&other.storage(), vm)?)),
+            _ => Ok(None),
+        }
     }
 
     /// Hashes the frozenset by XORing all element hashes.
@@ -1265,7 +1279,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         let mut hash: u64 = 0;
         let storage = self.storage();
         let iter = storage.iter(vm)?;
-        defer_drop_mut!(iter, vm);
+        defer_drop_vm_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             hash ^= set_element_hash(item, vm)?;
         }

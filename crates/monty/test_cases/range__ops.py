@@ -254,3 +254,23 @@ assert (2**63 - 1) not in range(-(2**63), 2**63 - 1, 1), 'stop excluded from ran
 assert -1 in range(2**63 - 1, -(2**63), -1), '-1 in backward span'
 assert (2**63 - 1) in range(2**63 - 1, -(2**63), -1), 'start in backward span'
 assert -(2**63) not in range(2**63 - 1, -(2**63), -1), 'stop excluded from backward span'
+
+# === Equality: ranges compare by the sequence they produce ===
+assert range(0, 3) == range(0, 3), 'identical ranges equal'
+assert range(0, 3) != range(0, 4), 'different length ranges not equal'
+# Empty ranges are equal regardless of start/stop/step
+assert range(0, 0) == range(5, 5), 'empty ranges equal regardless of bounds'
+assert range(0, 0, 1) == range(10, 5, 3), 'empty ranges equal regardless of step'
+# Single-element ranges are equal when their one element matches, regardless of step
+assert range(0, 1, 1) == range(0, 2, 2), 'singleton ranges equal regardless of step'
+assert range(5, 6) == range(5, 7, 100), 'singleton ranges equal with different step'
+assert range(0, 1) != range(1, 2), 'singleton ranges with different element not equal'
+# Multi-element ranges must match start and step (stop may differ if sequence matches)
+assert range(0, 4, 2) == range(0, 3, 2), 'equal multi-element ranges (same sequence [0, 2])'
+assert range(0, 4, 2) != range(0, 4, 1), 'different step multi-element ranges not equal'
+
+# === Hash consistency: equal ranges must hash equally (dict-key invariant) ===
+assert hash(range(0, 1, 1)) == hash(range(0, 2, 2)), 'equal singleton ranges hash the same'
+assert hash(range(0, 0)) == hash(range(5, 5)), 'equal empty ranges hash the same'
+assert hash(range(0, 4, 2)) == hash(range(0, 3, 2)), 'equal multi-element ranges hash the same'
+assert {range(0, 1, 1): 'a'}[range(0, 2, 2)] == 'a', 'equal ranges interchangeable as dict keys'

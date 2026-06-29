@@ -15,7 +15,7 @@ impl<R: Read> Read for OneByteReader<R> {
 
 fn feed() -> pb::ParentRequest {
     pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+        kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             mounts: vec![],

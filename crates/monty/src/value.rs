@@ -11,7 +11,7 @@ use std::{
 use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{ToPrimitive, Zero};
+use num_traits::{FromPrimitive, ToPrimitive, Zero};
 use smallvec::SmallVec;
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
-    hash::{HashValue, hash_python_str},
+    hash::{HashValue, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -30,7 +30,7 @@ use crate::{
     types::{
         Bytes, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
-        long_int::check_bits_str_digits_limit,
+        long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
         path,
         slice::slice_collect_iterator,
         str::{allocate_char, allocate_string, get_char_at_index, string_repr_fmt},
@@ -154,87 +154,67 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-        let interns = vm.interns;
-        match (self, other) {
-            (Self::Undefined, _) => Ok(false),
-            (_, Self::Undefined) => Ok(false),
-            (Self::Int(v1), Self::Int(v2)) => Ok(v1 == v2),
-            (Self::Bool(v1), Self::Bool(v2)) => Ok(v1 == v2),
-            (Self::Bool(v1), Self::Int(v2)) => Ok(i64::from(*v1) == *v2),
-            (Self::Int(v1), Self::Bool(v2)) => Ok(*v1 == i64::from(*v2)),
-            (Self::Float(v1), Self::Float(v2)) => Ok(v1 == v2),
-            (Self::Int(v1), Self::Float(v2)) => Ok((*v1 as f64) == *v2),
-            (Self::Float(v1), Self::Int(v2)) => Ok(*v1 == (*v2 as f64)),
-            (Self::Bool(v1), Self::Float(v2)) => Ok((i64::from(*v1) as f64) == *v2),
-            (Self::Float(v1), Self::Bool(v2)) => Ok(*v1 == (i64::from(*v2) as f64)),
-            (Self::None, Self::None) => Ok(true),
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        match self {
+            // `Undefined` is a sentinel and is never equal to anything.
+            Self::Undefined => Ok(Some(false)),
 
-            // Int == LongInt comparison
-            (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(BigInt::from(*a) == *li.inner())
-            }
-            // LongInt == Int comparison
-            (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(*li.inner() == BigInt::from(*b))
-            }
-
-            // For interned interns, compare by StringId first (fast path for same interned string)
-            (Self::InternString(s1), Self::InternString(s2)) => Ok(s1 == s2),
-            // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(interns.get_str(*string_id) == s2.as_str())
-            }
-            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(s1.as_str() == interns.get_str(*string_id))
-            }
-
-            // For interned bytes, compare by content (bytes are not deduplicated unlike interns)
-            (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                // Fast path: same BytesId means same content
-                Ok(b1 == b2 || interns.get_bytes(*b1) == interns.get_bytes(*b2))
-            }
-            // same for bytes
-            (Self::InternBytes(bytes_id), Self::Ref(id2)) if let HeapData::Bytes(b2) = vm.heap.get(*id2) => {
-                Ok(interns.get_bytes(*bytes_id) == b2.as_slice())
-            }
-            (Self::Ref(id1), Self::InternBytes(bytes_id)) if let HeapData::Bytes(b1) = vm.heap.get(*id1) => {
-                Ok(b1.as_slice() == interns.get_bytes(*bytes_id))
-            }
-
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                if *id1 == *id2 {
-                    return Ok(true);
+            Self::None => Ok(matches!(other, Self::None).then_some(true)),
+            Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
+            Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
+            Self::Int(a) => Ok(eq_i64(*a, other, vm)),
+            Self::Float(f) => Ok(eq_f64(*f, other, vm)),
+            // `InternLongInt` is normally materialised to a heap `LongInt` before
+            // it can be compared, but handle it directly so equality never
+            // silently diverges if one reaches here.
+            Self::InternLongInt(id) => Ok(eq_bigint(vm.interns.get_long_int(*id), other, vm)),
+            Self::InternString(id) => Ok(match other {
+                // Interned strings are deduplicated, so equal ids ⇔ equal content.
+                Self::InternString(o) => Some(id == o),
+                _ => eq_str(vm.interns.get_str(*id), other, vm),
+            }),
+            Self::InternBytes(id) => Ok(match other {
+                // Fast path for the same interned bytes; otherwise compare content
+                // (interned bytes are not deduplicated, unlike strings).
+                Self::InternBytes(o) if id == o => Some(true),
+                _ => eq_bytes(vm.interns.get_bytes(*id), other, vm),
+            }),
+            Self::Builtin(b) => Ok(match other {
+                Self::Builtin(o) => Some(b == o),
+                _ => None,
+            }),
+            Self::ModuleFunction(mf) => Ok(match other {
+                Self::ModuleFunction(o) => Some(mf == o),
+                _ => None,
+            }),
+            Self::DefFunction(f) => Ok(match other {
+                Self::DefFunction(o) => Some(f == o),
+                _ => None,
+            }),
+            // External function equality is name-based across both the inline
+            // `Value::ExtFunction(StringId)` and heap `HeapData::ExtFunction(String)`
+            // representations. (#347)
+            Self::ExtFunction(name_id) => Ok(eq_ext_function(vm.interns.get_str(*name_id), other, vm)),
+            Self::Marker(m) => Ok(match other {
+                Self::Marker(o) => Some(m == o),
+                _ => None,
+            }),
+            Self::Property(p) => Ok(match other {
+                Self::Property(o) => Some(p == o),
+                _ => None,
+            }),
+            Self::Ref(id) => {
+                // Identity short-circuit: a heap object always equals itself.
+                if let Self::Ref(other_id) = other
+                    && id == other_id
+                {
+                    Ok(Some(true))
+                } else {
+                    vm.heap.read(*id).py_eq_impl(other, vm)
                 }
-                let left = vm.heap.read(*id1);
-                let right = vm.heap.read(*id2);
-                left.py_eq(&right, vm)
             }
-
-            // Builtins equality - just check the enums are equal
-            (Self::Builtin(b1), Self::Builtin(b2)) => Ok(b1 == b2),
-            // Module functions equality
-            (Self::ModuleFunction(mf1), Self::ModuleFunction(mf2)) => Ok(mf1 == mf2),
-            (Self::DefFunction(f1), Self::DefFunction(f2)) => Ok(f1 == f2),
-            // External function equality is name-based: two ExtFunction values
-            // (any combination of inline `Value::ExtFunction(StringId)` and heap
-            // `HeapData::ExtFunction(String)`) compare equal iff they reference
-            // the same function name. Interned StringIds are deduped, so equal
-            // StringId ⇔ equal string; the cross-representation arms read the
-            // heap string directly. (#347)
-            (Self::ExtFunction(s1), Self::ExtFunction(s2)) => Ok(s1 == s2),
-            (Self::ExtFunction(s), Self::Ref(id)) if let HeapData::ExtFunction(n) = vm.heap.get(*id) => {
-                Ok(interns.get_str(*s) == n.as_str())
-            }
-            (Self::Ref(id), Self::ExtFunction(s)) if let HeapData::ExtFunction(n) = vm.heap.get(*id) => {
-                Ok(n.as_str() == interns.get_str(*s))
-            }
-            // Markers compare equal if they're the same variant
-            (Self::Marker(m1), Self::Marker(m2)) => Ok(m1 == m2),
-            // Properties compare equal if they're the same variant
-            (Self::Property(p1), Self::Property(p2)) => Ok(p1 == p2),
-
-            _ => Ok(false),
+            #[cfg(feature = "memory-model-checks")]
+            Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
     }
 
@@ -245,8 +225,9 @@ impl PyTrait<'_> for Value {
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
             (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
-            (Self::Int(s), Self::Float(o)) => Ok((*s as f64).partial_cmp(o)),
-            (Self::Float(s), Self::Int(o)) => Ok(s.partial_cmp(&(*o as f64))),
+            // Int/float ordering is exact (no rounding of either operand).
+            (Self::Int(s), Self::Float(o)) => Ok(i64_cmp_f64(*s, *o)),
+            (Self::Float(s), Self::Int(o)) => Ok(i64_cmp_f64(*o, *s).map(Ordering::reverse)),
             // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
             // to at most 2 levels (Bool→Int, then Int matches directly above).
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
@@ -258,6 +239,14 @@ impl PyTrait<'_> for Value {
             // LongInt vs Int comparison
             (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 Ok(li.inner().partial_cmp(&BigInt::from(*b)))
+            }
+            // Float vs LongInt comparison (exact, no precision loss)
+            (Self::Float(s), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(bigint_cmp_f64(li.inner(), *s).map(Ordering::reverse))
+            }
+            // LongInt vs Float comparison (exact, no precision loss)
+            (Self::Ref(id), Self::Float(o)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(li.partial_cmp_f64(*o))
             }
             // Ref vs Ref comparison: handles LongInt, Str, and Tuple
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
@@ -1515,6 +1504,36 @@ impl Value {
         self.id(vm) == other.id(vm)
     }
 
+    /// Python `==`, resolved to a definite boolean.
+    ///
+    /// Implements CPython's reflected comparison protocol on top of the
+    /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
+    /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
+    /// operand's type recognises the other, the values are unequal. This is the
+    /// entry point the VM `==`/`!=`/`in` operators and all container element
+    /// comparisons use; per-type `py_eq_impl` impls never drive reflection themselves.
+    pub fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
+        if let Some(result) = self.py_eq_impl(other, vm)? {
+            Ok(result)
+        } else if let Some(result) = other.py_eq_impl(self, vm)? {
+            Ok(result)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Reads the heap entry this value references, or `None` if it is not a
+    /// heap reference.
+    ///
+    /// Used by per-type [`PyTrait::py_eq_impl`] impls to resolve the other operand
+    /// to a heap object of their own type, returning `NotImplemented` otherwise.
+    pub(crate) fn read_heap<'a>(&self, vm: &VM<'a, impl ResourceTracker>) -> Option<HeapReadOutput<'a>> {
+        match self {
+            Self::Ref(id) => Some(vm.heap.read(*id)),
+            _ => None,
+        }
+    }
+
     /// Computes the hash value for this value, used for dict keys.
     ///
     /// Returns `Ok(Some(hash))` for hashable types (immediate values and immutable heap types).
@@ -1534,15 +1553,23 @@ impl Value {
             Self::Bool(b) => return Ok(Some(HashValue::new((*b).into()))),
             Self::Int(i) => return Ok(Some(HashValue::new(i.cast_unsigned()))),
             Self::Float(f) => {
-                return {
-                    if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
-                        // Hash floats that are mathematically integers the same as Ints (e.g., 1.0 hashes the same as 1)
-                        #[expect(clippy::cast_possible_truncation)]
-                        Ok(Some(HashValue::new((*f as i64).cast_unsigned())))
-                    } else {
-                        // Hash the bit representation of the float
-                        Ok(Some(HashValue::new(f.to_bits())))
-                    }
+                // 2^63, the first power of two past i64::MAX (exactly representable).
+                const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+                return if f.fract() != 0.0 || !f.is_finite() {
+                    // Non-integral or non-finite: hash the bit representation.
+                    Ok(Some(HashValue::new(f.to_bits())))
+                } else if *f >= -TWO_POW_63 && *f < TWO_POW_63 {
+                    // Integral float in i64 range hashes as the equivalent int
+                    // (e.g. `1.0` hashes the same as `1`).
+                    #[expect(clippy::cast_possible_truncation)]
+                    Ok(Some(HashValue::new((*f as i64).cast_unsigned())))
+                } else {
+                    // Integral float outside i64 range hashes as the equivalent
+                    // big int, so an exactly-equal `float`/`int` pair (e.g.
+                    // `2.0**100 == 2**100`) preserves `hash(a) == hash(b)`.
+                    Ok(Some(hash_python_long_int(
+                        &BigInt::from_f64(*f).expect("finite f64 converts to BigInt"),
+                    )))
                 };
             }
             // For heap-allocated values, dispatch to the per-type `py_hash`
@@ -2062,6 +2089,83 @@ impl Value {
         i32::try_from(int_value).map_err(|_| {
             SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into()
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared one-sided equality helpers
+//
+// Each compares a primitive operand (extracted from either an inline `Value`
+// or a heap object) against an arbitrary `other: &Value`, resolving `other`'s
+// representation as needed. They return `None` (NotImplemented) when `other`
+// is not a compatible Python type, so the reflected comparison can run. These
+// are shared by `Value::py_eq_impl` (inline operands) and
+// `HeapReadOutput::py_eq_impl` (heap operands) so the interned-vs-heap and
+// numeric-tower logic lives once.
+// ---------------------------------------------------------------------------
+
+/// `a == other` over Python's numeric tower (`int`/`bool`/`float`/big `int`).
+pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::Int(b) => Some(a == *b),
+        Value::Bool(b) => Some(a == i64::from(*b)),
+        Value::Float(f) => Some(i64_cmp_f64(a, *f) == Some(Ordering::Equal)),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(*li.inner() == BigInt::from(a)),
+        _ => None,
+    }
+}
+
+/// `f == other`, comparing against ints/bools/big ints *exactly* (no rounding).
+pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::Float(o) => Some(f == *o),
+        Value::Int(o) => Some(i64_cmp_f64(*o, f) == Some(Ordering::Equal)),
+        Value::Bool(o) => Some(i64_cmp_f64(i64::from(*o), f) == Some(Ordering::Equal)),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+            Some(li.partial_cmp_f64(f) == Some(Ordering::Equal))
+        }
+        _ => None,
+    }
+}
+
+/// `b == other` over the numeric tower, for heap `LongInt` / interned long-int
+/// operands. A heap `LongInt` is always outside i64 range, so it never equals
+/// an `Int`/`Bool` — but comparing exactly keeps the logic uniform.
+pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::Int(o) => Some(*b == BigInt::from(*o)),
+        Value::Bool(o) => Some(*b == BigInt::from(i64::from(*o))),
+        Value::Float(f) => Some(bigint_cmp_f64(b, *f) == Some(Ordering::Equal)),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(b == li.inner()),
+        _ => None,
+    }
+}
+
+/// `s == other`, resolving the other operand from an interned or heap string.
+pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
+        Value::Ref(id) if let HeapData::Str(o) = vm.heap.get(*id) => Some(s == o.as_str()),
+        _ => None,
+    }
+}
+
+/// `b == other`, resolving the other operand from interned or heap bytes.
+pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::InternBytes(id) => Some(b == vm.interns.get_bytes(*id)),
+        Value::Ref(id) if let HeapData::Bytes(o) = vm.heap.get(*id) => Some(b == o.as_slice()),
+        _ => None,
+    }
+}
+
+/// External functions compare equal iff their names match — used by both the
+/// inline `Value::ExtFunction` and heap `HeapData::ExtFunction` representations. (#347)
+pub(crate) fn eq_ext_function(name: &str, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    match other {
+        Value::ExtFunction(id) => Some(name == vm.interns.get_str(*id)),
+        Value::Ref(id) if let HeapData::ExtFunction(o) = vm.heap.get(*id) => Some(name == o.as_str()),
+        _ => None,
     }
 }
 

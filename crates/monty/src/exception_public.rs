@@ -102,7 +102,7 @@ impl MontyException {
     /// Most callers should use [`MontyException::new`] — the traceback is
     /// normally attached when the exception is raised. This constructor
     /// exists for boundaries that *reconstruct* an exception that was raised
-    /// elsewhere (e.g. deserializing one received from a `monty --subprocess`
+    /// elsewhere (e.g. deserializing one received from a `monty subprocess`
     /// worker) and must preserve its original frames.
     #[must_use]
     pub fn with_traceback(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self {
@@ -111,6 +111,11 @@ impl MontyException {
             message,
             traceback,
         }
+    }
+
+    /// Appends frames to this exception's traceback.
+    pub fn add_traceback(&mut self, traceback: impl IntoIterator<Item = StackFrame>) {
+        self.traceback.extend(traceback);
     }
 
     pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {

@@ -296,32 +296,42 @@ message NamedValue {
 
 message ParentRequest {
   oneof kind {
-    ReplCreate repl_create = 1;
-    ReplFeed repl_feed = 2;
-    ResumeCall resume_call = 3;
-    ResumeNameLookup resume_name_lookup = 4;
-    ResumeFutures resume_futures = 5;
-    Dump dump = 6;
-    Load load = 7;
-    Reset reset = 8;
-    Shutdown shutdown = 9;
+    Configure configure = 1;
+    InstallDependencies install_dependencies = 2;
+    Feed feed = 3;
+    ResumeCall resume_call = 4;
+    ResumeNameLookup resume_name_lookup = 5;
+    ResumeFutures resume_futures = 6;
+    Dump dump = 7;
+    Load load = 8;
+    Reset reset = 9;
+    Shutdown shutdown = 10;
   }
 }
 
-// Creates the REPL session this child will serve until `Reset`. Valid only
-// when the child has no session.
-message ReplCreate {
+// Configures the REPL session this child will serve until `Reset`, sent once
+// when the worker is checked out. The session's repl is materialized lazily on
+// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
+// worker can still be initialized by `Load` instead. Valid only when the
+// worker has no session yet.
+message Configure {
   string script_name = 1;
   ResourceLimits limits = 2;
   // Type-check each fed snippet before executing it.
   bool type_check = 3;
   // Optional stub file contents used by type checking.
   optional string type_check_stubs = 4;
+  // The parent's monty version (e.g. "0.0.18"). The child rejects the
+  // session with a `FatalError` when this does not match its own version:
+  // the protocol has no in-band negotiation and parent and child must be
+  // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
+  // than a silent source of frame desync.
+  string monty_version = 5;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,
 // `Error`, `TypingError`, or a suspension event.
-message ReplFeed {
+message Feed {
   string code = 1;
   repeated NamedValue inputs = 2;
   // Mounts for this feed; handled entirely inside the child. OS calls the
@@ -359,19 +369,38 @@ message ResumeFutures {
 // be restored by a monty child of the same version via `Load`.
 message Dump {}
 
-// Restores state produced by `Dump` into a fresh child (no session). If the
-// restored state was suspended, the child re-emits the suspension event so
+// Restores state produced by `Dump`. Valid only from no session. If
+// the restored state was suspended, the child re-emits the suspension event so
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
   bytes state = 1;
+  // Mounts to re-establish for a suspended feed being resumed. Mounts are
+  // host configuration, not sandbox state, so they are never part of the dump
+  // — the parent re-supplies the same mounts it used for the original feed.
+  // Without them a restored feed has no mounts and its OS calls all bubble up.
+  // When the restored state is idle this must be empty.
+  repeated Mount mounts = 2;
 }
 
 // Ends the checkout: the child drops all session state and returns to the
-// no-session state, ready for the next `ReplCreate` or `Load`.
+// no-session state, ready for the next `Configure` or `Load`.
 message Reset {}
 
 // The child replies `Ok` and exits cleanly.
 message Shutdown {}
+
+// Installs third-party Python packages into the session before further feeds,
+// using `uv pip install --python <venv-python>` against the worker's session
+// virtualenv. Only the
+// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+// an `Error` (it has no host interpreter to install for). Repeatable between
+// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
+// failure. Valid only once a session exists (after `Configure`).
+message InstallDependencies {
+  // PEP 508 requirement strings, e.g. "httpx>=0.27", "numpy". An empty list is
+  // a no-op that replies `Ok`.
+  repeated string requirements = 1;
+}
 
 // ============================================================================
 // Events (child -> parent)
@@ -406,6 +435,12 @@ message ChildEvent {
   // restored a session via `Load` (where the limits travel inside the opaque
   // state bytes) still learns the budget.
   optional uint64 max_duration_micros = 13;
+
+  // The session's script name, surfaced on a `Load` reply so a parent that
+  // restored a session (whose script name, like the limits above, travels
+  // inside the opaque dump bytes) learns it without parsing the dump. Set only
+  // on a successful `Load` reply; unset on all other events.
+  optional string restored_script_name = 14;
 }
 
 enum PrintStream {
@@ -465,7 +500,7 @@ message ResolveFutures {
 }
 
 // Turn end: the snippet completed with this value. The session is ready for
-// the next `ReplFeed`.
+// the next `Feed`.
 message Complete {
   MontyObject value = 1;
 }
@@ -489,7 +524,7 @@ message DumpResult {
   bytes state = 1;
 }
 
-// Generic acknowledgement for ReplCreate / Load (idle) / Reset / Shutdown.
+// Generic acknowledgement for Configure / Load (idle) / Reset / Shutdown.
 message Ok {}
 
 // The child hit an unrecoverable error (frame desync, panic, unsupported

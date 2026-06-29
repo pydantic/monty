@@ -6,7 +6,7 @@
 //! toolchain.
 
 use monty::MontyObject;
-use monty_proto::{FrameReader, WireObject, pb, write_frame};
+use monty_proto::{FrameReader, MONTY_VERSION, WireObject, pb, write_frame};
 use monty_worker::{Child, HandleOutcome, dispatch_frame};
 
 /// Frames one request the way a host transport would before posting it.
@@ -42,22 +42,23 @@ fn split_turn(bytes: &[u8]) -> (Vec<pb::Print>, pb::child_event::Kind) {
 }
 
 fn create_repl(child: &mut Child) {
-    let request = frame_request(pb::parent_request::Kind::ReplCreate(pb::ReplCreate {
+    let request = frame_request(pb::parent_request::Kind::Configure(pb::Configure {
         script_name: "main.py".to_owned(),
         limits: None,
         type_check: false,
         type_check_stubs: None,
+        monty_version: MONTY_VERSION.to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     assert!(
         matches!(decode_events(&bytes).as_slice(), [pb::child_event::Kind::Ok(_)]),
-        "ReplCreate should answer with a single Ok"
+        "Configure should answer with a single Ok"
     );
 }
 
 fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
-    let request = frame_request(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
         inputs: vec![],
         mounts: vec![],
@@ -116,7 +117,7 @@ fn inputs_are_injected() {
     let mut child = Child::new();
     create_repl(&mut child);
 
-    let request = frame_request(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+    let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: "n + 1".to_owned(),
         inputs: vec![pb::NamedValue {
             name: "n".to_owned(),

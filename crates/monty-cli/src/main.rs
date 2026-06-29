@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use monty::{
     LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
@@ -82,32 +82,62 @@ struct Cli {
     #[arg(long)]
     max_recursion_depth: Option<usize>,
 
+    #[command(subcommand)]
+    subcommand: Option<Command>,
+}
+
+/// Subcommands that switch `monty` out of its normal file/REPL behaviour.
+#[derive(Subcommand)]
+enum Command {
     /// Run as a protocol child: read framed protobuf requests on stdin and
     /// write framed events on stdout (see the monty-proto crate). Intended to
     /// be driven by a parent process such as monty-pool, not by hand.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "interactive", "type_check", "command", "file", "mounts",
-            "max_allocations", "max_duration", "max_memory", "gc_interval", "max_recursion_depth",
-        ],
-    )]
-    subprocess: bool,
+    Subprocess,
 }
 
 impl Cli {
+    /// The name of the first execution flag that conflicts with the `subprocess`
+    /// subcommand, if any. `subprocess` reads all its configuration from the
+    /// protocol, so any normal-execution flag passed alongside it is a
+    /// misconfiguration we reject rather than silently ignore.
+    fn subprocess_conflict(&self) -> Option<&'static str> {
+        if self.interactive {
+            Some("--interactive")
+        } else if self.command.is_some() {
+            Some("-c")
+        } else if self.file.is_some() {
+            Some("a file argument")
+        } else if self.type_check {
+            Some("--type-check")
+        } else if !self.mounts.is_empty() {
+            Some("--mount")
+        } else if self.any_resource_limit_flag() {
+            Some("a resource-limit flag")
+        } else {
+            None
+        }
+    }
+
+    /// Whether any resource-limit flag was *supplied* (regardless of whether its
+    /// value is valid). Used for the `subprocess` conflict check: we must not go
+    /// through `resource_limits()` there, because its parse errors (e.g. a
+    /// `--max-duration` that fails `Duration::try_from_secs_f64`) would be
+    /// swallowed and let an invalid flag slip past the conflict guard.
+    fn any_resource_limit_flag(&self) -> bool {
+        self.max_allocations.is_some()
+            || self.max_duration.is_some()
+            || self.max_memory.is_some()
+            || self.gc_interval.is_some()
+            || self.max_recursion_depth.is_some()
+    }
+
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
     /// Returns `Ok(None)` when no resource flags were provided, which lets the
     /// caller fall back to `NoLimitTracker` for zero-overhead execution.
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
-        if self.max_allocations.is_none()
-            && self.max_duration.is_none()
-            && self.max_memory.is_none()
-            && self.gc_interval.is_none()
-            && self.max_recursion_depth.is_none()
-        {
+        if !self.any_resource_limit_flag() {
             return Ok(None);
         }
 
@@ -138,7 +168,11 @@ const EXT_FUNCTIONS: bool = false;
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if cli.subprocess {
+    if let Some(Command::Subprocess) = cli.subcommand {
+        if let Some(flag) = cli.subprocess_conflict() {
+            eprintln!("{BOLD_RED}error{RESET}: `subprocess` cannot be combined with {flag}");
+            return ExitCode::FAILURE;
+        }
         return subprocess::run();
     }
 

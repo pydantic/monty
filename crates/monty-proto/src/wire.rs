@@ -1231,7 +1231,12 @@ thread_local! {
 /// what makes the budget *per frame* rather than cumulative — a (possibly
 /// compromised) child can't drain it across many frames, and a single ≤256 MiB
 /// frame still can't amplify cheap elements into GiB of host `MontyObject`s.
-pub(crate) fn reset_decode_budget() {
+///
+/// Callers that decode a message *without* going through [`crate::FrameReader`]
+/// (e.g. a transport that does its own framing, like a WebSocket) MUST call
+/// this before each `Message::decode`, or the budget drains cumulatively across
+/// decodes on the same thread and eventually rejects legitimate messages.
+pub fn reset_decode_budget() {
     DECODE_BUDGET.set(DEFAULT_MAX_DECODE_BYTES);
 }
 

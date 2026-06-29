@@ -12,11 +12,13 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod recursion;
 mod scheduler;
 
 use std::{cmp::Ordering, mem};
 
 pub(crate) use call::CallResult;
+pub(crate) use recursion::{ContainsVM, DropWithVM, RecursionToken, VmGuard};
 use scheduler::Scheduler;
 
 use crate::{
@@ -692,6 +694,14 @@ pub struct VM<'h, T: ResourceTracker> {
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
     pub(crate) pending_file_effect: Option<PendingFileEffect>,
+
+    /// Current recursion depth — charged by function-call frames and by nested
+    /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
+    ///
+    /// See [`recursion`](self::recursion) for the guard/token primitives that
+    /// maintain it. Not serialized: it is reconstructed from the active frame
+    /// count on `restore` and rebalanced per-task across async switches.
+    recursion_depth: usize,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -716,6 +726,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             module_code: None,
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: None,
+            recursion_depth: 0,
         }
     }
 
@@ -761,10 +772,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             .collect();
 
         // Restore recursion depth to match the number of active function frames.
-        // During serialization, recursion_depth is transient (defaults to 0),
-        // but cleanup paths call decr_recursion_depth for each non-root frame.
-        let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
-        heap.set_recursion_depth(current_frame_depth);
+        // recursion_depth is not serialized; cleanup paths decrement it for each
+        // non-root frame, so it must start matching the restored frame count.
+        let current_frame_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to depth
 
         Self {
             stack: snapshot.stack,
@@ -780,6 +790,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: snapshot.pending_file_effect,
+            recursion_depth: current_frame_depth,
         }
     }
 
@@ -1860,7 +1871,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
         if !self.frames.is_empty()
-            && let Err(e) = self.heap.incr_recursion_depth()
+            && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&frame);
             return Err(e.into());
@@ -1887,7 +1898,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
         // Decrement recursion depth if this wasn't the root frame
         if !self.frames.is_empty() {
-            self.heap.decr_recursion_depth();
+            self.decr_recursion();
         }
         frame.should_return
     }
