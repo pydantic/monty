@@ -22,7 +22,7 @@ use std::{
 };
 
 use monty_proto::{FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, pb, write_frame};
-use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::crypto::ring::default_provider;
 use tungstenite::{
     Error as WsError, Message, WebSocket,
     client::{IntoClientRequest, uri_mode},
@@ -384,7 +384,7 @@ fn underlying_tcp(stream: &MaybeTlsStream<TcpStream>) -> Option<&TcpStream> {
 /// Installs the process-level rustls `CryptoProvider` exactly once before the
 /// first `wss://` dial. rustls 0.23 panics on first TLS use when it can't pick a
 /// provider automatically (both `aws-lc-rs` and `ring`, or neither, compiled
-/// in), so we name `aws_lc_rs` explicitly. Idempotent via `Once`, and the
+/// in), so we name `ring` explicitly. Idempotent via `Once`, and the
 /// install error is ignored: another part of the process (e.g. a host embedding
 /// the pool) may have already installed a provider, which is fine.
 fn install_crypto_provider() {

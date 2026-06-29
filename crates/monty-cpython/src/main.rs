@@ -3,7 +3,7 @@
 
 use std::process::ExitCode;
 
-use rustls::crypto::aws_lc_rs::default_provider;
+use rustls::crypto::ring::default_provider;
 
 fn main() -> ExitCode {
     // rustls 0.23 panics on first TLS use if it can't pick a `CryptoProvider`
@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     // any tungstenite `wss://` dial in the `websocket` subcommand.
     default_provider()
         .install_default()
-        .expect("install rustls aws_lc_rs CryptoProvider");
+        .expect("install rustls ring CryptoProvider");
 
     monty_cpython::run()
 }

@@ -104,8 +104,11 @@ tempfile = "3"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
-# tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
-rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# tree), so naming `ring` explicitly removes the ambiguity. We use `ring` rather
+# than the default `aws-lc-rs` because the latter compiles vendored C/asm that
+# fails to cross-compile in the manylinux aarch64/i686 wheel-build containers;
+# `ring` builds cleanly across all our targets.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
