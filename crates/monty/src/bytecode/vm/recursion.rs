@@ -146,16 +146,11 @@ impl<'h, T: ResourceTracker> ContainsVM<'h> for VM<'h, T> {
 /// borrow the brand outlives. Callers discharge it from the implied bound on
 /// [`VmGuard`]'s `&mut VM<'h, _>` phantom (`'h: 'a`), so it never surfaces.
 pub(crate) trait DropWithVM<'h>: Sized {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c;
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>);
 }
 
 impl<'h> DropWithVM<'h> for RecursionToken {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         container.vm().decr_recursion();
     }
 }

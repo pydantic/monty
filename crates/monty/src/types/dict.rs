@@ -686,8 +686,8 @@ impl IntoIterator for Dict {
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight pair) is released on
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight pair) is released on
 /// every exit path — dict iteration almost always calls back into
 /// `py_eq` / `py_hash` (membership lookups, comparison) which recurse on
 /// cyclic structures.
@@ -786,10 +786,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
 }
 
 impl<'h> DropWithVM<'h> for DictIter<'_, 'h> {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         self.current_key.drop_with_heap(container);
         self.current_value.drop_with_heap(container);
         self.token.drop_with_vm(container);

@@ -212,11 +212,11 @@ impl<'h> HeapRead<'h, Tuple> {
 /// slot (using [`Value::Undefined`] as the empty sentinel) and drops the
 /// previous item at the start of each `next` call, so call sites do **not**
 /// need a per-item `defer_drop!`. The held item is also dropped when the
-/// iterator is released via [`DropWithHeap`].
+/// iterator is released via [`DropWithVM`].
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight item) is released
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released
 /// on every exit path. Unlike list / dict / set iteration, tuples are
 /// immutable so size never changes during iteration, but the token still
 /// belongs here — tuple iteration almost always feeds into operations that
@@ -280,10 +280,7 @@ impl<'a, 'h> TupleIter<'a, 'h> {
 }
 
 impl<'h> DropWithVM<'h> for TupleIter<'_, 'h> {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         self.current.drop_with_heap(container);
         self.token.drop_with_vm(container);
     }

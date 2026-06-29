@@ -364,9 +364,9 @@ impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
     }
 }
 
-/// Lets a [`RecursionToken`] (and the container iterators that hold one) be
-/// released through the encoder via `defer_drop_vm!`, reaching the VM-side
-/// recursion counter while the encoder itself stays borrowable.
+/// Lets a [`RecursionToken`](crate::bytecode::RecursionToken) (and the container
+/// iterators that hold one) be released through the encoder via `defer_drop_vm!`,
+/// reaching the VM-side recursion counter while the encoder itself stays borrowable.
 impl<'h, R: ResourceTracker> ContainsVM<'h> for Encoder<'_, 'h, R> {
     type Tracker = R;
 

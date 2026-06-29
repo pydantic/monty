@@ -315,8 +315,8 @@ impl<'h> HeapRead<'h, SetStorage> {
 /// a per-item `defer_drop!`.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight element) is released
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight element) is released
 /// on every exit path — set iteration usually feeds into `py_eq` /
 /// `py_hash` / membership checks which recurse on cyclic structures (e.g.
 /// frozensets of frozensets).
@@ -373,10 +373,7 @@ impl<'a, 'h> SetIter<'a, 'h> {
 }
 
 impl<'h> DropWithVM<'h> for SetIter<'_, 'h> {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         self.current.drop_with_heap(container);
         self.token.drop_with_vm(container);
     }

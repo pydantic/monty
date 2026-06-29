@@ -243,12 +243,12 @@ impl<'h> HeapRead<'h, List> {
 /// item in its `current` slot (using [`Value::Undefined`] as the empty
 /// sentinel) and drops the previous item at the start of each `next` call.
 /// The held item is also dropped when the iterator itself is released via
-/// [`DropWithHeap`]. This means call sites do **not** need a per-item
+/// [`DropWithVM`]. This means call sites do **not** need a per-item
 /// `defer_drop!`; the iter manages every item it hands out.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithHeap`]. The iterator MUST be wrapped in
-/// [`defer_drop_mut!`] so the token (and any in-flight item) is released on
+/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
+/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released on
 /// every exit path (success, early `return`, error via `?`). The token is
 /// intentionally non-optional — every iteration of a Python container can
 /// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_cmp` /
@@ -319,10 +319,7 @@ impl<'a, 'h> ListIter<'a, 'h> {
 }
 
 impl<'h> DropWithVM<'h> for ListIter<'_, 'h> {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         self.current.drop_with_heap(container);
         self.token.drop_with_vm(container);
     }

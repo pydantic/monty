@@ -203,7 +203,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// Same shape as [`TupleIter`](super::tuple::TupleIter): yields each item by
 /// reference, owns the most-recently-yielded item in a `Value::Undefined`
 /// sentinel slot, and holds a [`RecursionToken`] for its lifetime. MUST be
-/// wrapped in [`defer_drop_mut!`] so the token and the in-flight item are
+/// wrapped in [`defer_drop_vm_mut!`] so the token and the in-flight item are
 /// released on every exit path.
 ///
 /// `NamedTuple` is immutable, so there is no size-change detection — only
@@ -264,10 +264,7 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
 }
 
 impl<'h> DropWithVM<'h> for NamedTupleIter<'_, 'h> {
-    fn drop_with_vm<'c>(self, container: &'c mut impl ContainsVM<'h>)
-    where
-        'h: 'c,
-    {
+    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
         self.current.drop_with_heap(container);
         self.token.drop_with_vm(container);
     }
