@@ -18,35 +18,30 @@ TOP_LEVEL_AWAIT = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT
 # every feed shares one session, but their line numbers would otherwise collide.
 # Mirrors monty's own REPL (`MontyRepl.sources` keyed by `<python-input-N>`).
 # Process-global is fine: a worker serves exactly one session.
-_input_counter = 0
-_input_files: set[str] = set()
+input_counter = 0
+input_files: set[str] = set()
 
 
 def run(code: str, ns: dict[str, Any], script_name: str) -> Any:
     """Execute `code` REPL-style: a trailing expression becomes the value.
 
-    Mirrors how IPython/the stdlib REPL split a cell — run the body in `exec`
-    mode, then evaluate a trailing *expression* statement separately so its value
-    can be returned. The split node keeps its original location, so a traceback
-    from the trailing expression still points at the right line.
+    Like IPython/the stdlib REPL, the body runs in `exec` mode and a trailing
+    expression is evaluated separately so its value can be returned; the split
+    node keeps its location so tracebacks still point at the right line.
 
-    The snippet is compiled under a unique internal `<input-N>` filename and its
-    source is registered in `linecache`, so a later `extract_traceback` can
-    recover each frame's source line (and CPython's caret anchors) — even for
-    frames from functions defined in earlier feeds. Runtime traceback frames get
-    their parent-visible filename substituted in `extract_traceback`; syntax
-    errors have no user frame to rewrite, so their filename is rewritten here.
+    Each snippet compiles under a unique `<input-N>` filename, registered in
+    `linecache` so `extract_traceback` can recover source lines — even for frames
+    from functions defined in earlier feeds. Runtime frames get `script_name`
+    substituted there; syntax errors have no user frame, so they are rewritten here.
 
-    Top-level `await` is supported: both halves are compiled with
-    `PyCF_ALLOW_TOP_LEVEL_AWAIT`. If *either* half is a coroutine, both are driven
-    in a single `asyncio.run` event loop (see `drive_async`) so async objects the
-    body creates keep their loop affinity in the trailing expression. Purely
-    synchronous snippets never touch asyncio.
+    Top-level `await` is supported: if either half is a coroutine, both run in one
+    `asyncio.run` loop (see `drive_async`) to keep async objects' loop affinity.
+    Purely synchronous snippets never touch asyncio.
     """
-    global _input_counter
-    filename = f'<input-{_input_counter}>'
-    _input_counter += 1
-    _input_files.add(filename)
+    global input_counter
+    filename = f'<input-{input_counter}>'
+    input_counter += 1
+    input_files.add(filename)
     # `mtime=None` marks a non-file cache entry that `linecache.checkcache`
     # leaves in place (it would otherwise try to `stat` the fake filename).
     linecache.cache[filename] = (len(code), None, code.splitlines(keepends=True), filename)
@@ -89,10 +84,9 @@ async def drive_async(
 ) -> Any:
     """Run a cell's body then its trailing expression in one event loop.
 
-    Either half may be a top-level-await coroutine (`*_async`); the other is a
-    plain `eval`. Driving both on the same loop preserves loop affinity for any
-    async object the body hands to the trailing expression. Returns the trailing
-    expression's value (or `None` when there is none).
+    Either half may be a top-level-await coroutine (`*_async`); driving both on
+    the same loop preserves loop affinity for any async object the body hands to
+    the expression. Returns the expression's value (or `None`).
     """
     result = eval(body_code, ns)
     if body_async:
@@ -111,38 +105,32 @@ Frame = tuple[str, int, int, int, int, str | None, str | None, bool, bool]
 
 
 def extract_traceback(tb: Any, script_name: str) -> list[Frame]:
-    """Rebuild the sandbox traceback as structured frames for the Rust side.
+    """Rebuild the sandbox traceback as `Frame` tuples for the Rust side.
 
-    Keeps only frames from fed code (the `<input-N>` files this module registered
-    in `linecache`) so the runner's own driver frames are dropped. Returns one
-    `Frame` tuple per frame, outermost first. `script_name` is reported as every
-    frame's filename, so a multi-feed session shows the session's name rather
-    than the internal per-feed keys.
-
-    The rich path uses CPython's `traceback`/`linecache` machinery for source
-    previews and caret spans. The sandbox is full CPython, though, so user code
-    can monkey-patch those modules; if anything in the rich path fails, fall back
-    to a stdlib-free walk so a hostile (or merely buggy) sandbox still gets
-    frames — degraded to filename/line/function — rather than an empty traceback
-    that would erase the original exception's stack.
+    Keeps only frames from fed code (the `<input-N>` files registered in
+    `linecache`), dropping the runner's driver frames, and reports each under
+    `script_name`, outermost first. Best-effort: any failure (e.g. a sandbox that
+    monkey-patched `traceback`) yields an empty list rather than masking the
+    original exception, whose type and message are carried separately.
     """
     try:
-        return _extract_rich(tb, script_name)
+        return _extract_traceback(tb, script_name)
     except Exception:
-        return _extract_basic(tb, script_name)
+        return []
 
 
-def _extract_rich(tb: Any, script_name: str) -> list[Frame]:
-    """Full-fidelity extraction: source previews and caret spans.
+def _extract_traceback(tb: Any, script_name: str) -> list[Frame]:
+    """Walk `tb` into `Frame` tuples with source previews and caret spans.
 
     `extract_tb` is imported at call time so a sandbox that monkey-patched
-    `traceback` is observed and the rich path falls back (see `extract_traceback`).
+    `traceback` makes this raise (handled by `extract_traceback`) rather than
+    silently driving off a patched module.
     """
     from traceback import extract_tb
 
     frames: list[Frame] = []
     for fs in extract_tb(tb):
-        if fs.filename not in _input_files:
+        if fs.filename not in input_files:
             continue
         # The *unstripped* source line (minus its line terminator): monty's
         # `StackFrame` stores the full line and trims it at render time, and
@@ -161,38 +149,21 @@ def _extract_rich(tb: Any, script_name: str) -> list[Frame]:
             # character columns.
             start_col = byte_to_char(preview, fs.colno) + 1
             end_col = byte_to_char(preview, fs.end_colno) + 1
-            hide_caret = _is_raise_statement(preview)
+            hide_caret = is_raise_statement(preview)
         frames.append((script_name, lineno, start_col, lineno, end_col, frame_name, preview, hide_caret, False))
     return frames
 
 
-def _is_raise_statement(preview: str) -> bool:
-    """Whether `preview`'s first token is the `raise` keyword.
+def is_raise_statement(preview: str) -> bool:
+    """Whether `preview`'s first token is `raise`, the caret-visibility heuristic.
 
-    A rough caret-visibility heuristic: CPython hides carets for `raise` and shows
-    them otherwise. We mirror only that case, so CPython's other no-caret cases
-    (attribute access, bare-name lookups, full-line `x = f()` calls) over-draw a
-    whole-line underline here — cosmetic, and it keeps us off `traceback` internals.
+    CPython hides carets for `raise` and shows them otherwise; we mirror only that
+    case. Its other no-caret cases (attribute access, bare names, full-line
+    `x = f()` calls) over-draw a whole-line underline — cosmetic, and it keeps us
+    off `traceback` internals.
     """
     head = preview.split(maxsplit=1)
     return bool(head) and head[0] == 'raise'
-
-
-def _extract_basic(tb: Any, script_name: str) -> list[Frame]:
-    """Fallback extraction using only traceback/frame/code object attributes.
-
-    Touches no stdlib module, so a sandbox that monkey-patched `traceback` or
-    `linecache` cannot make it fail. Yields filename/line/function only — no
-    source preview or caret span.
-    """
-    frames: list[Frame] = []
-    while tb is not None:
-        code = tb.tb_frame.f_code
-        if code.co_filename in _input_files:
-            frame_name = None if code.co_name == '<module>' else code.co_name
-            frames.append((script_name, tb.tb_lineno, 0, tb.tb_lineno, 0, frame_name, None, True, False))
-        tb = tb.tb_next
-    return frames
 
 
 def byte_to_char(line: str, byte_offset: int) -> int:

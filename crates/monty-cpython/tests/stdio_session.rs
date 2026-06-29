@@ -419,11 +419,12 @@ fn traceback_preview_strips_carriage_returns() {
 }
 
 /// The sandbox is full CPython, so user code can monkey-patch the `traceback`
-/// module. The runner binds the helpers it needs at import time, so a patch must
-/// not erase the reconstructed frames of an unrelated exception. A second feed
-/// restores the module — the embedded interpreter is shared across tests.
+/// module. A patch that breaks traceback extraction must degrade gracefully: the
+/// exception's type and message still reach the parent, only the traceback drops
+/// to empty (extraction is best-effort). A second feed restores the module — the
+/// embedded interpreter is shared across tests.
 #[test]
-fn traceback_survives_sandbox_patching_traceback_module() {
+fn error_survives_sandbox_patching_traceback_module() {
     let events = Rc::new(RefCell::new(Vec::new()));
     let parent = ScriptedParent {
         script: VecDeque::from([
@@ -456,22 +457,11 @@ fn traceback_survives_sandbox_patching_traceback_module() {
         })
         .expect("an Error event");
 
+    // The exception still propagates intact; only the traceback is lost, since
+    // extraction calls the patched (broken) `traceback.extract_tb` and bails.
     assert_eq!(error.exc_type, "ValueError");
     assert_eq!(error.message.as_deref(), Some("real"));
-    // Frames survive via the stdlib-free fallback: the `raise` is on line 5, and
-    // the absent preview confirms the rich path was bypassed (it would set one).
-    let frames: Vec<(u32, Option<&str>, Option<&str>)> = error
-        .traceback
-        .iter()
-        .map(|f| {
-            (
-                f.start.as_ref().unwrap().line,
-                f.frame_name.as_deref(),
-                f.preview_line.as_deref(),
-            )
-        })
-        .collect();
-    assert_eq!(frames, vec![(5, None, None)]);
+    assert!(error.traceback.is_empty());
 }
 
 /// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams
