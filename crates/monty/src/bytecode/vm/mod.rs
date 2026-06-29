@@ -2129,14 +2129,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
     /// Returns the interned name of a module-level global at `slot`, if known.
     ///
-    /// Global slots index the module's namespace, which is captured by the
-    /// module `Code`'s `local_names` table (module-scope binds are emitted
-    /// directly into `local_names` by the compiler — `Code::local_names`
-    /// double-duty as the module's globals reverse map). Function-scope
-    /// `LoadGlobal` operands refer to the SAME module slots, so we walk
-    /// through `module_code` here rather than the current frame's code,
-    /// which only knows function-local names.
-    ///
     /// Returns `None` if no module code is attached (test harness use of
     /// `VM::new` without `run_module`) or if the slot is past the recorded
     /// name table.

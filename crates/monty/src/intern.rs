@@ -953,7 +953,7 @@ fn get_str(strings: &[WithHash<String>], id: StringId) -> &str {
 /// per host-supplied name, so the lookup must be O(1) — not the previous
 /// linear scan over `strings`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(into = "InternsWire", from = "InternsWire")]
+#[serde(from = "InternsWire")]
 pub(crate) struct Interns {
     strings: Vec<WithHash<String>>,
     bytes: Vec<WithHash<Vec<u8>>>,
@@ -966,17 +966,13 @@ pub(crate) struct Interns {
     /// no reverse map). Single-ASCII and `StaticStrings` ids are NOT stored
     /// here — those are resolved by the cheap branches at the top of
     /// `get_string_id_by_name`.
+    #[serde(skip)]
     string_id_by_name: AHashMap<String, StringId>,
 }
 
-/// On-the-wire representation of [`Interns`].
-///
-/// Carries only the canonical storage vectors; the `string_id_by_name`
-/// reverse map is rebuilt deterministically from `strings` after load.
-/// Keeping it off the wire avoids an attacker-controlled inconsistency
-/// between the forward and reverse directions.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(crate) struct InternsWire {
+/// Serialized form of [`Interns`]
+#[derive(serde::Deserialize)]
+struct InternsWire {
     strings: Vec<WithHash<String>>,
     bytes: Vec<WithHash<Vec<u8>>>,
     long_ints: Vec<WithHash<BigInt>>,

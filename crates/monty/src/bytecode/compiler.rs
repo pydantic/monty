@@ -440,15 +440,7 @@ impl<'a> Compiler<'a> {
         // stack indices.
         let mut compiler = Compiler::new(interns, existing_functions, true, 0);
 
-        // Pre-register every global slot in the module Code's `local_names`
-        // table. The module Code's `local_names` doubles as the global-namespace
-        // reverse map: the VM's `load_global` / `delete_global` look up the
-        // name at a slot through `module_code.local_name(slot)` (function
-        // frames don't carry global names — slot indices are in the module
-        // namespace, not the function's locals). Without this seeding, names
-        // that were allocated during prepare but never appear in module-level
-        // bytecode (e.g. an undefined name read only inside a function)
-        // would get a `<global N>` placeholder in the resulting `NameError`.
+        // All globals are "local names" in the module
         for (slot, name_id) in globals.iter() {
             compiler.code.register_local_name(slot.as_u16(), name_id);
         }
@@ -1232,14 +1224,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             NameScope::Global => {
-                // Only register in `local_names` at module scope, where the
-                // code object's `local_names` IS the global-namespace reverse
-                // map. At function scope, `slot` indexes the MODULE
-                // namespace, not the function's locals — registering here
-                // would corrupt the function's per-slot name table that
-                // `UnboundLocalError` / `LoadLocal` rely on, and the VM
-                // looks up global-slot names through `module_code` instead
-                // (see `VM::load_global`).
+                // Global name - only a "local" name at module scope
                 if self.is_module_scope {
                     self.code.register_local_name(slot, ident.name_id);
                 }

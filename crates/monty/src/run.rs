@@ -185,16 +185,7 @@ impl MontyRun {
 /// for error reporting. Also used by `run_progress` and `repl` modules.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Executor {
-    /// Module-level globals: slot ↔ name in both directions.
-    ///
-    /// `globals.len()` is the size of the global namespace. The reverse
-    /// (slot → name) direction is what the VM uses to label `NameError` /
-    /// `NameLookup` requests with the actual variable name.
-    ///
-    /// Consumers:
-    /// - ref-count tests look up slots by name to inspect variable values
-    /// - REPL incremental compilation hands this back to keep slot IDs stable
-    /// - [`MontyRepl::call_function`](crate::MontyRepl) looks up functions by name
+    /// Module-level global names.
     pub(crate) globals: NameMap,
     /// Compiled bytecode for the module.
     pub(crate) module_code: Code,
