@@ -661,11 +661,18 @@ impl<'a> Parser<'a> {
 
     /// Parses a `class Foo: ...` definition into a [`Node::ClassDef`].
     ///
-    /// Only the subset Monty supports is accepted: instance methods (`def`s) and
-    /// simple class-level variables (`name = <literal>` or `name: T = <literal>`).
+    /// The class body is modelled as a synthetic zero-argument function (like
+    /// CPython's class-body code object): the class statements are collected in
+    /// source order into a [`RawFunctionDef`] that, when prepared and compiled,
+    /// runs in its own scope and returns the assembled `Class`. Methods become
+    /// nested `FunctionDef`s; class variables become `Assign`s with arbitrary
+    /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
+    /// recorded in `members`, in source order, for namespace assembly.
+    ///
     /// `pass` and a leading docstring are ignored. Inheritance/metaclass syntax
-    /// (`class Foo(Bar):`), class/method decorators, and anything else in the body
-    /// are rejected with a not-implemented error, reserving the syntax for later.
+    /// (`class Foo(Bar):`), class/method decorators, and anything else in the
+    /// body (arbitrary control flow, complex targets) are rejected with a
+    /// not-implemented error, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.convert_range(class.range);
         if !class.decorator_list.is_empty() {
@@ -683,8 +690,12 @@ impl<'a> Parser<'a> {
         }
 
         let name = self.identifier(&class.name.id, class.name.range);
-        let mut methods = Vec::new();
-        let mut class_vars = Vec::new();
+        // The class-body statements (in source order) and the member names they
+        // bind. Both methods and class vars are ordinary bindings of the body
+        // scope; `members` records the order so the compiler can assemble the
+        // namespace dict from the body's locals.
+        let mut body = Vec::new();
+        let mut members = Vec::new();
 
         for stmt in class.body {
             match stmt {
@@ -695,9 +706,11 @@ impl<'a> Parser<'a> {
                             self.convert_range(function.range),
                         ));
                     }
-                    methods.push(self.parse_function_def(function)?);
+                    let method = self.parse_function_def(function)?;
+                    members.push(method.name);
+                    body.push(Node::FunctionDef(method));
                 }
-                // `name = <literal>` — a class-level variable.
+                // `name = <expr>` — a class-level variable.
                 Stmt::Assign(ast::StmtAssign {
                     targets, value, range, ..
                 }) => {
@@ -708,14 +721,16 @@ impl<'a> Parser<'a> {
                     ] = targets.as_slice()
                     else {
                         return Err(ParseError::not_implemented(
-                            "complex class variable targets (only `name = <literal>` is allowed)",
+                            "complex class variable targets (only `name = <expr>` is allowed)",
                             self.convert_range(range),
                         ));
                     };
                     let ident = self.identifier(id, *name_range);
-                    class_vars.push((ident, self.parse_class_var_value(*value)?));
+                    let object = self.parse_expression(*value)?;
+                    members.push(ident);
+                    body.push(Node::Assign { target: ident, object });
                 }
-                // `name: T = <literal>` — an annotated class-level variable. A bare
+                // `name: T = <expr>` — an annotated class-level variable. A bare
                 // `name: T` (no value) is just an annotation and creates nothing.
                 Stmt::AnnAssign(ast::StmtAnnAssign {
                     target, value, range, ..
@@ -726,12 +741,14 @@ impl<'a> Parser<'a> {
                         }) = *target
                         else {
                             return Err(ParseError::not_implemented(
-                                "only simple `name = <literal>` class variables are supported",
+                                "only simple `name = <expr>` class variables are supported",
                                 self.convert_range(range),
                             ));
                         };
                         let ident = self.identifier(&id, name_range);
-                        class_vars.push((ident, self.parse_class_var_value(*value)?));
+                        let object = self.parse_expression(*value)?;
+                        members.push(ident);
+                        body.push(Node::Assign { target: ident, object });
                     }
                 }
                 // `pass` and a leading docstring are no-ops in the class body.
@@ -746,30 +763,22 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // Wrap the body statements in a synthetic zero-arg function. The class
+        // name's `name_id` is reused for nicer tracebacks; this function is never
+        // registered in any scope (prepared with `register_name = false`).
+        let body = RawFunctionDef {
+            name,
+            signature: ParsedSignature::default(),
+            body,
+            is_async: false,
+        };
+
         Ok(Node::ClassDef {
             name,
-            methods,
-            class_vars,
+            body,
+            members,
             position,
         })
-    }
-
-    /// Parses a class-variable value expression, requiring it to be a literal.
-    ///
-    /// Non-literal values (`x = some_call()`, `x = OTHER`) are rejected: class
-    /// bodies do not get their own name-resolution scope in Monty, so anything
-    /// referencing names would resolve against the enclosing scope and surprise
-    /// the user. Restricting to literals keeps semantics unambiguous for v1.
-    fn parse_class_var_value(&mut self, value: AstExpr) -> Result<ExprLoc, ParseError> {
-        let parsed = self.parse_expression(value)?;
-        if matches!(parsed.expr, Expr::Literal(_)) {
-            Ok(parsed)
-        } else {
-            Err(ParseError::not_implemented(
-                "non-literal class variables",
-                parsed.position,
-            ))
-        }
     }
 
     /// `lhs = rhs` — parses a single-target assignment into the appropriate `Node` variant.
@@ -2007,7 +2016,7 @@ pub enum ParseError {
 }
 
 impl ParseError {
-    fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
+    pub(crate) fn not_implemented(msg: impl Into<Cow<'static, str>>, position: CodeRange) -> Self {
         Self::NotImplemented {
             msg: msg.into(),
             position,

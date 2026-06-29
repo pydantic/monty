@@ -647,10 +647,10 @@ impl<'a> Compiler<'a> {
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
             Node::ClassDef {
                 name,
-                methods,
-                class_vars,
+                body,
+                members,
                 position,
-            } => self.compile_class_def(name, methods, class_vars, *position)?,
+            } => self.compile_class_def(name, body, members, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::With {
                 context, target, body, ..
@@ -709,6 +709,30 @@ impl<'a> Compiler<'a> {
     /// namespace-size error message. Net stack effect is `+1`: even when free
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
+        self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
+            Self::compile_function_body(&func_def.body, interns, functions, namespace_size)
+        })
+    }
+
+    /// Shared core of [`emit_make_function`](Self::emit_make_function) and
+    /// [`emit_make_class_body`](Self::emit_make_class_body): compiles a callable's
+    /// body via `compile_body`, registers the resulting [`Function`], pushes its
+    /// default values, and emits `MakeFunction`/`MakeClosure`, leaving the
+    /// function/closure value on the operand stack (net stack effect `+1`).
+    ///
+    /// `compile_body` is the only thing that varies: ordinary functions/lambdas
+    /// use [`compile_function_body`](Self::compile_function_body) (implicit
+    /// `return None` tail), while a class body uses
+    /// [`compile_class_body`](Self::compile_class_body) (assemble-namespace +
+    /// return-class tail). It receives the interner, the moved-out `functions`
+    /// vector, and this body's namespace size; it returns the compiled body code
+    /// and the (possibly extended) `functions` vector.
+    fn emit_make_callable(
+        &mut self,
+        func_def: &PreparedFunctionDef,
+        what: &'static str,
+        compile_body: impl FnOnce(&Interns, Vec<Function>, u16) -> Result<(Code, Vec<Function>), CompileError>,
+    ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
         // Bound the bytecode-operand counts before compiling — the `u8` casts
@@ -716,12 +740,11 @@ impl<'a> Compiler<'a> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the function body recursively
-        // Take ownership of functions for the recursive compile, then restore
+        // 1. Compile the body recursively.
+        // Take ownership of functions for the recursive compile, then restore.
         let functions = mem::take(&mut self.functions);
         let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
-        let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
+        let (body_code, mut functions) = compile_body(self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -772,42 +795,94 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a `class Foo: ...` definition.
     ///
-    /// Pushes each class member as a `(name, value)` pair onto the stack, then
-    /// emits [`Opcode::BuildClass`] (which pops the pairs, builds the namespace
-    /// dict, and wraps it in a class object) and stores it to the class name.
-    ///
-    /// Members are methods (via [`emit_make_function`](Self::emit_make_function))
-    /// and class variables (literal expressions). `emit_make_function` has net
-    /// stack effect `+1` even when it captures cells (the cells it pushes are
-    /// consumed by `MakeClosure`), so the key/value pairing stays intact.
+    /// Modelled on CPython's class-body code object: the class body is compiled
+    /// to a synthetic zero-arg function (via
+    /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
+    /// statements in its own scope and returns the assembled `Class`. We emit
+    /// that function value, call it with zero args, and bind the result to the
+    /// class name.
     fn compile_class_def(
         &mut self,
         name: &Identifier,
-        methods: &[PreparedFunctionDef],
-        class_vars: &[(Identifier, ExprLoc)],
+        body: &PreparedFunctionDef,
+        members: &[Identifier],
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        // Push (name, value) pairs for every member onto the stack.
-        for method in methods {
-            let name_const = self.code.add_const(Value::InternString(method.name.name_id))?;
-            self.code.emit_u16(Opcode::LoadConst, name_const)?;
-            self.emit_make_function(method, "method")?;
-        }
-        for (var_name, value) in class_vars {
-            let name_const = self.code.add_const(Value::InternString(var_name.name_id))?;
-            self.code.emit_u16(Opcode::LoadConst, name_const)?;
-            self.compile_expr(value)?;
+        // Build the class-body function/closure value on the stack...
+        self.emit_make_class_body(body, members, name, position)?;
+        // ...call it with zero args — it runs the body and returns the `Class`...
+        self.code.emit_u8(Opcode::CallFunction, 0)?;
+        // ...and bind the class object to the class name's slot.
+        self.compile_store(name)?;
+        Ok(())
+    }
+
+    /// Emits the class-body function value (a `MakeFunction`/`MakeClosure`),
+    /// leaving it on the operand stack (net stack effect `+1`).
+    ///
+    /// Sibling of [`emit_make_function`](Self::emit_make_function): identical
+    /// closure/cell handling, but compiles the body with
+    /// [`compile_class_body`](Self::compile_class_body) so the emitted code ends
+    /// by assembling the namespace and returning the `Class`.
+    fn emit_make_class_body(
+        &mut self,
+        body: &PreparedFunctionDef,
+        members: &[Identifier],
+        class_name: &Identifier,
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
+            Self::compile_class_body(
+                &body.body,
+                members,
+                class_name,
+                position,
+                interns,
+                functions,
+                namespace_size,
+            )
+        })
+    }
+
+    /// Compiles a class body, mirroring
+    /// [`compile_function_body`](Self::compile_function_body) but replacing the
+    /// implicit `LoadNone; ReturnValue` tail with namespace assembly: for each
+    /// member (in source order) push `LoadConst <name>` then load the member's
+    /// value from its class-body slot, then `BuildClass` (pops the pairs, builds
+    /// the namespace dict, wraps it in a `Class`) and `ReturnValue`.
+    ///
+    /// Members are plain locals (the prepare phase forces class-body locals to
+    /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
+    /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
+    /// changed, so no assumption is hard-coded here.
+    fn compile_class_body(
+        body: &[PreparedNode],
+        members: &[Identifier],
+        class_name: &Identifier,
+        position: CodeRange,
+        interns: &Interns,
+        functions: Vec<Function>,
+        num_locals: u16,
+    ) -> Result<(Code, Vec<Function>), CompileError> {
+        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        compiler.compile_block(body)?;
+
+        // Assemble the namespace: push (name, value) for each member in order.
+        for member in members {
+            let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
+            compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
+            compiler.compile_name(member)?;
         }
 
         // BuildClass(name_const, member_count) pops the pairs and builds the class.
-        let member_count = check_collection_size_u16(methods.len() + class_vars.len(), position)?;
-        let class_name_const = self.code.add_const(Value::InternString(name.name_id))?;
-        self.code
+        let member_count = check_collection_size_u16(members.len(), position)?;
+        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
+        compiler
+            .code
             .emit_u16_u16(Opcode::BuildClass, class_name_const, member_count)?;
+        compiler.code.emit(Opcode::ReturnValue)?;
 
-        // Bind the class object to the class name's slot.
-        self.compile_store(name)?;
-        Ok(())
+        Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
     /// Compiles an import statement.

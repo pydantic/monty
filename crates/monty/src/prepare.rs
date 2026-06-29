@@ -183,6 +183,14 @@ struct Prepare<'i, 'g> {
     /// stores must bypass this stack (see [`Prepare::get_id_for_store_target`])
     /// so PEP 572 binding semantics are preserved.
     comp_name_scopes: Vec<AHashMap<StringId, u16>>,
+    /// True when this preparer is for a **class body** (see `prepare_class_def`).
+    ///
+    /// Class scope is skipped for method free-var resolution in CPython: a
+    /// method (or lambda) defined in the class body may capture variables from
+    /// scopes *enclosing the class*, but must NOT see sibling methods or class
+    /// variables by bare name. [`Self::child_enclosing_locals`] honours this by
+    /// excluding our own (class-member) locals when this flag is set.
+    is_class_scope: bool,
 }
 
 /// Scope-specific state for [`Prepare`].
@@ -263,6 +271,55 @@ impl<'i, 'g> Prepare<'i, 'g> {
         match &mut self.state {
             PrepareState::Module => self.globals.ensure_slot(name_id, position),
             PrepareState::Function(state) => state.locals.ensure_slot(name_id, position),
+        }
+    }
+
+    /// Builds the `enclosing_locals` set for a child scope (function, lambda,
+    /// or class body) about to be prepared under `self`.
+    ///
+    /// This is the **transitive** set: our own locals (params, body-assigned,
+    /// cells, free vars) **plus** everything we ourselves can capture
+    /// (`enclosing_locals`). Threading `enclosing_locals` through is what lets a
+    /// deeply nested function capture a variable several levels up: without it,
+    /// an intermediate scope that doesn't itself mention the variable would hide
+    /// it from its own children (issue #477). Empty at module scope (module
+    /// globals are reached via `global`, not closure capture).
+    ///
+    /// Names this scope declares `global` are excluded: such a name is not a
+    /// local binding here, so a nested function referencing it must resolve to
+    /// the module global rather than capture a (non-existent) cell — e.g.
+    /// `def mid(): global x; x = 1; def inner(): return x` reads the global `x`.
+    fn child_enclosing_locals(&self) -> AHashSet<StringId> {
+        match &self.state {
+            PrepareState::Module => AHashSet::new(),
+            PrepareState::Function(state) if self.is_class_scope => {
+                // Class scope is skipped for method free-var resolution (CPython):
+                // a method/lambda defined in the class body may capture variables
+                // from scopes *enclosing the class* — what we ourselves capture
+                // (`free_var_map`) plus what we can reach further up
+                // (`enclosing_locals`) — but must NOT see sibling methods or class
+                // variables by bare name. So we deliberately omit our own locals
+                // (`assigned_names`/`locals`), which are the class members.
+                let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
+                locals.extend(state.enclosing_locals.iter().copied());
+                locals.retain(|name| !state.global_names.contains(name));
+                locals
+            }
+            PrepareState::Function(state) => {
+                let mut locals = state.assigned_names.clone();
+                for (_, name_id) in state.locals.iter() {
+                    locals.insert(name_id);
+                }
+                // `enclosing_locals` on the parent is itself the transitive
+                // union over ITS ancestors, so propagating it up keeps the
+                // closure visible at arbitrary depth.
+                locals.extend(state.enclosing_locals.iter().copied());
+                // Names this scope declares `global` are NOT capturable locals:
+                // a nested function reading such a name must resolve to the
+                // module global, not capture a (non-existent) cell.
+                locals.retain(|name| !state.global_names.contains(name));
+                locals
+            }
         }
     }
 
@@ -355,6 +412,45 @@ impl<'i, 'g> Prepare<'i, 'g> {
         (inner_slots, enclosing_slots)
     }
 
+    /// Records a freshly-prepared child scope's captures against `self` and
+    /// builds the child's closure-slot vectors.
+    ///
+    /// Shared tail of [`Self::prepare_function_def`], [`Self::prepare_lambda`]
+    /// and [`Self::prepare_class_def`]. `inner_free_var_map` /
+    /// `inner_cell_var_map` are the child's maps, already moved out of the child
+    /// preparer — which **must** have been dropped first so its `GlobalsRef`
+    /// borrow is released before this mutates `self`. Each name the child
+    /// captured is filed against us as an owned cell or a pass-through free var
+    /// (see [`Self::bubble_up_captured_name`]).
+    fn finalize_child_scope(
+        &mut self,
+        inner_free_var_map: AHashMap<StringId, NamespaceId>,
+        inner_cell_var_map: AHashMap<StringId, NamespaceId>,
+        param_names: &[StringId],
+        position: CodeRange,
+    ) -> Result<FinalizedScope, ParseError> {
+        // Bubble-up: each captured name in the child's `free_var_map` must
+        // be backed by a slot in OUR namespace. With the recursive scope
+        // analysis, `cell_var_names` already covers every transitively
+        // captured local of ours, but we keep this loop as a safety net for
+        // names that scope analysis missed.
+        for &captured_name in inner_free_var_map.keys() {
+            self.bubble_up_captured_name(captured_name, position)?;
+        }
+        // Build the explicit closure-slot vectors the runtime installs at frame
+        // setup (see `install_closure_cells`): the child's own free-var slots
+        // paired with OUR slot each captured cell is read from, and the child's
+        // owned-cell slots paired with the param index each is seeded from.
+        let (free_var_slots, free_var_enclosing_slots) = self.build_free_var_slots(inner_free_var_map);
+        let (cell_var_slots, cell_param_indices) = build_cell_slots(inner_cell_var_map, param_names);
+        Ok(FinalizedScope {
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+        })
+    }
+
     /// Constructs the module-scope preparer.
     ///
     /// The caller owns the globals `NameMap` (it survives prepare for use
@@ -370,6 +466,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            is_class_scope: false,
         }
     }
 
@@ -479,6 +576,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             names_used: AHashSet::new(),
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
+            is_class_scope: false,
         })
     }
 
@@ -688,32 +786,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 }
                 Node::ClassDef {
                     name,
-                    methods,
-                    class_vars,
+                    body,
+                    members,
                     position,
                 } => {
-                    // The class name binds in the enclosing scope, exactly like a `def`.
-                    self.names_assigned_in_order.insert(name.name_id);
-                    let name = self.get_id(name)?;
-                    // Methods are prepared as nested functions of *this* (enclosing) scope,
-                    // NOT of the class body — Python skips class scope for method free-var
-                    // resolution. `register_name = false` keeps method names out of the
-                    // enclosing scope; their values land in the class namespace instead.
-                    let methods = methods
-                        .into_iter()
-                        .map(|m| self.prepare_function_def(m.name, &m.signature, m.body, m.is_async, false))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    // Class-variable values are literals; prepare them without binding names.
-                    let class_vars = class_vars
-                        .into_iter()
-                        .map(|(var_name, value)| Ok((var_name, self.prepare_expression(value)?)))
-                        .collect::<Result<Vec<_>, ParseError>>()?;
-                    new_nodes.push(Node::ClassDef {
-                        name,
-                        methods,
-                        class_vars,
-                        position,
-                    });
+                    new_nodes.push(self.prepare_class_def(name, body, members, position)?);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1460,37 +1537,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let scope_info = collect_function_scope_info(&body, &param_names, self.interner);
 
         // Build `enclosing_locals` for the new function: the union of every
-        // ancestor function scope's locals (params, body-assigned, cells,
-        // free vars). This is the transitive closure — without it, the
-        // intermediate "pass-through" scope in
-        //
-        //   def outer():
-        //       x = 1
-        //       def middle():
-        //           def inner(): return x   # captures `x` through middle
-        //           return inner()
-        //       return middle()
-        //
-        // would not see `x` when preparing `inner`, and `inner` would
-        // misresolve `x` as a global (issue #477).
-        let enclosing_locals: AHashSet<StringId> = match &self.state {
-            PrepareState::Module => AHashSet::new(),
-            PrepareState::Function(state) => {
-                let mut locals = state.assigned_names.clone();
-                for (_, name_id) in state.locals.iter() {
-                    locals.insert(name_id);
-                }
-                // `enclosing_locals` on the parent is itself the transitive
-                // union over ITS ancestors, so propagating it up keeps the
-                // closure visible at arbitrary depth.
-                locals.extend(state.enclosing_locals.iter().copied());
-                // Names this scope declares `global` are NOT capturable locals:
-                // a nested function reading such a name must resolve to the
-                // module global, not capture a (non-existent) cell.
-                locals.retain(|name| !state.global_names.contains(name));
-                locals
-            }
-        };
+        // ancestor function scope's locals (see `child_enclosing_locals` for the
+        // transitive-closure and class-scope-skipping rationale).
+        let enclosing_locals = self.child_enclosing_locals();
 
         // Filter potential_captures to get actual implicit captures.
         // Only names that are ALSO in enclosing_locals are true implicit captures.
@@ -1540,27 +1589,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let namespace_size = inner_locals.len();
         drop(inner_prepare);
 
-        // Bubble-up: each captured name in the child's `free_var_map` must
-        // be backed by a slot in OUR namespace. With the recursive scope
-        // analysis below, `cell_var_names` already covers every transitively
-        // captured local of ours, but we keep this loop as a safety net for
-        // names that scope analysis missed.
-        //
-        // The classification cascade matches `get_id`'s scope cascade:
-        // - Already cell_var or free_var here → nothing to do
-        // - Bound locally in this scope (assigned_names / params) → cell_var here
-        // - Bound in an ancestor (enclosing_locals) → pass-through (free_var here)
-        // - Otherwise → unreachable: the child shouldn't have classified it as a free var
-        for &captured_name in inner_free_var_map.keys() {
-            self.bubble_up_captured_name(captured_name, name.position)?;
-        }
-
-        // Build the explicit closure-slot vectors the runtime installs at frame
-        // setup (see `install_closure_cells`): the child's own free-var slots
-        // paired with OUR slot each captured cell is read from, and the child's
-        // owned-cell slots paired with the param index each is seeded from.
-        let (free_var_slots, free_var_enclosing_slots) = self.build_free_var_slots(inner_free_var_map);
-        let (cell_var_slots, cell_param_indices) = build_cell_slots(inner_cell_var_map, &param_names);
+        // Record every variable the inner function captured from us (filing each
+        // as an owned cell or a pass-through free var) and build its slot vectors.
+        let FinalizedScope {
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+        } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, name.position)?;
 
         // Build the runtime Signature from the parsed signature
         let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
@@ -1611,7 +1647,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
 
         // Return the prepared function definition; the caller wraps it in a
-        // `Node::FunctionDef` or collects it into a `Node::ClassDef`'s methods.
+        // `Node::FunctionDef` or uses it as a `Node::ClassDef`'s body.
         Ok(PreparedFunctionDef {
             name,
             signature,
@@ -1623,6 +1659,156 @@ impl<'i, 'g> Prepare<'i, 'g> {
             cell_param_indices,
             default_exprs,
             is_async,
+        })
+    }
+
+    /// Prepares a `class Foo: ...` definition.
+    ///
+    /// The class body is a synthetic zero-argument function (see
+    /// [`Node::ClassDef`]); this mirrors [`Self::prepare_function_def`] but:
+    /// - the inner preparer is flagged `is_class_scope = true`, so methods skip
+    ///   the class scope for free-var resolution (see
+    ///   [`Self::child_enclosing_locals`]);
+    /// - it carries no params/defaults;
+    /// - `cell_var_names` is forced empty: skip-class-scope guarantees no nested
+    ///   scope captures a class-body local, so every member stays a plain local
+    ///   (the compiler loads members with `LoadLocal`);
+    /// - it resolves each member name to its class-body slot (for namespace
+    ///   assembly) from the inner preparer's locals.
+    ///
+    /// The class name itself binds in the **enclosing** scope, exactly like a `def`.
+    fn prepare_class_def(
+        &mut self,
+        name: Identifier,
+        body: RawFunctionDef,
+        members: Vec<Identifier>,
+        position: CodeRange,
+    ) -> Result<PreparedNode, ParseError> {
+        // The class name binds in the enclosing scope, exactly like a `def`.
+        self.names_assigned_in_order.insert(name.name_id);
+        let name = self.get_id(name)?;
+
+        // The class body is a synthetic zero-arg function: no params, no defaults.
+        let RawFunctionDef {
+            name: body_name,
+            body: body_nodes,
+            ..
+        } = body;
+        let param_names: Vec<StringId> = Vec::new();
+
+        // Pass 1: collect scope info over the class-body statements. The class
+        // body's own locals are never cells (no nested scope may capture them —
+        // see the doc above), so drop any cell-var candidates the generic
+        // pre-pass flagged: keeping every member a plain local.
+        let mut scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
+        scope_info.cell_var_names.clear();
+
+        // Names the class body may capture from scopes enclosing the class.
+        let enclosing_locals = self.child_enclosing_locals();
+        let implicit_captures: AHashSet<StringId> = scope_info
+            .potential_captures
+            .into_iter()
+            .filter(|n| enclosing_locals.contains(n))
+            .collect();
+
+        // Re-borrow the live globals handle (see `prepare_function_def`).
+        let globals = self.globals.reborrow();
+
+        // Pass 2: child preparer for the class body, flagged as a class scope.
+        let mut inner_prepare = Prepare::new_function(
+            &param_names,
+            body_name.position,
+            scope_info.assigned_names,
+            scope_info.global_names,
+            &scope_info.nonlocal_names,
+            &implicit_captures,
+            globals,
+            enclosing_locals,
+            &scope_info.cell_var_names,
+            self.interner,
+        )?;
+        inner_prepare.is_class_scope = true;
+
+        let prepared_body = inner_prepare.prepare_nodes(body_nodes)?;
+
+        // Take the per-function state out of the child and drop it so its
+        // `GlobalsRef` borrow is released before we mutate `self` below.
+        let PrepareState::Function(inner_state) = mem::replace(&mut inner_prepare.state, PrepareState::Module) else {
+            unreachable!("class-body preparer was constructed with new_function");
+        };
+        let FunctionState {
+            locals: inner_locals,
+            free_var_map: inner_free_var_map,
+            cell_var_map: inner_cell_var_map,
+            ..
+        } = *inner_state;
+        let namespace_size = inner_locals.len();
+        drop(inner_prepare);
+
+        // Resolve each member to its class-body-local slot. Every member is
+        // assigned in the class body (a method `def` or a class-var `Assign`),
+        // so it is always present as a plain local.
+        let members = members
+            .into_iter()
+            .map(|member| {
+                let slot = inner_locals.get(member.name_id).unwrap_or_else(|| {
+                    let member_name = self.interner.get_str(member.name_id);
+                    panic!("class member '{member_name}' missing from class-body locals")
+                });
+                Identifier::new_with_scope(member.name_id, member.position, slot, NameScope::Local)
+            })
+            .collect::<Vec<_>>();
+
+        // Same-name collision (a known divergence — see `limitations/classes.md`):
+        // a class-body owned cell means a method captured a class-body local that
+        // ALSO has the same name as a variable in an enclosing scope. CPython keeps
+        // these distinct (class-dict entry vs. closure cell); Monty maps one name
+        // to a single slot, so it cannot represent both. Reject cleanly rather than
+        // miscompile (the alternative is a runtime "expected cell reference" crash).
+        if let Some(&name_id) = inner_cell_var_map.keys().next() {
+            let name_str = self.interner.get_str(name_id);
+            return Err(ParseError::not_implemented(
+                format!(
+                    "class member '{name_str}' that shadows a captured variable of the same name from an enclosing scope"
+                ),
+                position,
+            ));
+        }
+
+        // Record what the class body captured from us and build its slot vectors.
+        let FinalizedScope {
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+        } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
+
+        // The class body is a synthetic, never-registered zero-arg function. Its
+        // name reuses the class `name_id` (for tracebacks) with a placeholder slot.
+        let body_name = Identifier::new_with_scope(
+            body_name.name_id,
+            body_name.position,
+            NamespaceId::new(0).expect("slot 0 fits in u16"),
+            NameScope::Local,
+        );
+        let body_def = PreparedFunctionDef {
+            name: body_name,
+            signature: Signature::default(),
+            body: prepared_body,
+            namespace_size,
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+            default_exprs: Vec::new(),
+            is_async: false,
+        };
+
+        Ok(Node::ClassDef {
+            name,
+            body: body_def,
+            members,
+            position,
         })
     }
 
@@ -1663,22 +1849,8 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let scope_info = collect_function_scope_info(&body_nodes, &param_names, self.interner);
 
         // Build enclosing_locals: names that are local to this scope or
-        // captured from any enclosing scope (transitive closure — same
-        // rationale as `prepare_function_def`).
-        let enclosing_locals: AHashSet<StringId> = match &self.state {
-            PrepareState::Module => AHashSet::new(),
-            PrepareState::Function(state) => {
-                let mut locals = state.assigned_names.clone();
-                for (_, name_id) in state.locals.iter() {
-                    locals.insert(name_id);
-                }
-                locals.extend(state.enclosing_locals.iter().copied());
-                // See `prepare_function_def`: `global`-declared names are not
-                // capturable locals.
-                locals.retain(|name| !state.global_names.contains(name));
-                locals
-            }
-        };
+        // captured from any enclosing scope (see `child_enclosing_locals`).
+        let enclosing_locals = self.child_enclosing_locals();
 
         // Filter potential_captures to get actual implicit captures
         let implicit_captures: AHashSet<StringId> = scope_info
@@ -1721,16 +1893,14 @@ impl<'i, 'g> Prepare<'i, 'g> {
         let namespace_size = inner_locals.len();
         drop(inner_prepare);
 
-        // Bubble-up safety net for late-discovered captures — see
-        // `prepare_function_def` for the full classification cascade.
-        for &captured_name in inner_free_var_map.keys() {
-            self.bubble_up_captured_name(captured_name, position)?;
-        }
-
-        // Build the explicit closure-slot vectors the runtime installs at frame
-        // setup (see `install_closure_cells`); same shape as `prepare_function_def`.
-        let (free_var_slots, free_var_enclosing_slots) = self.build_free_var_slots(inner_free_var_map);
-        let (cell_var_slots, cell_param_indices) = build_cell_slots(inner_cell_var_map, &param_names);
+        // Record every variable the lambda captured from us (filing each as an
+        // owned cell or a pass-through free var) and build its slot vectors.
+        let FinalizedScope {
+            free_var_enclosing_slots,
+            free_var_slots,
+            cell_var_slots,
+            cell_param_indices,
+        } = self.finalize_child_scope(inner_free_var_map, inner_cell_var_map, &param_names, position)?;
 
         // Build the runtime Signature from the parsed signature
         let pos_args: Vec<StringId> = parsed_sig.pos_args.iter().map(|p| p.name).collect();
@@ -1965,6 +2135,20 @@ impl<'i, 'g> Prepare<'i, 'g> {
 ///
 /// This struct holds the scope-related information needed for the second pass
 /// of function preparation and for closure analysis.
+/// The closure-slot vectors produced when a freshly-prepared child scope
+/// (function, lambda, or class body) is finalized against its parent.
+///
+/// Built by [`Prepare::finalize_child_scope`] after the bubble-up that records
+/// each captured name against the parent. These are exactly the fields the
+/// compiler needs to emit `MakeFunction`/`MakeClosure` and install cells at
+/// call time; see [`crate::function::Function`] for their meaning.
+struct FinalizedScope {
+    free_var_enclosing_slots: Vec<NamespaceId>,
+    free_var_slots: Vec<NamespaceId>,
+    cell_var_slots: Vec<NamespaceId>,
+    cell_param_indices: Vec<Option<usize>>,
+}
+
 struct FunctionScopeInfo {
     /// Names declared as `global`
     global_names: AHashSet<StringId>,
@@ -2205,7 +2389,7 @@ fn collect_scope_info_from_node(
         }
         Node::ClassDef { name, .. } => {
             // A class definition binds the class name in this scope, just like a `def`.
-            // Method bodies are separate scopes (handled by the cell-var pass).
+            // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
         }
         Node::Try(Try {
@@ -2479,13 +2663,12 @@ fn collect_cell_vars_from_node(
         Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
             collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
         }
-        Node::ClassDef { methods, .. } => {
-            // Each method is a nested function of *this* scope (class scope is skipped),
-            // so a method capturing one of our locals turns that local into a cell var —
-            // exactly as a nested `def` would.
-            for method in methods {
-                collect_cell_vars_from_function(&method.signature, &method.body, our_locals, cell_vars, interner);
-            }
+        Node::ClassDef { body, .. } => {
+            // The class body is a nested scope of *this* scope, like a `def`: any
+            // of our locals referenced from the class-var values or (transitively)
+            // the method bodies becomes a cell var. `collect_cell_vars_from_function`
+            // recurses into the nested method bodies for us.
+            collect_cell_vars_from_function(&body.signature, &body.body, our_locals, cell_vars, interner);
         }
         // Recurse into control flow structures
         Node::For {
@@ -3016,8 +3199,9 @@ fn collect_referenced_names_from_node(
             collect_nested_function_references(signature, body, referenced, interner);
         }
         Node::ClassDef { .. } => {
-            // Method bodies are separate scopes; the class name is a binding, not a
-            // reference. Class-variable values are literals. Nothing to collect here.
+            // The class body (method bodies *and* class-var values) is a separate
+            // scope; the class name is a binding, not a reference. Nothing here is a
+            // reference in *our* scope, so there is nothing to collect.
         }
         Node::Try(Try {
             body,

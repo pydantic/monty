@@ -8,11 +8,11 @@ any code runs.
 ## Statements rejected at parse time
 
 - **`class` definitions** — simple classes are supported (instance methods,
-  `__init__`/`__repr__`/`__str__`, literal class variables). Rejected at parse
-  time: base classes / metaclasses (`class Foo(Bar):`), class and method
-  decorators (so `@dataclass`, `@classmethod`, `@staticmethod`, `@property`
-  are unavailable), and class-body statements other than `def`, a simple
-  `name = <literal>` assignment, `pass`, or a docstring. There is no
+  `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
+  Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`), class
+  and method decorators (so `@dataclass`, `@classmethod`, `@staticmethod`,
+  `@property` are unavailable), and class-body statements other than `def`, a
+  simple `name [: T] = <expr>` assignment, `pass`, or a docstring. There is no
   inheritance and no general dunder protocol. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator

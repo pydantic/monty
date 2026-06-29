@@ -62,10 +62,30 @@ fn method_decorators_return_not_implemented_error() {
 }
 
 #[test]
-fn non_literal_class_var_returns_not_implemented_error() {
-    let err = get_parse_err("class Foo:\n    x = foo()");
+fn non_literal_class_var_compiles_successfully() {
+    // The class body now has a real scope, so class variables may be arbitrary
+    // expressions (including ones referencing earlier class variables).
+    let result = MontyRun::new(
+        "class Foo:\n    a = 1\n    b = a + 1\n    c = [a, b]".to_owned(),
+        "test.py",
+        vec![],
+    );
+    assert!(result.is_ok(), "non-literal class variables should compile");
+}
+
+#[test]
+fn class_member_shadowing_captured_var_returns_not_implemented_error() {
+    // Same-name collision: an enclosing local and a class member share a name,
+    // and a method captures the enclosing one. Monty cannot represent both a
+    // class-dict entry and a closure cell under one name (see limitations/classes.md).
+    let err = get_parse_err(
+        "def outer():\n    x = 1\n    class C:\n        x = 2\n        def m(self):\n            return x\n    return C",
+    );
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support non-literal class variables");
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support class member 'x' that shadows a captured variable of the same name from an enclosing scope"
+    );
 }
 
 #[test]

@@ -2,7 +2,9 @@
 
 Sandboxed Python code in Monty can define simple classes. A `class`
 statement with instance methods, `__init__`, `__repr__`/`__str__`, and
-literal class variables works:
+class variables works. The class body has a real scope (like CPython's
+class-body code object), so class variables may be arbitrary expressions
+and may reference earlier class variables:
 
 ```python
 class Foo:
@@ -26,8 +28,12 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 
 ## What works
 
-- `class Foo: ...` with a body of instance methods and simple class
-  variables (`name = <literal>` or `name: T = <literal>`).
+- `class Foo: ...` with a body of instance methods and class variables
+  (`name = <expr>` or `name: T = <expr>`, where `<expr>` is any expression,
+  including calls, comprehensions, and references to earlier class variables).
+- Class variable values run in the class-body scope, top-to-bottom; because
+  that body is a real, suspendable frame, a class-variable value may call an
+  external/OS function.
 - `__init__` with arbitrary positional/keyword/default/`*args`/`**kwargs`
   parameters (methods are ordinary functions; `self` is the first parameter).
 - Instance attribute get/set (`obj.x`, `obj.x = ...`), including attributes
@@ -61,12 +67,26 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 - A user `__str__` returning a non-`str` raises `TypeError: __str__ returned
   non-string (type X)` (and likewise for `__repr__`); the wording may differ
   from CPython.
+- **Comprehensions in the class body** can see class variables, because Monty
+  inlines comprehensions into the enclosing scope. In CPython a comprehension
+  has its own scope that skips the class scope, so only the *leftmost iterable*
+  is evaluated in class scope and the body cannot see class variables
+  (`[n + offset for n in nums]` referencing a class variable `offset` raises
+  `NameError` in CPython but succeeds in Monty).
+- **Same-name collision is rejected, not resolved.** When an enclosing-function
+  local and a class variable share a name *and* a method captures the enclosing
+  one, CPython keeps the two distinct (a class-dict entry vs. a closure cell).
+  Monty maps one name to a single slot and so cannot represent both; it raises
+  `NotImplementedError` at compile time ("class member 'x' that shadows a
+  captured variable of the same name from an enclosing scope") rather than
+  miscompiling. Distinct names work fine.
 
 ## What does NOT exist for user code
 
 - `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
   parse time: "class inheritance and metaclasses").
-- Metaclasses, `__init_subclass__`, `__set_name__`.
+- Metaclasses, `__init_subclass__`, `__set_name__`, and any other
+  metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - `@classmethod`, `@staticmethod`, `@property`, and any other class/method
@@ -75,9 +95,9 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   `__call__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`,
   `__contains__`, `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`,
   `__bool__`, etc. are not dispatched for user-defined instances.
-- Non-literal class variables (`x = some_call()`, `x = OTHER`) and any
-  class-body statement other than a `def`, a simple variable assignment,
-  `pass`, or a docstring (rejected at parse time).
+- Class-body statements other than a `def`, a simple `name [: T] = <expr>`
+  variable assignment, `pass`, or a docstring — e.g. `if`/`for`/`while` in the
+  class body, or tuple/multiple assignment targets (rejected at parse time).
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `FrozenInstanceError`

@@ -639,19 +639,27 @@ pub enum Node<F> {
     FunctionDef(F),
     /// Class definition (e.g. `class Foo: ...`).
     ///
-    /// Only the restricted subset Monty supports is represented: instance
-    /// methods (each rides the same `F` = Raw→Prepared pipeline as
-    /// [`Node::FunctionDef`], with `self` as an ordinary first parameter) and
-    /// simple class-level variables (`name = <expr>`). Inheritance, metaclasses,
-    /// decorators and `classmethod`/`staticmethod`/`property` are rejected at
-    /// parse time — see `limitations/classes.md`.
+    /// Modelled on CPython's class-body code object: the class body is a
+    /// synthetic zero-argument function ([`body`](Self::ClassDef::body), riding
+    /// the same `F` = Raw→Prepared pipeline as [`Node::FunctionDef`]) that
+    /// executes the class statements top-to-bottom into its own scope, then
+    /// assembles the namespace and returns a `Class`. Methods are ordinary
+    /// `FunctionDef`s in that body (with `self` as the first parameter); class
+    /// variables are `Assign`s. Inheritance, metaclasses, decorators and
+    /// `classmethod`/`staticmethod`/`property` are rejected at parse time — see
+    /// `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
-        /// Method definitions in source order.
-        methods: Vec<F>,
-        /// Class-level variable assignments (`name = <expr>`) in source order.
-        class_vars: Vec<(Identifier, ExprLoc)>,
+        /// The synthetic class-body function: its body is the class statements
+        /// in source order. Prepared and compiled exactly like a function; its
+        /// emitted code ends by building the namespace `Dict` and returning the
+        /// `Class` object.
+        body: F,
+        /// Top-level member names (methods + class vars) in source order.
+        /// Each is resolved to a class-body-local slot during prepare; the
+        /// compiler uses them to assemble the namespace dict.
+        members: Vec<Identifier>,
         /// Source position of the `class` statement (for error reporting).
         position: CodeRange,
     },
