@@ -51,11 +51,12 @@ enum State {
     /// host). `sys.stdout`/`sys.stderr` are separate `Stdio` sinks kept alive by
     /// the interpreter, so they need no Rust-side handle here. `install` holds the
     /// session's `uv` install dir, created lazily on the first `InstallDependencies`.
-    /// `script_name` is the `Configure.script_name` snippets compile under, so
-    /// CPython tracebacks report the parent's filename.
+    /// `script_name` is the parent-visible filename used for tracebacks and syntax
+    /// errors.
     Ready {
         namespace: Py<SandboxGlobals>,
         install: Option<InstallEnv>,
+        /// Parent-visible filename reported in tracebacks and syntax errors.
         script_name: String,
     },
 }
@@ -300,7 +301,7 @@ impl Session {
             return event;
         }
 
-        match self.runner.run(py, feed.code, &namespace) {
+        match self.runner.run(py, feed.code, &namespace, &script_name) {
             Ok(value) => match py_to_monty_value(&value, &dc) {
                 Ok(value) if exceeds_max_value_depth(&value) => error_event(
                     ExcType::RuntimeError,

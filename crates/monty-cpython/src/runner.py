@@ -27,7 +27,7 @@ _input_counter = 0
 _input_files: set[str] = set()
 
 
-def run(code: str, ns: dict[str, Any]) -> Any:
+def run(code: str, ns: dict[str, Any], script_name: str) -> Any:
     """Execute `code` REPL-style: a trailing expression becomes the value.
 
     Mirrors how IPython/the stdlib REPL split a cell — run the body in `exec`
@@ -38,8 +38,9 @@ def run(code: str, ns: dict[str, Any]) -> Any:
     The snippet is compiled under a unique internal `<input-N>` filename and its
     source is registered in `linecache`, so a later `extract_traceback` can
     recover each frame's source line (and CPython's caret anchors) — even for
-    frames from functions defined in earlier feeds. The parent-visible filename
-    is substituted in `extract_traceback`, not here.
+    frames from functions defined in earlier feeds. Runtime traceback frames get
+    their parent-visible filename substituted in `extract_traceback`; syntax
+    errors have no user frame to rewrite, so their filename is rewritten here.
 
     Top-level `await` is supported: both halves are compiled with
     `PyCF_ALLOW_TOP_LEVEL_AWAIT`. If *either* half is a coroutine, both are driven
@@ -54,16 +55,23 @@ def run(code: str, ns: dict[str, Any]) -> Any:
     # `mtime=None` marks a non-file cache entry that `linecache.checkcache`
     # leaves in place (it would otherwise try to `stat` the fake filename).
     linecache.cache[filename] = (len(code), None, code.splitlines(keepends=True), filename)
-    module = ast.parse(code, filename, 'exec')
-    trailing_expr = None
-    if module.body and isinstance(module.body[-1], ast.Expr):
-        trailing_expr = cast(ast.Expr, module.body.pop()).value
-    body_code = compile(module, filename, 'exec', flags=TOP_LEVEL_AWAIT)
-    expr_code = (
-        None
-        if trailing_expr is None
-        else compile(ast.Expression(trailing_expr), filename, 'eval', flags=TOP_LEVEL_AWAIT)
-    )
+    try:
+        module = ast.parse(code, filename, 'exec')
+        trailing_expr = None
+        if module.body and isinstance(module.body[-1], ast.Expr):
+            trailing_expr = cast(ast.Expr, module.body.pop()).value
+        body_code = compile(module, filename, 'exec', flags=TOP_LEVEL_AWAIT)
+        expr_code = (
+            None
+            if trailing_expr is None
+            else compile(ast.Expression(trailing_expr), filename, 'eval', flags=TOP_LEVEL_AWAIT)
+        )
+    except SyntaxError as exc:
+        exc.filename = script_name
+        if len(exc.args) >= 2 and isinstance(exc.args[1], tuple) and exc.args[1]:
+            location = cast(tuple[Any, ...], exc.args[1])
+            exc.args = (exc.args[0], (script_name, *location[1:]), *exc.args[2:])
+        raise
     body_async = bool(body_code.co_flags & CO_COROUTINE)
     expr_async = expr_code is not None and bool(expr_code.co_flags & CO_COROUTINE)
     if body_async or expr_async:

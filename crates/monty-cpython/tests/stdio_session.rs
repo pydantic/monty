@@ -358,6 +358,36 @@ fn traceback_preview_resolves_across_feeds() {
     );
 }
 
+/// Syntax errors are raised before a user traceback frame exists, so the runner
+/// rewrites the compile-time `<input-N>` filename directly on the `SyntaxError`.
+#[test]
+fn syntax_error_reports_configured_script_name() {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let parent = ScriptedParent {
+        script: VecDeque::from([configure(), feed("1 +"), shutdown()]),
+        pending_resume: None,
+        name_values: HashMap::new(),
+        externals: HashMap::new(),
+        events: events.clone(),
+    };
+
+    drive(parent);
+
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .filter_map(|e| e.kind.as_ref())
+        .find_map(|k| match k {
+            pb::child_event::Kind::Error(e) => e.exception.as_ref(),
+            _ => None,
+        })
+        .expect("an Error event");
+
+    assert_eq!(error.exc_type, "SyntaxError");
+    assert_eq!(error.message.as_deref(), Some("invalid syntax (main.py, line 1)"));
+    assert!(error.traceback.is_empty());
+}
+
 /// `sys.stdout` and `sys.stderr` are separate sinks: each `print()` chunk streams
 /// as a `Print` event tagged with its stream, so the parent can tell them apart.
 #[test]
@@ -827,7 +857,7 @@ fn feed_installs_pep723_dependencies() {
 fn configure() -> pb::ParentRequest {
     request(pb::parent_request::Kind::Configure(pb::Configure {
         monty_version: env!("CARGO_PKG_VERSION").to_string(),
-        // Fed code compiles under this filename, so it appears in tracebacks.
+        // Parent-visible filename reported in tracebacks and syntax errors.
         script_name: "main.py".to_string(),
         ..Default::default()
     }))

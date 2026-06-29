@@ -9,7 +9,7 @@
 //! converted and returned directly, and an **unknown** name raises `NameError`.
 //! All the real work — name resolution, value conversion, the transport round
 //! trips — happens in Rust on [`SandboxGlobals`]; the Python glue is intentionally
-//! tiny (just the REPL runner `run`).
+//! tiny (the REPL runner plus traceback extraction).
 //!
 //! SECURITY: this runs untrusted code in *full CPython*, which is not itself a
 //! sandbox (the code can `import os` and do anything this process can). Isolation
@@ -40,9 +40,9 @@ use crate::{
     transport::{Incoming, SendError, SharedTransport},
 };
 
-/// Python glue, executed once per process. Defines just the REPL runner (`run`);
-/// everything else — the namespace, name resolution, host calls — lives in Rust
-/// on [`SandboxGlobals`].
+/// Python glue, executed once per process. Defines the REPL runner (`run`) and
+/// traceback extractor; everything else — the namespace, name resolution, host
+/// calls — lives in Rust on [`SandboxGlobals`].
 ///
 /// The source lives in `runner.py` (so it reads/edits/lints as real Python) and
 /// is inlined here at compile time as a `&CStr` — `include_str!` embeds the file,
@@ -73,14 +73,16 @@ impl Runner {
     /// Runs `code` in `namespace`, returning the trailing expression's value.
     /// The snippet compiles under an internal `<input-N>` filename (see
     /// `runner.py`'s `run`); the parent-visible name is applied when a traceback
-    /// is rebuilt via [`Runner::traceback_extractor`].
+    /// is rebuilt via [`Runner::extract_traceback`], or directly on syntax
+    /// errors because they have no user traceback frame to rewrite.
     pub fn run<'py>(
         &self,
         py: Python<'py>,
         code: String,
         namespace: &Bound<'py, SandboxGlobals>,
+        script_name: &str,
     ) -> PyResult<Bound<'py, PyAny>> {
-        self.run.bind(py).call1((code, namespace))
+        self.run.bind(py).call1((code, namespace, script_name))
     }
 
     /// Extracts a structured traceback from the given `traceback` object, using
