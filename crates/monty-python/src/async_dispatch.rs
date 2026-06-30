@@ -13,8 +13,7 @@ use tokio::task::{JoinError, JoinSet};
 use crate::{
     dataclass::DcRegistry,
     external::{
-        CallResult, ExternalFunctionRegistry, dispatch_method_call_or_coroutine, py_err_to_ext_result,
-        py_obj_to_ext_result,
+        CallResult, ExternalLookup, dispatch_method_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
     },
 };
 
@@ -32,12 +31,12 @@ pub(crate) fn dispatch_function_call(
     Python::attach(|py| {
         if method_call {
             dispatch_method_call_or_coroutine(py, function_name, args, kwargs, dc_registry)
-        } else if let Some(lookup) = external_lookup {
-            let lookup = lookup.bind(py);
-            let registry = ExternalFunctionRegistry::new(py, lookup, dc_registry);
-            registry.call_or_coroutine(function_name, args, kwargs)
         } else {
-            CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned()))
+            ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), dc_registry).call_or_coroutine(
+                function_name,
+                args,
+                kwargs,
+            )
         }
     })
 }

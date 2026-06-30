@@ -365,16 +365,29 @@ class MontySession:
         invoked in this process. Async external functions are not supported
         here — use `AsyncMonty`.
 
-        `external_lookup` resolves names the snippet leaves undefined, lazily and
-        on demand: a callable entry becomes a host function the sandbox can call
-        (as before), any other value is converted and returned directly when the
-        name is read, and an absent name raises `NameError`. This is the lazy
-        counterpart to `inputs`, which eagerly binds every entry as a global at
-        feed start whether or not it is referenced; a name present in both is
-        served by the eager `inputs` binding.
-
-        Mounts are handled inside the worker process: `'overlay'` writes live
-        in the worker and are discarded when the feed ends.
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is converted to a Python object and returned.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host values resolving names the snippet leaves
+                undefined, lazily and on demand: a callable entry becomes a host
+                function the sandbox can call, any other value is converted and
+                returned directly when the name is read, and an absent name
+                raises `NameError`. The lazy counterpart to `inputs`; a name
+                present in both is served by the eager `inputs` binding.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for this feed.
+                Handled inside the worker — `'overlay'` writes live in the
+                worker and are discarded when the feed ends.
+            os: Fallback handler for OS calls (e.g. filesystem access) not
+                covered by a mount, invoked as `(function_name, args, kwargs)`,
+                or an `AbstractOS` instance.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
 
         Raises:
             MontyRuntimeError: The code raised an exception (session survives).
@@ -399,13 +412,29 @@ class MontySession:
 
         Answer the snapshot with `snapshot.resume(...)`, which returns the next
         snapshot or a `MontyComplete`. Unlike `feed_run` there is no
-        `external_lookup` argument — surfacing those calls is the point. An
-        `os=` handler still auto-dispatches uncovered OS calls until the next
-        non-OS event. Mounts are fixed for the whole feed (there is no `mount=`
-        on `resume`).
+        `external_lookup` argument — surfacing those calls is the point.
 
         Use `snapshot.dump()` to checkpoint the worker mid-execution and
         `load_snapshot` to restore it.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is the `MontyComplete.output` when the feed completes.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for the whole feed
+                (there is no `mount=` on `resume`). `'overlay'` writes live in
+                the worker and are discarded when the feed ends.
+            os: Fallback handler for OS calls not covered by a mount, invoked as
+                `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
+                auto-dispatches uncovered OS calls until the next non-OS event;
+                omit it to surface OS calls as snapshots instead.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
         """
 
     def load(self, state: bytes) -> None:
@@ -630,8 +659,32 @@ class AsyncMontySession:
 
         Worker I/O runs off the event loop; external functions (the callable
         entries in `external_lookup`) may be coroutines, awaited concurrently.
-        See `MontySession.feed_run` for the shared semantics (`external_lookup`,
-        mounts, error types).
+        See `MontySession.feed_run` for the shared error types.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is converted to a Python object and returned.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            external_lookup: Host values resolving names the snippet leaves
+                undefined, lazily and on demand: a callable entry (sync or a
+                coroutine function) becomes a host function the sandbox can call,
+                any other value is converted and returned directly when the name
+                is read, and an absent name raises `NameError`. The lazy
+                counterpart to `inputs`; a name present in both is served by the
+                eager `inputs` binding.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for this feed.
+                Handled inside the worker — `'overlay'` writes live in the
+                worker and are discarded when the feed ends.
+            os: Fallback handler for OS calls (e.g. filesystem access) not
+                covered by a mount, invoked as `(function_name, args, kwargs)`,
+                or an `AbstractOS` instance.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
         """
 
     async def feed_start(
@@ -647,6 +700,25 @@ class AsyncMontySession:
         """
         Async counterpart of `MontySession.feed_start`: resolves to a snapshot
         (whose `resume(...)` is awaitable) or a `MontyComplete`.
+
+        Arguments:
+            code: The Python snippet to execute; its trailing expression value
+                (if any) is the `MontyComplete.output` when the feed completes.
+            inputs: Values eagerly bound as globals before the snippet runs —
+                every entry is converted and bound once, whether or not it is
+                referenced.
+            print_callback: Receives the sandbox's `print()` output as
+                `(stream, text)`, or a `CollectStreams` / `CollectString`
+                collector. Defaults to the host process stdout/stderr.
+            mount: Host directories mounted into the sandbox for the whole feed
+                (there is no `mount=` on `resume`). `'overlay'` writes live in
+                the worker and are discarded when the feed ends.
+            os: Fallback handler for OS calls not covered by a mount, invoked as
+                `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
+                auto-dispatches uncovered OS calls until the next non-OS event;
+                omit it to surface OS calls as snapshots instead.
+            skip_type_check: Skip type checking for this feed even when the
+                session was checked out with `type_check=True`.
         """
 
     async def load(self, state: bytes) -> None:

@@ -46,10 +46,10 @@ use tokio::task::{JoinSet, spawn_blocking};
 use crate::{
     async_dispatch::{dispatch_function_call, join_error_to_py, spawn_coroutine_task, wait_for_futures},
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
-    convert::{get_docstring, monty_to_py, py_to_monty_value},
+    convert::{monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_monty_to_py, exc_py_to_monty},
-    external::{CallResult, ExternalFunctionRegistry, dispatch_method_call},
+    exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_py_to_monty},
+    external::{CallResult, ExternalLookup, dispatch_method_call},
     get_not_handled,
     limits::extract_limits,
     mount::PyMountDir,
@@ -1045,6 +1045,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         checkout,
         dc_registry,
     } = args;
+    let lookup = ExternalLookup::new(py, external_lookup, &dc_registry);
     let mut event = {
         let (result, print_err) = py.detach(|| {
             run_turn_blocking(&checkout, &print_target, |c, p| {
@@ -1066,10 +1067,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
             } => {
                 let result = if method_call {
                     dispatch_method_call(py, &function_name, &args, &kwargs, &dc_registry)
-                } else if let Some(lookup) = external_lookup {
-                    ExternalFunctionRegistry::new(py, lookup, &dc_registry).call(&function_name, &args, &kwargs)
                 } else {
-                    ExtFunctionResult::NotFound(function_name)
+                    lookup.call(&function_name, &args, &kwargs)
                 };
                 TurnAnswer::Call(ext_to_resume(result)?)
             }
@@ -1091,9 +1090,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                 );
                 TurnAnswer::Call(ext_to_resume(result)?)
             }
-            TurnEvent::NameLookup { name } => {
-                TurnAnswer::Name(resolve_pool_name_lookup(py, &name, external_lookup, &dc_registry)?)
-            }
+            TurnEvent::NameLookup { name } => TurnAnswer::Name(lookup.resolve_name(&name)?),
             TurnEvent::ResolveFutures { .. } => {
                 return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
             }
@@ -1177,7 +1174,7 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
                 TurnAnswer::Call(ext_to_resume(result)?)
             }
             TurnEvent::NameLookup { name } => TurnAnswer::Name(Python::attach(|py| {
-                resolve_pool_name_lookup(py, &name, external_lookup.as_ref().map(|d| d.bind(py)), &dc_registry)
+                ExternalLookup::new(py, external_lookup.as_ref().map(|d| d.bind(py)), &dc_registry).resolve_name(&name)
             })?),
             TurnEvent::ResolveFutures { pending_call_ids } => {
                 let results = wait_for_futures(&mut join_set, &pending_call_ids).await?;
@@ -1330,33 +1327,6 @@ pub(crate) fn dispatch_os_parts(
         })
     };
     call().unwrap_or_else(|err| ExtFunctionResult::Error(exc_py_to_monty(py, &err)))
-}
-
-/// Resolves a bare-name lookup against the `external_lookup` dict: a callable
-/// becomes a lazy host function proxy (`MontyObject::Function`, invoked on the
-/// eventual `FunctionCall`), any other value is converted and returned directly,
-/// and an absent name yields `None` (→ the sandbox raises `NameError`).
-///
-/// A non-callable value that cannot be converted surfaces as a `PyErr` rather
-/// than masquerading as `NameError`, so callers `?` it.
-pub(crate) fn resolve_pool_name_lookup(
-    py: Python<'_>,
-    name: &str,
-    external_lookup: Option<&Bound<'_, PyDict>>,
-    dc_registry: &DcRegistry,
-) -> PyResult<Option<MontyObject>> {
-    let Some(value) = external_lookup.and_then(|d| d.get_item(name).ok().flatten()) else {
-        return Ok(None);
-    };
-    let obj = if value.is_callable() {
-        MontyObject::Function {
-            name: name.to_owned(),
-            docstring: get_docstring(&value),
-        }
-    } else {
-        py_to_monty_value(&value, dc_registry).map_err(|exc| exc_monty_to_py(py, exc))?
-    };
-    Ok(Some(obj))
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into child-local mount specs.
