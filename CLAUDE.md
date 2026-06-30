@@ -712,7 +712,7 @@ await using session = await pool.checkout({ typeCheck: false })
 await session.feedRun('x = 21') // session state persists across feeds
 const result = await session.feedRun('x * 2', {
   inputs: { y: 1 },
-  externalFunctions: { fetch: async (url: string) => '...' }, // sync or async
+  externalLookup: { fetch: async (url: string) => '...' }, // sync or async
   printCallback: (stream, text) => {},
 })
 ```

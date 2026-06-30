@@ -43,8 +43,19 @@ async def test_await_external_function(asession: AsyncMontySession):
     async def foobar(a: int, b: int) -> int:
         return a + b
 
-    result = await asession.feed_run('await foobar(1, 2)', external_functions={'foobar': foobar})
+    result = await asession.feed_run('await foobar(1, 2)', external_lookup={'foobar': foobar})
     assert result == snapshot(3)
+
+
+async def test_external_lookup_value(asession: AsyncMontySession):
+    """A non-callable external_lookup entry resolves the bare name to its value,
+    alongside a callable entry resolved as a function proxy."""
+
+    def double(x: int) -> int:
+        return x * 2
+
+    result = await asession.feed_run('double(n)', external_lookup={'double': double, 'n': 21})
+    assert result == snapshot(42)
 
 
 async def test_asyncio_gather(asession: AsyncMontySession):
@@ -60,7 +71,7 @@ await asyncio.gather(foo(1), bar(2))
     async def bar(x: int) -> int:
         return x + 2
 
-    result = await asession.feed_run(code, external_functions={'foo': foo, 'bar': bar})
+    result = await asession.feed_run(code, external_lookup={'foo': foo, 'bar': bar})
     assert result == snapshot([3, 4])
 
 
@@ -70,7 +81,7 @@ async def test_sync_function(asession: AsyncMontySession):
     def get_value():
         return 42
 
-    result = await asession.feed_run('get_value()', external_functions={'get_value': get_value})
+    result = await asession.feed_run('get_value()', external_lookup={'get_value': get_value})
     assert result == snapshot(42)
 
 
@@ -81,14 +92,14 @@ async def test_async_function(asession: AsyncMontySession):
         await asyncio.sleep(0.001)
         return 'async result'
 
-    result = await asession.feed_run('await fetch_data()', external_functions={'fetch_data': fetch_data})
+    result = await asession.feed_run('await fetch_data()', external_lookup={'fetch_data': fetch_data})
     assert result == snapshot('async result')
 
 
 async def test_function_not_found(asession: AsyncMontySession):
     """Missing external function raises wrapped NameError."""
     with pytest.raises(MontyRuntimeError) as exc_info:
-        await asession.feed_run('missing_func()', external_functions={})
+        await asession.feed_run('missing_func()', external_lookup={})
     inner = exc_info.value.exception()
     assert isinstance(inner, NameError)
     assert inner.args[0] == snapshot("name 'missing_func' is not defined")
@@ -101,7 +112,7 @@ async def test_sync_exception(asession: AsyncMontySession):
         raise ValueError('sync error')
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        await asession.feed_run('fail()', external_functions={'fail': fail})
+        await asession.feed_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('sync error')
@@ -115,7 +126,7 @@ async def test_async_exception(asession: AsyncMontySession):
         raise RuntimeError('async error')
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        await asession.feed_run('await async_fail()', external_functions={'async_fail': async_fail})
+        await asession.feed_run('await async_fail()', external_lookup={'async_fail': async_fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert inner.args[0] == snapshot('async error')
@@ -134,7 +145,7 @@ caught
     def fail():
         raise ValueError('caught error')
 
-    result = await asession.feed_run(code, external_functions={'fail': fail})
+    result = await asession.feed_run(code, external_lookup={'fail': fail})
     assert result == snapshot(True)
 
 
@@ -153,7 +164,7 @@ await asyncio.gather(fetch_a(), fetch_b())
         await asyncio.sleep(0.005)
         return 'b'
 
-    result = await asession.feed_run(code, external_functions={'fetch_a': fetch_a, 'fetch_b': fetch_b})
+    result = await asession.feed_run(code, external_lookup={'fetch_a': fetch_a, 'fetch_b': fetch_b})
     assert result == snapshot(['a', 'b'])
 
 
@@ -172,7 +183,7 @@ sync_val + async_val
         await asyncio.sleep(0.001)
         return 5
 
-    result = await asession.feed_run(code, external_functions={'sync_func': sync_func, 'async_func': async_func})
+    result = await asession.feed_run(code, external_lookup={'sync_func': sync_func, 'async_func': async_func})
     assert result == snapshot(15)
 
 
@@ -182,7 +193,7 @@ async def test_with_inputs(asession: AsyncMontySession):
     def process(a: int, b: int) -> int:
         return a * b
 
-    result = await asession.feed_run('process(x, y)', inputs={'x': 6, 'y': 7}, external_functions={'process': process})
+    result = await asession.feed_run('process(x, y)', inputs={'x': 6, 'y': 7}, external_lookup={'process': process})
     assert result == snapshot(42)
 
 
@@ -202,7 +213,7 @@ async def test_function_returning_none(asession: AsyncMontySession):
     def do_nothing():
         return None
 
-    result = await asession.feed_run('do_nothing()', external_functions={'do_nothing': do_nothing})
+    result = await asession.feed_run('do_nothing()', external_lookup={'do_nothing': do_nothing})
     assert result is None
 
 
@@ -225,7 +236,7 @@ Path('/test.txt').read_text()
     assert result == snapshot('hello world')
 
 
-async def test_os_with_external_functions(asession: AsyncMontySession):
+async def test_os_with_external_lookup(asession: AsyncMontySession):
     """feed_run can combine OSAccess with external functions."""
     fs = OSAccess([MemoryFile('/data.txt', content='test data')])
 
@@ -237,7 +248,7 @@ from pathlib import Path
 content = Path('/data.txt').read_text()
 await process(content)
 """
-    result = await asession.feed_run(code, external_functions={'process': process}, os=fs)
+    result = await asession.feed_run(code, external_lookup={'process': process}, os=fs)
     assert result == snapshot('TEST DATA')
 
 
@@ -278,7 +289,7 @@ p.read_text()
     assert result == snapshot('updated')
 
 
-async def test_nested_gather_with_external_functions(asession: AsyncMontySession):
+async def test_nested_gather_with_external_lookup(asession: AsyncMontySession):
     """Nested asyncio.gather with spawned tasks and external async functions.
 
     https://github.com/pydantic/monty/pull/174
@@ -335,7 +346,7 @@ await main()
 
     result = await asession.feed_run(
         code,
-        external_functions={
+        external_lookup={
             'get_lat_lng': get_lat_lng,
             'get_temp': get_temp,
             'get_weather_description': get_weather_description,
@@ -360,9 +371,9 @@ async def test_state_persists(asession: AsyncMontySession):
         return x * 2
 
     ext = {'double': double}
-    await asession.feed_run('x = 10', external_functions=ext)
-    await asession.feed_run('y = double(x)', external_functions=ext)
-    result = await asession.feed_run('y', external_functions=ext)
+    await asession.feed_run('x = 10', external_lookup=ext)
+    await asession.feed_run('y = double(x)', external_lookup=ext)
+    result = await asession.feed_run('y', external_lookup=ext)
     assert result == snapshot(20)
 
 
@@ -373,9 +384,9 @@ async def test_async_state_persists(asession: AsyncMontySession):
         return f'value_{key}'
 
     ext = {'fetch': fetch}
-    await asession.feed_run("a = await fetch('one')", external_functions=ext)
-    await asession.feed_run("b = await fetch('two')", external_functions=ext)
-    result = await asession.feed_run('a + b', external_functions=ext)
+    await asession.feed_run("a = await fetch('one')", external_lookup=ext)
+    await asession.feed_run("b = await fetch('two')", external_lookup=ext)
+    result = await asession.feed_run('a + b', external_lookup=ext)
     assert result == snapshot('value_onevalue_two')
 
 
@@ -387,7 +398,7 @@ async def test_error_preserves_state(asession: AsyncMontySession):
         raise ValueError('oops')
 
     with pytest.raises(MontyRuntimeError):
-        await asession.feed_run('fail()', external_functions={'fail': fail})
+        await asession.feed_run('fail()', external_lookup={'fail': fail})
 
     result = await asession.feed_run('x')
     assert result == snapshot(42)
@@ -402,7 +413,7 @@ async def test_async_error_preserves_state(asession: AsyncMontySession):
         raise RuntimeError('async kaboom')
 
     with pytest.raises(MontyRuntimeError):
-        await asession.feed_run('await failing_async()', external_functions={'failing_async': failing_async})
+        await asession.feed_run('await failing_async()', external_lookup={'failing_async': failing_async})
 
     result = await asession.feed_run('x')
     assert result == snapshot(100)
@@ -439,7 +450,7 @@ except ValueError:
     result = 'caught'
 result
 """
-    result = await asession.feed_run(code, external_functions={'get_str': lambda: '\ud83d'})
+    result = await asession.feed_run(code, external_lookup={'get_str': lambda: '\ud83d'})
     assert result == snapshot('caught')
 
 
@@ -451,7 +462,7 @@ async def test_async_external_return_lone_surrogate(asession: AsyncMontySession)
         return '\ud83d'
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        await asession.feed_run('await get_str()', external_functions={'get_str': get_str})
+        await asession.feed_run('await get_str()', external_lookup={'get_str': get_str})
     assert isinstance(exc_info.value.exception(), ValueError)
 
 
@@ -472,7 +483,7 @@ async def test_llm_iterative_data_collection(asession: AsyncMontySession):
     ext = {'fetch_users': fetch_users}
 
     # Snippet 1: LLM sets up accumulator
-    await asession.feed_run('all_users = []', external_functions=ext)
+    await asession.feed_run('all_users = []', external_lookup=ext)
 
     # Snippets 2-4: LLM fetches batches until one comes back empty
     batch_code = """\
@@ -480,12 +491,12 @@ batch = await fetch_users(len(all_users), 2)
 all_users = all_users + batch
 len(batch)
 """
-    assert await asession.feed_run(batch_code, external_functions=ext) == 2
-    assert await asession.feed_run(batch_code, external_functions=ext) == 1
-    assert await asession.feed_run(batch_code, external_functions=ext) == 0
+    assert await asession.feed_run(batch_code, external_lookup=ext) == 2
+    assert await asession.feed_run(batch_code, external_lookup=ext) == 1
+    assert await asession.feed_run(batch_code, external_lookup=ext) == 0
 
     # Snippet 5: LLM extracts final result
-    result = await asession.feed_run('[u["name"] for u in all_users]', external_functions=ext)
+    result = await asession.feed_run('[u["name"] for u in all_users]', external_lookup=ext)
     assert result == snapshot(['Alice', 'Bob', 'Charlie'])
 
 
@@ -504,7 +515,7 @@ async def test_llm_error_recovery_retry(asession: AsyncMontySession):
 
     # Snippet 1: LLM tries, gets error
     with pytest.raises(MontyRuntimeError):
-        await asession.feed_run("data = await flaky_api('test')", external_functions=ext)
+        await asession.feed_run("data = await flaky_api('test')", external_lookup=ext)
 
     # Snippet 2: LLM wraps in try/except and retries
     result = await asession.feed_run(
@@ -515,7 +526,7 @@ except Exception as e:
     data = 'fallback'
 data
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot('result for test')
 
@@ -534,7 +545,7 @@ async def test_llm_redefine_helper_function(asession: AsyncMontySession):
 def parse_title(html):
     return html
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
 
     # Snippet 2: LLM uses it, gets raw html back
@@ -543,7 +554,7 @@ def parse_title(html):
 html = await fetch('example.com')
 parse_title(html)
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot('<html>example.com</html>')
 
@@ -555,11 +566,11 @@ def parse_title(html):
     end = html.rfind('<')
     return html[start:end]
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
 
     # Snippet 4: uses improved parser on previously fetched data
-    result = await asession.feed_run('parse_title(html)', external_functions=ext)
+    result = await asession.feed_run('parse_title(html)', external_lookup=ext)
     assert result == snapshot('example.com')
 
 
@@ -588,7 +599,7 @@ for r in results:
     record(s)
 summaries
 """
-    result = await asession.feed_run(code, external_functions=ext)
+    result = await asession.feed_run(code, external_lookup=ext)
     assert result == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
     assert records == snapshot(['summary(python async_result_1)', 'summary(python async_result_2)'])
 
@@ -607,7 +618,7 @@ items = ['apple', 'banana', 'cherry', 'date', 'elderberry']
 prices = await asyncio.gather(*(fetch_price(item) for item in items))
 dict(zip(items, prices))
 """
-    result = await asession.feed_run(code, external_functions={'fetch_price': fetch_price})
+    result = await asession.feed_run(code, external_lookup={'fetch_price': fetch_price})
     assert result == snapshot({'apple': 1.5, 'banana': 0.75, 'cherry': 3.0, 'date': 5.0, 'elderberry': 8.0})
 
 
@@ -628,7 +639,7 @@ for key in ['good', 'bad', 'also_good']:
         results[key] = 'missing'
 results
 """
-    result = await asession.feed_run(code, external_functions={'fetch_data': fetch_data})
+    result = await asession.feed_run(code, external_lookup={'fetch_data': fetch_data})
     assert result == snapshot({'good': 'data_good', 'bad': 'missing', 'also_good': 'data_also_good'})
 
 
@@ -644,7 +655,7 @@ async def test_llm_conditional_external_call(asession: AsyncMontySession):
     ext = {'expensive_lookup': expensive_lookup}
 
     # Snippet 1: set up a cache
-    await asession.feed_run("cache = {'x': 'cached_x'}", external_functions=ext)
+    await asession.feed_run("cache = {'x': 'cached_x'}", external_lookup=ext)
 
     # Snippet 2: LLM checks cache before calling
     code = """\
@@ -658,7 +669,7 @@ for key in ['x', 'y', 'x']:
         results.append(val)
 results
 """
-    result = await asession.feed_run(code, external_functions=ext)
+    result = await asession.feed_run(code, external_lookup=ext)
     assert result == snapshot(['cached_x', 'looked up y', 'cached_x'])
     assert call_count == 1  # only 'y' triggered a call
 
@@ -682,7 +693,7 @@ for m in models:
     record_model(m['name'], m['params'], 0.01)
 len(models)
 """
-    result = await asession.feed_run(code, external_functions={'record_model': record_model, 'get_models': get_models})
+    result = await asession.feed_run(code, external_lookup={'record_model': record_model, 'get_models': get_models})
     assert result == snapshot(2)
     assert recorded == snapshot(
         [{'name': 'gpt-4', 'params': '1.7T', 'price': 0.01}, {'name': 'claude-3', 'params': '???', 'price': 0.01}]
@@ -714,11 +725,11 @@ def fetch_with_retry(url, max_retries=3):
                 raise
     raise ValueError('should not reach here')
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
 
     # Snippet 2: LLM uses the retry helper
-    result = await asession.feed_run("fetch_with_retry('example.com')", external_functions=ext)
+    result = await asession.feed_run("fetch_with_retry('example.com')", external_lookup=ext)
     assert result == snapshot('content of example.com')
     assert attempt_counts == snapshot({'example.com': 2})
 
@@ -748,7 +759,7 @@ results = await asyncio.gather(
 )
 results
 """
-    result = await asession.feed_run(code, external_functions={'get_user': get_user, 'get_posts': get_posts})
+    result = await asession.feed_run(code, external_lookup={'get_user': get_user, 'get_posts': get_posts})
     assert result == snapshot(
         [
             {'id': 1, 'name': 'user_1', 'posts': ['post_1_1', 'post_1_2']},
@@ -776,7 +787,7 @@ async def test_llm_external_returns_complex_nested_structure(asession: AsyncMont
     ext = {'get_api_response': get_api_response}
 
     # Snippet 1: fetch and store
-    await asession.feed_run('response = await get_api_response()', external_functions=ext)
+    await asession.feed_run('response = await get_api_response()', external_lookup=ext)
 
     # Snippet 2: LLM navigates nested structure
     result = await asession.feed_run(
@@ -788,7 +799,7 @@ for u in users:
     averages[u['name']] = round(avg, 1)
 averages
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot({'Alice': 91.3, 'Bob': 84.3})
 
@@ -804,7 +815,7 @@ page1 = await search('test', limit=2, offset=0)
 page2 = await search('test', limit=2, offset=2)
 page1['results'] + page2['results']
 """
-    result = await asession.feed_run(code, external_functions={'search': search})
+    result = await asession.feed_run(code, external_lookup={'search': search})
     assert result == snapshot(['test_0', 'test_1', 'test_0', 'test_1'])
 
 
@@ -824,12 +835,12 @@ async def test_llm_os_read_then_process_with_external(asession: AsyncMontySessio
 from pathlib import Path
 raw = Path('/data.csv').read_text()
 """,
-        external_functions=ext,
+        external_lookup=ext,
         os=fs,
     )
 
     # Snippet 2: process with external
-    result = await asession.feed_run('await analyze(raw)', external_functions=ext, os=fs)
+    result = await asession.feed_run('await analyze(raw)', external_lookup=ext, os=fs)
     assert result == snapshot({'alice': 95, 'bob': 87, 'charlie': 92})
 
 
@@ -854,13 +865,13 @@ async def test_llm_long_multi_step_session(asession: AsyncMontySession):
     ext = {'query_db': query_db}
 
     # Step 1: LLM explores what's available
-    result = await asession.feed_run('await query_db("products")', external_functions=ext)
+    result = await asession.feed_run('await query_db("products")', external_lookup=ext)
     assert len(result) == 4
 
     # Step 2: LLM filters by category
     await asession.feed_run(
         "tools = await query_db('products', filters={'category': 'tools'})",
-        external_functions=ext,
+        external_lookup=ext,
     )
 
     # Step 3: LLM computes stats
@@ -870,14 +881,14 @@ total = sum(p['price'] for p in tools)
 avg = total / len(tools)
 {'count': len(tools), 'total': round(total, 2), 'average': round(avg, 2)}
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot({'count': 2, 'total': 14.98, 'average': 7.49})
 
     # Step 4: LLM also checks electronics
     await asession.feed_run(
         "electronics = await query_db('products', filters={'category': 'electronics'})",
-        external_functions=ext,
+        external_lookup=ext,
     )
 
     # Step 5: LLM builds final summary from accumulated state
@@ -892,7 +903,7 @@ for cat, items in [('tools', tools), ('electronics', electronics)]:
     }
 summary
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot(
         {
@@ -910,7 +921,7 @@ async def test_llm_string_manipulation_of_external_result(asession: AsyncMontySe
 
     ext = {'fetch_page': fetch_page}
 
-    await asession.feed_run("html = await fetch_page('example.com')", external_functions=ext)
+    await asession.feed_run("html = await fetch_page('example.com')", external_lookup=ext)
 
     # LLM extracts title
     result = await asession.feed_run(
@@ -920,7 +931,7 @@ end = html.find('</title>')
 title = html[start:end]
 title
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot('Test Page')
 
@@ -936,7 +947,7 @@ while '<p>' in remaining:
     remaining = remaining[e + 4:]
 paragraphs
 """,
-        external_functions=ext,
+        external_lookup=ext,
     )
     assert result == snapshot(['Hello', 'World'])
 
@@ -950,12 +961,12 @@ async def test_llm_syntax_error_then_fix(asession: AsyncMontySession):
     ext = {'add': add}
 
     # Snippet 1: set up state
-    await asession.feed_run('x = 10', external_functions=ext)
+    await asession.feed_run('x = 10', external_lookup=ext)
 
     # Snippet 2: syntax error
     with pytest.raises(MontySyntaxError):
-        await asession.feed_run('y = add(x,', external_functions=ext)
+        await asession.feed_run('y = add(x,', external_lookup=ext)
 
     # Snippet 3: state preserved, LLM fixes the code
-    result = await asession.feed_run('y = add(x, 5)\ny', external_functions=ext)
+    result = await asession.feed_run('y = add(x, 5)\ny', external_lookup=ext)
     assert result == snapshot(15)

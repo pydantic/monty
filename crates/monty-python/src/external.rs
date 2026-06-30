@@ -76,9 +76,11 @@ fn dispatch_method_call_inner(
     py_to_monty(&result, dc_registry, 0)
 }
 
-/// Maps external function names to Python callables, dispatching calls when
-/// Monty pauses at an external function. Dataclass types in return values are
-/// auto-registered into `dc_registry` transparently.
+/// Dispatches a `FunctionCall` against the session's `external_lookup` dict
+/// when Monty pauses at an external function. Only *callable* entries are ever
+/// invoked here — a name reaches a `FunctionCall` only after resolving to a
+/// function proxy, so non-callable entries never arrive. Dataclass types in
+/// return values are auto-registered into `dc_registry` transparently.
 pub struct ExternalFunctionRegistry<'a, 'py> {
     py: Python<'py>,
     functions: &'py Bound<'py, PyDict>,
@@ -86,7 +88,8 @@ pub struct ExternalFunctionRegistry<'a, 'py> {
 }
 
 impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
-    /// Creates a new registry from a Python dict of `name -> callable`.
+    /// Creates a new registry over the `external_lookup` dict (`name -> value`);
+    /// only callable entries are invoked by [`call`](Self::call).
     pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>, dc_registry: &'a DcRegistry) -> Self {
         Self {
             py,

@@ -26,15 +26,15 @@ pub(crate) fn dispatch_function_call(
     method_call: bool,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    external_functions: Option<&Py<PyDict>>,
+    external_lookup: Option<&Py<PyDict>>,
     dc_registry: &DcRegistry,
 ) -> CallResult {
     Python::attach(|py| {
         if method_call {
             dispatch_method_call_or_coroutine(py, function_name, args, kwargs, dc_registry)
-        } else if let Some(ext_fns) = external_functions {
-            let ext_fns = ext_fns.bind(py);
-            let registry = ExternalFunctionRegistry::new(py, ext_fns, dc_registry);
+        } else if let Some(lookup) = external_lookup {
+            let lookup = lookup.bind(py);
+            let registry = ExternalFunctionRegistry::new(py, lookup, dc_registry);
             registry.call_or_coroutine(function_name, args, kwargs)
         } else {
             CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned()))

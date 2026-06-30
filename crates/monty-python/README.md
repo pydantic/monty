@@ -65,7 +65,7 @@ async def main():
         async with pool.checkout() as session:
             result = await session.feed_run(
                 "await fetch('https://example.com')",
-                external_functions={'fetch': fetch},
+                external_lookup={'fetch': fetch},
             )
     print(result)
     #> contents of https://example.com
@@ -74,7 +74,7 @@ async def main():
 asyncio.run(main())
 ```
 
-### Input variables and external functions
+### Input variables and external lookup
 
 ```python
 from pydantic_monty import Monty
@@ -84,7 +84,7 @@ with Monty() as pool:
         result = session.feed_run(
             'double(x) + y',
             inputs={'x': 5, 'y': 1},
-            external_functions={'double': lambda x: x * 2},
+            external_lookup={'double': lambda x: x * 2},
         )
     print(result)
     #> 11

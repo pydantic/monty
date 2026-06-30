@@ -127,7 +127,7 @@ async def main():
             output = await session.feed_run(
                 code,
                 inputs={'prompt': 'testing'},
-                external_functions={'call_llm': call_llm},
+                external_lookup={'call_llm': call_llm},
             )
     print(output)
     #> example output, message count 2
@@ -179,7 +179,7 @@ console.log(await session.feedRun('x * 2')) // 42
 
 // external functions may be async
 const result = await session.feedRun('await fetch_data()', {
-  externalFunctions: { fetch_data: async () => 'data' },
+  externalLookup: { fetch_data: async () => 'data' },
 })
 ```
 

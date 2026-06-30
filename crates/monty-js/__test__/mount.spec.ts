@@ -440,7 +440,7 @@ content = Path('/data/hello.txt').read_text()
 result = get_prefix()
 result + content
 `
-    const result = await run(code, { mount: md, externalFunctions: { get_prefix: () => 'PREFIX: ' } })
+    const result = await run(code, { mount: md, externalLookup: { get_prefix: () => 'PREFIX: ' } })
     t.is(result, 'PREFIX: hello world')
   } finally {
     cleanup()

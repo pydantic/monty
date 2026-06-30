@@ -182,7 +182,7 @@ fetch()
     with pytest.raises(MontyRuntimeError) as exc_info:
         session.feed_run(
             code,
-            external_functions={'fetch': lambda: 42},
+            external_lookup={'fetch': lambda: 42},
             print_callback=make_error_callback(ValueError('callback boom')),
         )
     assert exc_info.value.exception().args[0] == snapshot('callback boom')
@@ -289,7 +289,7 @@ x = fetch()
 print("after", x)
 """
     collector = CollectStreams()
-    result = monty_run(code, external_functions={'fetch': lambda: 10}, print_callback=collector)
+    result = monty_run(code, external_lookup={'fetch': lambda: 10}, print_callback=collector)
 
     assert result is None
     assert collector.output == snapshot([('stdout', 'before\n'), ('stdout', 'after 10\n')])
@@ -302,7 +302,7 @@ x = fetch()
 print("after", x)
 """
     collector = CollectString()
-    result = monty_run(code, external_functions={'fetch': lambda: 10}, print_callback=collector)
+    result = monty_run(code, external_lookup={'fetch': lambda: 10}, print_callback=collector)
 
     assert result is None
     assert collector.output == snapshot('before\nafter 10\n')

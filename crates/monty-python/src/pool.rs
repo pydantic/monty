@@ -48,7 +48,7 @@ use crate::{
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_py_to_monty},
+    exceptions::{MontyCrashedError, MontyError, MontyTypingError, exc_monty_to_py, exc_py_to_monty},
     external::{CallResult, ExternalFunctionRegistry, dispatch_method_call},
     get_not_handled,
     limits::extract_limits,
@@ -210,14 +210,14 @@ impl PyMontySession {
     ///
     /// Blocks the calling thread with the GIL released; async external
     /// functions are not supported here — use [`AsyncMonty`].
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run(
         &self,
         py: Python<'_>,
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
-        external_functions: Option<&Bound<'_, PyDict>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
@@ -235,7 +235,7 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        drive_sync(py, args, external_functions)
+        drive_sync(py, args, external_lookup)
     }
 
     /// Starts a snippet but, instead of driving it to completion, returns a
@@ -243,7 +243,7 @@ impl PyMontySession {
     /// resolution. The caller answers with `snapshot.resume(...)` and may
     /// `snapshot.dump()` to checkpoint the worker mid-execution.
     ///
-    /// Unlike [`feed_run`](Self::feed_run) there is no `external_functions`
+    /// Unlike [`feed_run`](Self::feed_run) there is no `external_lookup`
     /// argument — surfacing those calls is the point. An `os=` handler still
     /// auto-dispatches uncovered OS calls until the next non-OS event.
     #[pyo3(signature = (code, *, inputs=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
@@ -668,14 +668,14 @@ impl PyAsyncMontySession {
     /// print callbacks in this process. Session state persists across feeds.
     ///
     /// Worker I/O runs off the event loop via tokio's blocking pool.
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
-        external_functions: Option<&Bound<'_, PyDict>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
@@ -693,8 +693,8 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        let ext_fns = external_functions.map(|d| d.clone().unbind());
-        future_into_py(py, async move { drive_async(args, ext_fns).await })
+        let ext = external_lookup.map(|d| d.clone().unbind());
+        future_into_py(py, async move { drive_async(args, ext).await })
     }
 
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
@@ -1034,7 +1034,7 @@ impl FeedArgs {
 
 /// Synchronous drive loop: protocol turns run with the GIL released;
 /// callbacks run between turns with the GIL held.
-fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
+fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -1066,8 +1066,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
             } => {
                 let result = if method_call {
                     dispatch_method_call(py, &function_name, &args, &kwargs, &dc_registry)
-                } else if let Some(fns) = external_functions {
-                    ExternalFunctionRegistry::new(py, fns, &dc_registry).call(&function_name, &args, &kwargs)
+                } else if let Some(lookup) = external_lookup {
+                    ExternalFunctionRegistry::new(py, lookup, &dc_registry).call(&function_name, &args, &kwargs)
                 } else {
                     ExtFunctionResult::NotFound(function_name)
                 };
@@ -1091,7 +1091,9 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
                 );
                 TurnAnswer::Call(ext_to_resume(result)?)
             }
-            TurnEvent::NameLookup { name } => TurnAnswer::Name(resolve_pool_name_lookup(&name, external_functions)),
+            TurnEvent::NameLookup { name } => {
+                TurnAnswer::Name(resolve_pool_name_lookup(py, &name, external_lookup, &dc_registry)?)
+            }
             TurnEvent::ResolveFutures { .. } => {
                 return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
             }
@@ -1109,7 +1111,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_functions: Option<&Bound<
 /// Async drive loop: protocol turns run in `spawn_blocking`; coroutine
 /// external functions are spawned as tasks and resolved via
 /// `ResolveFutures`.
-async fn drive_async(args: FeedArgs, external_functions: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
+async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -1144,7 +1146,7 @@ async fn drive_async(args: FeedArgs, external_functions: Option<Py<PyDict>>) -> 
                     method_call,
                     &args,
                     &kwargs,
-                    external_functions.as_ref(),
+                    external_lookup.as_ref(),
                     &dc_registry,
                 ) {
                     CallResult::Sync(result) => TurnAnswer::Call(ext_to_resume(result)?),
@@ -1175,8 +1177,8 @@ async fn drive_async(args: FeedArgs, external_functions: Option<Py<PyDict>>) -> 
                 TurnAnswer::Call(ext_to_resume(result)?)
             }
             TurnEvent::NameLookup { name } => TurnAnswer::Name(Python::attach(|py| {
-                resolve_pool_name_lookup(&name, external_functions.as_ref().map(|d| d.bind(py)))
-            })),
+                resolve_pool_name_lookup(py, &name, external_lookup.as_ref().map(|d| d.bind(py)), &dc_registry)
+            })?),
             TurnEvent::ResolveFutures { pending_call_ids } => {
                 let results = wait_for_futures(&mut join_set, &pending_call_ids).await?;
                 let results = results
@@ -1330,16 +1332,31 @@ pub(crate) fn dispatch_os_parts(
     call().unwrap_or_else(|err| ExtFunctionResult::Error(exc_py_to_monty(py, &err)))
 }
 
-/// Resolves a bare-name lookup against the external functions dict.
+/// Resolves a bare-name lookup against the `external_lookup` dict: a callable
+/// becomes a lazy host function proxy (`MontyObject::Function`, invoked on the
+/// eventual `FunctionCall`), any other value is converted and returned directly,
+/// and an absent name yields `None` (→ the sandbox raises `NameError`).
+///
+/// A non-callable value that cannot be converted surfaces as a `PyErr` rather
+/// than masquerading as `NameError`, so callers `?` it.
 pub(crate) fn resolve_pool_name_lookup(
+    py: Python<'_>,
     name: &str,
-    external_functions: Option<&Bound<'_, PyDict>>,
-) -> Option<MontyObject> {
-    let value = external_functions?.get_item(name).ok().flatten()?;
-    Some(MontyObject::Function {
-        name: name.to_owned(),
-        docstring: get_docstring(&value),
-    })
+    external_lookup: Option<&Bound<'_, PyDict>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<Option<MontyObject>> {
+    let Some(value) = external_lookup.and_then(|d| d.get_item(name).ok().flatten()) else {
+        return Ok(None);
+    };
+    let obj = if value.is_callable() {
+        MontyObject::Function {
+            name: name.to_owned(),
+            docstring: get_docstring(&value),
+        }
+    } else {
+        py_to_monty_value(&value, dc_registry).map_err(|exc| exc_monty_to_py(py, exc))?
+    };
+    Ok(Some(obj))
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into child-local mount specs.

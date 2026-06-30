@@ -122,7 +122,7 @@ Ignore any deprecated models.
                         ) as session:
                             output = await session.feed_run(
                                 extracted.code,
-                                external_functions={
+                                external_lookup={
                                     'open_page': browser.open_page,
                                     'beautiful_soup': beautiful_soup,
                                     'record_model_info': record_models.record_model_info,

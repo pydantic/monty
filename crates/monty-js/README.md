@@ -52,30 +52,43 @@ Pass values as globals for a feed:
 await session.feedRun('x + y', { inputs: { x: 10, y: 20 } }) // 30
 ```
 
-## External Functions
+## External Lookup
 
-The sandbox can call host functions by name — sync or async (async functions
-are awaited while other sandbox tasks keep running):
+`externalLookup` resolves names a snippet leaves undefined, lazily and on
+demand. A **function** entry becomes a host function the sandbox can call by
+name — sync or async (async functions are awaited while other sandbox tasks
+keep running). Any **other value** is converted and returned directly when the
+name is read. An absent name raises `NameError`.
 
 ```ts
 await session.feedRun('add(2, 3)', {
-  externalFunctions: { add: (a: number, b: number) => a + b },
+  externalLookup: { add: (a: number, b: number) => a + b },
 }) // 5
 
 await session.feedRun('await fetch_data(url)', {
   inputs: { url: 'https://example.com' },
-  externalFunctions: {
+  externalLookup: {
     fetch_data: async (url: string) => {
       const response = await fetch(url)
       return response.text()
     },
   },
 })
+
+await session.feedRun('greeting + name', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greeting: 'hello ' },
+}) // 'hello Ada'
 ```
 
-Keyword arguments arrive as a trailing object; thrown errors cross into the
-sandbox as Python exceptions (the error's `name` is used when it matches a
-Python exception type, e.g. `TypeError`, otherwise `RuntimeError`).
+`externalLookup` is the lazy counterpart to `inputs`, which eagerly binds every
+entry as a global whether or not it is referenced; a name in both is served by
+the eager `inputs` binding.
+
+For function entries, keyword arguments arrive as a trailing object; thrown
+errors cross into the sandbox as Python exceptions (the error's `name` is used
+when it matches a Python exception type, e.g. `TypeError`, otherwise
+`RuntimeError`).
 
 ## Snapshots: pausing and resuming
 

@@ -1,5 +1,5 @@
 // Async external functions: sync or async JS functions are passed the same
-// way via `externalFunctions`. A promise-returning function yields an
+// way via `externalLookup`. A promise-returning function yields an
 // awaitable in the sandbox (so the snippet uses `await fn()`), with the
 // promise registered as a sandbox future and delivered automatically — plain
 // `run(...)` covers everything the old in-process `runMontyAsync` helper did.
@@ -17,7 +17,7 @@ const { run } = setupPool(test)
 
 test('run with sync external function', async (t) => {
   const result = await run('get_value()', {
-    externalFunctions: {
+    externalLookup: {
       get_value: () => 42,
     },
   })
@@ -27,7 +27,7 @@ test('run with sync external function', async (t) => {
 
 test('run with async external function', async (t) => {
   const result = await run('await fetch_data()', {
-    externalFunctions: {
+    externalLookup: {
       fetch_data: async () => {
         // Simulate async operation
         await new Promise((resolve) => setTimeout(resolve, 10))
@@ -46,7 +46,7 @@ b = await fetch_b()
 a + b
 `
   const result = await run(code, {
-    externalFunctions: {
+    externalLookup: {
       fetch_a: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
         return 10
@@ -64,7 +64,7 @@ a + b
 test('run async external function with inputs', async (t) => {
   const result = await run('await multiply(x)', {
     inputs: { x: 5 },
-    externalFunctions: {
+    externalLookup: {
       multiply: async (n: number) => n * 2,
     },
   })
@@ -74,7 +74,7 @@ test('run async external function with inputs', async (t) => {
 
 test('run async external function with args and kwargs', async (t) => {
   const result = await run('await process(1, 2, name="test")', {
-    externalFunctions: {
+    externalLookup: {
       process: async (a: number, b: number, kwargs: { name: string }) => {
         return `${kwargs.name}: ${a + b}`
       },
@@ -96,7 +96,7 @@ test('sync external function throws exception', async (t) => {
   const error = await t.throwsAsync(
     () =>
       run('fail_sync()', {
-        externalFunctions: {
+        externalLookup: {
           fail_sync: () => {
             throw new ValueError('sync error')
           },
@@ -116,7 +116,7 @@ test('async external function throws exception', async (t) => {
   const error = await t.throwsAsync(
     () =>
       run('await fail_async()', {
-        externalFunctions: {
+        externalLookup: {
           fail_async: async () => {
             await new Promise((resolve) => setTimeout(resolve, 5))
             throw new ValueError('async error')
@@ -142,7 +142,7 @@ result
   }
 
   const result = await run(code, {
-    externalFunctions: {
+    externalLookup: {
       might_fail: async () => {
         throw new ValueError('expected error')
       },
@@ -153,7 +153,7 @@ result
 })
 
 test('missing external function raises NameError', async (t) => {
-  const error = await t.throwsAsync(() => run('missing_func()', { externalFunctions: {} }), {
+  const error = await t.throwsAsync(() => run('missing_func()', { externalLookup: {} }), {
     instanceOf: MontyRuntimeError,
   })
 
@@ -168,7 +168,7 @@ except NameError:
     result = 'caught'
 result
 `
-  t.is(await run(code, { externalFunctions: {} }), 'caught')
+  t.is(await run(code, { externalLookup: {} }), 'caught')
 })
 
 // =============================================================================
@@ -177,7 +177,7 @@ result
 
 test('async external function returns complex types', async (t) => {
   const result = (await run('await get_data()', {
-    externalFunctions: {
+    externalLookup: {
       get_data: async () => {
         return [1, 2, { key: 'value' }]
       },
@@ -194,7 +194,7 @@ test('async external function returns complex types', async (t) => {
 test('async external function with list input', async (t) => {
   const result = await run('await sum_list(items)', {
     inputs: { items: [1, 2, 3, 4, 5] },
-    externalFunctions: {
+    externalLookup: {
       sum_list: async (items: number[]) => {
         return items.reduce((a, b) => a + b, 0)
       },
@@ -215,7 +215,7 @@ async_result = await async_func()
 sync_result + async_result
 `
   const result = await run(code, {
-    externalFunctions: {
+    externalLookup: {
       sync_func: () => 100,
       async_func: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
@@ -234,7 +234,7 @@ second = await process(first)
 await finalize(second)
 `
   const result = await run(code, {
-    externalFunctions: {
+    externalLookup: {
       get_first: async () => 'hello',
       process: async (s: string) => s.toUpperCase(),
       finalize: async (s: string) => `${s}!`,
@@ -286,7 +286,7 @@ test('printCallback with external functions', async (t) => {
   const output: string[] = []
 
   const result = await run('x = get_value()\nprint(f"got {x}")\nx', {
-    externalFunctions: {
+    externalLookup: {
       get_value: () => 42,
     },
     printCallback: (stream, text) => {

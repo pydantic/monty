@@ -348,7 +348,7 @@ class MontySession:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -364,6 +364,14 @@ class MontySession:
         runs; external functions, the `os` fallback, and print callbacks are
         invoked in this process. Async external functions are not supported
         here — use `AsyncMonty`.
+
+        `external_lookup` resolves names the snippet leaves undefined, lazily and
+        on demand: a callable entry becomes a host function the sandbox can call
+        (as before), any other value is converted and returned directly when the
+        name is read, and an absent name raises `NameError`. This is the lazy
+        counterpart to `inputs`, which eagerly binds every entry as a global at
+        feed start whether or not it is referenced; a name present in both is
+        served by the eager `inputs` binding.
 
         Mounts are handled inside the worker process: `'overlay'` writes live
         in the worker and are discarded when the feed ends.
@@ -391,7 +399,7 @@ class MontySession:
 
         Answer the snapshot with `snapshot.resume(...)`, which returns the next
         snapshot or a `MontyComplete`. Unlike `feed_run` there is no
-        `external_functions` argument — surfacing those calls is the point. An
+        `external_lookup` argument — surfacing those calls is the point. An
         `os=` handler still auto-dispatches uncovered OS calls until the next
         non-OS event. Mounts are fixed for the whole feed (there is no `mount=`
         on `resume`).
@@ -608,7 +616,7 @@ class AsyncMontySession:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -620,9 +628,10 @@ class AsyncMontySession:
         """
         Execute one snippet in the worker and return its result.
 
-        Worker I/O runs off the event loop; external functions may be
-        coroutines, awaited concurrently. See `MontySession.feed_run` for the
-        shared semantics (mounts, error types).
+        Worker I/O runs off the event loop; external functions (the callable
+        entries in `external_lookup`) may be coroutines, awaited concurrently.
+        See `MontySession.feed_run` for the shared semantics (`external_lookup`,
+        mounts, error types).
         """
 
     async def feed_start(

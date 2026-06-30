@@ -157,6 +157,23 @@ properties that real CPython does not provide, per the caveat above.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are handled inside the worker and never reach the
   callback.
+- **`external_lookup` resolves undefined names lazily.** `feed_run` /
+  `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
+  leaves undefined is resolved on first reference against this dict — a
+  *callable* entry becomes a host function proxy (invoked on the eventual call),
+  any *other value* is converted and returned directly, and an absent name
+  raises `NameError`. It is the lazy counterpart to the eager `inputs` (a name
+  present in both is served by the `inputs` binding, so no lookup fires). A
+  non-callable value that cannot be converted surfaces host-side (a conversion
+  error that rejects the turn), **not** as a misleading `NameError`. The two
+  workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
+  worker caches it in the namespace slot, so a second reference in the same feed
+  does not re-fire `NameLookup` (a later host mutation of the dict entry is not
+  observed), whereas the `monty-cpython` worker caches only function proxies and
+  re-fires `NameLookup` on every value reference (re-reading live). Function
+  proxies are cached by both. `feed_start` / `feedStart` take no
+  `external_lookup` — they surface name lookups as snapshots, which resolve only
+  to a function (see below).
 - **Dependency installation is only available on the embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
   `session.installDependencies([...])` in `@pydantic/monty`) makes the
