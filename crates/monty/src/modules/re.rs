@@ -527,9 +527,6 @@ fn extract_pattern_string_flags(
         )));
     };
     defer_drop!(pattern_val, vm);
-    // `compile` keeps the pattern, so it must be owned; the `?` early-returns
-    // cleanly because `pattern_val` and the remaining positionals are guarded.
-    let pattern = pattern_val.to_str(vm)?.to_owned();
 
     let Some(string_val) = pos.next() else {
         return Err(ExcType::type_error(format!(
@@ -538,7 +535,7 @@ fn extract_pattern_string_flags(
     };
 
     // `string_val` is pulled out of `pos`, so the `pos` guard no longer covers
-    // it; drop it explicitly on the two remaining error paths, and hand it back
+    // it; drop it explicitly on the remaining error paths, and hand it back
     // to the caller (still live) on success.
     let flags = match extract_flags(pos.next(), vm) {
         Ok(flags) => flags,
@@ -555,6 +552,18 @@ fn extract_pattern_string_flags(
             "{func_name}() takes at most 3 positional arguments"
         )));
     }
+
+    // Convert the pattern only after arity is fully validated, so e.g.
+    // `re.search(123)` reports the missing-'string' error like CPython's
+    // signature check would, not the pattern type error. `compile` keeps the
+    // pattern, so it must be owned.
+    let pattern = match pattern_val.to_str(vm) {
+        Ok(s) => s.to_owned(),
+        Err(e) => {
+            string_val.drop_with_heap(vm);
+            return Err(e);
+        }
+    };
 
     Ok((pattern, string_val, flags))
 }

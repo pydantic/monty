@@ -12,6 +12,16 @@ Implemented: `compile`, `search`, `match`, `fullmatch`, `findall`, `sub`,
 Not implemented: `subn`, `purge`, `template`. The pre-compiled `re._compile`
 internal is not exposed.
 
+`search`, `match`, `fullmatch`, `findall`, and `finditer` accept positional
+arguments only — `re.search(pattern='h', string='hello')` works in CPython
+(its module functions are pure Python) but raises `TypeError` in Monty.
+
+`TypeError` messages for missing, extra, or wrongly-typed arguments to the
+module-level functions do not match CPython's wording (CPython raises
+standard Python-function signature errors, e.g. `search() missing 1 required
+positional argument: 'string'`; Monty raises e.g. `re.search() missing
+required argument: 'string'`).
+
 ## Flags
 
 Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,

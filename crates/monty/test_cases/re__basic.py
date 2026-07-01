@@ -333,6 +333,28 @@ try:
 except TypeError as e:
     assert 'string' in str(e).lower(), 're.fullmatch None string error'
 
+# === re.search() error: arity checked before pattern type ===
+# a lone non-string pattern must report the missing 'string' argument,
+# not the pattern type error
+try:
+    re.search(123)
+    assert False, 're.search with a single non-string arg should raise TypeError'
+except TypeError as e:
+    assert 'missing' in str(e) and "'string'" in str(e), 're.search(123) reports missing string argument'
+
+try:
+    re.findall(123)
+    assert False, 're.findall with a single non-string arg should raise TypeError'
+except TypeError as e:
+    assert 'missing' in str(e) and "'string'" in str(e), 're.findall(123) reports missing string argument'
+
+# === re.search() error: too many args checked before pattern type ===
+try:
+    re.search(123, 'x', 0, 'extra')
+    assert False, 're.search with 4 args should raise TypeError'
+except TypeError as e:
+    assert 'positional arguments' in str(e), 're.search with 4 args reports too many arguments'
+
 # === Object basic ===
 assert bool(re.compile(r'\d+'))
 assert bool(re.search(r'\w+', 'hello'))

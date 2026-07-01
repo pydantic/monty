@@ -30,8 +30,33 @@ r0 = results[0]
 r1 = results[1]
 r2 = results[2]
 
+# === Module-level error paths ===
+# Once the subject has been pulled out of the positional-arg iterator its
+# guard no longer covers it, so each error path below must drop it manually.
+# (Concatenation defeats literal interning, so subject is a real heap string.)
+subject = 'hello' + ' world'
+
+# Non-string pattern: arity is validated first, then pattern conversion fails
+try:
+    re.search(123, subject)
+except TypeError:
+    pass
+
+# Bad flags type: extract_flags fails after the subject was extracted
+try:
+    re.search('h', subject, 'bad')
+except TypeError:
+    pass
+
+# Too many positional args: the extra value and the subject are both dropped
+try:
+    re.search('h', subject, 0, subject)
+except TypeError:
+    pass
+
 # p: 1, m: 1, group_str: 1, m2: 1, full_str: 1
 # results: 1, r0: 2 (var + list), r1: 2 (var + list), r2: 2 (var + list + final expr)
+# subject: 1 (all error paths dropped their borrowed copies)
 # re: 1
 r2
-# ref-counts={'p': 1, 'm': 1, 'group_str': 1, 'm2': 1, 'full_str': 1, 'results': 1, 'r0': 2, 'r1': 2, 'r2': 3, 're': 1}
+# ref-counts={'p': 1, 'm': 1, 'group_str': 1, 'm2': 1, 'full_str': 1, 'results': 1, 'r0': 2, 'r1': 2, 'r2': 3, 'subject': 1, 're': 1}
