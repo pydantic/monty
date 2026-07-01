@@ -15,7 +15,7 @@ test('external function no args', (t) => {
     return 'called'
   }
 
-  const result = m.run({ externalFunctions: { noop } })
+  const result = m.run({ externalLookup: { noop } })
   t.is(result, 'called')
 })
 
@@ -27,7 +27,7 @@ test('external function positional args', (t) => {
     return 'ok'
   }
 
-  t.is(m.run({ externalFunctions: { func } }), 'ok')
+  t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
 test('external function kwargs only', (t) => {
@@ -39,7 +39,7 @@ test('external function kwargs only', (t) => {
     return 'ok'
   }
 
-  t.is(m.run({ externalFunctions: { func } }), 'ok')
+  t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
 test('external function kwargs cannot replace prototype', (t) => {
@@ -52,7 +52,7 @@ test('external function kwargs cannot replace prototype', (t) => {
     return 'ok'
   }
 
-  t.is(m.run({ externalFunctions: { func } }), 'ok')
+  t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
 test('external function mixed args kwargs', (t) => {
@@ -64,7 +64,7 @@ test('external function mixed args kwargs', (t) => {
     return 'ok'
   }
 
-  t.is(m.run({ externalFunctions: { func } }), 'ok')
+  t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
 test('external function complex types', (t) => {
@@ -78,7 +78,7 @@ test('external function complex types', (t) => {
     return 'ok'
   }
 
-  t.is(m.run({ externalFunctions: { func } }), 'ok')
+  t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
 test('external function returns none', (t) => {
@@ -88,7 +88,7 @@ test('external function returns none', (t) => {
     // returns undefined which becomes None
   }
 
-  t.is(m.run({ externalFunctions: { do_nothing } }), null)
+  t.is(m.run({ externalLookup: { do_nothing } }), null)
 })
 
 test('external function returns complex type', (t) => {
@@ -98,7 +98,7 @@ test('external function returns complex type', (t) => {
     return { a: [1, 2, 3], b: { nested: true } }
   }
 
-  const result = m.run({ externalFunctions: { get_data } })
+  const result = m.run({ externalLookup: { get_data } })
   // Plain objects become Maps
   t.true(result instanceof Map)
   t.deepEqual(result.get('a'), [1, 2, 3])
@@ -126,7 +126,7 @@ test('multiple external functions', (t) => {
     return a * b
   }
 
-  const result = m.run({ externalFunctions: { add, mul } })
+  const result = m.run({ externalLookup: { add, mul } })
   t.is(result, 15) // 3 + 12
 })
 
@@ -140,7 +140,7 @@ test('external function called multiple times', (t) => {
     return callCount
   }
 
-  const result = m.run({ externalFunctions: { counter } })
+  const result = m.run({ externalLookup: { counter } })
   t.is(result, 6) // 1 + 2 + 3
   t.is(callCount, 3)
 })
@@ -153,7 +153,7 @@ test('external function with input', (t) => {
     return x * 10
   }
 
-  t.is(m.run({ inputs: { x: 5 }, externalFunctions: { process } }), 50)
+  t.is(m.run({ inputs: { x: 5 }, externalLookup: { process } }), 50)
 })
 
 // =============================================================================
@@ -183,19 +183,19 @@ test('external function raises exception', (t) => {
     throw error
   }
 
-  const error = t.throws(() => m.run({ externalFunctions: { fail } }), isRuntimeError)
+  const error = t.throws(() => m.run({ externalLookup: { fail } }), isRuntimeError)
   t.true(error.message.includes('ValueError'))
   t.true(error.message.includes('intentional error'))
 })
 
 test('external function wrong name raises name error', (t) => {
-  // When 'foo' is called but only 'bar' is provided at runtime, foo is a NameError
-  // because no externalFunctions are declared in the constructor
+  // When 'foo' is called but only 'bar' is provided in externalLookup, foo is a
+  // NameError since the lookup has no own 'foo' key.
   const m = new Monty('foo()')
 
   const bar = () => 1
 
-  const error = t.throws(() => m.run({ externalFunctions: { bar } }), isRuntimeError)
+  const error = t.throws(() => m.run({ externalLookup: { bar } }), isRuntimeError)
   t.is(error.message, "NameError: name 'foo' is not defined")
 })
 
@@ -215,7 +215,7 @@ caught
     throw error
   }
 
-  t.is(m.run({ externalFunctions: { fail } }), true)
+  t.is(m.run({ externalLookup: { fail } }), true)
 })
 
 test('external function exception type preserved', (t) => {
@@ -227,7 +227,7 @@ test('external function exception type preserved', (t) => {
     throw error
   }
 
-  const error = t.throws(() => m.run({ externalFunctions: { fail } }), isRuntimeError)
+  const error = t.throws(() => m.run({ externalLookup: { fail } }), isRuntimeError)
   t.true(error.message.includes('TypeError'))
   t.true(error.message.includes('type error message'))
 })
@@ -263,7 +263,7 @@ for (const exceptionType of exceptionTypes) {
       throw error
     }
 
-    const error = t.throws(() => m.run({ externalFunctions: { fail } }), isRuntimeError)
+    const error = t.throws(() => m.run({ externalLookup: { fail } }), isRuntimeError)
     t.true(error.message.includes(exceptionType))
   })
 }
@@ -301,7 +301,7 @@ caught
     }
 
     // Child exception should be caught by parent handler (which comes first)
-    t.is(m.run({ externalFunctions: { fail } }), 'parent')
+    t.is(m.run({ externalLookup: { fail } }), 'parent')
   })
 }
 
@@ -318,7 +318,7 @@ test('external function exception in expression', (t) => {
     throw error
   }
 
-  const error = t.throws(() => m.run({ externalFunctions: { fail } }), isRuntimeError)
+  const error = t.throws(() => m.run({ externalLookup: { fail } }), isRuntimeError)
   t.true(error.message.includes('RuntimeError'))
   t.true(error.message.includes('mid-expression error'))
 })
@@ -339,7 +339,7 @@ a + b
     throw error
   }
 
-  const error = t.throws(() => m.run({ externalFunctions: { success, fail } }), isRuntimeError)
+  const error = t.throws(() => m.run({ externalLookup: { success, fail } }), isRuntimeError)
   t.true(error.message.includes('ValueError'))
   t.true(error.message.includes('second call fails'))
 })
@@ -363,5 +363,40 @@ finally_ran
     throw error
   }
 
-  t.is(m.run({ externalFunctions: { fail } }), true)
+  t.is(m.run({ externalLookup: { fail } }), true)
+})
+
+// =============================================================================
+// externalLookup value resolution (non-callable entries)
+// =============================================================================
+
+test('externalLookup resolves a bare name to a value', (t) => {
+  const m = new Monty('x + 1')
+  t.is(m.run({ externalLookup: { x: 41 } }), 42)
+})
+
+test('externalLookup resolves a falsy value', (t) => {
+  // 0 is falsy but a present own key, so it must resolve rather than raise.
+  const m = new Monty('n + 1')
+  t.is(m.run({ externalLookup: { n: 0 } }), 1)
+})
+
+test('externalLookup mixes a function and a value', (t) => {
+  const m = new Monty('double(n)')
+  const double = (x: number) => x * 2
+  t.is(m.run({ externalLookup: { double, n: 21 } }), 42)
+})
+
+test('externalLookup absent name raises name error', (t) => {
+  const m = new Monty('missing')
+  const error = t.throws(() => m.run({ externalLookup: { present: 1 } }), isRuntimeError)
+  t.is(error.message, "NameError: name 'missing' is not defined")
+})
+
+test('inherited property name is not resolved as a host value', (t) => {
+  // toString lives on Object.prototype, not as an own key, so it must raise
+  // NameError rather than leaking the inherited function.
+  const m = new Monty('toString')
+  const error = t.throws(() => m.run({ externalLookup: { present: 1 } }), isRuntimeError)
+  t.is(error.message, "NameError: name 'toString' is not defined")
 })
