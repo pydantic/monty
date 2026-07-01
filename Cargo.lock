@@ -2019,6 +2019,8 @@ dependencies = [
  "strum 0.27.2",
  "tempfile",
  "unicode-general-category",
+ "unicode-normalization",
+ "unicode_names2",
 ]
 
 [[package]]

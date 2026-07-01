@@ -700,6 +700,26 @@ pub enum StaticStrings {
     Setrecursionlimit,
 
     // ==========================
+    // unicodedata module strings. The `name()` function reuses the existing
+    // `Name` variant (both intern to "name").
+    /// Module name for `import unicodedata`.
+    Unicodedata,
+    /// `unicodedata.normalize()` function.
+    Normalize,
+    /// `unicodedata.is_normalized()` function.
+    #[strum(serialize = "is_normalized")]
+    IsNormalized,
+    /// `unicodedata.category()` function.
+    Category,
+    /// `unicodedata.lookup()` function.
+    Lookup,
+    /// `unicodedata.combining()` function.
+    Combining,
+    /// `unicodedata.unidata_version` constant.
+    #[strum(serialize = "unidata_version")]
+    UnidataVersion,
+
+    // ==========================
     // Module dunder values.
     #[strum(serialize = "__main__")]
     DunderMain,
