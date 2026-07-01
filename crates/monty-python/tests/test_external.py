@@ -9,6 +9,7 @@ from conftest import RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
+from pydantic_monty import MontySession
 
 
 def test_external_function_no_args(monty_run: RunMonty):
@@ -550,3 +551,25 @@ def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty)
     with pytest.raises(TypeError) as exc_info:
         monty_run('x', external_lookup={'x': object()})
     assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+
+
+def test_external_lookup_type_object_round_trips(monty_run: RunMonty):
+    """A modeled type object resolves a bare name to the Monty type (so
+    `isinstance` works), rather than degrading to a host-function proxy just
+    because a type is callable."""
+    assert monty_run('isinstance(5, IntType)', external_lookup={'IntType': int}) == snapshot(True)
+    assert monty_run('isinstance(5, StrType)', external_lookup={'StrType': str}) == snapshot(False)
+
+
+def test_external_lookup_name_conversion_error_discards_session(session: MontySession):
+    """A conversion failure while resolving a bare name discards the suspended
+    worker rather than wedging it: the feed raises, and a follow-up feed on the
+    same session fails fast instead of hanging on a dangling name-lookup
+    suspension the aborted feed never answered."""
+    with pytest.raises(TypeError) as exc_info:
+        session.feed_run('x', external_lookup={'x': object()})
+    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+    # the worker was discarded, so the session can no longer be fed
+    with pytest.raises(RuntimeError) as exc_info2:
+        session.feed_run('1 + 1')
+    assert str(exc_info2.value) == snapshot('this checkout has already been finished')

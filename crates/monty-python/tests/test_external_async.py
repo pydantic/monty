@@ -64,3 +64,18 @@ result
         return object()
 
     assert await run_async(code, external_lookup={'get_thing': get_thing}) == snapshot('caught')
+
+
+async def test_async_external_lookup_name_conversion_error_discards_session():
+    """As in the sync drive loop, a conversion failure while resolving a bare
+    name discards the suspended worker rather than wedging it: the feed raises,
+    and a follow-up feed on the same session fails fast instead of hanging."""
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout() as session:
+            with pytest.raises(TypeError) as exc_info:
+                await session.feed_run('x', external_lookup={'x': object()})
+            assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+            # the worker was discarded, so the session can no longer be fed
+            with pytest.raises(RuntimeError) as exc_info2:
+                await session.feed_run('1 + 1')
+            assert str(exc_info2.value) == snapshot('this checkout has already been finished')

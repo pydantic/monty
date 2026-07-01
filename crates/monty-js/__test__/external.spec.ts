@@ -138,6 +138,24 @@ test('undeclared function raises name error', async (t) => {
   t.is(error.message, "NameError: name 'unknown_func' is not defined")
 })
 
+test('inherited property name is not resolved as a host value', async (t) => {
+  // `toString` lives on Object.prototype, not as an own key, so referencing it
+  // must raise NameError rather than leaking the inherited function.
+  const error = await t.throwsAsync(() => run('toString', { externalLookup: { present: 1 } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "NameError: name 'toString' is not defined")
+})
+
+test('inherited property name is not dispatched as a host function', async (t) => {
+  // A call to an inherited callable (e.g. Object.prototype.hasOwnProperty) must
+  // be treated as "no such function" and raise NameError, not invoked.
+  const error = await t.throwsAsync(() => run('hasOwnProperty()', { externalLookup: { present: 1 } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "NameError: name 'hasOwnProperty' is not defined")
+})
+
 test('external function raises exception', async (t) => {
   const fail = () => {
     const error = new Error('intentional error')

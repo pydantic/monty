@@ -376,14 +376,19 @@ export class MontySession {
         case 'nameLookup': {
           // A callable entry resolves to a host function (by display name); any
           // other value is converted and returned directly; an absent name is
-          // left undefined so the sandbox raises NameError.
-          const v = options.externalLookup?.[turn.name]
-          if (v === undefined) {
+          // left undefined so the sandbox raises NameError. Only own keys count
+          // — an inherited member (`toString`, `constructor`, …) must never
+          // satisfy a lookup the host did not deliberately expose.
+          const lookup = options.externalLookup
+          if (lookup === undefined || !Object.prototype.hasOwnProperty.call(lookup, turn.name)) {
             next = this.native.resumeNameLookup(null, null, onPrint)
-          } else if (typeof v === 'function') {
-            next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
-            next = this.native.resumeNameLookup(null, v, onPrint)
+            const v = lookup[turn.name]
+            if (typeof v === 'function') {
+              next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
+            } else {
+              next = this.native.resumeNameLookup(null, v, onPrint)
+            }
           }
           break
         }
@@ -417,8 +422,13 @@ export class MontySession {
       )
     }
     // Only callable entries are invocable: a non-callable can never have
-    // produced a function proxy, so treat it as "no such function".
-    const entry = externalLookup?.[call.functionName]
+    // produced a function proxy, so treat it as "no such function". Restrict to
+    // own keys so an inherited callable (e.g. `Object.prototype.toString`) can
+    // never be dispatched as a host function.
+    const entry =
+      externalLookup !== undefined && Object.prototype.hasOwnProperty.call(externalLookup, call.functionName)
+        ? externalLookup[call.functionName]
+        : undefined
     if (typeof entry !== 'function') {
       return this.native.resumeNotFound(onPrint)
     }

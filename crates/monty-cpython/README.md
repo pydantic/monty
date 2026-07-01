@@ -81,8 +81,8 @@ emits a `NameLookup` and branches on the parent's `ResumeNameLookup` answer:
 
 - a host **value** → the converted Python value, returned directly (re-read live
   on every reference — host values are not cached). A parent reaches this branch
-  in practice via a non-callable `external_lookup` entry (not only the eager
-  `inputs`);
+  in practice via a non-callable `external_lookup` entry (eager `inputs` are
+  bound directly with `set_item` and never hit `__missing__`);
 - a host **function** → an `ExternalFunction` proxy whose call emits a
   `FunctionCall` (cached per session, so repeated references/calls skip the
   lookup);
@@ -100,7 +100,7 @@ Consequences that differ from CPython:
   re-fires a `NameLookup` and re-reads live. The Monty sandbox worker instead
   caches a resolved value in the namespace slot (a second reference skips the
   lookup), so the two workers diverge on repeated references to an
-  `external_lookup` value — see `limitations/pool-architecture.md`.
+  `external_lookup` value — see `../../limitations/pool-architecture.md`.
 
 ## Installing dependencies (`InstallDependencies`)
 

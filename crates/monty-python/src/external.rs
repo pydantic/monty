@@ -15,7 +15,7 @@ use pyo3::{
 };
 
 use crate::{
-    convert::{get_docstring, monty_to_py, py_to_monty, py_to_monty_value},
+    convert::{monty_to_py, py_to_monty, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{exc_monty_to_py, exc_py_to_monty},
 };
@@ -113,25 +113,34 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         }
     }
 
-    /// Resolves a bare-name lookup (a `NameLookup` event): a callable entry
+    /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
     /// becomes a lazy host function proxy (`MontyObject::Function`, invoked on
-    /// the eventual `FunctionCall`), any other value is converted and returned
-    /// directly, and an absent name (or absent dict) yields `None` → the sandbox
-    /// raises `NameError`.
+    /// the eventual `FunctionCall`), any other value — including a type object
+    /// Monty models, which is technically callable but must round-trip as a
+    /// `MontyObject::Type` rather than degrade to a proxy — is converted and
+    /// returned directly, and an absent name (or absent dict) yields `None` →
+    /// the sandbox raises `NameError`.
+    ///
+    /// Conversion is delegated to [`py_to_monty_value`] so the callable-vs-type
+    /// ordering lives in one place; a resulting function proxy is renamed to the
+    /// lookup *key* (not the callable's `__name__`) so the follow-up
+    /// `FunctionCall` resolves against the same dict key in [`call`](Self::call).
     ///
     /// A non-callable value that cannot be converted surfaces as a `PyErr`
     /// rather than masquerading as `NameError`, so callers `?` it.
     pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
-        let Some(value) = self.lookup.and_then(|d| d.get_item(name).ok().flatten()) else {
+        let Some(lookup) = self.lookup else {
             return Ok(None);
         };
-        let obj = if value.is_callable() {
-            MontyObject::Function {
+        let Some(value) = lookup.get_item(name)? else {
+            return Ok(None);
+        };
+        let obj = match py_to_monty_value(&value, self.dc_registry).map_err(|exc| exc_monty_to_py(self.py, exc))? {
+            MontyObject::Function { docstring, .. } => MontyObject::Function {
                 name: name.to_owned(),
-                docstring: get_docstring(&value),
-            }
-        } else {
-            py_to_monty_value(&value, self.dc_registry).map_err(|exc| exc_monty_to_py(self.py, exc))?
+                docstring,
+            },
+            other => other,
         };
         Ok(Some(obj))
     }
