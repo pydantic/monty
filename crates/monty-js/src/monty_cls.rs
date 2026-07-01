@@ -284,13 +284,22 @@ impl Monty {
                             return Ok(Either::A(monty_to_js(&result, env)?));
                         }
                         RunProgress::FunctionCall(call) => {
-                            let return_value = call_external_function(
+                            // Dispatching the call can fail (arg/result conversion,
+                            // a callable-type check). Restore the mount table before
+                            // propagating so the shared slots are not left empty.
+                            let return_value = match call_external_function(
                                 env,
                                 external_lookup.as_ref(),
                                 &call.function_name,
                                 &call.args,
                                 &call.kwargs,
-                            )?;
+                            ) {
+                                Ok(v) => v,
+                                Err(err) => {
+                                    put_back(mount_table);
+                                    return Err(err);
+                                }
+                            };
 
                             progress = match call.resume(return_value, print_output.reborrow()) {
                                 Ok(p) => p,
@@ -301,7 +310,16 @@ impl Monty {
                             };
                         }
                         RunProgress::NameLookup(lookup) => {
-                            let result = resolve_name_lookup(env, external_lookup.as_ref(), &lookup.name)?;
+                            // Resolving the name can fail (converting a non-callable
+                            // `external_lookup` value). Restore the mount table before
+                            // propagating so the shared slots are not left empty.
+                            let result = match resolve_name_lookup(env, external_lookup.as_ref(), &lookup.name) {
+                                Ok(r) => r,
+                                Err(err) => {
+                                    put_back(mount_table);
+                                    return Err(err);
+                                }
+                            };
                             progress = match lookup.resume(result, print_output.reborrow()) {
                                 Ok(p) => p,
                                 Err(exc) => {
