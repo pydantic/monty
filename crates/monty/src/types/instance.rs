@@ -197,6 +197,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         Ok(None)
     }
 
+    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        // Bound methods hash by identity, consistent with their identity-only
+        // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
+        let mut hasher = DefaultHasher::new();
+        self_id.hash(&mut hasher);
+        Ok(Some(HashValue::new(hasher.finish())))
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,

@@ -188,3 +188,24 @@ assert n1.other.other is n1, 'cycle navigable through attributes'
 # Self reference.
 n1.other = n1
 assert n1.other is n1, 'instance can reference itself'
+
+# === Bound methods hash by identity: the same bound-method object works as a
+# dict key (CPython hashes by (instance, func); see limitations/classes.md) ===
+
+m = c.inc
+d = {m: 'inc'}
+assert d[m] == 'inc', 'bound method usable as dict key'
+assert hash(m) == hash(m), 'bound method hash is stable'
+s = {m, m}
+assert len(s) == 1, 'same bound method object dedupes in a set'
+
+# === A name bound more than once in the class body: last binding wins, the
+# replaced (heap-allocated) value is released ===
+
+
+class Rebound:
+    items = [1]
+    items = [2, 3]
+
+
+assert Rebound.items == [2, 3], 'later class-body binding replaces the earlier one'

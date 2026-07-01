@@ -41,7 +41,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Use into_iter to consume items by value, avoiding clone and proper ownership transfer
         let mut iter = items.into_iter();
         while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            dict.set(key, value, self)?;
+            // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
+            // value, which must be dropped or its refcount leaks.
+            if let Some(old_value) = dict.set(key, value, self)? {
+                old_value.drop_with_heap(self);
+            }
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
@@ -68,7 +72,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         let mut namespace = Dict::new();
         let mut iter = items.into_iter();
         while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            namespace.set(key, value, self)?;
+            // A name bound more than once in the class body (`x = 1; x = 2`)
+            // appears twice in the pairs; drop the replaced value or it leaks.
+            if let Some(old_value) = namespace.set(key, value, self)? {
+                old_value.drop_with_heap(self);
+            }
         }
 
         let class_id = self.heap.allocate(HeapData::Class(Class::new(name_id, namespace)))?;

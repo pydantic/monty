@@ -70,6 +70,7 @@ known-first-party = ["pydantic_monty"]
     "E721", # Use `is` and `is not` for type comparisons, or `isinstance()` for isinstance checks
     "E731", # Do not assign a lambda expression, use a def - needed for testing lambda expressions
     "F541", # f-string without any placeholders
+    "F601", # duplicate dict literal key - tests duplicate-key replacement behavior
     "F632", # ignore replace `is` with `==` - we have lots of these tests
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling

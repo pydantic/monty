@@ -724,9 +724,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
             Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
             Self::Dataclass(dc) => dc.py_hash(self_id, vm),
-            // Classes and instances hash by identity.
+            // Classes, instances and bound methods hash by identity.
             Self::Class(class) => class.py_hash(self_id, vm),
             Self::Instance(instance) => instance.py_hash(self_id, vm),
+            Self::BoundMethod(bm) => bm.py_hash(self_id, vm),
             Self::Range(r) => r.py_hash(self_id, vm),
             Self::Slice(s) => s.py_hash(self_id, vm),
             Self::Path(p) => p.py_hash(self_id, vm),

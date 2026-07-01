@@ -5,7 +5,7 @@ use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
-    name::Name,
+    helpers::any_over_expr, name::Name,
 };
 use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange};
@@ -706,6 +706,15 @@ impl<'a> Parser<'a> {
                             self.convert_range(function.range),
                         ));
                     }
+                    // Parameter defaults evaluate in the class-body scope, so a
+                    // walrus target there would become a class member (see
+                    // `reject_class_body_walrus`); walrus in the method *body*
+                    // binds in the method scope and is fine.
+                    for param in function.parameters.iter_non_variadic_params() {
+                        if let Some(default) = &param.default {
+                            self.reject_class_body_walrus(default)?;
+                        }
+                    }
                     let method = self.parse_function_def(function)?;
                     members.push(method.name);
                     body.push(Node::FunctionDef(method));
@@ -726,6 +735,7 @@ impl<'a> Parser<'a> {
                         ));
                     };
                     let ident = self.identifier(id, *name_range);
+                    self.reject_class_body_walrus(&value)?;
                     let object = self.parse_expression(*value)?;
                     members.push(ident);
                     body.push(Node::Assign { target: ident, object });
@@ -746,6 +756,7 @@ impl<'a> Parser<'a> {
                             ));
                         };
                         let ident = self.identifier(&id, name_range);
+                        self.reject_class_body_walrus(&value)?;
                         let object = self.parse_expression(*value)?;
                         members.push(ident);
                         body.push(Node::Assign { target: ident, object });
@@ -779,6 +790,25 @@ impl<'a> Parser<'a> {
             members,
             position,
         })
+    }
+
+    /// Rejects `:=` anywhere in an expression evaluated in a class-body scope
+    /// (class-variable values and method parameter defaults).
+    ///
+    /// A walrus target in such an expression binds in the class body, so in
+    /// CPython it becomes a class member (`class C: x = (y := 5)` gives `C.y`).
+    /// Monty's namespace assembly only records directly-assigned names, so the
+    /// binding would be silently dropped — reject the syntax until class-scope
+    /// walrus is implemented.
+    fn reject_class_body_walrus(&self, expr: &AstExpr) -> Result<(), ParseError> {
+        if any_over_expr(expr, |e| matches!(e, AstExpr::Named(_))) {
+            Err(ParseError::not_implemented(
+                "assignment expressions (`:=`) in class bodies",
+                self.convert_range(expr.range()),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// `lhs = rhs` — parses a single-target assignment into the appropriate `Node` variant.

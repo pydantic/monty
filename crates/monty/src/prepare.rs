@@ -2131,10 +2131,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
     }
 }
 
-/// Information collected from first-pass scan of a function body.
-///
-/// This struct holds the scope-related information needed for the second pass
-/// of function preparation and for closure analysis.
 /// The closure-slot vectors produced when a freshly-prepared child scope
 /// (function, lambda, or class body) is finalized against its parent.
 ///
@@ -2149,6 +2145,10 @@ struct FinalizedScope {
     cell_param_indices: Vec<Option<usize>>,
 }
 
+/// Information collected from the first-pass scan of a function body.
+///
+/// Holds the scope-related name sets needed for the second pass of function
+/// preparation and for closure analysis.
 struct FunctionScopeInfo {
     /// Names declared as `global`
     global_names: AHashSet<StringId>,

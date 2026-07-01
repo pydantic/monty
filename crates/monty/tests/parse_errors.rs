@@ -52,6 +52,30 @@ fn class_decorators_return_not_implemented_error() {
 }
 
 #[test]
+fn class_var_walrus_returns_not_implemented_error() {
+    // A walrus target in a class-variable value binds in the class body, so
+    // CPython makes it a class member; Monty's namespace assembly would
+    // silently drop it, so the syntax is rejected.
+    let err = get_parse_err("class Foo:\n    x = (y := 5)");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support assignment expressions (`:=`) in class bodies"
+    );
+}
+
+#[test]
+fn method_default_walrus_returns_not_implemented_error() {
+    // Method parameter defaults also evaluate in the class-body scope.
+    let err = get_parse_err("class Foo:\n    def m(self, a=(z := 7)):\n        return a");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support assignment expressions (`:=`) in class bodies"
+    );
+}
+
+#[test]
 fn method_decorators_return_not_implemented_error() {
     let err = get_parse_err("class Foo:\n    @staticmethod\n    def m(): pass");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);

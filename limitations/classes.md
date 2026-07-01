@@ -64,6 +64,10 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 - **Equality and hashing are identity-only**: a user `__eq__`/`__hash__` is
   not dispatched. `a == b` is true only when `a is b`; instances hash by
   identity. Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- **Bound methods compare and hash by identity**: each `obj.method` access
+  creates a fresh object, so `obj.method == obj.method` is `False` and two
+  accesses hash differently. CPython compares/hashes bound methods by
+  `(instance, func)`, making separate accesses equal.
 - A user `__str__` returning a non-`str` raises `TypeError: __str__ returned
   non-string (type X)` (and likewise for `__repr__`); the wording may differ
   from CPython.
@@ -98,6 +102,11 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
   variable assignment, `pass`, or a docstring — e.g. `if`/`for`/`while` in the
   class body, or tuple/multiple assignment targets (rejected at parse time).
+- Assignment expressions (`:=`) in class-variable values or method parameter
+  defaults (rejected at parse time). In CPython the walrus target becomes a
+  class member (`class C: x = (y := 5)` gives `C.y`); Monty's class-namespace
+  assembly only records directly-assigned names, so the syntax is reserved
+  rather than silently dropping the binding.
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `FrozenInstanceError`

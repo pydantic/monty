@@ -1793,8 +1793,8 @@ impl Value {
 
     /// Sets an attribute on this value.
     ///
-    /// Currently only Dataclass objects support attribute setting.
-    /// Returns AttributeError for other types.
+    /// Only Dataclass objects and user-defined class instances support
+    /// attribute setting. Returns AttributeError for other types.
     ///
     /// Takes ownership of `value` and drops it on error.
     /// On success, drops the old attribute value if one existed.
