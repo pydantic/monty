@@ -31,3 +31,7 @@ crates; accessing them raises `AttributeError`.
 - `lookup` requires a `str` argument; CPython also accepts `bytes`. A non-`str`
   argument raises `TypeError: "expected string, not <type>"` rather than
   CPython's bytes-oriented message.
+- `name` called with too many arguments reports the wrong *count* with C-method
+  wording (`name() takes at most 2 arguments (3 given)`) instead of CPython's
+  `name expected at most 2 arguments, got 3`. The value and per-argument type
+  errors match CPython exactly; only this arg-count phrasing differs.

@@ -54,3 +54,43 @@ assert u.is_normalized('NFC', NFC_E) is True, 'precomposed is NFC'
 assert u.is_normalized('NFC', NFD_E) is False, 'decomposed is not NFC'
 assert u.is_normalized('NFD', NFD_E) is True, 'decomposed is NFD'
 assert u.is_normalized('NFD', NFC_E) is False, 'precomposed is not NFD'
+
+# === error cases ===
+# A well-typed but unrecognised form is a *value* error, distinct from the
+# type error for a non-str form (regression guard: the two must not be conflated).
+try:
+    u.normalize('XYZ', 'abc')
+    assert False, 'expected invalid form to raise'
+except ValueError as exc:
+    assert str(exc) == 'invalid normalization form', 'normalize invalid form'
+try:
+    u.is_normalized('BAD', 'abc')
+    assert False, 'expected invalid form to raise'
+except ValueError as exc:
+    assert str(exc) == 'invalid normalization form', 'is_normalized invalid form'
+
+# A non-str form/string is a type error, numbered by argument position.
+try:
+    u.normalize(123, 'abc')
+    assert False, 'expected non-str form to raise'
+except TypeError as exc:
+    assert str(exc) == 'normalize() argument 1 must be str, not int', 'normalize arg 1 type'
+try:
+    u.normalize('NFC', 123)
+    assert False, 'expected non-str unistr to raise'
+except TypeError as exc:
+    assert str(exc) == 'normalize() argument 2 must be str, not int', 'normalize arg 2 type'
+
+# Single-character functions distinguish wrong-type from wrong-length.
+try:
+    u.category(123)
+    assert False, 'expected non-str to raise'
+except TypeError as exc:
+    assert str(exc) == 'category() argument must be a unicode character, not int', 'category type error'
+try:
+    u.combining('ab')
+    assert False, 'expected multi-char string to raise'
+except TypeError as exc:
+    assert str(exc) == 'combining(): argument must be a unicode character, not a string of length 2', (
+        'combining length error'
+    )

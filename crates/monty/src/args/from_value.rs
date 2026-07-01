@@ -85,6 +85,13 @@ pub(crate) trait FromValue: Sized {
     /// body is monomorphised once per field type and shared across all derives.
     /// On error the input `value` has already been dropped by `from_value`; the
     /// caller remains responsible for draining the argument iterators.
+    ///
+    /// The `bad_arg` rewrite only fires on a genuine *type* mismatch (actual
+    /// type ≠ `EXPECTED_TYPE_NAME`). This lets a `FromValue` impl layer *value*
+    /// validation on top of a type check — e.g. a `NormForm` that accepts only
+    /// `str` but rejects unknown form names with a `ValueError` — and have that
+    /// value error surface unchanged instead of being clobbered into a bogus
+    /// "argument N must be str, not str".
     fn extract_into(
         value: Value,
         slot: &mut Option<Self>,
@@ -102,15 +109,29 @@ pub(crate) trait FromValue: Sized {
                 *slot = Some(extracted);
                 Ok(())
             }
-            Err(err) => Err(match (ctx, Self::EXPECTED_TYPE_NAME, got_type) {
-                (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected), Some(got)) => {
-                    ExcType::type_error_bad_arg_pos(func_name, pos, expected, got.cpython_arg_name())
-                }
-                (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected), Some(got)) => {
-                    ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got.cpython_arg_name())
-                }
-                _ => err,
-            }),
+            Err(err) => {
+                // Only rewrite into a `_PyArg_BadArgument` type error when the
+                // value's actual type genuinely differs from the expected one.
+                // When they match, `from_value` rejected the value on a *value*
+                // check rather than a type check — e.g. a valid `str` that names
+                // no normalization form, or an `int` too large for `i32` — and
+                // that inner error (a `ValueError` / `OverflowError`) must
+                // surface unchanged rather than be rewritten into a nonsensical
+                // "must be str, not str".
+                let type_mismatch = matches!(
+                    (Self::EXPECTED_TYPE_NAME, got_type),
+                    (Some(expected), Some(got)) if got.cpython_arg_name().to_string() != expected
+                );
+                Err(match (ctx, Self::EXPECTED_TYPE_NAME, got_type) {
+                    (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected), Some(got)) if type_mismatch => {
+                        ExcType::type_error_bad_arg_pos(func_name, pos, expected, got.cpython_arg_name())
+                    }
+                    (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected), Some(got)) if type_mismatch => {
+                        ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got.cpython_arg_name())
+                    }
+                    _ => err,
+                })
+            }
         }
     }
 }

@@ -24,13 +24,11 @@
 //! they return `Value` directly (wrapped in `CallResult::Value` by the dispatch
 //! in [`super`]).
 
-use std::borrow::Cow;
-
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, FromValue},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -124,7 +122,10 @@ fn uni_category(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 /// Raises `ValueError("no such name")` when the character has no name and no
 /// `default` is supplied; otherwise returns `default`.
 fn uni_name(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (chr_val, default_val) = args.get_one_two_args("name", vm.heap)?;
+    let NameArgs {
+        chr: chr_val,
+        default: default_val,
+    } = NameArgs::from_args(args, vm)?;
     defer_drop!(chr_val, vm);
 
     // `default_val` is not covered by `defer_drop!` (it's an `Option` we may
@@ -179,29 +180,64 @@ fn uni_combining(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 
 /// `unicodedata.normalize(form, unistr)` — normalize a string to NFC/NFD/NFKC/NFKD.
 fn uni_normalize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (form_val, str_val) = args.get_two_args("normalize", vm.heap)?;
-    defer_drop!(form_val, vm);
-    defer_drop!(str_val, vm);
-    let form = require_str(form_val, "normalize", 1, vm)?;
-    let text = require_str(str_val, "normalize", 2, vm)?;
-    let form = NormForm::parse(&form)?;
-    normalize_with(form, &text, vm.heap)
+    let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
+    normalize_with(form, &unistr, vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
 fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (form_val, str_val) = args.get_two_args("is_normalized", vm.heap)?;
-    defer_drop!(form_val, vm);
-    defer_drop!(str_val, vm);
-    let form = require_str(form_val, "is_normalized", 1, vm)?;
-    let text = require_str(str_val, "is_normalized", 2, vm)?;
-    let normalized = match NormForm::parse(&form)? {
-        NormForm::Nfc => unicode_normalization::is_nfc(&text),
-        NormForm::Nfd => unicode_normalization::is_nfd(&text),
-        NormForm::Nfkc => unicode_normalization::is_nfkc(&text),
-        NormForm::Nfkd => unicode_normalization::is_nfkd(&text),
+    let IsNormalizedArgs { form, unistr } = IsNormalizedArgs::from_args(args, vm)?;
+    let normalized = match form {
+        NormForm::Nfc => unicode_normalization::is_nfc(&unistr),
+        NormForm::Nfd => unicode_normalization::is_nfd(&unistr),
+        NormForm::Nfkc => unicode_normalization::is_nfkc(&unistr),
+        NormForm::Nfkd => unicode_normalization::is_nfkd(&unistr),
     };
     Ok(Value::Bool(normalized))
+}
+
+/// Argument shape for `name(chr, default=..., /)`.
+///
+/// Both arguments are positional-only (matching CPython's C signature). `chr`
+/// stays a raw `Value` because it needs the bespoke single-character coercion
+/// in [`single_char`] (CPython's "must be a unicode character" wording has no
+/// `FromArgs` equivalent); `default` is any object returned verbatim when the
+/// character has no name.
+#[derive(FromArgs)]
+#[from_args(name = "name")]
+struct NameArgs {
+    #[from_args(pos_only)]
+    chr: Value,
+    #[from_args(pos_only, default)]
+    default: Option<Value>,
+}
+
+/// Argument shape for `normalize(form, unistr, /)`.
+///
+/// Both arguments are positional-only. `form` coerces straight into a
+/// [`NormForm`] (its `FromValue` impl does the str type-check *and* the
+/// form-name value check); `unistr` is a plain `str`. `bad_arg` gives both the
+/// exact `normalize() argument N must be str, not <type>` type error, while
+/// `NormForm`'s own `ValueError` for an unknown form survives unclobbered (see
+/// `FromValue::extract_into`). `expected_exact` reproduces CPython's
+/// `normalize expected 2 arguments, got N` arity error.
+#[derive(FromArgs)]
+#[from_args(name = "normalize", bad_arg, expected_exact)]
+struct NormalizeArgs {
+    #[from_args(pos_only)]
+    form: NormForm,
+    #[from_args(pos_only)]
+    unistr: String,
+}
+
+/// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
+#[derive(FromArgs)]
+#[from_args(name = "is_normalized", bad_arg, expected_exact)]
+struct IsNormalizedArgs {
+    #[from_args(pos_only)]
+    form: NormForm,
+    #[from_args(pos_only)]
+    unistr: String,
 }
 
 /// The four Unicode normalization forms accepted by `normalize`/`is_normalized`.
@@ -213,11 +249,16 @@ enum NormForm {
     Nfkd,
 }
 
-impl NormForm {
-    /// Parses a form name, raising `ValueError("invalid normalization form")`
-    /// for anything other than the four canonical spellings (matching CPython).
-    fn parse(s: &str) -> RunResult<Self> {
-        match s {
+impl FromValue for NormForm {
+    /// Constrains the argument to `str`, so a non-str raises CPython's
+    /// `argument N must be str, not <type>` (via `bad_arg`).
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
+
+    /// A well-typed `str` that names no known form is a *value* error, not a
+    /// type error; `FromValue::extract_into` only rewrites genuine type
+    /// mismatches, so this `ValueError` reaches the caller unchanged.
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        match String::from_value(value, vm)?.as_str() {
             "NFC" => Ok(Self::Nfc),
             "NFD" => Ok(Self::Nfd),
             "NFKC" => Ok(Self::Nfkc),
@@ -290,24 +331,6 @@ fn single_char(
             "{fn_name}(): {arg_word} must be a unicode character, not a string of length {}",
             s.chars().count()
         ))),
-    }
-}
-
-/// Extracts a `str` argument, raising `"<fn>() argument N must be str, not <type>"`
-/// (CPython's message for `normalize`/`is_normalized` type errors).
-fn require_str<'a>(
-    value: &'a Value,
-    fn_name: &str,
-    arg_num: u32,
-    vm: &'a VM<'_, impl ResourceTracker>,
-) -> RunResult<Cow<'a, str>> {
-    if value.is_str(vm.heap) {
-        value_to_str(value, vm)
-    } else {
-        Err(ExcType::type_error(format!(
-            "{fn_name}() argument {arg_num} must be str, not {}",
-            value.py_type(vm)
-        )))
     }
 }
 
