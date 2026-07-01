@@ -94,3 +94,16 @@ except TypeError as exc:
     assert str(exc) == 'combining(): argument must be a unicode character, not a string of length 2', (
         'combining length error'
     )
+
+# name() uses PyArg_UnpackTuple arity wording: a min..max range, so too-few and
+# too-many report "at least"/"at most" rather than an exact count.
+try:
+    u.name()
+    assert False, 'expected name() with no args to raise'
+except TypeError as exc:
+    assert str(exc) == 'name expected at least 1 argument, got 0', 'name too few args'
+try:
+    u.name('a', 'b', 'c')
+    assert False, 'expected name() with 3 args to raise'
+except TypeError as exc:
+    assert str(exc) == 'name expected at most 2 arguments, got 3', 'name too many args'

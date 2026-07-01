@@ -19,6 +19,7 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream> {
 }
 
 /// Parsed, validated signature for a single struct deriving `FromArgs`.
+#[expect(clippy::struct_excessive_bools)]
 struct Signature {
     struct_ident: Ident,
     /// Function name embedded in error messages (the `{name}()` prefix).
@@ -36,6 +37,12 @@ struct Signature {
     /// `{name} expected N argument(s), got M` (CPython `PyArg_UnpackTuple`
     /// wording). For exact-arity callables like `sorted()`.
     expected_exact: bool,
+    /// Fixed positional `min..max` range (a required count below the maximum) —
+    /// emits `{name} expected at least N argument(s), got M` / `… at most M …`,
+    /// CPython's `PyArg_UnpackTuple` wording for optional-tail builtins like
+    /// `unicodedata.name(chr[, default])`. Unlike the macro's default C-method
+    /// wording, this reports the *count* range rather than the argument names.
+    unpack_tuple: bool,
     /// Override for the function name in the unknown-kwarg error only.
     /// Used by `json.dumps`, which forwards unmatched kwargs to
     /// `JSONEncoder.__init__` and so reports that name instead.
@@ -150,6 +157,7 @@ impl Signature {
             error_style,
             at_most_total,
             expected_exact,
+            unpack_tuple,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -258,6 +266,13 @@ impl Signature {
                  — the exact-arity wording assumes a single fixed required positional count",
             ));
         }
+        if unpack_tuple && (varargs_idx.is_some() || at_most_total || expected_exact) {
+            return Err(syn::Error::new(
+                struct_ident.span(),
+                "`unpack_tuple` cannot be combined with `varargs`, `at_most_total`, or `expected_exact` \
+                 — it models a fixed positional min..max range (CPython `PyArg_UnpackTuple`)",
+            ));
+        }
         if kwargs_not_supported_yet {
             if varkwargs_idx.is_some() {
                 return Err(syn::Error::new(
@@ -291,6 +306,7 @@ impl Signature {
             error_style,
             at_most_total,
             expected_exact,
+            unpack_tuple,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -326,6 +342,7 @@ impl Signature {
         let no_kwargs_check = self.render_no_kwargs_check();
         let total_check = self.render_total_check(max_positional);
         let exact_check = self.render_expected_exact_check();
+        let unpack_tuple_check = self.render_unpack_tuple_check();
         let at_least_check = self.render_at_least_positional_check();
         let positional_loop = self.render_positional_loop(&slots, max_positional, has_varargs);
         let unknown_decl = self.render_unknown_kwarg_decl();
@@ -392,6 +409,7 @@ impl Signature {
                     #no_kwargs_check
                     #total_check
                     #exact_check
+                    #unpack_tuple_check
                     #at_least_check
                     #unknown_decl
                     #positional_loop
@@ -467,6 +485,12 @@ impl Signature {
             // Pre-check should already have fired; emit matching wording anyway.
             return quote! {
                 crate::exception_private::ExcType::type_error_expected_exact(#func_name, #max_lit, #actual)
+            };
+        }
+        if self.unpack_tuple {
+            // `render_unpack_tuple_check` fires first; match its wording here too.
+            return quote! {
+                crate::exception_private::ExcType::type_error_at_most(#func_name, #max_lit, #actual)
             };
         }
         if self.use_c_method_arity_wording() {
@@ -558,10 +582,10 @@ impl Signature {
             .count()
     }
 
-    /// Suppressed under `expected_exact`, whose own check covers the at-least
-    /// direction with different wording.
+    /// Suppressed under `expected_exact` / `unpack_tuple`, whose own pre-checks
+    /// cover the at-least/at-most directions with `PyArg_UnpackTuple` wording.
     fn use_c_method_arity_wording(&self) -> bool {
-        !self.expected_exact && self.required_pos_only_count() > 0
+        !self.expected_exact && !self.unpack_tuple && self.required_pos_only_count() > 0
     }
 
     /// Pre-check for `expected_exact`: exactly `required_positional_count()`
@@ -580,6 +604,41 @@ impl Signature {
                     __cleanup!(
                         crate::exception_private::ExcType::type_error_expected_exact(
                             #func_name, #required, __pos_actual,
+                        )
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pre-check for `unpack_tuple`: the positional count must land in
+    /// `required_positional_count()..=named_positional_count()`, matching
+    /// CPython's `PyArg_UnpackTuple(args, name, min, max, …)`. Too few emits
+    /// `{name} expected at least {min} argument(s), got {n}`; too many emits
+    /// `{name} expected at most {max} argument(s), got {n}`. Kwargs are not
+    /// counted (these callables are positional-only); a stray kwarg still
+    /// falls through to the unknown-kwarg path.
+    fn render_unpack_tuple_check(&self) -> TokenStream {
+        if !self.unpack_tuple {
+            return TokenStream::new();
+        }
+        let func_name = self.func_name.as_str();
+        let min = self.required_positional_count();
+        let max = self.named_positional_count();
+        quote! {
+            {
+                let __pos_actual = ::std::iter::ExactSizeIterator::len(&__pos_iter);
+                if __pos_actual < #min {
+                    __cleanup!(
+                        crate::exception_private::ExcType::type_error_at_least(
+                            #func_name, #min, __pos_actual,
+                        )
+                    );
+                }
+                if __pos_actual > #max {
+                    __cleanup!(
+                        crate::exception_private::ExcType::type_error_at_most(
+                            #func_name, #max, __pos_actual,
                         )
                     );
                 }
@@ -1157,11 +1216,13 @@ fn vec_element_ty(ty: &Type) -> Option<Type> {
 }
 
 /// Parsed `#[from_args(...)]` set on the struct itself.
+#[expect(clippy::struct_excessive_bools)]
 struct StructAttrs {
     name: String,
     error_style: ErrorStyle,
     at_most_total: bool,
     expected_exact: bool,
+    unpack_tuple: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
     kwargs_not_supported_yet: bool,
@@ -1176,6 +1237,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut is_c_style = false;
     let mut at_most_total = false;
     let mut expected_exact = false;
+    let mut unpack_tuple = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
     let mut kwargs_not_supported_yet = false;
@@ -1196,6 +1258,9 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else if meta.path.is_ident("expected_exact") {
                 expected_exact = true;
+                Ok(())
+            } else if meta.path.is_ident("unpack_tuple") {
+                unpack_tuple = true;
                 Ok(())
             } else if meta.path.is_ident("kwarg_error_name") {
                 let value: LitStr = meta.value()?.parse()?;
@@ -1232,7 +1297,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, `c_error_named`, or `kwargs_not_supported_yet`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `unpack_tuple`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, `c_error_named`, or `kwargs_not_supported_yet`",
                 ))
             }
         })?;
@@ -1252,6 +1317,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         error_style,
         at_most_total,
         expected_exact,
+        unpack_tuple,
         kwarg_error_name,
         bad_arg,
         kwargs_not_supported_yet,

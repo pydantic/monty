@@ -202,9 +202,10 @@ fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
 /// stays a raw `Value` because it needs the bespoke single-character coercion
 /// in [`single_char`] (CPython's "must be a unicode character" wording has no
 /// `FromArgs` equivalent); `default` is any object returned verbatim when the
-/// character has no name.
+/// character has no name. `unpack_tuple` gives the `PyArg_UnpackTuple` arity
+/// wording CPython uses here (`name expected at most 2 arguments, got 3`).
 #[derive(FromArgs)]
-#[from_args(name = "name")]
+#[from_args(name = "name", unpack_tuple)]
 struct NameArgs {
     #[from_args(pos_only)]
     chr: Value,

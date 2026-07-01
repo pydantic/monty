@@ -37,11 +37,16 @@ required fields before optional ones in each region. Field types must
 implement `FromValue` (impls live in `monty::args::from_value`).
 
 The full attribute surface — struct-level wording flags (`c_error`,
-`c_error_named`, `at_most_total`, `bad_arg`, `kwargs_not_supported_yet`, …)
-and field-level roles (`pos_only`, `kw_only`, `varargs`, `varkwargs`,
-`default`, `static_string`) — is documented inline on `StructAttrs`, the
-`FieldKind` enum, and each `render_*` helper in
+`c_error_named`, `at_most_total`, `expected_exact`, `unpack_tuple`, `bad_arg`,
+`kwargs_not_supported_yet`, …) and field-level roles (`pos_only`, `kw_only`,
+`varargs`, `varkwargs`, `default`, `static_string`) — is documented inline on
+`StructAttrs`, the `FieldKind` enum, and each `render_*` helper in
 [`src/from_args.rs`](src/from_args.rs).
+
+`expected_exact` and `unpack_tuple` select CPython's `PyArg_UnpackTuple` arity
+wording (`expected N arguments, got M` / `expected at {least,most} N …`) for
+positional-only builtins — `expected_exact` for a fixed count, `unpack_tuple`
+for a `min..max` range (e.g. `unicodedata.name(chr[, default])`).
 
 ## `#[derive(ToArgs)]`
 
