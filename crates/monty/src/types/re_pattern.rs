@@ -336,25 +336,25 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = value_to_str(arg, vm)?.into_owned();
+                let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).search(&text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = value_to_str(arg, vm)?.into_owned();
+                let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).match_start(&text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = value_to_str(arg, vm)?.into_owned();
+                let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).fullmatch(&text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = value_to_str(arg, vm)?.into_owned();
+                let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).findall(&text, vm.heap)
             }
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
@@ -362,7 +362,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = value_to_str(arg, vm)?.into_owned();
+                let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).finditer(&text, vm.heap)
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
@@ -430,8 +430,8 @@ fn call_pattern_sub<'h>(
             "callable replacement is not yet supported in re.sub()",
         ));
     }
-    let repl = value_to_str(repl_val, vm)?.into_owned();
-    let text = value_to_str(string_val, vm)?.into_owned();
+    let repl = repl_val.to_str(vm)?.to_owned();
+    let text = string_val.to_str(vm)?.to_owned();
     pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
 }
 
@@ -450,7 +450,7 @@ fn call_pattern_split<'h>(
     defer_drop!(string_val, vm);
 
     let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
-    let text = value_to_str(string_val, vm)?.into_owned();
+    let text = string_val.to_str(vm)?.to_owned();
     pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
 }
 
@@ -643,20 +643,6 @@ fn translate_g_backref(chars: &mut iter::Peekable<str::Chars<'_>>, result: &mut 
     result.push('{');
     result.push_str(&name);
     result.push('}');
-}
-
-/// Extracts a string from a `Value`, supporting both interned and heap strings.
-///
-/// Returns a `Cow<str>` to avoid unnecessary copies for interned strings.
-pub(crate) fn value_to_str<'a>(val: &'a Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<Cow<'a, str>> {
-    match val {
-        Value::InternString(string_id) => Ok(Cow::Borrowed(vm.interns.get_str(*string_id))),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(Cow::Borrowed(s.as_str())),
-            _ => Err(ExcType::type_error(format!("expected string, not {}", val.py_type(vm)))),
-        },
-        _ => Err(ExcType::type_error(format!("expected string, not {}", val.py_type(vm)))),
-    }
 }
 
 impl Serialize for RePattern {

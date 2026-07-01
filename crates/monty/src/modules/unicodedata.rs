@@ -37,7 +37,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     string_builder::StringBuilder,
-    types::{Module, PyTrait, re_pattern::value_to_str, str::allocate_string},
+    types::{Module, PyTrait, str::allocate_string},
     value::Value,
 };
 
@@ -161,8 +161,8 @@ fn uni_name(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 fn uni_lookup(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);
-    let name = value_to_str(value, vm)?;
-    match unicode_names2::character(&name) {
+    let name = value.to_str(vm)?;
+    match unicode_names2::character(name) {
         Some(c) => Ok(allocate_string(c.to_string(), vm.heap)?),
         None => Err(SimpleException::new_msg(ExcType::KeyError, format!("undefined character name '{name}'")).into()),
     }
@@ -257,14 +257,23 @@ impl FromValue for NormForm {
     /// A well-typed `str` that names no known form is a *value* error, not a
     /// type error; `FromValue::extract_into` only rewrites genuine type
     /// mismatches, so this `ValueError` reaches the caller unchanged.
+    ///
+    /// Matches on the borrowed form name ([`Value::to_str`] borrows both
+    /// interned and heap strings) rather than allocating an owned `String`,
+    /// then drops the value once that borrow is released. For a non-`str`
+    /// value, `to_str`'s error is what `extract_into` rewrites into the
+    /// `argument N must be str, not <type>` message.
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        match String::from_value(value, vm)?.as_str() {
-            "NFC" => Ok(Self::Nfc),
-            "NFD" => Ok(Self::Nfd),
-            "NFKC" => Ok(Self::Nfkc),
-            "NFKD" => Ok(Self::Nfkd),
-            _ => Err(SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into()),
-        }
+        let result = match value.to_str(vm) {
+            Ok("NFC") => Ok(Self::Nfc),
+            Ok("NFD") => Ok(Self::Nfd),
+            Ok("NFKC") => Ok(Self::Nfkc),
+            Ok("NFKD") => Ok(Self::Nfkd),
+            Ok(_) => Err(SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into()),
+            Err(e) => Err(e),
+        };
+        value.drop_with_heap(vm);
+        result
     }
 }
 
@@ -323,7 +332,7 @@ fn single_char(
             value.py_type(vm)
         )));
     }
-    let s = value_to_str(value, vm)?;
+    let s = value.to_str(vm)?;
     let mut chars = s.chars();
     match (chars.next(), chars.next()) {
         (Some(c), None) => Ok(c),

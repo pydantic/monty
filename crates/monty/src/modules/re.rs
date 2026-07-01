@@ -24,8 +24,6 @@
 //! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
 //! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
-use std::borrow::Cow;
-
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
@@ -36,7 +34,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{Module, PyTrait, RePattern, Type, re_pattern::value_to_str, str::allocate_string},
+    types::{Module, PyTrait, RePattern, Type, str::allocate_string},
     value::Value,
 };
 
@@ -216,9 +214,10 @@ fn call_compile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 /// Compiles the pattern, then delegates to `RePattern::search`. Returns a `re.Match`
 /// object on success, or `None` if no position in the string matches.
 fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.search", vm)?;
+    let (pattern, string_val, flags) = extract_pattern_string_flags(args, "re.search", vm)?;
+    defer_drop!(string_val, vm);
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.search(&text, vm.heap)
+    compiled.search(string_val.to_str(vm)?, vm.heap)
 }
 
 /// `re.match(pattern, string, flags=0)` — match at the beginning of the string.
@@ -226,9 +225,10 @@ fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
 /// Compiles the pattern, then delegates to `RePattern::match_start`. Returns a `re.Match`
 /// object if the pattern matches at position 0, or `None` otherwise.
 fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.match", vm)?;
+    let (pattern, string_val, flags) = extract_pattern_string_flags(args, "re.match", vm)?;
+    defer_drop!(string_val, vm);
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.match_start(&text, vm.heap)
+    compiled.match_start(string_val.to_str(vm)?, vm.heap)
 }
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
@@ -236,9 +236,10 @@ fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
 /// Compiles the pattern, then delegates to `RePattern::fullmatch`. Returns a `re.Match`
 /// object if the pattern matches the whole string, or `None` otherwise.
 fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.fullmatch", vm)?;
+    let (pattern, string_val, flags) = extract_pattern_string_flags(args, "re.fullmatch", vm)?;
+    defer_drop!(string_val, vm);
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.fullmatch(&text, vm.heap)
+    compiled.fullmatch(string_val.to_str(vm)?, vm.heap)
 }
 
 /// `re.findall(pattern, string, flags=0)` — find all non-overlapping matches.
@@ -246,9 +247,10 @@ fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
 /// Compiles the pattern, then delegates to `RePattern::findall`. Returns a list of
 /// strings or tuples depending on the number of capture groups (matching CPython semantics).
 fn call_findall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.findall", vm)?;
+    let (pattern, string_val, flags) = extract_pattern_string_flags(args, "re.findall", vm)?;
+    defer_drop!(string_val, vm);
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.findall(&text, vm.heap)
+    compiled.findall(string_val.to_str(vm)?, vm.heap)
 }
 
 /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches with a replacement.
@@ -298,7 +300,7 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 
     let flags = extract_flags(flags_val, vm)?;
 
-    let pattern = value_to_str(pattern_val, vm)?.into_owned();
+    let pattern = pattern_val.to_str(vm)?.to_owned();
 
     // Check that repl is a string — callable replacement is not supported
     if !repl_val.is_str(vm.heap) {
@@ -306,11 +308,11 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
             "callable replacement is not yet supported in re.sub()",
         ));
     }
-    let repl = value_to_str(repl_val, vm)?.into_owned();
-    let text = value_to_str(string_val, vm)?.into_owned();
+    let repl = repl_val.to_str(vm)?;
+    let text = string_val.to_str(vm)?;
 
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.sub(&repl, &text, count, vm.heap)
+    compiled.sub(repl, text, count, vm.heap)
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern occurrences.
@@ -331,11 +333,11 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     let maxsplit = extract_maxsplit(maxsplit_val, vm)?;
     let flags = extract_flags(flags_val, vm)?;
 
-    let pattern = value_to_str(pattern_val, vm)?.into_owned();
-    let text = value_to_str(string_val, vm)?.into_owned();
+    let pattern = pattern_val.to_str(vm)?.to_owned();
+    let text = string_val.to_str(vm)?;
 
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.split(&text, maxsplit, vm.heap)
+    compiled.split(text, maxsplit, vm.heap)
 }
 
 /// Argument shape for `re.sub(pattern, repl, string, count=0, flags=0)`.
@@ -381,9 +383,10 @@ struct ReSplitArgs {
 /// `for m in re.finditer(...)`, the VM's `GetIter` opcode handles iteration
 /// over the returned list automatically.
 fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (pattern, text, flags) = extract_pattern_string_flags(args, "re.finditer", vm)?;
+    let (pattern, string_val, flags) = extract_pattern_string_flags(args, "re.finditer", vm)?;
+    defer_drop!(string_val, vm);
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.finditer(&text, vm.heap)
+    compiled.finditer(string_val.to_str(vm)?, vm.heap)
 }
 
 /// `re.escape(pattern)` — escape special regex characters in a string.
@@ -396,7 +399,7 @@ fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 fn call_escape(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("re.escape", vm.heap)?;
     defer_drop!(arg, vm);
-    let text = value_to_str(arg, vm)?.into_owned();
+    let text = arg.to_str(vm)?;
 
     let mut result = String::with_capacity(text.len() * 2);
     for c in text.chars() {
@@ -475,7 +478,7 @@ fn extract_pattern_and_flags(
     let (pattern_val, flags_val) = args.get_one_two_args(func_name, vm.heap)?;
     defer_drop!(pattern_val, vm);
 
-    let pattern = value_to_str(pattern_val, vm)?.into_owned();
+    let pattern = pattern_val.to_str(vm)?.to_owned();
     let flags = extract_flags(flags_val, vm)?;
 
     Ok((pattern, flags))
@@ -503,11 +506,18 @@ fn extract_flags(flags_val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>
 /// `re.fullmatch()`, and `re.findall()`.
 ///
 /// Accepts 2 or 3 positional arguments: `(pattern, string)` or `(pattern, string, flags)`.
+///
+/// The `pattern` is returned as an owned `String` because [`RePattern::compile`]
+/// stores it. The subject `string` is returned as its still-live `Value` (not a
+/// borrowed `&str`) so the caller can borrow it with [`Value::to_str`] — avoiding
+/// a copy of what is often a large subject — while keeping it alive on the heap
+/// for the duration of the match. The caller must `drop_with_heap` the returned
+/// `Value`.
 fn extract_pattern_string_flags(
     args: ArgValues,
     func_name: &str,
     vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<(String, Cow<'static, str>, u16)> {
+) -> RunResult<(String, Value, u16)> {
     let pos = args.into_pos_only(func_name, vm.heap)?;
     defer_drop_mut!(pos, vm);
 
@@ -517,25 +527,34 @@ fn extract_pattern_string_flags(
         )));
     };
     defer_drop!(pattern_val, vm);
+    // `compile` keeps the pattern, so it must be owned; the `?` early-returns
+    // cleanly because `pattern_val` and the remaining positionals are guarded.
+    let pattern = pattern_val.to_str(vm)?.to_owned();
 
     let Some(string_val) = pos.next() else {
         return Err(ExcType::type_error(format!(
             "{func_name}() missing required argument: 'string'"
         )));
     };
-    defer_drop!(string_val, vm);
 
-    let flags = extract_flags(pos.next(), vm)?;
+    // `string_val` is pulled out of `pos`, so the `pos` guard no longer covers
+    // it; drop it explicitly on the two remaining error paths, and hand it back
+    // to the caller (still live) on success.
+    let flags = match extract_flags(pos.next(), vm) {
+        Ok(flags) => flags,
+        Err(e) => {
+            string_val.drop_with_heap(vm);
+            return Err(e);
+        }
+    };
 
     if let Some(extra) = pos.next() {
         extra.drop_with_heap(vm);
+        string_val.drop_with_heap(vm);
         return Err(ExcType::type_error(format!(
             "{func_name}() takes at most 3 positional arguments"
         )));
     }
 
-    let pattern = value_to_str(pattern_val, vm)?.into_owned();
-    let text = value_to_str(string_val, vm)?.into_owned();
-
-    Ok((pattern, Cow::Owned(text), flags))
+    Ok((pattern, string_val, flags))
 }
