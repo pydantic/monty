@@ -23,13 +23,15 @@ match CPython's, with these divergences:
   (`cannot use a string pattern on a bytes-like object`); a bytes *pattern*
   raises `first argument must be string or compiled pattern`, whereas
   CPython supports bytes patterns.
-- A non-str, non-callable `repl` for `re.sub` raises `callable replacement
-  is not yet supported in re.sub()` (callable replacement is a genuine
-  feature gap); CPython raises `decoding to str: need a bytes-like object,
-  int found`-style errors for non-callable non-strings.
+- A non-str `repl` for `re.sub` raises `callable replacement is not yet
+  supported in re.sub()` for non-negative counts; CPython raises
+  `decoding to str: need a bytes-like object, int found`-style errors for
+  non-callable non-strings. With a negative count, Monty returns the subject
+  unchanged before validating `repl`, while CPython still validates `repl`.
 - A negative or `> 0xFFFF` integer `flags` value raises
-  `TypeError: flags must be a non-negative integer`; CPython accepts any
-  int-sized value (unknown bits are silently accepted by Monty either way).
+  `TypeError: flags must be a non-negative integer`; CPython accepts larger
+  int-sized values and handles negative values according to the resulting flag
+  bits.
 - Positional `count` / `maxsplit` for `re.sub` / `re.split` do not emit
   CPython 3.13+'s `DeprecationWarning` (Monty has no warnings machinery).
 
@@ -39,7 +41,9 @@ Supported: `NOFLAG`, `IGNORECASE` / `I`, `MULTILINE` / `M`, `DOTALL` / `S`,
 `ASCII` / `A`.
 
 Not implemented: `VERBOSE` / `X`, `LOCALE` / `L`, `DEBUG`, `UNICODE` / `U`
-(Unicode is always on). Passing an unknown flag bit is silently accepted.
+(Unicode is always on). Unknown flag bits within the accepted `u16` range are
+silently accepted; bits above that range are rejected by the integer range
+check.
 
 ## `re.Pattern` objects
 
