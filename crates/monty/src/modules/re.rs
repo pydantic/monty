@@ -31,7 +31,7 @@
 //! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue},
+    args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
@@ -504,13 +504,15 @@ pub(crate) enum PatternArg {
     /// A `str` pattern, copied out because compilation stores it.
     Str(String),
     /// An already-compiled `re.Pattern` heap value (ownership transferred in;
-    /// dropped by [`resolve_pattern`]'s error path, `drop_extracted`, or the
+    /// dropped by [`resolve_pattern`]'s error path, `drop_with_heap`, or the
     /// eventual consumer).
     Compiled(Value),
 }
 
-impl FromValue for PatternArg {
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+impl PatternArg {
+    /// Coerces the raw `pattern` value, consuming it on every path (the
+    /// `Compiled` variant transfers ownership in rather than dropping).
+    fn extract(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Some(either) = value.as_either_str(vm.heap) {
             let pattern = either.into_string(vm.interns);
             value.drop_with_heap(vm);
@@ -522,8 +524,10 @@ impl FromValue for PatternArg {
             Err(ExcType::type_error("first argument must be string or compiled pattern"))
         }
     }
+}
 
-    fn drop_extracted(self, heap: &mut impl ContainsHeap) {
+impl DropWithHeap for PatternArg {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         if let Self::Compiled(value) = self {
             value.drop_with_heap(heap);
         }
@@ -542,8 +546,9 @@ impl FromValue for PatternArg {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ReFlags(u16);
 
-impl FromValue for ReFlags {
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+impl ReFlags {
+    /// Coerces the raw `flags` value, consuming it on every path.
+    fn extract(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let result = match value {
             Value::Int(n) => u16::try_from(n)
                 .map(Self)
@@ -571,7 +576,7 @@ enum ResolvedPattern {
     /// `HeapData::RePattern` allocation in `re.compile` reuses the box.
     Owned(Box<RePattern>),
     /// A live `re.Pattern` heap value (always a `Value::Ref` to
-    /// `HeapData::RePattern`, guaranteed by [`PatternArg::from_value`]).
+    /// `HeapData::RePattern`, guaranteed by [`PatternArg::extract`]).
     Heap(Value),
 }
 
@@ -612,17 +617,17 @@ impl DropWithHeap for ResolvedPattern {
 fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<ResolvedPattern> {
     // Sequential hand-rolled cleanup: each coercion consumes its value, so on
     // failure only the *other*, not-yet-consumed value needs dropping.
-    let pattern = match PatternArg::from_value(pattern, vm) {
+    let pattern = match PatternArg::extract(pattern, vm) {
         Ok(pattern) => pattern,
         Err(e) => {
             flags.drop_with_heap(vm);
             return Err(e);
         }
     };
-    let flags = match ReFlags::from_value(flags, vm) {
+    let flags = match ReFlags::extract(flags, vm) {
         Ok(flags) => flags,
         Err(e) => {
-            pattern.drop_extracted(vm);
+            pattern.drop_with_heap(vm);
             return Err(e);
         }
     };

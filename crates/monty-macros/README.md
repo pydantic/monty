@@ -34,7 +34,17 @@ let DatetimeArgs { year, month, day, hour, tzinfo } =
 Fields must appear in Python signature order:
 `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
 required fields before optional ones in each region. Field types must
-implement `FromValue` (impls live in `monty::args::from_value`).
+implement `FromValue` (impls live in `monty::args::from_value`). Coercion
+failures are structured (`FromValueFail`): wrong-type failures get their
+wording from the extraction site (`bad_arg`/`bad_arg_named`, or the impl's
+`type_error`), while value-level failures (`ValueError`, `OverflowError`)
+surface unchanged. `str` arguments the function only reads should use
+`StrArg`, which validates without copying the text and lends `&str` via
+`as_str(vm)`.
+
+`FromValue`-typed fields are only correct for functions **implemented in C
+in CPython**, whose argument clinic type-checks while binding. See the
+`py_def` note below for pure-Python `def`s.
 
 The full attribute surface — struct-level wording flags (`c_error`,
 `c_error_named`, `at_most_total`, `expected_exact`, `unpack_tuple`, `py_def`,

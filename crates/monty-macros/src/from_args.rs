@@ -57,9 +57,11 @@ struct Signature {
     /// Used by `json.dumps`, which forwards unmatched kwargs to
     /// `JSONEncoder.__init__` and so reports that name instead.
     kwarg_error_name: Option<String>,
-    /// Wrap `FromValue` errors in CPython's `_PyArg_BadArgument` wording —
-    /// `{name}() argument {pos|'arg'} must be {expected}, not {got}` —
-    /// for fields whose type sets `EXPECTED_TYPE_NAME`.
+    /// Report `FromValue` wrong-type failures in CPython's
+    /// `_PyArg_BadArgument` wording — `{name}() argument {pos|'arg'} must be
+    /// {expected}, not {got}` — for fields whose type sets
+    /// `EXPECTED_TYPE_NAME`. Value-level failures (`FromValueFail::Raise`)
+    /// surface unchanged.
     bad_arg: Option<BadArgStyle>,
     /// Reject any kwarg up front with
     /// `NotImplementedError: {name}() does not yet support keyword arguments`.
@@ -1025,7 +1027,7 @@ impl Signature {
                 vec_element_ty(&self.fields[varargs_idx].ty).unwrap_or_else(|| self.fields[varargs_idx].ty.clone());
             quote! {
                 _ => {
-                    match <#elem_ty as crate::args::FromValue>::from_value(__arg, vm) {
+                    match <#elem_ty as crate::args::FromValue>::from_value_plain(__arg, vm) {
                         ::std::result::Result::Ok(__v) => {
                             #varargs_slot.push(__v);
                         }
@@ -1067,8 +1069,8 @@ impl Signature {
     /// (`value_var = __arg`) and the kwarg arms (`value_var = __value`) so
     /// `encode(42)` and `encode(encoding=42)` report identical errors.
     ///
-    /// The heavy lifting (the pre-`from_value` type snapshot and CPython
-    /// `_PyArg_BadArgument` wording selection) lives in `extract_into` —
+    /// The heavy lifting (matching the structured `FromValueFail` and picking
+    /// the CPython `_PyArg_BadArgument` wording) lives in `extract_into` —
     /// monomorphised once per field type and shared across every derive —
     /// rather than being inlined as tokens at each site. The macro only picks
     /// the [`ArgErrCtx`] variant; errors still route through `__cleanup!` so

@@ -28,7 +28,7 @@ use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -181,17 +181,19 @@ fn uni_combining(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// `unicodedata.normalize(form, unistr)` — normalize a string to NFC/NFD/NFKC/NFKD.
 fn uni_normalize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
-    normalize_with(form, &unistr, vm.heap)
+    defer_drop!(unistr, vm);
+    normalize_with(form, unistr.as_str(vm), vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
 fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let IsNormalizedArgs { form, unistr } = IsNormalizedArgs::from_args(args, vm)?;
+    defer_drop!(unistr, vm);
     let normalized = match form {
-        NormForm::Nfc => unicode_normalization::is_nfc(&unistr),
-        NormForm::Nfd => unicode_normalization::is_nfd(&unistr),
-        NormForm::Nfkc => unicode_normalization::is_nfkc(&unistr),
-        NormForm::Nfkd => unicode_normalization::is_nfkd(&unistr),
+        NormForm::Nfc => unicode_normalization::is_nfc(unistr.as_str(vm)),
+        NormForm::Nfd => unicode_normalization::is_nfd(unistr.as_str(vm)),
+        NormForm::Nfkc => unicode_normalization::is_nfkc(unistr.as_str(vm)),
+        NormForm::Nfkd => unicode_normalization::is_nfkd(unistr.as_str(vm)),
     };
     Ok(Value::Bool(normalized))
 }
@@ -217,18 +219,18 @@ struct NameArgs {
 ///
 /// Both arguments are positional-only. `form` coerces straight into a
 /// [`NormForm`] (its `FromValue` impl does the str type-check *and* the
-/// form-name value check); `unistr` is a plain `str`. `bad_arg` gives both the
-/// exact `normalize() argument N must be str, not <type>` type error, while
-/// `NormForm`'s own `ValueError` for an unknown form survives unclobbered (see
-/// `FromValue::extract_into`). `expected_exact` reproduces CPython's
-/// `normalize expected 2 arguments, got N` arity error.
+/// form-name value check); `unistr` is a zero-copy [`StrArg`]. `bad_arg`
+/// gives both the exact `normalize() argument N must be str, not <type>`
+/// type error, while `NormForm`'s `ValueError` for an unknown form is a
+/// `FromValueFail::Raise` and so survives unclobbered. `expected_exact`
+/// reproduces CPython's `normalize expected 2 arguments, got N` arity error.
 #[derive(FromArgs)]
 #[from_args(name = "normalize", bad_arg, expected_exact)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
     form: NormForm,
     #[from_args(pos_only)]
-    unistr: String,
+    unistr: StrArg,
 }
 
 /// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
@@ -238,7 +240,7 @@ struct IsNormalizedArgs {
     #[from_args(pos_only)]
     form: NormForm,
     #[from_args(pos_only)]
-    unistr: String,
+    unistr: StrArg,
 }
 
 /// The four Unicode normalization forms accepted by `normalize`/`is_normalized`.
@@ -255,23 +257,24 @@ impl FromValue for NormForm {
     /// `argument N must be str, not <type>` (via `bad_arg`).
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
 
-    /// A well-typed `str` that names no known form is a *value* error, not a
-    /// type error; `FromValue::extract_into` only rewrites genuine type
-    /// mismatches, so this `ValueError` reaches the caller unchanged.
+    /// A non-`str` reports `WrongType` (rewritten by `bad_arg` into the
+    /// `argument N must be str, not <type>` message); a well-typed `str` that
+    /// names no known form is a *value* failure, so its `ValueError` reaches
+    /// the caller unchanged.
     ///
     /// Matches on the borrowed form name ([`Value::to_str`] borrows both
     /// interned and heap strings) rather than allocating an owned `String`,
-    /// then drops the value once that borrow is released. For a non-`str`
-    /// value, `to_str`'s error is what `extract_into` rewrites into the
-    /// `argument N must be str, not <type>` message.
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    /// then drops the value once that borrow is released.
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
         let result = match value.to_str(vm) {
             Ok("NFC") => Ok(Self::Nfc),
             Ok("NFD") => Ok(Self::Nfd),
             Ok("NFKC") => Ok(Self::Nfkc),
             Ok("NFKD") => Ok(Self::Nfkd),
-            Ok(_) => Err(SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into()),
-            Err(e) => Err(e),
+            Ok(_) => Err(FromValueFail::Raise(
+                SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into(),
+            )),
+            Err(_) => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
         };
         value.drop_with_heap(vm);
         result

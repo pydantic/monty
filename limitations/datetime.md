@@ -50,11 +50,16 @@ got N`.
 
 ## `timedelta`
 
-Constructor: `timedelta(days=0, seconds=0, microseconds=0, minutes=0,
-hours=0)`. The CPython `milliseconds` and `weeks` parameters are not
-supported.
+Constructor: `timedelta(days=0, seconds=0, microseconds=0, *,
+milliseconds=0, minutes=0, hours=0, weeks=0)` — note `milliseconds`,
+`minutes`, `hours`, and `weeks` are keyword-only in Monty; CPython accepts
+all seven positionally.
 Attributes: `days`, `seconds`, `microseconds`.
-No methods (`.total_seconds()` is **not** implemented).
+Methods: `total_seconds`.
+
+A non-int component raises `TypeError: '{type}' object cannot be
+interpreted as an integer`; CPython names the offending component instead
+(`unsupported type for timedelta days component: str`).
 
 Arithmetic (`+`, `-`, `*`, comparisons) works between `timedelta`s and
 between `datetime`/`date` and `timedelta`. Division and floor-division of

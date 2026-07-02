@@ -78,7 +78,7 @@ use smallvec::smallvec;
 
 use super::{MontyIter, PyTrait, Type};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -510,13 +510,18 @@ fn bytes_decode<'h>(
     let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm)?;
     // `errors` is accepted for parity but ignored — UTF-8 decoding of valid
     // bytes has nothing to handle, and `lookup_error_unknown_error_handler`
-    // would be the next layer once non-UTF-8 codecs land.
-    let _ = errors;
-    let encoding = encoding.map_or_else(|| "utf-8".to_owned(), |e| e.to_ascii_lowercase());
+    // would be the next layer once non-UTF-8 codecs land. The guard still
+    // drops its heap reference.
+    defer_drop!(errors, vm);
+    defer_drop!(encoding, vm);
+    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
 
     // Only support UTF-8 family
-    if !matches!(encoding.as_str(), "utf-8" | "utf8" | "utf_8") {
-        return Err(ExcType::lookup_error_unknown_encoding(&encoding));
+    if !(encoding.eq_ignore_ascii_case("utf-8")
+        || encoding.eq_ignore_ascii_case("utf8")
+        || encoding.eq_ignore_ascii_case("utf_8"))
+    {
+        return Err(ExcType::lookup_error_unknown_encoding(encoding));
     }
 
     // Decode as UTF-8
@@ -532,15 +537,15 @@ fn bytes_decode<'h>(
 /// (`decode() argument 'encoding' must be str, not <type>`) so wrong-type
 /// errors match the C implementation. Both fields default to absent;
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
-/// out naturally because `Option<String>::from_value` delegates to
-/// `String::from_value` and rejects `Value::None`.
+/// out naturally because `Option<StrArg>::from_value` delegates to
+/// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
 #[from_args(name = "decode", bad_arg_named)]
 struct BytesDecodeArgs {
     #[from_args(default)]
-    encoding: Option<String>,
+    encoding: Option<StrArg>,
     #[from_args(default)]
-    errors: Option<String>,
+    errors: Option<StrArg>,
 }
 
 /// Implements Python's `bytes.count(sub[, start[, end]])` method.

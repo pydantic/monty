@@ -11,7 +11,7 @@
 use std::str;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -43,10 +43,11 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
         opener,
     } = OpenArgs::from_args(args, vm)?;
 
-    // `mode` is already a `String` from the macro (default `"r"`); `file`
-    // and the unsupported kwargs are still raw `Value`s and need cleanup.
+    // `file` and the unsupported kwargs are raw `Value`s; `mode` holds a
+    // borrowed str — all need cleanup on every path.
     let mut file = HeapGuard::new(file, vm);
     let (file, vm) = file.as_parts_mut();
+    defer_drop!(mode, vm);
     defer_drop!(buffering, vm);
     defer_drop!(encoding, vm);
     defer_drop!(errors, vm);
@@ -67,6 +68,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
     // Parse here purely to reject malformed modes before the OS round-trip;
     // the file wrapper itself is built from the host's returned FileHandle.
     let file_mode = mode
+        .as_ref()
+        .map_or("r", |m| m.as_str(vm))
         .parse::<FileMode>()
         .map_err(|e| RunError::from(SimpleException::new_msg(ExcType::ValueError, e)))?;
 
@@ -79,9 +82,10 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 /// Argument shape for `open(file, mode='r', buffering=-1, encoding=None,
 /// errors=None, newline=None, closefd=True, opener=None)`.
 ///
-/// `mode` is taken as `String` so wrong-type errors flow through the macro's
-/// `bad_arg_named` path and match CPython's `open() argument 'mode' must be
-/// str, not …` wording verbatim. The other kwargs stay as raw `Value`
+/// `mode` is a zero-copy [`StrArg`] (absent → `"r"`) so wrong-type errors
+/// flow through the macro's `bad_arg_named` path and match CPython's
+/// `open() argument 'mode' must be str, not …` wording verbatim, without
+/// copying the mode string. The other kwargs stay as raw `Value`
 /// because they have monty-specific validation (`validate_ignored_open_kwarg`)
 /// that the macro doesn't model — Monty rejects any *non-default* value to
 /// avoid silently dropping semantics it doesn't honour (e.g. `buffering=0`,
@@ -92,8 +96,8 @@ pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValue
 #[from_args(name = "open", bad_arg_named)]
 struct OpenArgs {
     file: Value,
-    #[from_args(default = "r".to_owned())]
-    mode: String,
+    #[from_args(default)]
+    mode: Option<StrArg>,
     #[from_args(default = Value::Int(-1))]
     buffering: Value,
     #[from_args(default = Value::None)]

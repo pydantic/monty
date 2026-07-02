@@ -16,8 +16,9 @@ use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
@@ -266,7 +267,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = format_date_strftime(date, &format)?;
+                defer_drop!(format, vm);
+                let formatted = format_date_strftime(date, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
@@ -415,7 +417,7 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 #[derive(FromArgs)]
 #[from_args(name = "strftime", c_error_named, at_most_total, bad_arg)]
 pub(crate) struct StrftimeArgs {
-    pub(crate) format: String,
+    pub(crate) format: StrArg,
 }
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields

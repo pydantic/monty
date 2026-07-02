@@ -999,7 +999,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = format_datetime_strftime(&dt, &format)?;
+                defer_drop!(format, vm);
+                let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {

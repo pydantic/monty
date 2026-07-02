@@ -1127,16 +1127,11 @@ except TypeError as e:
         assert str(e) == "__new__() got an unexpected keyword argument 'foo'", f'td foo kw: {e}'
 
 # === FromArgs migration: invalid argument-type coverage ===
-# CPython routes non-int arguments through component-specific error messages
-# that name the argument (e.g. `unsupported type for timedelta days
-# component: str`, or `'str' object cannot be interpreted as an integer`),
-# while Monty's `FromValue::<i32|i128>::from_value` emits the generic
-# "an integer is required (got type float)" — note the wording is itself
-# wrong for non-float inputs and stems from a pre-existing wart in
-# `Value::to_i32`. Closing the gap requires either (a) custom `FromValue`
-# impls for the timedelta components or (b) fixing `Value::to_i32`'s type
-# reporting plus matching CPython's `'<type>' object cannot be interpreted`
-# wording.
+# Monty's int extraction reports CPython's `'<type>' object cannot be
+# interpreted as an integer`. timedelta is the one remaining divergence:
+# CPython's timedelta constructor names the component (`unsupported type for
+# timedelta days component: str`), which would need argument-name-aware
+# wording in the extraction machinery — see limitations/datetime.md.
 
 # timedelta: positional days as wrong type
 try:
@@ -1144,7 +1139,7 @@ try:
     assert False, 'timedelta(non-int) should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'td non-int days: {e}'
+        assert str(e) == "'str' object cannot be interpreted as an integer", f'td non-int days: {e}'
     else:
         assert str(e) == 'unsupported type for timedelta days component: str', f'td non-int days: {e}'
 
@@ -1154,7 +1149,7 @@ try:
     assert False, 'timedelta(milliseconds=non-int) should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'td non-int ms kw: {e}'
+        assert str(e) == "'list' object cannot be interpreted as an integer", f'td non-int ms kw: {e}'
     else:
         assert str(e) == 'unsupported type for timedelta milliseconds component: list', f'td non-int ms kw: {e}'
 
@@ -1164,10 +1159,7 @@ try:
     base_dt.replace(year='nope')
     assert False, 'datetime.replace(year=str) should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt.replace bad type: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt.replace bad type: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt.replace bad type: {e}'
 
 # NOTE: CPython's datetime.replace() accepts positional args (year, month,
 # day, ...). Monty's existing implementation rejects all positional args for
@@ -1180,10 +1172,7 @@ try:
     base_date.replace(day='last')
     assert False, 'date.replace(day=str) should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'date.replace bad type: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'date.replace bad type: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'date.replace bad type: {e}'
 
 # datetime constructor: missing required positional (yields a precise message,
 # shared with CPython's `PyArg_ParseTupleAndKeywords`)
@@ -1198,30 +1187,21 @@ try:
     datetime.datetime('twenty-four', 6, 15)
     assert False, 'datetime non-int year should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int year: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int year: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int year: {e}'
 
 # datetime constructor: wrong type for optional positional (microsecond)
 try:
     datetime.datetime(2024, 6, 15, 0, 0, 0, 'oops')
     assert False, 'datetime non-int microsecond should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec: {e}'
 
 # datetime constructor: wrong type for kw-only-style microsecond (via kwarg path)
 try:
     datetime.datetime(2024, 6, 15, microsecond='nope')
     assert False, 'datetime non-int microsecond kwarg should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == 'an integer is required (got type float)', f'dt non-int microsec kw: {e}'
-    else:
-        assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec kw: {e}'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f'dt non-int microsec kw: {e}'
 
 # === timedelta str with microseconds (timedelta.rs py_str) ===
 
