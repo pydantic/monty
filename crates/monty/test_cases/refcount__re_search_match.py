@@ -31,32 +31,51 @@ r1 = results[1]
 r2 = results[2]
 
 # === Module-level error paths ===
-# Once the subject has been pulled out of the positional-arg iterator its
-# guard no longer covers it, so each error path below must drop it manually.
+# The FromArgs slots guard drops extracted values when binding fails, and the
+# body coercions (resolve_pattern / extract_count / subject_str) must drop
+# their peers on each failure path.
 # (Concatenation defeats literal interning, so subject is a real heap string.)
 subject = 'hello' + ' world'
 
-# Non-string pattern: arity is validated first, then pattern conversion fails
+# Non-string pattern: binding succeeds, pattern coercion fails in the body —
+# the subject is dropped by its defer_drop guard
 try:
     re.search(123, subject)
 except TypeError:
     pass
 
-# Bad flags type: extract_flags fails after the subject was extracted
+# Bad flags type: pattern already coerced, flags coercion fails
 try:
     re.search('h', subject, 'bad')
 except TypeError:
     pass
 
-# Too many positional args: the extra value and the subject are both dropped
+# Too many positional args: binding fails, the slots guard drops the already-
+# bound subject and the overflow value
 try:
     re.search('h', subject, 0, subject)
 except TypeError:
     pass
 
+# Compiled pattern with flags: the ValueError path must drop the still-live
+# compiled-pattern reference taken at extraction
+try:
+    re.search(p, subject, 1)
+except ValueError:
+    pass
+
+# Compiled pattern used by a module function: p's refcount returns to 1
+m3 = re.search(p, subject)
+assert m3 is not None, 'compiled pattern search finds match'
+
+# Negative count returns the subject: subject gains a reference from the result
+sub_result = re.sub('h', 'X', subject, -1)
+assert sub_result == 'hello world', 'negative count returns subject unchanged'
+
 # p: 1, m: 1, group_str: 1, m2: 1, full_str: 1
 # results: 1, r0: 2 (var + list), r1: 2 (var + list), r2: 2 (var + list + final expr)
-# subject: 1 (all error paths dropped their borrowed copies)
+# subject: 2 (variable + sub_result aliasing it), sub_result: 2 (same object)
+# m3: 1
 # re: 1
 r2
-# ref-counts={'p': 1, 'm': 1, 'group_str': 1, 'm2': 1, 'full_str': 1, 'results': 1, 'r0': 2, 'r1': 2, 'r2': 3, 'subject': 1, 're': 1}
+# ref-counts={'p': 1, 'm': 1, 'group_str': 1, 'm2': 1, 'full_str': 1, 'results': 1, 'r0': 2, 'r1': 2, 'r2': 3, 'subject': 2, 'sub_result': 2, 'm3': 1, 're': 1}

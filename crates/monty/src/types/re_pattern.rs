@@ -9,7 +9,7 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, fmt::Write, iter, mem, str};
+use std::{borrow::Cow, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use ahash::AHashSet;
 use fancy_regex::Regex;
@@ -223,19 +223,27 @@ impl RePattern {
 
     /// `pattern.split(string, maxsplit=0)` — split string by pattern occurrences.
     ///
-    /// Returns a list of strings. If `maxsplit` is non-zero, at most `maxsplit`
-    /// splits occur and the remainder of the string is returned as the final element.
-    pub fn split(&self, text: &str, maxsplit: usize, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let pieces: Vec<&str> = if maxsplit == 0 {
-            self.compiled
+    /// Returns a list of strings. If `maxsplit` is positive, at most `maxsplit`
+    /// splits occur and the remainder of the string is returned as the final
+    /// element; if it is negative, no splits occur at all (CPython's split loop
+    /// runs zero times), returning the whole subject as a single element.
+    pub fn split(&self, text: &str, maxsplit: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        let pieces: Vec<&str> = match maxsplit.cmp(&0) {
+            Ordering::Less => vec![text],
+            Ordering::Equal => self
+                .compiled
                 .split(text)
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(ExcType::re_pattern_error)?
-        } else {
-            self.compiled
-                .splitn(text, maxsplit + 1)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(ExcType::re_pattern_error)?
+                .map_err(ExcType::re_pattern_error)?,
+            Ordering::Greater => {
+                // `maxsplit + 1` pieces = at most `maxsplit` splits; saturate
+                // for absurdly large limits (splitn caps at the piece count).
+                let limit = usize::try_from(maxsplit).unwrap_or(usize::MAX).saturating_add(1);
+                self.compiled
+                    .splitn(text, limit)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(ExcType::re_pattern_error)?
+            }
         };
 
         let mut results = Vec::with_capacity(pieces.len());
@@ -399,29 +407,14 @@ fn call_pattern_sub<'h>(
     defer_drop!(repl_val, vm);
     defer_drop!(string_val, vm);
 
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "n is checked non-negative above"
-    )]
-    let count = match count_val {
-        Some(Value::Int(n)) if n >= 0 => n as usize,
-        Some(Value::Bool(b)) => usize::from(b),
-        Some(Value::Int(_)) => {
-            // Negative count — Pattern.sub returns the input string unchanged,
-            // so just typecheck and bump the refcount; no need to re-allocate.
-            if !string_val.is_str(vm.heap) {
-                let t = string_val.py_type(vm);
-                return Err(ExcType::type_error(format!("expected string, not {t}")));
-            }
-            return Ok(string_val.clone_with_heap(vm.heap));
+    let Some(count) = extract_count(count_val, vm)? else {
+        // Negative count — Pattern.sub returns the input string unchanged,
+        // so just typecheck and bump the refcount; no need to re-allocate.
+        if !string_val.is_str(vm.heap) {
+            let t = string_val.py_type(vm);
+            return Err(ExcType::type_error(format!("expected string, not {t}")));
         }
-        Some(other) => {
-            let t = other.py_type(vm);
-            other.drop_with_heap(vm);
-            return Err(ExcType::type_error(format!("expected int for count, not {t}")));
-        }
-        None => 0,
+        return Ok(string_val.clone_with_heap(vm.heap));
     };
 
     // Check that repl is a string — callable replacement is not supported
@@ -482,24 +475,50 @@ struct PatternSplitArgs {
     maxsplit: Option<Value>,
 }
 
-/// Extracts a `maxsplit` value from an optional `Value`.
+/// Extracts a `maxsplit` value from an optional `Value` for [`RePattern::split`].
 ///
-/// Returns 0 if not provided. Negative values are treated as 0 (split all).
-fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<usize> {
+/// Returns 0 (split all) if not provided; negatives pass through — the split
+/// loop then runs zero times, matching CPython. Non-ints get CPython's
+/// argument-clinic message. Shared by `Pattern.split` and module-level
+/// `re.split`.
+pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<i64> {
     match val {
         None => Ok(0),
-        Some(Value::Int(n)) if n <= 0 => Ok(0),
-        #[expect(
-            clippy::cast_sign_loss,
-            clippy::cast_possible_truncation,
-            reason = "n is checked positive above"
-        )]
-        Some(Value::Int(n)) => Ok(n as usize),
-        Some(Value::Bool(b)) => Ok(usize::from(b)),
+        Some(Value::Int(n)) => Ok(n),
+        Some(Value::Bool(b)) => Ok(i64::from(b)),
         Some(other) => {
             let t = other.py_type(vm);
             other.drop_with_heap(vm);
-            Err(ExcType::type_error(format!("expected int for maxsplit, not {t}")))
+            Err(ExcType::type_error(format!(
+                "'{t}' object cannot be interpreted as an integer"
+            )))
+        }
+    }
+}
+
+/// Extracts a `count` value from an optional `Value` for [`RePattern::sub`].
+///
+/// Returns `Ok(None)` for a negative count, which callers turn into "return
+/// the subject unchanged" (CPython's match loop runs zero times there).
+/// Non-ints get CPython's argument-clinic message. Shared by `Pattern.sub`
+/// and module-level `re.sub`.
+pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<usize>> {
+    #[expect(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        reason = "n is checked non-negative above"
+    )]
+    match val {
+        None => Ok(Some(0)),
+        Some(Value::Int(n)) if n >= 0 => Ok(Some(n as usize)),
+        Some(Value::Bool(b)) => Ok(Some(usize::from(b))),
+        Some(Value::Int(_)) => Ok(None),
+        Some(other) => {
+            let t = other.py_type(vm);
+            other.drop_with_heap(vm);
+            Err(ExcType::type_error(format!(
+                "'{t}' object cannot be interpreted as an integer"
+            )))
         }
     }
 }

@@ -271,13 +271,16 @@ impl Signature {
         let arg_param_count = self.arg_count();
         let total_positional_params = pos_param_count + arg_param_count;
 
-        // Check positional argument count against maximum
+        // Check positional argument count against maximum. When some
+        // positional params have defaults CPython reports the range form
+        // (`takes from {min} to {max} positional arguments ...`).
         if let Some(max) = self.max_positional_count() {
             let positional_count = pos_iter.len();
             if positional_count > max {
                 let func = vm.interns.get_str(func_name.name_id);
-                return Err(ExcType::type_error_too_many_positional(
+                return Err(ExcType::type_error_too_many_positional_range(
                     func,
+                    self.required_positional_count(),
                     max,
                     positional_count,
                     kwonly_given,
@@ -612,37 +615,23 @@ impl Signature {
     fn wrong_arg_count_error<T>(&self, actual_count: usize, interns: &Interns, func_name: Identifier) -> RunResult<T> {
         let name_str = interns.get_str(func_name.name_id);
         let param_count = self.param_count();
-        let msg = if let Some(missing_count) = param_count.checked_sub(actual_count) {
-            // Missing arguments - show actual parameter names
-            let mut msg = format!(
-                "{}() missing {} required positional argument{}: ",
-                name_str,
-                missing_count,
-                if missing_count == 1 { "" } else { "s" }
-            );
-            // Collect parameter names, skipping the ones already provided
-            let mut missing_names: Vec<_> = self
+        // Only reached from the Simple/SimpleWithDefaults fast paths, so there
+        // are no pos-only, kw-only, or `*args` params: every param is
+        // positional-or-keyword and `param_count` is the positional maximum.
+        let required = self.required_positional_count();
+        let msg = if actual_count < required {
+            // Missing arguments — CPython lists only the *required* params not
+            // yet provided (params with defaults are never "missing").
+            let missing_names: Vec<String> = self
                 .param_names()
+                .take(required)
                 .skip(actual_count)
-                .map(|string_id| format!("'{}'", interns.get_str(string_id)))
+                .map(|string_id| interns.get_str(string_id).to_string())
                 .collect();
-            let last = missing_names.pop().unwrap();
-            if !missing_names.is_empty() {
-                msg.push_str(&missing_names.join(", "));
-                msg.push_str(", and ");
-            }
-            msg.push_str(&last);
-            msg
+            let missing_refs: Vec<&str> = missing_names.iter().map(String::as_str).collect();
+            ExcType::missing_positional_msg(name_str, &missing_refs)
         } else {
-            // Too many arguments
-            format!(
-                "{}() takes {} positional argument{} but {} {} given",
-                name_str,
-                param_count,
-                if param_count == 1 { "" } else { "s" },
-                actual_count,
-                if actual_count == 1 { "was" } else { "were" }
-            )
+            ExcType::too_many_positional_range_msg(name_str, required, param_count, actual_count, 0)
         };
         Err(SimpleException::new_msg(ExcType::TypeError, msg)
             .with_position(func_name.position)

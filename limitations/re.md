@@ -12,15 +12,26 @@ Implemented: `compile`, `search`, `match`, `fullmatch`, `findall`, `sub`,
 Not implemented: `subn`, `purge`, `template`. The pre-compiled `re._compile`
 internal is not exposed.
 
-`search`, `match`, `fullmatch`, `findall`, and `finditer` accept positional
-arguments only — `re.search(pattern='h', string='hello')` works in CPython
-(its module functions are pure Python) but raises `TypeError` in Monty.
+The module-level functions accept the same positional-or-keyword arguments
+as CPython (including compiled `re.Pattern` objects as the first argument,
+with `re.compile(p) is p` and the `cannot process flags argument with a
+compiled pattern` `ValueError`), and their signature/type error messages
+match CPython's, with these divergences:
 
-`TypeError` messages for missing, extra, or wrongly-typed arguments to the
-module-level functions do not match CPython's wording (CPython raises
-standard Python-function signature errors, e.g. `search() missing 1 required
-positional argument: 'string'`; Monty raises e.g. `re.search() missing
-required argument: 'string'`).
+- `bytes` patterns and subjects are not supported (Monty has no bytes
+  matching). A bytes *subject* raises CPython's mixed-types message
+  (`cannot use a string pattern on a bytes-like object`); a bytes *pattern*
+  raises `first argument must be string or compiled pattern`, whereas
+  CPython supports bytes patterns.
+- A non-str, non-callable `repl` for `re.sub` raises `callable replacement
+  is not yet supported in re.sub()` (callable replacement is a genuine
+  feature gap); CPython raises `decoding to str: need a bytes-like object,
+  int found`-style errors for non-callable non-strings.
+- A negative or `> 0xFFFF` integer `flags` value raises
+  `TypeError: flags must be a non-negative integer`; CPython accepts any
+  int-sized value (unknown bits are silently accepted by Monty either way).
+- Positional `count` / `maxsplit` for `re.sub` / `re.split` do not emit
+  CPython 3.13+'s `DeprecationWarning` (Monty has no warnings machinery).
 
 ## Flags
 
@@ -39,6 +50,10 @@ Methods: `search`, `match`, `fullmatch`, `findall`, `sub`, `split`,
 Not implemented: `subn`, `groups` (count), `groupindex` (named-group
 mapping), `scanner`. The `pos` / `endpos` arguments accepted by
 `Pattern.search(string, pos, endpos)` etc. in CPython are **not** supported.
+
+A non-str subject passed to a Pattern *method* raises `expected string, not
+{type}` rather than CPython's `expected string or bytes-like object, got
+'{type}'` (the module-level functions match CPython's wording).
 
 ## `re.Match` objects
 

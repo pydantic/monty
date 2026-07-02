@@ -43,6 +43,16 @@ struct Signature {
     /// `unicodedata.name(chr[, default])`. Unlike the macro's default C-method
     /// wording, this reports the *count* range rather than the argument names.
     unpack_tuple: bool,
+    /// Exact pure-Python `def` signature errors, for callables that are plain
+    /// Python functions in CPython (e.g. the `re` module functions,
+    /// `json.dumps`). Switches the too-many-positional wording to
+    /// `{name}() takes [from {min} to] {max} positional argument(s) but {N}
+    /// were given` — counting only positionals, with CPython's
+    /// `(and N keyword-only argument(s))` suffix. The default `Python` style
+    /// keeps the `PyArg_UnpackTuple`-ish `expected at most` wording because
+    /// most default-style structs model CPython *C* functions where that
+    /// wording is the correct one.
+    py_def: bool,
     /// Override for the function name in the unknown-kwarg error only.
     /// Used by `json.dumps`, which forwards unmatched kwargs to
     /// `JSONEncoder.__init__` and so reports that name instead.
@@ -158,6 +168,7 @@ impl Signature {
             at_most_total,
             expected_exact,
             unpack_tuple,
+            py_def,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -273,6 +284,29 @@ impl Signature {
                  — it models a fixed positional min..max range (CPython `PyArg_UnpackTuple`)",
             ));
         }
+        if py_def {
+            if !matches!(error_style, ErrorStyle::Python) {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`py_def` cannot be combined with `c_error` or `c_error_named` \
+                     — it models a pure-Python `def`, which always uses Python-style errors",
+                ));
+            }
+            if at_most_total || expected_exact || unpack_tuple {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`py_def` cannot be combined with `at_most_total`, `expected_exact`, or `unpack_tuple` \
+                     — those model C argument-parsing wordings, `py_def` models a pure-Python `def`",
+                ));
+            }
+            if varargs_idx.is_some() {
+                return Err(syn::Error::new(
+                    struct_ident.span(),
+                    "`py_def` cannot be combined with `varargs` \
+                     — a `*args` signature can never raise too-many-positional, so the attribute is dead",
+                ));
+            }
+        }
         if kwargs_not_supported_yet {
             if varkwargs_idx.is_some() {
                 return Err(syn::Error::new(
@@ -307,6 +341,7 @@ impl Signature {
             at_most_total,
             expected_exact,
             unpack_tuple,
+            py_def,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -481,6 +516,16 @@ impl Signature {
     /// stay in sync.
     fn at_most_err_expr(&self, max_lit: usize, actual: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
+        if self.py_def {
+            // Pure-Python `def` wording; `__kwonly_given` is bound by
+            // `render_overflow_bindings` at both overflow sites.
+            let min = self.required_positional_count();
+            return quote! {
+                crate::exception_private::ExcType::type_error_too_many_positional_range(
+                    #func_name, #min, #max_lit, #actual, __kwonly_given,
+                )
+            };
+        }
         if self.expected_exact {
             // Pre-check should already have fired; emit matching wording anyway.
             return quote! {
@@ -520,6 +565,62 @@ impl Signature {
             ErrorStyle::Python => quote! {
                 crate::exception_private::ExcType::type_error_at_most(#func_name, #max_lit, #actual)
             },
+        }
+    }
+
+    /// Bind the locals the too-many-positional error expression reads, at an
+    /// overflow site where `__pos_iter` has just yielded one arg too many.
+    ///
+    /// `pos_prefix` is the already-consumed positional count (`1usize` on the
+    /// zero-slot fast path, `__pos_count + 1` on the positional-loop tail).
+    /// The default styles fold remaining kwargs into `__actual` so the count
+    /// matches CPython's C "(M given)" total; `py_def` counts positionals only
+    /// and additionally binds `__kwonly_given` (kwargs naming keyword-only
+    /// fields) for CPython's `(and N keyword-only argument(s))` suffix.
+    fn render_overflow_bindings(&self, pos_prefix: &TokenStream) -> TokenStream {
+        if !self.py_def {
+            return quote! {
+                let __actual = #pos_prefix
+                    + ::std::iter::ExactSizeIterator::len(&__pos_iter)
+                    + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
+            };
+        }
+        let kw_only_ids: Vec<TokenStream> = self
+            .fields
+            .iter()
+            .filter(|f| matches!(f.kind, FieldKind::KwOnly))
+            .map(Field::kwarg_string_id_expr)
+            .collect();
+        let kwonly_binding = if kw_only_ids.is_empty() {
+            quote! { let __kwonly_given: usize = 0; }
+        } else {
+            // Drain-count the kwargs: we are erroring anyway, so consume and
+            // drop each pair (leaving `__cleanup!`'s drain a no-op) while
+            // counting the ones that name a keyword-only field. Non-string
+            // keys simply don't count.
+            let mut is_kwonly = quote!(false);
+            for id in &kw_only_ids {
+                is_kwonly = quote!(#is_kwonly || __key_str.matches(#id, vm.interns));
+            }
+            quote! {
+                let mut __kwonly_given: usize = 0;
+                while let ::std::option::Option::Some((__key, __value)) =
+                    ::std::iter::Iterator::next(&mut __kwargs_iter)
+                {
+                    let __is_kwonly = match __key.as_either_str(vm.heap) {
+                        ::std::option::Option::Some(__key_str) => #is_kwonly,
+                        ::std::option::Option::None => false,
+                    };
+                    if __is_kwonly {
+                        __kwonly_given += 1;
+                    }
+                    (__key, __value).drop_with_heap(vm);
+                }
+            }
+        };
+        quote! {
+            let __actual = #pos_prefix + ::std::iter::ExactSizeIterator::len(&__pos_iter);
+            #kwonly_binding
         }
     }
 
@@ -583,9 +684,11 @@ impl Signature {
     }
 
     /// Suppressed under `expected_exact` / `unpack_tuple`, whose own pre-checks
-    /// cover the at-least/at-most directions with `PyArg_UnpackTuple` wording.
+    /// cover the at-least/at-most directions with `PyArg_UnpackTuple` wording,
+    /// and under `py_def`, where even required pos-only fields keep the
+    /// pure-Python `def` wording (e.g. CPython's `json.loads(s, /)`).
     fn use_c_method_arity_wording(&self) -> bool {
-        !self.expected_exact && !self.unpack_tuple && self.required_pos_only_count() > 0
+        !self.expected_exact && !self.unpack_tuple && !self.py_def && self.required_pos_only_count() > 0
     }
 
     /// Pre-check for `expected_exact`: exactly `required_positional_count()`
@@ -689,32 +792,91 @@ impl Signature {
     /// passed, `render_build_struct` can move fields out without any fallible
     /// `__cleanup!` expressions inside the struct initializer, avoiding
     /// partial-initialization leaks for already-moved heap values.
+    ///
+    /// The Python style aggregates every missing name into one error
+    /// (`missing 2 required positional arguments: 'a' and 'b'`), positional
+    /// names first, matching CPython's `def` binding; C/NamedC keep the
+    /// per-field first-missing wording of `PyArg_ParseTupleAndKeywords`.
     fn render_final_required_check(&self, slots: &[TokenStream]) -> TokenStream {
-        let func_name = self.func_name.as_str();
-        let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
-            if matches!(field.kind, FieldKind::Varargs | FieldKind::Varkwargs) || field.default.is_some() {
-                return None;
-            }
+        if matches!(self.error_style, ErrorStyle::Python) {
+            self.render_final_required_check_python(slots)
+        } else {
+            let func_name = self.func_name.as_str();
+            let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
+                if matches!(field.kind, FieldKind::Varargs | FieldKind::Varkwargs) || field.default.is_some() {
+                    return None;
+                }
 
+                let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+                let err_expr = if let Some(pos) = field.pos_index {
+                    self.missing_positional_err(&field_name_lit, pos)
+                } else {
+                    quote! {
+                        crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
+                            #func_name,
+                            &[#field_name_lit],
+                        )
+                    }
+                };
+
+                Some(quote! {
+                    if #slot.is_none() {
+                        __cleanup!(#err_expr);
+                    }
+                })
+            });
+            quote! { #(#checks)* }
+        }
+    }
+
+    /// Python-style arm of [`render_final_required_check`](Self::render_final_required_check):
+    /// collect ALL missing required names (positional pass, then keyword-only
+    /// pass) and raise once per group with CPython's aggregated wording.
+    fn render_final_required_check_python(&self, slots: &[TokenStream]) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        let mut positional_pushes: Vec<TokenStream> = Vec::new();
+        let mut kwonly_pushes: Vec<TokenStream> = Vec::new();
+        for (field, slot) in self.fields.iter().zip(slots) {
+            if matches!(field.kind, FieldKind::Varargs | FieldKind::Varkwargs) || field.default.is_some() {
+                continue;
+            }
             let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
-            let err_expr = if let Some(pos) = field.pos_index {
-                self.missing_positional_err(&field_name_lit, pos)
-            } else {
-                quote! {
-                    crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
-                        #func_name,
-                        &[#field_name_lit],
-                    )
+            let push = quote! {
+                if #slot.is_none() {
+                    __missing.push(#field_name_lit);
                 }
             };
+            if field.pos_index.is_some() {
+                positional_pushes.push(push);
+            } else {
+                kwonly_pushes.push(push);
+            }
+        }
 
-            Some(quote! {
-                if #slot.is_none() {
-                    __cleanup!(#err_expr);
+        let group = |pushes: &[TokenStream], err_fn: TokenStream| {
+            if pushes.is_empty() {
+                TokenStream::new()
+            } else {
+                quote! {
+                    {
+                        let mut __missing: ::std::vec::Vec<&'static str> = ::std::vec::Vec::new();
+                        #(#pushes)*
+                        if !__missing.is_empty() {
+                            __cleanup!(crate::exception_private::ExcType::#err_fn(
+                                #func_name,
+                                &__missing,
+                            ));
+                        }
+                    }
                 }
-            })
-        });
-        quote! { #(#checks)* }
+            }
+        };
+        let positional_check = group(&positional_pushes, quote!(type_error_missing_positional_with_names));
+        let kwonly_check = group(&kwonly_pushes, quote!(type_error_missing_kwonly_with_names));
+        quote! {
+            #positional_check
+            #kwonly_check
+        }
     }
 
     /// Deferred unknown-kwarg check. Fires only when every required field
@@ -846,12 +1008,11 @@ impl Signature {
         // check. The full while/match would warn about the dead `+= 1`.
         if max_positional == 0 && !has_varargs {
             let err_expr = self.at_most_err_expr(0, &quote!(__actual));
+            let bindings = self.render_overflow_bindings(&quote!(1usize));
             return quote! {
                 if let ::std::option::Option::Some(__arg) = ::std::iter::Iterator::next(&mut __pos_iter) {
                     __arg.drop_with_heap(vm);
-                    let __actual = 1
-                        + ::std::iter::ExactSizeIterator::len(&__pos_iter)
-                        + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
+                    #bindings
                     __cleanup!(#err_expr);
                 }
             };
@@ -876,17 +1037,13 @@ impl Signature {
             }
         } else {
             let err_expr = self.at_most_err_expr(max_positional, &quote!(__actual));
+            let bindings = self.render_overflow_bindings(&quote!(__pos_count + 1));
             quote! {
                 _ => {
-                    // Drop the unconsumed arg ourselves; include remaining
-                    // positionals *and* kwargs in `__actual` so the count
-                    // matches CPython's "(M given)" total. `__cleanup!`
-                    // drains both iterators.
+                    // Drop the unconsumed arg ourselves; `__cleanup!` drains
+                    // both iterators after the bindings have counted them.
                     __arg.drop_with_heap(vm);
-                    let __actual = __pos_count
-                        + 1
-                        + ::std::iter::ExactSizeIterator::len(&__pos_iter)
-                        + ::std::iter::ExactSizeIterator::len(&__kwargs_iter);
+                    #bindings
                     __cleanup!(#err_expr);
                 }
             }
@@ -1223,6 +1380,7 @@ struct StructAttrs {
     at_most_total: bool,
     expected_exact: bool,
     unpack_tuple: bool,
+    py_def: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
     kwargs_not_supported_yet: bool,
@@ -1238,6 +1396,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut at_most_total = false;
     let mut expected_exact = false;
     let mut unpack_tuple = false;
+    let mut py_def = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
     let mut kwargs_not_supported_yet = false;
@@ -1261,6 +1420,9 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else if meta.path.is_ident("unpack_tuple") {
                 unpack_tuple = true;
+                Ok(())
+            } else if meta.path.is_ident("py_def") {
+                py_def = true;
                 Ok(())
             } else if meta.path.is_ident("kwarg_error_name") {
                 let value: LitStr = meta.value()?.parse()?;
@@ -1297,7 +1459,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `unpack_tuple`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, `c_error_named`, or `kwargs_not_supported_yet`",
+                    "unknown struct attribute; expected `name = \"...\"`, `at_most_positional`, `at_most_total`, `expected_exact`, `unpack_tuple`, `py_def`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, `c_error`, `c_error_named`, or `kwargs_not_supported_yet`",
                 ))
             }
         })?;
@@ -1318,6 +1480,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         at_most_total,
         expected_exact,
         unpack_tuple,
+        py_def,
         kwarg_error_name,
         bad_arg,
         kwargs_not_supported_yet,

@@ -37,16 +37,27 @@ required fields before optional ones in each region. Field types must
 implement `FromValue` (impls live in `monty::args::from_value`).
 
 The full attribute surface — struct-level wording flags (`c_error`,
-`c_error_named`, `at_most_total`, `expected_exact`, `unpack_tuple`, `bad_arg`,
-`kwargs_not_supported_yet`, …) and field-level roles (`pos_only`, `kw_only`,
-`varargs`, `varkwargs`, `default`, `static_string`) — is documented inline on
-`StructAttrs`, the `FieldKind` enum, and each `render_*` helper in
+`c_error_named`, `at_most_total`, `expected_exact`, `unpack_tuple`, `py_def`,
+`bad_arg`, `kwargs_not_supported_yet`, …) and field-level roles (`pos_only`,
+`kw_only`, `varargs`, `varkwargs`, `default`, `static_string`) — is documented
+inline on `StructAttrs`, the `FieldKind` enum, and each `render_*` helper in
 [`src/from_args.rs`](src/from_args.rs).
 
 `expected_exact` and `unpack_tuple` select CPython's `PyArg_UnpackTuple` arity
 wording (`expected N arguments, got M` / `expected at {least,most} N …`) for
 positional-only builtins — `expected_exact` for a fixed count, `unpack_tuple`
 for a `min..max` range (e.g. `unicodedata.name(chr[, default])`).
+
+`py_def` marks a callable that is a pure-Python `def` in CPython (e.g. the
+`re` module functions, `json.dumps`): too-many-positional errors use the
+`def` wording — `f() takes [from {min} to] {max} positional argument(s) but
+{N} were given`, counting positionals only, with CPython's `(and N
+keyword-only argument(s))` suffix. Missing required names are aggregated into
+one error (`missing 2 required positional arguments: 'a' and 'b'`) for every
+Python-style struct, `py_def` or not. Since CPython's `def` binding never
+type-checks, `py_def` structs should declare fields as raw `Value` and coerce
+in the function body — a `FromValue` coercion failure at extraction time
+would wrongly preempt later binding errors.
 
 ## `#[derive(ToArgs)]`
 
