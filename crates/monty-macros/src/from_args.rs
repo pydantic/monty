@@ -42,6 +42,8 @@ struct Signature {
     /// CPython's `PyArg_UnpackTuple` wording for optional-tail builtins like
     /// `unicodedata.name(chr[, default])`. Unlike the macro's default C-method
     /// wording, this reports the *count* range rather than the argument names.
+    /// Requires every field to be `pos_only`: these callables take no keyword
+    /// arguments (`METH_VARARGS`), and the range check counts positionals only.
     unpack_tuple: bool,
     /// Exact pure-Python `def` signature errors, for callables that are plain
     /// Python functions in CPython (e.g. the `re` module functions,
@@ -272,18 +274,37 @@ impl Signature {
                  signatures with a fixed maximum",
             ));
         }
-        if expected_exact && (varargs_idx.is_some() || at_most_total) {
+        // `kw_only` fields remain legal under `expected_exact`: clinic functions
+        // like `sorted(iterable, /, *, key=None, reverse=False)` genuinely pair
+        // the "expected N arguments" wording (which counts positionals only)
+        // with keyword-only parameters. `varkwargs` is different — it would
+        // silently swallow arbitrary kwargs the exact-arity check never sees.
+        if expected_exact && (varargs_idx.is_some() || varkwargs_idx.is_some() || at_most_total) {
             return Err(syn::Error::new(
                 struct_ident.span(),
-                "`expected_exact` cannot be combined with `varargs` or `at_most_total` \
+                "`expected_exact` cannot be combined with `varargs`, `varkwargs`, or `at_most_total` \
                  — the exact-arity wording assumes a single fixed required positional count",
             ));
         }
-        if unpack_tuple && (varargs_idx.is_some() || at_most_total || expected_exact) {
+        if unpack_tuple && (at_most_total || expected_exact) {
             return Err(syn::Error::new(
                 struct_ident.span(),
-                "`unpack_tuple` cannot be combined with `varargs`, `at_most_total`, or `expected_exact` \
+                "`unpack_tuple` cannot be combined with `at_most_total` or `expected_exact` \
                  — it models a fixed positional min..max range (CPython `PyArg_UnpackTuple`)",
+            ));
+        }
+        // `PyArg_UnpackTuple` callables are METH_VARARGS: they take no keyword
+        // arguments at all, and the pre-check counts positionals only. Any
+        // non-pos_only field would break that — `varkwargs`/`kw_only` would
+        // silently accept kwargs these callables must reject, and a
+        // pos-or-keyword field passed by name would miscount ("expected at
+        // least N arguments" despite the argument being supplied).
+        if unpack_tuple && fields.iter().any(|f| !matches!(f.kind, FieldKind::PosOnly)) {
+            return Err(syn::Error::new(
+                struct_ident.span(),
+                "`unpack_tuple` models a positional-only `PyArg_UnpackTuple` signature \
+                 — every field must be `pos_only` (no pos-or-keyword, `varargs`, `kw_only`, \
+                 or `varkwargs` fields)",
             ));
         }
         if py_def {
