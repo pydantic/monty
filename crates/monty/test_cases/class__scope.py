@@ -104,3 +104,102 @@ assert factory(4)().kind == 'widget', 'class member with a distinct name is unaf
 
 # The bare-name NameError case (a method referencing a class member by bare name)
 # is covered by the traceback test in class__name_error.py.
+
+
+# === LOAD_NAME semantics: a member read before its binding falls back to the
+# global namespace (never to enclosing function locals), like CPython ===
+
+x = 5
+
+
+class ReadsGlobal:
+    x = x + 1
+
+
+assert ReadsGlobal.x == 6, 'member read before binding sees the global'
+assert x == 5, 'the global is not modified by the class-body binding'
+
+fwd = 10
+
+
+class ForwardRef:
+    y = fwd
+    fwd = 1
+
+
+assert ForwardRef.y == 10, 'forward member reference reads the global'
+assert ForwardRef.fwd == 1, 'the later binding still creates the member'
+assert fwd == 10, 'global unchanged'
+
+g_name = 'global'
+
+
+def shadowed():
+    g_name = 'func'
+
+    class Inner:
+        g_name = g_name
+
+    assert g_name == 'func', 'enclosing local untouched'
+    return Inner.g_name
+
+
+assert shadowed() == 'global', 'LOAD_NAME skips enclosing function locals'
+
+
+# A global created at runtime, mid-class-body, is visible to a later unbound-
+# member read (the fallback is late-bound, not a prepare-time snapshot).
+def set_dyn():
+    global dyn
+    dyn = 99
+
+
+class DynamicGlobal:
+    a = set_dyn()
+    b = dyn
+    dyn = 1
+
+
+assert DynamicGlobal.b == 99, 'fallback sees a global created mid-body'
+assert DynamicGlobal.dyn == 1, 'member binding wins afterwards'
+
+
+# Unbound-member reads fall through globals to builtins.
+class BuiltinFallback:
+    len = len
+    n = len('abc')
+
+
+assert BuiltinFallback.n == 3, 'unbound member read falls back to the builtin'
+
+
+# Method parameter defaults evaluate in class scope at their statement's
+# position, so the same before/after-binding rule applies.
+w_default = 'module'
+
+
+class DefaultsScope:
+    def before(self, a=w_default):
+        return a
+
+    w_default = 'member'
+
+    def after(self, a=w_default):
+        return a
+
+
+d = DefaultsScope()
+assert d.before() == 'module', 'default before the member binding reads the global'
+assert d.after() == 'member', 'default after the member binding reads the member'
+
+# A member with no global/builtin anywhere raises NameError (not
+# UnboundLocalError), matching CPython class bodies.
+try:
+
+    class NoBinding:
+        z = missing_name + 1
+        missing_name = 1
+
+    assert False, 'expected NameError'
+except NameError as e:
+    assert str(e) == "name 'missing_name' is not defined", 'unbound member read raises NameError'

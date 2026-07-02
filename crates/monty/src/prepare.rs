@@ -191,6 +191,19 @@ struct Prepare<'i, 'g> {
     /// variables by bare name. [`Self::child_enclosing_locals`] honours this by
     /// excluding our own (class-member) locals when this flag is set.
     is_class_scope: bool,
+    /// Class members whose binding statement has already been prepared, in
+    /// source order (only populated when `is_class_scope`).
+    ///
+    /// CPython class bodies resolve name reads with `LOAD_NAME` semantics:
+    /// class locals → globals → builtins, decided at *runtime*. Because Monty
+    /// restricts class bodies to linear statements (no control flow, walrus,
+    /// `del`, or `exec`-style namespace mutation), source order IS execution
+    /// order, so the runtime question "is this member bound yet?" is decidable
+    /// at prepare time: a read of a member listed here uses its local slot; a
+    /// read of a not-yet-bound member falls back to a late-bound global load
+    /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
+    /// bindings this must become a runtime-fallback opcode instead.
+    bound_class_members: AHashSet<StringId>,
 }
 
 /// Scope-specific state for [`Prepare`].
@@ -467,6 +480,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
             is_class_scope: false,
+            bound_class_members: AHashSet::new(),
         }
     }
 
@@ -577,6 +591,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             comp_var_depth: 0,
             comp_name_scopes: Vec::new(),
             is_class_scope: false,
+            bound_class_members: AHashSet::new(),
         })
     }
 
@@ -636,6 +651,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     // Track that this name was assigned before we call get_id
                     self.names_assigned_in_order.insert(target.name_id);
                     let target = self.get_id(target)?;
+                    // In a class body, the member becomes bound only now — the
+                    // value expression above must see the pre-binding state
+                    // (`x = x + 1` reads the global `x`, like CPython).
+                    if self.is_class_scope {
+                        self.bound_class_members.insert(target.name_id);
+                    }
                     new_nodes.push(Node::Assign { target, object });
                 }
                 Node::UnpackAssign {
@@ -782,6 +803,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     is_async,
                 }) => {
                     let func = self.prepare_function_def(name, &signature, body, is_async, true)?;
+                    // In a class body, the method name becomes a bound member
+                    // only now — its own parameter defaults (evaluated in class
+                    // scope, above) must see the pre-binding state.
+                    if self.is_class_scope {
+                        self.bound_class_members.insert(func.name.name_id);
+                    }
                     new_nodes.push(Node::FunctionDef(func));
                 }
                 Node::ClassDef {
@@ -1206,7 +1233,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
         }
 
-        Ok(Expr::Name(self.get_id(name)?))
+        Ok(Expr::Name(self.get_id_read(name)?))
     }
 
     /// Prepares a `SequenceItem` by recursively preparing its inner expression.
@@ -2003,6 +2030,22 @@ impl<'i, 'g> Prepare<'i, 'g> {
     }
 
     fn get_id(&mut self, ident: Identifier) -> Result<Identifier, ParseError> {
+        self.get_id_impl(ident, false)
+    }
+
+    /// Resolves an identifier for an expression-position READ.
+    ///
+    /// Identical to [`Self::get_id`] except in class-body scopes, where a read
+    /// of a class member whose binding statement has not yet been prepared
+    /// falls back to the module-global namespace (CPython `LOAD_NAME`
+    /// semantics — see `bound_class_members`) instead of the member's local
+    /// slot. Store targets must keep using `get_id` so they always bind the
+    /// member's local slot.
+    fn get_id_read(&mut self, ident: Identifier) -> Result<Identifier, ParseError> {
+        self.get_id_impl(ident, true)
+    }
+
+    fn get_id_impl(&mut self, ident: Identifier, is_read: bool) -> Result<Identifier, ParseError> {
         let name_id = ident.name_id;
         let position = ident.position;
         // Note: `names_used` is intentionally NOT updated here. The "name 'X'
@@ -2030,6 +2073,22 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     NameScope::CompVar,
                 ));
             }
+        }
+
+        // In a class body, a READ of a member that has not been bound yet
+        // cannot hit its local slot: CPython's `LOAD_NAME` falls back to
+        // globals → builtins (never enclosing function locals). The linear
+        // class-body grammar makes "bound yet" a compile-time fact, so resolve
+        // straight to a late-bound global slot — at runtime an `Undefined`
+        // global picks up a builtin or raises `NameError`, exactly the
+        // `LOAD_NAME` tail. See `bound_class_members` for the full rationale.
+        if is_read
+            && self.is_class_scope
+            && !self.bound_class_members.contains(&name_id)
+            && matches!(&self.state, PrepareState::Function(state) if state.assigned_names.contains(&name_id))
+        {
+            let slot = self.globals.ensure_slot(name_id, position)?;
+            return Ok(Identifier::new_with_scope(name_id, position, slot, NameScope::Global));
         }
 
         // At module scope every name is a global — the module's local namespace
