@@ -298,6 +298,51 @@ assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
 assert ''.encode() == b'', 'encode empty'
 assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
 
+# === encode() with the 'ascii' codec ===
+assert 'hello'.encode('ascii') == b'hello', 'encode plain ascii'
+assert 'hello'.encode('us-ascii') == b'hello', 'encode us-ascii alias'
+assert 'hello'.encode('ASCII') == b'hello', 'encode ASCII case insensitive'
+assert 'héllo wörld ⚡'.encode('ascii', 'ignore') == b'hllo wrld ', 'encode ascii ignore drops non-ascii chars'
+assert 'héllo wörld ⚡'.encode('ascii', 'replace') == b'h?llo w?rld ?', 'encode ascii replace uses ?'
+assert 'héllo wörld ⚡'.encode('ascii', 'backslashreplace') == b'h\\xe9llo w\\xf6rld \\u26a1', (
+    'encode ascii backslashreplace escapes non-ascii chars'
+)
+# The 'ignore' handler round-trips through decode('ascii') since only ASCII bytes remain.
+assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
+    'encode ignore then decode ascii strips non-ascii characters'
+)
+
+# strict (the default) raises UnicodeEncodeError, a ValueError subclass, with CPython's exact wording.
+try:
+    'héllo'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except ValueError as e:
+    assert isinstance(e, UnicodeEncodeError), 'UnicodeEncodeError should be a ValueError subclass'
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii strict single-char message: {e}'
+    )
+try:
+    'aéöbé'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)", (
+        f'encode ascii strict multi-char range message: {e}'
+    )
+
+# Like CPython, an unknown error handler name is only looked up if it's actually needed.
+assert 'hello'.encode('ascii', 'bogus') == b'hello', 'unused error handler name is never validated'
+try:
+    'héllo'.encode('ascii', 'bogus')
+    assert False, 'encode ascii with unknown error handler should error'
+except LookupError as e:
+    assert str(e) == "unknown error handler name 'bogus'", f'encode ascii unknown error handler: {e}'
+
+try:
+    'hello'.encode('not-a-real-codec')
+    assert False, 'encode with unsupported codec should error'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: not-a-real-codec', f'encode unknown encoding: {e}'
+
 # Wrong-type encoding/errors → CPython's `_PyArg_BadArgument` named wording.
 # Routed through `bad_arg_named` on `EncodeArgs`; matches CPython exactly,
 # including `None`-vs-`NoneType` (lone `None` reads as `"not None"`).

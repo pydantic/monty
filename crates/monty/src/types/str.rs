@@ -1944,8 +1944,10 @@ struct ExpandtabsArgs {
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
-/// Returns an encoded version of the string as a bytes object. Only supports
-/// UTF-8 encoding (the native encoding for Rust strings).
+/// Returns an encoded version of the string as a bytes object. Supports
+/// UTF-8 (the native encoding for Rust strings, so `errors` never triggers)
+/// and ASCII (with full `strict`/`ignore`/`replace`/`backslashreplace` handling
+/// of non-ASCII characters via [`encode_ascii`]).
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     defer_drop!(encoding, vm);
@@ -1953,20 +1955,80 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    // Only UTF-8 is supported - Rust strings are always valid UTF-8
-    if !(encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8")) {
+    let is_utf8 = encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8");
+    let is_ascii = encoding.eq_ignore_ascii_case("ascii") || encoding.eq_ignore_ascii_case("us-ascii");
+    if !is_utf8 && !is_ascii {
         return Err(ExcType::lookup_error_unknown_encoding(encoding));
     }
 
-    // For UTF-8 encoding of a valid UTF-8 string, errors mode doesn't matter
-    // since there's nothing to handle - the string is already valid UTF-8
-    if errors != "strict" && errors != "ignore" && errors != "replace" && errors != "backslashreplace" {
-        return Err(ExcType::lookup_error_unknown_error_handler(errors));
-    }
+    // Like CPython, the error handler name is only looked up (and validated)
+    // when an actual encoding error occurs - `'hello'.encode('ascii', 'bogus')`
+    // succeeds because there's nothing for the handler to do.
+    let bytes = if is_utf8 {
+        s.get(vm.heap).as_bytes().to_vec()
+    } else {
+        encode_ascii(s.get(vm.heap), errors)?
+    };
 
-    let bytes = s.get(vm.heap).as_bytes().to_vec();
     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Encodes `s` as ASCII bytes, applying `errors` to any non-ASCII characters.
+/// `errors` is only matched against known handler names on first use,
+/// matching CPython's lazy `codecs.lookup_error` - an unrecognized `errors`
+/// value is silently accepted if the string turns out to be all-ASCII.
+///
+/// Builds into a `String` rather than a `Vec<u8>` — every byte pushed (ASCII
+/// input, `?`, or a `\xNN`/`\uNNNN`/`\UNNNNNNNN` escape) is itself valid
+/// ASCII, so the accumulator is always valid UTF-8 and `into_bytes()` at the
+/// end is free. This also lets `backslashreplace` escape a character with a
+/// single `write!` instead of two intermediate heap allocations.
+///
+/// The output is bounded by a small constant multiple of `s.len()` (at most
+/// 10 bytes per input character for `backslashreplace`'s `\Uxxxxxxxx` form),
+/// so no `StringBuilder`-style resource tracking is needed beyond the
+/// already-tracked input string.
+fn encode_ascii(s: &str, errors: &str) -> RunResult<Vec<u8>> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().enumerate().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if c.is_ascii() {
+            out.push(c);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => out.push('?'),
+            "backslashreplace" => {
+                let code = c as u32;
+                let result = if code <= 0xFF {
+                    write!(out, "\\x{code:02x}")
+                } else if code <= 0xFFFF {
+                    write!(out, "\\u{code:04x}")
+                } else {
+                    write!(out, "\\U{code:08x}")
+                };
+                result.expect("writing to a String is infallible");
+            }
+            "strict" => {
+                // CPython reports a single position for a lone bad character,
+                // but merges a contiguous run of unencodable characters into
+                // one `position start-end` range.
+                let mut end = idx + 1;
+                while let Some(&(_, next_c)) = chars.peek() {
+                    if next_c.is_ascii() {
+                        break;
+                    }
+                    chars.next();
+                    end += 1;
+                }
+                return Err(ExcType::unicode_encode_error_ascii(c, idx, end));
+            }
+            _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
+        }
+    }
+    Ok(out.into_bytes())
 }
 
 /// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.

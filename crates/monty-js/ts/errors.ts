@@ -211,6 +211,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'UnboundLocalError',
   'ValueError',
   'UnicodeDecodeError',
+  'UnicodeEncodeError',
   'json.JSONDecodeError',
   'ImportError',
   'ModuleNotFoundError',

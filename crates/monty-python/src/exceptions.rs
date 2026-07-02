@@ -19,7 +19,7 @@ use std::sync::Arc;
 use ::monty::{ExcType, MontyException};
 use ahash::AHashMap;
 use pyo3::{
-    PyClassInitializer, PyTypeCheck,
+    PyClassInitializer, PyTypeCheck, PyTypeInfo,
     exceptions::{self},
     prelude::*,
     py_format,
@@ -467,7 +467,8 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
-        ExcType::UnicodeDecodeError => exceptions::PyUnicodeDecodeError::new_err(msg),
+        ExcType::UnicodeDecodeError => unicode_error_or_value_error::<exceptions::PyUnicodeDecodeError>(py, msg),
+        ExcType::UnicodeEncodeError => unicode_error_or_value_error::<exceptions::PyUnicodeEncodeError>(py, msg),
         ExcType::JsonDecodeError => {
             if let Ok(json_decode_error) = get_json_decode_error(py)
                 && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
@@ -507,6 +508,26 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
     }
 }
 
+/// Constructs a `UnicodeDecodeError`/`UnicodeEncodeError`-shaped exception `E`
+/// from Monty's single formatted message string, falling back to a plain
+/// `ValueError` carrying the same message if that fails.
+///
+/// CPython's real `UnicodeDecodeError`/`UnicodeEncodeError` constructors
+/// require five positional arguments (`encoding, object, start, end,
+/// reason`), which Monty doesn't track — only the already-formatted message.
+/// A bare `E::new_err(msg)` "succeeds" at the `PyErr` level but silently
+/// materializes (lazily, whenever the value is first accessed) into whatever
+/// `TypeError` that failed single-argument construction raised, losing both
+/// the class identity and the message. `except ValueError:` /
+/// `ExcType::is_subclass_of` still catch the `ValueError` fallback
+/// correctly; only `isinstance(exc, UnicodeDecodeError)` doesn't.
+fn unicode_error_or_value_error<E: PyTypeInfo>(py: Python<'_>, msg: String) -> PyErr {
+    match py.get_type::<E>().call1((PyString::new(py, &msg),)) {
+        Ok(exc_instance) => PyErr::from_value(exc_instance),
+        Err(_) => exceptions::PyValueError::new_err(msg),
+    }
+}
+
 /// Converts a python exception to monty.
 ///
 /// Used when resuming execution with an exception from Python.
@@ -537,12 +558,14 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
         // put the most commonly used exceptions first
         if exceptions::PyTypeError::type_check(exc) {
             ExcType::TypeError
-        // ValueError hierarchy (check UnicodeDecodeError first as it's a subclass)
+        // ValueError hierarchy (check UnicodeDecodeError/UnicodeEncodeError first as they're subclasses)
         } else if exceptions::PyValueError::type_check(exc) {
             if is_json_decode_error(exc) {
                 ExcType::JsonDecodeError
             } else if exceptions::PyUnicodeDecodeError::type_check(exc) {
                 ExcType::UnicodeDecodeError
+            } else if exceptions::PyUnicodeEncodeError::type_check(exc) {
+                ExcType::UnicodeEncodeError
             } else if is_unsupported_operation(exc) {
                 // `io.UnsupportedOperation` inherits from both `OSError` and `ValueError`
                 ExcType::UnsupportedOperation

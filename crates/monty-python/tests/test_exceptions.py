@@ -130,13 +130,16 @@ def test_syntax_error_lone_surrogate(monty_run: RunMonty):
 
 def test_runtime_error_input_value_lone_surrogate(monty_run: RunMonty):
     # An input string containing a lone surrogate fails UTF-8 conversion during
-    # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a
-    # `MontyRuntimeError(ValueError)` so input-value failures surface the same
-    # way as failures when an external function returns such a string.
+    # `py_to_monty`, raising a real `UnicodeEncodeError` (a `ValueError`
+    # subclass). `.exception()` falls back to a plain `ValueError` carrying
+    # the same message rather than `UnicodeEncodeError`, since Monty only
+    # stores the formatted message and CPython's real `UnicodeEncodeError`
+    # constructor requires 5 positional args (`encoding, object, start, end,
+    # reason`) that a single string can't satisfy.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('x', inputs={'x': '\ud83d'})
     assert str(exc_info.value) == snapshot(
-        "ValueError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
+        "UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
     )
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)

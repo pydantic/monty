@@ -12,7 +12,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_public::{MontyException, SourceMap, StackFrame},
-    fstring::FormatError,
+    fstring::{FormatError, ascii_escape},
     heap::{HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
@@ -86,6 +86,9 @@ pub enum ExcType {
     ValueError,
     /// Subclass of ValueError - for encoding/decoding errors.
     UnicodeDecodeError,
+    /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
+    /// on a string containing non-ASCII characters).
+    UnicodeEncodeError,
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
     JsonDecodeError,
@@ -175,11 +178,14 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError, json.JSONDecodeError, and
-            // io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
+            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
             Self::ValueError => matches!(
                 self,
-                Self::UnicodeDecodeError | Self::JsonDecodeError | Self::UnsupportedOperation
+                Self::UnicodeDecodeError
+                    | Self::UnicodeEncodeError
+                    | Self::JsonDecodeError
+                    | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
@@ -1486,6 +1492,44 @@ impl ExcType {
             "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
         )
         .into()
+    }
+
+    /// Creates a UnicodeDecodeError for a byte >= 0x80 encountered while decoding
+    /// as ASCII (`bytes.decode('ascii')`).
+    ///
+    /// Matches CPython's format: `UnicodeDecodeError: 'ascii' codec can't decode
+    /// byte 0xNN in position N: ordinal not in range(128)`
+    #[must_use]
+    pub(crate) fn unicode_decode_error_ascii(byte: u8, position: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::UnicodeDecodeError,
+            format!("'ascii' codec can't decode byte 0x{byte:02x} in position {position}: ordinal not in range(128)"),
+        )
+        .into()
+    }
+
+    /// Creates a UnicodeEncodeError for a run of `start..end` consecutive
+    /// characters (character indices, not byte offsets) that can't be
+    /// represented while encoding as ASCII (`str.encode('ascii')`).
+    /// `first_char` is the character at `start`, used for the single-character
+    /// message form.
+    ///
+    /// Matches CPython's format, which differs for a single character vs. a run:
+    /// `UnicodeEncodeError: 'ascii' codec can't encode character '\xe9' in
+    /// position 1: ordinal not in range(128)` or `... can't encode characters
+    /// in position 1-2: ordinal not in range(128)`.
+    #[must_use]
+    pub(crate) fn unicode_encode_error_ascii(first_char: char, start: usize, end: usize) -> RunError {
+        let msg = if end - start == 1 {
+            format!(
+                "'ascii' codec can't encode character '{}' in position {start}: ordinal not in range(128)",
+                ascii_escape(&first_char.to_string())
+            )
+        } else {
+            let last = end - 1;
+            format!("'ascii' codec can't encode characters in position {start}-{last}: ordinal not in range(128)")
+        };
+        SimpleException::new_msg(Self::UnicodeEncodeError, msg).into()
     }
 
     /// Creates a ValueError for subsequence not found in bytes/str.

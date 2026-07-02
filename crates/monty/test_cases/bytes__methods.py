@@ -397,6 +397,44 @@ assert b'hello'.decode('utf-8', 'strict') == 'hello', 'decode with strict errors
 assert b'hello'.decode('utf-8', 'ignore') == 'hello', 'decode with ignore errors'
 assert b'hello'.decode('utf-8', 'replace') == 'hello', 'decode with replace errors'
 
+# === bytes.decode() with the 'ascii' codec ===
+assert b'hello'.decode('ascii') == 'hello', 'decode plain ascii'
+assert b'hello'.decode('us-ascii') == 'hello', 'decode us-ascii alias'
+assert b'hello'.decode('ASCII') == 'hello', 'decode ASCII case insensitive'
+assert b'hello \xe9 world'.decode('ascii', 'ignore') == 'hello  world', 'decode ascii ignore drops bad bytes'
+assert b'hello \xe9 world'.decode('ascii', 'replace') == 'hello � world', 'decode ascii replace uses U+FFFD'
+assert b'hello \xe9 world'.decode('ascii', 'backslashreplace') == 'hello \\xe9 world', (
+    'decode ascii backslashreplace escapes bad bytes as literal text'
+)
+# encode(errors='ignore') then decode('ascii') round-trips since only ASCII bytes remain.
+assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
+    'encode ignore then decode ascii strips non-ascii characters'
+)
+
+# strict (the default) raises UnicodeDecodeError, a ValueError subclass, with CPython's exact wording.
+try:
+    b'hello \xe9 world'.decode('ascii')
+    assert False, 'decode ascii of non-ascii bytes should error'
+except ValueError as e:
+    assert isinstance(e, UnicodeDecodeError), 'UnicodeDecodeError should be a ValueError subclass'
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 6: ordinal not in range(128)", (
+        f'decode ascii strict message: {e}'
+    )
+
+# Like CPython, an unknown error handler name is only looked up if it's actually needed.
+assert b'hello'.decode('ascii', 'bogus') == 'hello', 'unused error handler name is never validated'
+try:
+    b'hello \xe9 world'.decode('ascii', 'bogus')
+    assert False, 'decode ascii with unknown error handler should error'
+except LookupError as e:
+    assert str(e) == "unknown error handler name 'bogus'", f'decode ascii unknown error handler: {e}'
+
+try:
+    b'hello'.decode('not-a-real-codec')
+    assert False, 'decode with unsupported codec should error'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: not-a-real-codec', f'decode unknown encoding: {e}'
+
 # === bytes.decode() type-error wording (CPython `_PyArg_BadArgument`) ===
 # Wrong-type encoding / errors must produce the named bad-arg wording
 # (`decode() argument '<name>' must be str, not <type>`) including the

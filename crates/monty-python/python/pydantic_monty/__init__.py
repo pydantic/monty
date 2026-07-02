@@ -148,6 +148,7 @@ ExcType = Literal[
     'UnboundLocalError',
     'ValueError',
     'UnicodeDecodeError',
+    'UnicodeEncodeError',
     'json.JSONDecodeError',
     'ImportError',
     'ModuleNotFoundError',

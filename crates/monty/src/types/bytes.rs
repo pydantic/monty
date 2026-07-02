@@ -7,7 +7,7 @@
 /// # Implemented Methods
 ///
 /// ## Encoding/Decoding
-/// - `decode([encoding[, errors]])` - Decode to string (UTF-8 only)
+/// - `decode([encoding[, errors]])` - Decode to string (UTF-8 or ASCII)
 /// - `hex([sep[, bytes_per_sep]])` - Return hex string representation
 /// - `fromhex(string)` - Create bytes from hex string (classmethod)
 ///
@@ -501,34 +501,64 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
 
 /// Implements Python's `bytes.decode([encoding[, errors]])` method.
 ///
-/// Converts bytes to a string. Currently only supports UTF-8 encoding.
+/// Converts bytes to a string. Supports UTF-8 (`errors` is accepted for
+/// parity but ignored on invalid bytes — see `limitations/encoding.md`) and
+/// ASCII (with full `strict`/`ignore`/`replace`/`backslashreplace` handling
+/// of bytes >= 0x80 via [`decode_ascii`]).
 fn bytes_decode<'h>(
     bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let BytesDecodeArgs { encoding, errors } = BytesDecodeArgs::from_args(args, vm)?;
-    // `errors` is accepted for parity but ignored — UTF-8 decoding of valid
-    // bytes has nothing to handle, and `lookup_error_unknown_error_handler`
-    // would be the next layer once non-UTF-8 codecs land. The guard still
-    // drops its heap reference.
     defer_drop!(errors, vm);
     defer_drop!(encoding, vm);
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    // Only support UTF-8 family
-    if !(encoding.eq_ignore_ascii_case("utf-8")
+    if encoding.eq_ignore_ascii_case("utf-8")
         || encoding.eq_ignore_ascii_case("utf8")
-        || encoding.eq_ignore_ascii_case("utf_8"))
+        || encoding.eq_ignore_ascii_case("utf_8")
     {
-        return Err(ExcType::lookup_error_unknown_encoding(encoding));
+        // `errors` is accepted for parity but ignored — UTF-8 decoding of
+        // valid bytes has nothing to handle.
+        match str::from_utf8(bytes.get(vm.heap)) {
+            Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
+            Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
+        }
+    } else if encoding.eq_ignore_ascii_case("ascii") || encoding.eq_ignore_ascii_case("us-ascii") {
+        let s = decode_ascii(bytes.get(vm.heap), errors)?;
+        Ok(super::str::allocate_string(s, vm.heap)?)
+    } else {
+        Err(ExcType::lookup_error_unknown_encoding(encoding))
     }
+}
 
-    // Decode as UTF-8
-    match str::from_utf8(bytes.get(vm.heap)) {
-        Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
-        Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
+/// Decodes `bytes` as ASCII text, applying `errors` to any byte >= 0x80. The
+/// error handler name is only validated on first use, matching CPython's
+/// lazy `codecs.lookup_error` — an unrecognized `errors` value is silently
+/// accepted if the bytes turn out to be all-ASCII.
+///
+/// The output is bounded by a small constant multiple of `bytes.len()` (at
+/// most 4 bytes per input byte for `backslashreplace`'s `\xNN` form), so no
+/// `StringBuilder`-style resource tracking is needed beyond the
+/// already-tracked input bytes.
+fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
+    let mut result = String::with_capacity(bytes.len());
+    for (idx, &byte) in bytes.iter().enumerate() {
+        if byte.is_ascii() {
+            result.push(byte as char);
+            continue;
+        }
+        match errors {
+            "ignore" => {}
+            "replace" => result.push('\u{FFFD}'),
+            "backslashreplace" => write!(result, "\\x{byte:02x}").expect("String writes are infallible"),
+            "strict" => return Err(ExcType::unicode_decode_error_ascii(byte, idx)),
+            _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
+        }
     }
+    Ok(result)
 }
 
 /// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.

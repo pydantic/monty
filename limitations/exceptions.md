@@ -10,8 +10,8 @@ code **cannot define new exception classes** (no `class` statement; see
 `ArithmeticError`, `OverflowError`, `ZeroDivisionError`, `LookupError`,
 `IndexError`, `KeyError`, `RuntimeError`, `NotImplementedError`,
 `RecursionError`, `AttributeError`, `FrozenInstanceError`, `NameError`,
-`UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `ImportError`,
-`ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
+`UnboundLocalError`, `ValueError`, `UnicodeDecodeError`, `UnicodeEncodeError`,
+`ImportError`, `ModuleNotFoundError`, `OSError`, `FileNotFoundError`, `FileExistsError`,
 `IsADirectoryError`, `NotADirectoryError`, `PermissionError`,
 `AssertionError`, `MemoryError`, `StopIteration`, `SyntaxError`,
 `TimeoutError`, `TypeError`.
@@ -29,7 +29,7 @@ both `OSError` and `ValueError`, matching CPython's dual parentage).
 `BrokenPipeError`), `BlockingIOError`, `ChildProcessError`,
 `InterruptedError`, `ProcessLookupError`, `ReferenceError`,
 `StopAsyncIteration`, `SystemError`, `TabError`, `IndentationError`,
-`UnicodeError` (parent), `UnicodeEncodeError`, `UnicodeTranslateError`,
+`UnicodeError` (parent), `UnicodeTranslateError`,
 `EncodingWarning`, `EnvironmentError` / `IOError` aliases,
 `ExceptionGroup` / `BaseExceptionGroup` (see [language.md](language.md)).
 
