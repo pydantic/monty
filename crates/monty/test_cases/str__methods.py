@@ -301,11 +301,17 @@ assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
 # === encode() with the 'ascii' codec ===
 assert 'hello'.encode('ascii') == b'hello', 'encode plain ascii'
 assert 'hello'.encode('us-ascii') == b'hello', 'encode us-ascii alias'
+assert 'hello'.encode('us_ascii') == b'hello', 'encode us_ascii (underscore) alias'
+assert 'hello'.encode('US_ASCII') == b'hello', 'encode US_ASCII case insensitive underscore alias'
 assert 'hello'.encode('ASCII') == b'hello', 'encode ASCII case insensitive'
 assert 'héllo wörld ⚡'.encode('ascii', 'ignore') == b'hllo wrld ', 'encode ascii ignore drops non-ascii chars'
 assert 'héllo wörld ⚡'.encode('ascii', 'replace') == b'h?llo w?rld ?', 'encode ascii replace uses ?'
 assert 'héllo wörld ⚡'.encode('ascii', 'backslashreplace') == b'h\\xe9llo w\\xf6rld \\u26a1', (
     'encode ascii backslashreplace escapes non-ascii chars'
+)
+# Non-BMP characters (> U+FFFF) escape via the \Uxxxxxxxx form, not \uxxxx.
+assert 'a\U0001f600b'.encode('ascii', 'backslashreplace') == b'a\\U0001f600b', (
+    'encode ascii backslashreplace escapes non-BMP chars with \\U'
 )
 # The 'ignore' handler round-trips through decode('ascii') since only ASCII bytes remain.
 assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
@@ -318,6 +324,7 @@ try:
     assert False, 'encode ascii of non-ascii string should error'
 except ValueError as e:
     assert isinstance(e, UnicodeEncodeError), 'UnicodeEncodeError should be a ValueError subclass'
+    assert type(e).__name__ == 'UnicodeEncodeError', f'exception type name: {type(e).__name__}'
     assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
         f'encode ascii strict single-char message: {e}'
     )
@@ -327,6 +334,31 @@ try:
 except UnicodeEncodeError as e:
     assert str(e) == "'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)", (
         f'encode ascii strict multi-char range message: {e}'
+    )
+
+# Boundary: the bad character at the very start (position 0) of the string.
+try:
+    'éxyz'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 0: ordinal not in range(128)", (
+        f'encode ascii strict bad char at position 0: {e}'
+    )
+# Boundary: the bad character at the very end of the string.
+try:
+    'xyzé'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)", (
+        f'encode ascii strict bad char at last position: {e}'
+    )
+# Boundary: a single-character string that is itself non-ascii.
+try:
+    'é'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 0: ordinal not in range(128)", (
+        f'encode ascii strict single-char string: {e}'
     )
 
 # Like CPython, an unknown error handler name is only looked up if it's actually needed.

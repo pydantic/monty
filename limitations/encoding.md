@@ -6,7 +6,7 @@ Monty implements a fixed, small set of text codecs rather than the full
 ## Supported codecs
 
 - `utf-8` (aliases `utf8`, and for `decode()` only, `utf_8`), case-insensitive.
-- `ascii` (alias `us-ascii`), case-insensitive.
+- `ascii` (aliases `us-ascii`, `us_ascii`), case-insensitive.
 
 Any other encoding name raises `LookupError: unknown encoding: {name}`, even
 names CPython recognizes (`latin-1`, `utf-16`, `cp1252`, `iso-8859-1`, ...).

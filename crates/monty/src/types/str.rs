@@ -1956,7 +1956,9 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
     let is_utf8 = encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8");
-    let is_ascii = encoding.eq_ignore_ascii_case("ascii") || encoding.eq_ignore_ascii_case("us-ascii");
+    let is_ascii = encoding.eq_ignore_ascii_case("ascii")
+        || encoding.eq_ignore_ascii_case("us-ascii")
+        || encoding.eq_ignore_ascii_case("us_ascii");
     if !is_utf8 && !is_ascii {
         return Err(ExcType::lookup_error_unknown_encoding(encoding));
     }

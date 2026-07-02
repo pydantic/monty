@@ -526,7 +526,10 @@ fn bytes_decode<'h>(
             Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
             Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
         }
-    } else if encoding.eq_ignore_ascii_case("ascii") || encoding.eq_ignore_ascii_case("us-ascii") {
+    } else if encoding.eq_ignore_ascii_case("ascii")
+        || encoding.eq_ignore_ascii_case("us-ascii")
+        || encoding.eq_ignore_ascii_case("us_ascii")
+    {
         let s = decode_ascii(bytes.get(vm.heap), errors)?;
         Ok(super::str::allocate_string(s, vm.heap)?)
     } else {

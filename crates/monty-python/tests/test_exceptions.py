@@ -29,6 +29,34 @@ def test_value_error(monty_run: RunMonty):
     assert str(inner) == snapshot('bad value')
 
 
+def test_unicode_encode_error(monty_run: RunMonty):
+    # `str.encode('ascii')` on a non-ascii string raises `UnicodeEncodeError`
+    # inside the sandbox. `.exception()` falls back to a plain `ValueError`
+    # carrying the same message (see `unicode_error_or_value_error` in
+    # `exceptions.rs`) rather than a real `UnicodeEncodeError` instance,
+    # since CPython's constructor needs 5 positional args Monty doesn't track.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("'café'.encode('ascii')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert not isinstance(inner, UnicodeEncodeError)
+    assert str(inner) == snapshot(
+        "'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)"
+    )
+
+
+def test_unicode_decode_error(monty_run: RunMonty):
+    # `bytes.decode('ascii')` on non-ascii bytes raises `UnicodeDecodeError`
+    # inside the sandbox; same fallback-to-`ValueError` behavior as
+    # `test_unicode_encode_error` applies to `.exception()`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("b'\\xe9'.decode('ascii')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert not isinstance(inner, UnicodeDecodeError)
+    assert str(inner) == snapshot("'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)")
+
+
 def test_type_error(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("'string' + 1")
