@@ -107,8 +107,9 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   `__contains__`, `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`,
   `__bool__`, etc. are not dispatched for user-defined instances.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
-  variable assignment, `pass`, or a docstring — e.g. `if`/`for`/`while` in the
-  class body, or tuple/multiple assignment targets (rejected at parse time).
+  variable assignment, `pass`, `...`, or a docstring — e.g. `if`/`for`/`while`
+  in the class body, or tuple/multiple assignment targets (rejected at parse
+  time).
 - Assignment expressions (`:=`) in class-variable values or method parameter
   defaults (rejected at parse time). In CPython the walrus target becomes a
   class member (`class C: x = (y := 5)` gives `C.y`); Monty's class-namespace

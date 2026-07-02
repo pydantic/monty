@@ -297,3 +297,13 @@ class InitBoundMethod:
 ibm = InitBoundMethod(1, 2)
 assert type(ibm) is InitBoundMethod, 'bound-method __init__ constructs the instance'
 assert rec.calls == [(1, 2)], 'bound-method __init__ called with only the constructor args'
+
+
+# === `...` as the class body (common stub idiom) ===
+class Stub: ...
+
+
+s = Stub()
+assert type(s) is Stub, 'ellipsis-body class instantiates'
+s.x = 1
+assert s.x == 1, 'ellipsis-body class supports attributes'

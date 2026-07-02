@@ -762,9 +762,11 @@ impl<'a> Parser<'a> {
                         body.push(Node::Assign { target: ident, object });
                     }
                 }
-                // `pass` and a leading docstring are no-ops in the class body.
+                // `pass`, `...` (the common `class C: ...` stub idiom) and a
+                // leading docstring are no-ops in the class body.
                 Stmt::Pass(_) => {}
-                Stmt::Expr(ast::StmtExpr { value, .. }) if matches!(*value, AstExpr::StringLiteral(_)) => {}
+                Stmt::Expr(ast::StmtExpr { value, .. })
+                    if matches!(*value, AstExpr::StringLiteral(_) | AstExpr::EllipsisLiteral(_)) => {}
                 other => {
                     return Err(ParseError::not_implemented(
                         "class bodies containing anything other than methods and simple class variables",
