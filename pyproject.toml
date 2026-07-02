@@ -147,8 +147,9 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
-# unused variables and imports are fine in test cases
+# unused variables, classes and imports are fine in test cases
 reportUnusedVariable = false
+reportUnusedClass = false
 reportUnusedImport = false
 reportDuplicateImport = false
 reportAssignmentType = false

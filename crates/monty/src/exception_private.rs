@@ -880,6 +880,18 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
+    /// Creates a TypeError for `__init__` returning a value other than `None`.
+    ///
+    /// Matches CPython's format: `TypeError: __init__() should return None, not '{type}'`
+    #[must_use]
+    pub(crate) fn type_error_init_return(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("__init__() should return None, not '{type_name}'"),
+        )
+        .into()
+    }
+
     /// Creates a generic `ValueError` with a custom message.
     pub(crate) fn value_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(Self::ValueError, msg).into()

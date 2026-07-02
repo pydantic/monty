@@ -209,3 +209,91 @@ class Rebound:
 
 
 assert Rebound.items == [2, 3], 'later class-body binding replaces the earlier one'
+
+# === Exotic __init__ members: CPython's type.__call__ looks __init__ up with
+# descriptor binding, so only plain functions bind the new instance as self;
+# anything else is called with the constructor args unchanged and must still
+# return None ===
+
+
+class _Helper:
+    def __init__(self, x=None):
+        self.x = x
+
+
+class InitIsClass:
+    __init__ = _Helper
+
+
+try:
+    InitIsClass()
+    assert False, 'expected InitIsClass() to raise'
+except TypeError as e:
+    assert str(e) == "__init__() should return None, not '_Helper'", 'class-valued __init__'
+
+
+class InitNotCallable:
+    __init__ = 42
+
+
+try:
+    InitNotCallable()
+    assert False, 'expected InitNotCallable() to raise'
+except TypeError as e:
+    assert str(e) == "'int' object is not callable", 'non-callable __init__'
+
+
+class InitReturnsValue:
+    def __init__(self):
+        return 'nope'
+
+
+try:
+    InitReturnsValue()
+    assert False, 'expected InitReturnsValue() to raise'
+except TypeError as e:
+    assert str(e) == "__init__() should return None, not 'str'", '__init__ returning non-None'
+
+
+class InitAsync:
+    async def __init__(self):
+        pass
+
+
+try:
+    InitAsync()
+    assert False, 'expected InitAsync() to raise'
+except TypeError as e:
+    assert str(e) == "__init__() should return None, not 'coroutine'", 'async __init__'
+
+
+# A builtin __init__ that returns None: the instance is constructed and the
+# builtin receives only the constructor args (no self).
+class InitBuiltin:
+    __init__ = print
+
+
+ib = InitBuiltin('init-builtin-arg')
+assert type(ib) is InitBuiltin, 'builtin __init__ returning None constructs the instance'
+
+
+# A bound method used as __init__ keeps its own receiver; the new instance is
+# not prepended.
+class Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def record(self, *args):
+        self.calls.append(args)
+
+
+rec = Recorder()
+
+
+class InitBoundMethod:
+    __init__ = rec.record
+
+
+ibm = InitBoundMethod(1, 2)
+assert type(ibm) is InitBoundMethod, 'bound-method __init__ constructs the instance'
+assert rec.calls == [(1, 2)], 'bound-method __init__ called with only the constructor args'

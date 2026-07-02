@@ -69,3 +69,16 @@ Tracebacks are formatted to match CPython, including the
 `File "...", line N, in <function>` lines and `~` caret markers (Monty
 uses `~` where CPython uses `^`; the test harness normalizes between
 them). Frame names use `<module>` for top-level code.
+
+Known caret divergences:
+
+- CPython suppresses carets on a frame whose location is exactly the call in a
+  simple `name = f(...)` assignment or `return f(...)` statement (a noise
+  heuristic in `traceback._should_show_carets`); Monty always draws carets for
+  the frame's range.
+- For a frame whose location spans multiple lines (e.g. a caller frame covering
+  a whole multi-line `class` statement), Monty renders the CPython-style source
+  block — all lines when the range covers at most three, otherwise
+  `...<N lines>...` elision — but never draws caret markers under it, where
+  CPython draws multi-line carets for partial-line ranges (e.g. a multi-line
+  binary expression).

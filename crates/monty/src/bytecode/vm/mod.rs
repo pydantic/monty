@@ -1675,7 +1675,27 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // (e.g. `evaluate_function`).
                     let stop = self.pop_frame();
                     if is_init {
-                        // `__init__` returns None — discard it. The instance was
+                        if !matches!(value, Value::None) {
+                            // CPython raises at the `Foo(...)` call site: the
+                            // initializer frame is already popped, so the traceback
+                            // matches (no `__init__` frame).
+                            let type_name = self.value_type_display_name(&value);
+                            value.drop_with_heap(self);
+                            let err = ExcType::type_error_init_return(&type_name);
+                            if stop {
+                                // The initializer was driven by `evaluate_function`
+                                // and its frame boundary is already popped —
+                                // propagate directly rather than unwinding into
+                                // frames that must not observe this error. The
+                                // pending instance left on the operand stack is
+                                // reclaimed by the eventual `handle_exception`
+                                // stack drain (or final teardown).
+                                return Err(err);
+                            }
+                            catch_sync!(self, cached_frame, err);
+                            continue;
+                        }
+                        // `__init__` returned None — discard it. The instance was
                         // pushed onto the caller's stack before this frame ran and
                         // is the real result of `Foo(...)`.
                         value.drop_with_heap(self);

@@ -847,16 +847,24 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Allocates the instance with an empty `__dict__`, then:
     /// - **No `__init__`:** rejects any arguments (like `object()`), returns the
     ///   instance directly.
-    /// - **With `__init__`:** pushes the instance onto the operand stack as the
-    ///   pending result, runs `__init__(self, *args)` as a real (suspendable)
-    ///   frame, and marks that frame `is_initializer`. When the initializer frame
-    ///   returns, the [`ReturnValue`](crate::bytecode::Opcode::ReturnValue) handler
-    ///   discards its `None` and leaves the already-pushed instance as the result —
-    ///   so `Foo(a)` evaluates to the new instance, not `__init__`'s return.
+    /// - **`__init__` is a plain sync function** (the normal case): pushes the
+    ///   instance onto the operand stack as the pending result, runs
+    ///   `__init__(self, *args)` as a real (suspendable) frame, and marks that
+    ///   frame `is_initializer`. When the initializer frame returns, the
+    ///   [`ReturnValue`](crate::bytecode::Opcode::ReturnValue) handler enforces the
+    ///   `None` return and leaves the already-pushed instance as the result — so
+    ///   `Foo(a)` evaluates to the new instance, not `__init__`'s return.
+    /// - **Any other `__init__`** (builtin, class, `async def`, non-callable, ...):
+    ///   runs it to completion synchronously via
+    ///   [`evaluate_function`](Self::evaluate_function) and enforces CPython's
+    ///   contract that it returns `None`. This path cannot suspend, and must NOT
+    ///   go through the frame-marking path: a class-valued `__init__` recurses
+    ///   into `instantiate_class`, which pushes its own pending instance —
+    ///   blindly marking the resulting frame would corrupt the operand stack.
     ///
-    /// Because `__init__` runs as a normal frame, it may suspend on external/OS
-    /// calls; the `is_initializer` flag is threaded through frame serialization so
-    /// a suspended initializer resumes correctly.
+    /// Because a plain-function `__init__` runs as a normal frame, it may suspend
+    /// on external/OS calls; the `is_initializer` flag is threaded through frame
+    /// serialization so a suspended initializer resumes correctly.
     fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
         // Allocate the instance. On allocation failure drop the args we own.
         let instance_id = match self
@@ -893,24 +901,55 @@ impl<T: ResourceTracker> VM<'_, T> {
                 }
             }
             Some(init_func) => {
-                // Push the instance as the pending result, then run __init__(self, ...).
-                self.push(Value::Ref(instance_id));
-                self.heap.inc_ref(instance_id);
-                let init_args = args.prepend(Value::Ref(instance_id));
                 let this = self;
                 defer_drop!(init_func, this);
-                match this.call_function(init_func, init_args)? {
-                    CallResult::FramePushed => {
-                        // Mark the just-pushed frame so its return value (None) is
-                        // discarded and the pending instance becomes the result.
-                        this.current_frame_mut().is_initializer = true;
-                        Ok(CallResult::FramePushed)
+                // CPython's `type.__call__` looks up `__init__` with descriptor
+                // binding: only plain functions bind the new instance as `self`.
+                // Bound methods already carry their own receiver, and builtins,
+                // classes and other values are called with the constructor
+                // arguments unchanged.
+                let init_args = if this.is_function_value(init_func) {
+                    this.heap.inc_ref(instance_id);
+                    args.prepend(Value::Ref(instance_id))
+                } else {
+                    args
+                };
+                if this.is_plain_sync_function(init_func) {
+                    // Push the instance as the pending result (transferring the
+                    // allocation's reference), then run __init__ as a real
+                    // (suspendable) frame.
+                    this.push(Value::Ref(instance_id));
+                    match this.call_function(init_func, init_args)? {
+                        CallResult::FramePushed => {
+                            // Mark the just-pushed frame so its return value is
+                            // discarded (after the `None` check in the ReturnValue
+                            // handler) and the pending instance becomes the result.
+                            this.current_frame_mut().is_initializer = true;
+                            Ok(CallResult::FramePushed)
+                        }
+                        other => {
+                            // Defensive: `is_plain_sync_function` guarantees a frame push.
+                            other.drop_with_heap(this);
+                            this.pop().drop_with_heap(this);
+                            Err(ExcType::type_error("__init__() must be a regular function"))
+                        }
                     }
-                    other => {
-                        // __init__ wasn't a regular sync function (e.g. `async def`).
-                        other.drop_with_heap(this);
-                        this.pop().drop_with_heap(this);
-                        Err(ExcType::type_error("__init__() must be a regular function"))
+                } else {
+                    // Exotic `__init__` (builtin, class, `async def`, non-callable,
+                    // ...): run to completion synchronously — no pending instance is
+                    // pushed — and enforce CPython's `None`-return contract.
+                    match this.evaluate_function("__init__", init_func, init_args) {
+                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                        Ok(result) => {
+                            let type_name = this.value_type_display_name(&result);
+                            result.drop_with_heap(this);
+                            Value::Ref(instance_id).drop_with_heap(this);
+                            Err(ExcType::type_error_init_return(&type_name))
+                        }
+                        Err(e) => {
+                            Value::Ref(instance_id).drop_with_heap(this);
+                            Err(e)
+                        }
                     }
                 }
             }
@@ -922,6 +961,50 @@ impl<T: ResourceTracker> VM<'_, T> {
         match self.heap.get(class_id) {
             HeapData::Class(class) => self.interns.get_str(class.name_id()).to_owned(),
             _ => "object".to_owned(),
+        }
+    }
+
+    /// Returns a value's type name for error messages, resolving user-defined
+    /// instances to their class name — `Type::Instance` would otherwise display
+    /// as the generic `"object"`.
+    pub(super) fn value_type_display_name(&self, value: &Value) -> String {
+        if let Value::Ref(id) = value
+            && let HeapData::Instance(instance) = self.heap.get(*id)
+        {
+            self.class_display_name(instance.class())
+        } else {
+            value.py_type(self).to_string()
+        }
+    }
+
+    /// Whether `value` is a plain Python function object (`def`, closure, or
+    /// function-with-defaults — sync or async): the kinds that act as descriptors
+    /// in CPython and therefore bind an instance when looked up as a class member.
+    fn is_function_value(&self, value: &Value) -> bool {
+        match value {
+            Value::DefFunction(_) => true,
+            Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
+            _ => false,
+        }
+    }
+
+    /// Whether calling `value` would push a regular synchronous frame
+    /// (`CallResult::FramePushed`): a plain `def`, closure, function-with-defaults,
+    /// or a bound method wrapping one — but not an `async def`, whose call creates
+    /// a coroutine instead. Used by [`instantiate_class`](Self::instantiate_class)
+    /// to decide whether `__init__` can run as a suspendable initializer frame.
+    fn is_plain_sync_function(&self, value: &Value) -> bool {
+        match value {
+            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
+                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                // Bound methods never wrap another bound method, so this
+                // recursion is at most one level deep.
+                HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
+                _ => false,
+            },
+            _ => false,
         }
     }
 }

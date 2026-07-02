@@ -422,6 +422,17 @@ impl fmt::Display for StackFrame {
         }
 
         if let Some(line) = &self.preview_line {
+            if self.start.line != self.end.line {
+                // Multi-line statement range: `preview_line` holds a
+                // pre-rendered, dedented block (see `SourceMap::multiline_preview`).
+                // CPython prints each line at the 4-space frame indent with no
+                // caret markers.
+                f.write_char('\n')?;
+                for block_line in line.lines() {
+                    writeln!(f, "    {block_line}")?;
+                }
+                return Ok(());
+            }
             // Strip leading whitespace like CPython does
             let trimmed = line.trim_start();
             writeln!(f, "\n    {trimmed}")?;
@@ -618,26 +629,72 @@ impl<'s> SourceMap<'s> {
 
     /// Resolves a `CodeRange` into `(start, end, preview_line)`.
     ///
-    /// `preview_line` is `Some(line)` only when `start` and `end` lie on the
-    /// same line — matching the previous semantics where multi-line ranges
-    /// have no single preview to highlight. The returned `Arc<str>` is
-    /// shared with any other frame in this traceback resolving to the same
-    /// line, so repeated lookups for the same line are O(1) and allocate
-    /// only on the first lookup.
+    /// When `start` and `end` lie on the same line, `preview_line` is that
+    /// single source line. The returned `Arc<str>` is shared with any other
+    /// frame in this traceback resolving to the same line, so repeated
+    /// lookups for the same line are O(1) and allocate only on the first
+    /// lookup.
+    ///
+    /// When the range spans multiple lines, `preview_line` holds a
+    /// pre-rendered CPython-style block (see
+    /// [`multiline_preview`](Self::multiline_preview)); the renderer
+    /// distinguishes the two cases by comparing `start`/`end` lines.
     pub(crate) fn resolve_range(&mut self, range: CodeRange) -> (CodeLoc, CodeLoc, Option<Arc<str>>) {
         let (start_line_idx, start) = self.resolve_byte(range.start_byte);
         let (end_line_idx, end) = self.resolve_byte(range.end_byte);
-        let preview_line = (start_line_idx == end_line_idx).then(|| {
+        let preview_line = if start_line_idx == end_line_idx {
             // Cache materializes lazily — first request for a given line allocates
             // the `Arc<str>`, subsequent requests for the same line clone the Arc.
             let line_text = self.line_text(start_line_idx);
-            Arc::clone(
+            Some(Arc::clone(
                 self.line_cache
                     .entry(start_line_idx)
                     .or_insert_with(|| Arc::from(line_text)),
-            )
-        });
+            ))
+        } else {
+            // Multi-line ranges are rare (e.g. a traceback frame covering a
+            // whole `class` statement), so no caching.
+            Some(Arc::from(self.multiline_preview(start_line_idx, end_line_idx)))
+        };
         (start, end, preview_line)
+    }
+
+    /// Renders the source preview for a range spanning several lines,
+    /// mirroring CPython's traceback formatting: all lines when the range
+    /// covers at most three, otherwise the first and last around a
+    /// `...<N lines>...` elision marker. Displayed lines are dedented by
+    /// their common leading whitespace; the caller adds the 4-space frame
+    /// indent (and no caret markers — CPython omits them for these
+    /// full-statement ranges).
+    fn multiline_preview(&self, start_line_idx: usize, end_line_idx: usize) -> String {
+        let total = end_line_idx - start_line_idx + 1;
+        let displayed: Vec<&str> = if total <= 3 {
+            (start_line_idx..=end_line_idx).map(|i| self.line_text(i)).collect()
+        } else {
+            vec![self.line_text(start_line_idx), self.line_text(end_line_idx)]
+        };
+        // Common leading-whitespace prefix across non-blank displayed lines.
+        let dedent = displayed
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.len() - line.trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let stripped = |line: &str| line.get(dedent..).unwrap_or("").to_owned();
+        if total <= 3 {
+            displayed
+                .iter()
+                .map(|line| stripped(line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            format!(
+                "{}\n...<{} lines>...\n{}",
+                stripped(displayed[0]),
+                total - 2,
+                stripped(displayed[1])
+            )
+        }
     }
 
     /// Resolves a raw byte offset to `(0-based line index, CodeLoc)`.

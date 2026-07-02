@@ -61,6 +61,13 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   synchronously, so a `__repr__`/`__str__` that calls an external/OS function
   raises rather than yielding to the host. `__init__` and regular methods
   *can* suspend on external/OS calls.
+- **Only a plain-function `__init__` can suspend.** When `__init__` is bound to
+  something else (a builtin, another class, a bound method, ...), it is called
+  with CPython's descriptor-binding semantics (no `self` prepended unless it is
+  a plain function) and CPython's `None`-return contract is enforced — but it
+  runs to completion synchronously, so it cannot yield to the host, and an
+  external-function `__init__` raises `NotImplementedError` rather than
+  suspending.
 - **Equality and hashing are identity-only**: a user `__eq__`/`__hash__` is
   not dispatched. `a == b` is true only when `a is b`; instances hash by
   identity. Instances are always truthy (no `__bool__`/`__len__` dispatch).

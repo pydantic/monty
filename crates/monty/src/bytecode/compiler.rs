@@ -810,7 +810,11 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         // Build the class-body function/closure value on the stack...
         self.emit_make_class_body(body, members, name, position)?;
-        // ...call it with zero args — it runs the body and returns the `Class`...
+        // ...call it with zero args — it runs the body and returns the `Class`.
+        // Record the class statement as the call site so a traceback from inside
+        // the class body attributes this frame to the `class` statement (like
+        // CPython) rather than falling back to `CodeRange::default()`.
+        self.code.set_location(position, None);
         self.code.emit_u8(Opcode::CallFunction, 0)?;
         // ...and bind the class object to the class name's slot.
         self.compile_store(name)?;
