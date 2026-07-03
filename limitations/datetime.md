@@ -14,6 +14,15 @@ Class methods `today()`, `fromisoformat()`, `fromisocalendar()`,
 `fromtimestamp()`, `fromordinal()` are not implemented. `today()` is
 missing because the sandbox has no access to the host clock.
 
+Constructor overflow wording on Windows: CPython's `i` converter goes
+through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
+raises `OverflowError: Python int too large to convert to C long` there,
+while 64-bit-`long` platforms raise the sign-aware `signed integer is
+greater than maximum` / `less than minimum`. Monty's ints are i64 on
+every host, so it always uses the 64-bit wording — matching CPython on
+Linux/macOS but not on Windows. (Same for `datetime`; values wider than
+i64 raise the `C long` message on all platforms, matching CPython.)
+
 ## `datetime`
 
 Constructor: `datetime(year, month, day, hour=0, minute=0, second=0,

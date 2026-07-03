@@ -223,18 +223,22 @@ except TypeError as e:
 # === constructor arguments too wide for the C parameter type ===
 # CPython's `i` format converts to C long first ("too large to convert"), then
 # range-checks C int with sign-aware wording; timedelta components report C int.
+# On Windows C long is 32 bits, so ±2**40 already fails CPython's *long*
+# conversion with a different message — skip the sign-aware cases there.
+# Monty's ints are i64 on every host (sys.platform == 'monty', so these always
+# run under Monty) — divergence documented in limitations/datetime.md.
+if sys.platform != 'win32':
+    try:
+        datetime.date(2**40, 1, 1)
+        assert False, 'date year above C int range should raise OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'signed integer is greater than maximum', f'date year overflow: {e}'
 
-try:
-    datetime.date(2**40, 1, 1)
-    assert False, 'date year above C int range should raise OverflowError'
-except OverflowError as e:
-    assert str(e) == 'signed integer is greater than maximum', f'date year overflow: {e}'
-
-try:
-    datetime.date(-(2**40), 1, 1)
-    assert False, 'date year below C int range should raise OverflowError'
-except OverflowError as e:
-    assert str(e) == 'signed integer is less than minimum', f'date year underflow: {e}'
+    try:
+        datetime.date(-(2**40), 1, 1)
+        assert False, 'date year below C int range should raise OverflowError'
+    except OverflowError as e:
+        assert str(e) == 'signed integer is less than minimum', f'date year underflow: {e}'
 
 try:
     datetime.date(2**100, 1, 1)

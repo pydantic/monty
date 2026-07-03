@@ -221,37 +221,12 @@ impl FromValue for i64 {
     }
 }
 
-/// Accepts `Int` and `Bool`; widens to `i128`. Used by constructors like
-/// `timedelta()` that hold their intermediate component values in `i128` so
-/// the overflow check on the normalisation step doesn't silently wrap.
-///
-/// Ints wider than i64 are rejected with CPython's `C int` overflow wording,
-/// which is what `timedelta` — this impl's only consumer — reports for such
-/// components (its accumulator converts each one through C int).
-impl FromValue for i128 {
-    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
-
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
-        let result = match value {
-            Value::Bool(b) => Ok(Self::from(b)),
-            Value::Int(i) => Ok(Self::from(i)),
-            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
-            _ => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
-        };
-        value.drop_with_heap(vm);
-        result
-    }
-
-    fn type_error(got: Type) -> RunError {
-        ExcType::type_error_not_integer(got)
-    }
-}
-
 /// True when `value` is a Python int wider than i64 (heap or interned
-/// `LongInt`). Such values are genuine ints, so the fixed-width impls above
+/// `LongInt`). Such values are genuine ints, so fixed-width int impls
 /// must raise `OverflowError` rather than report `WrongType` — a bad-arg
-/// rewrite would produce the absurd "must be int, not int".
-fn is_long_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+/// rewrite would produce the absurd "must be int, not int". Also used by
+/// consumer-specific int impls (e.g. `timedelta`'s component extraction).
+pub(crate) fn is_long_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
     match value {
         Value::InternLongInt(_) => true,
         Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
