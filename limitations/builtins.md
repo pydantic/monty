@@ -37,6 +37,14 @@ mechanism beyond dataclass field inheritance.
 
 ## Behavioural divergences
 
+- **Arity-error wording for some str/bytes methods** — a handful of
+  keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
+  equivalents) report too-many-arguments as `split expected at most 2
+  arguments, got 3`, where CPython 3.14's Argument Clinic pre-counts
+  positionals *plus* kwargs and says `split() takes at most 2 arguments (3
+  given)`. Methods audited against CPython (`encode`, `decode`,
+  `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
+  need a per-function `at_most_total` audit.
 - **`getattr(obj, name)`** — if the resolved attribute would be an async
   coroutine, external function, or OS call, raises `TypeError:
   "getattr(): attribute is not a simple value"` rather than returning a

@@ -49,8 +49,16 @@ impl StringId {
 
     /// Returns the StringId for an ASCII byte.
     #[must_use]
-    pub fn from_ascii(byte: u8) -> Self {
-        Self(u32::from(byte))
+    pub const fn from_ascii(byte: u8) -> Self {
+        Self(byte as u32)
+    }
+
+    /// Const equivalent of `StringId::from(StaticStrings)`, for building
+    /// `static` tables (e.g. the `ParamSpec`s emitted by `derive(FromArgs)`)
+    /// where trait-based `From` conversions cannot be used.
+    #[must_use]
+    pub const fn from_static(value: StaticStrings) -> Self {
+        Self(value as u32)
     }
 }
 

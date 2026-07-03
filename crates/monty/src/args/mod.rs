@@ -1,8 +1,10 @@
+mod binder;
 mod from_value;
 mod to_monty_object;
 
 use std::{mem, slice, vec::IntoIter};
 
+pub(crate) use binder::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg};
 pub(crate) use monty_macros::{FromArgs, ToArgs};
 pub(crate) use to_monty_object::ToMontyObject;

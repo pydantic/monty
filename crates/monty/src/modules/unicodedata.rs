@@ -204,10 +204,10 @@ fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
 /// stays a raw `Value` because it needs the bespoke single-character coercion
 /// in [`single_char`] (CPython's "must be a unicode character" wording has no
 /// `FromArgs` equivalent); `default` is any object returned verbatim when the
-/// character has no name. `unpack_tuple` gives the `PyArg_UnpackTuple` arity
+/// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
 /// wording CPython uses here (`name expected at most 2 arguments, got 3`).
 #[derive(FromArgs)]
-#[from_args(name = "name", unpack_tuple)]
+#[from_args(name = "name", style = unpack)]
 struct NameArgs {
     #[from_args(pos_only)]
     chr: Value,
@@ -222,10 +222,11 @@ struct NameArgs {
 /// form-name value check); `unistr` is a zero-copy [`StrArg`]. `bad_arg`
 /// gives both the exact `normalize() argument N must be str, not <type>`
 /// type error, while `NormForm`'s `ValueError` for an unknown form is a
-/// `FromValueFail::Raise` and so survives unclobbered. `expected_exact`
-/// reproduces CPython's `normalize expected 2 arguments, got N` arity error.
+/// `FromValueFail::Raise` and so survives unclobbered. `style = unpack`
+/// (with min == max here) reproduces CPython's `normalize expected 2
+/// arguments, got N` arity error.
 #[derive(FromArgs)]
-#[from_args(name = "normalize", bad_arg, expected_exact)]
+#[from_args(name = "normalize", style = unpack, bad_arg)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
     form: NormForm,
@@ -235,7 +236,7 @@ struct NormalizeArgs {
 
 /// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "is_normalized", bad_arg, expected_exact)]
+#[from_args(name = "is_normalized", style = unpack, bad_arg)]
 struct IsNormalizedArgs {
     #[from_args(pos_only)]
     form: NormForm,

@@ -73,7 +73,7 @@ pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// will be renamed to `r#mod` and lose the flag when kwargs are
 /// implemented.
 #[derive(FromArgs)]
-#[from_args(name = "pow", c_error_named, at_most_total, kwargs_not_supported_yet)]
+#[from_args(name = "pow", style = c_named, at_most_total, kwargs_not_supported_yet)]
 struct PowArgs {
     base: Value,
     exp: Value,

@@ -80,11 +80,11 @@ pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 ///
 /// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
 /// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
-/// use `py_def` wording. The additional CPython kwargs (`cls`, `object_hook`,
+/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
 /// …) are intentionally not implemented; leaving them off this struct means
 /// the macro emits the standard "unexpected keyword" error for them.
 #[derive(FromArgs)]
-#[from_args(name = "loads", py_def)]
+#[from_args(name = "loads", style = def)]
 struct JsonLoadsArgs {
     s: Value,
 }

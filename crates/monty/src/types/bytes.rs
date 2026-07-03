@@ -204,7 +204,7 @@ impl Bytes {
 /// (`source` is the CPython kwarg name) interpreted as the type-specific
 /// dispatch inside [`Bytes::init`].
 #[derive(FromArgs)]
-#[from_args(name = "bytes", c_error_named)]
+#[from_args(name = "bytes", style = c_named)]
 struct BytesInitArgs {
     #[from_args(default)]
     source: Option<Value>,
@@ -540,7 +540,7 @@ fn bytes_decode<'h>(
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "decode", bad_arg_named)]
+#[from_args(name = "decode", at_most_total, bad_arg_named)]
 struct BytesDecodeArgs {
     #[from_args(default)]
     encoding: Option<StrArg>,
@@ -2163,7 +2163,7 @@ fn parse_bytes_hex_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) 
 /// kwargs and the flag goes away when the kwarg dispatch is plumbed
 /// through.
 #[derive(FromArgs)]
-#[from_args(name = "bytes.hex", c_error_named, at_most_total, kwargs_not_supported_yet)]
+#[from_args(name = "bytes.hex", style = c_named, at_most_total, kwargs_not_supported_yet)]
 struct BytesHexArgs {
     #[from_args(default = Value::None)]
     sep: Value,

@@ -525,12 +525,17 @@ fn extract_bytes_data(
 
 /// Python-facing argument shape for `Path.mkdir(mode=0o777, parents=False, exist_ok=False)`.
 ///
+/// `Path.mkdir` is a pure-Python `def` in CPython, hence `style = def` (its
+/// duplicate-arg error is `got multiple values for argument`). The
+/// too-many-positional count still diverges: CPython counts the bound `self`
+/// (`takes from 1 to 4 …`), Monty does not — see `limitations/open.md`.
+///
 /// Monty parses `mode` for signature compatibility and arity validation, but
 /// filesystem backends do not model POSIX permission bits. `parents` and
 /// `exist_ok` use [`LaxBool`] so they accept any truth-tested value (matching
 /// CPython, which evaluates them via `bool()`).
 #[derive(FromArgs)]
-#[from_args(name = "Path.mkdir", at_most_total)]
+#[from_args(name = "Path.mkdir", style = def)]
 struct PathMkdirArgs {
     #[from_args(default = 0o777_i64)]
     mode: i64,

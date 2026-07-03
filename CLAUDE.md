@@ -333,12 +333,16 @@ Hand-written `args.into_parts()` loops are not acceptable for any
 signature that has multiple positionals with defaults, keyword
 arguments, `*args`, or `**kwargs` — they are a known source of
 reference-count leaks, divergent error messages, and duplicated
-boilerplate. `FromArgs` generates the dispatch, conflict detection,
-default handling, and refcount cleanup mechanically. See
-[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for
-the full attribute surface (`c_error`, `c_error_named`, `pos_only`,
-`kw_only`, `varargs`, `varkwargs`, `default`, `static_string`, …) and
-how to extend the macro or add new `FromValue` impls.
+boilerplate. `FromArgs` emits a static param spec driven by the runtime
+binder (`crates/monty/src/args/binder.rs`), which handles dispatch,
+conflict detection, default handling, and refcount cleanup mechanically.
+Pick `style = def | clinic | c | c_named | unpack` by the CPython parser
+family the target function uses — see
+[`crates/monty-macros/README.md`](crates/monty-macros/README.md) for the
+family table and the full attribute surface (`style`, `at_most_total`,
+`bad_arg[_named]`, `pos_only`, `kw_only`, `varargs`, `varkwargs`,
+`default`, `static_string`, …) and how to extend the macro or add new
+`FromValue` impls.
 
 If a callsite needs custom per-argument coercion (e.g. `value_to_float`
 for math, a `TimeDelta` type check, a `bytes`-or-`str` union), declare

@@ -18,7 +18,7 @@
 //! Like CPython's pure-Python `re` functions, all arguments are accepted
 //! positionally or by keyword, and `pattern` may be a `str` or an
 //! already-compiled `re.Pattern` (in which case non-zero `flags` raise
-//! `ValueError`). Signature errors use `#[from_args(py_def)]` so their
+//! `ValueError`). Signature errors use `#[from_args(style = def)]` so their
 //! wording matches CPython's `def` binding exactly.
 //!
 //! # Module attributes
@@ -352,7 +352,7 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
 /// [`resolve_pattern`], count, the callable-replacement check, the subject)
 /// happens in the body in CPython's error order.
 #[derive(FromArgs)]
-#[from_args(name = "sub", py_def)]
+#[from_args(name = "sub", style = def)]
 struct ReSubArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -369,7 +369,7 @@ struct ReSubArgs {
 ///
 /// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "split", py_def)]
+#[from_args(name = "split", style = def)]
 struct ReSplitArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -383,7 +383,7 @@ struct ReSplitArgs {
 
 /// Argument shape for `re.compile(pattern, flags=0)`.
 #[derive(FromArgs)]
-#[from_args(name = "compile", py_def)]
+#[from_args(name = "compile", style = def)]
 struct ReCompileArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -397,7 +397,7 @@ struct ReCompileArgs {
 /// whose non-str error (the `decoding to str: …` fallback) differs from the
 /// pattern wording [`PatternArg`] produces.
 #[derive(FromArgs)]
-#[from_args(name = "escape", py_def)]
+#[from_args(name = "escape", style = def)]
 struct ReEscapeArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -409,7 +409,7 @@ struct ReEscapeArgs {
 ///
 /// See `ReSubArgs` for why `pattern` / `string` use `static_string`.
 #[derive(FromArgs)]
-#[from_args(name = "search", py_def)]
+#[from_args(name = "search", style = def)]
 struct ReSearchArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -421,7 +421,7 @@ struct ReSearchArgs {
 
 /// Argument shape for `re.match(pattern, string, flags=0)` — see [`ReSearchArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "match", py_def)]
+#[from_args(name = "match", style = def)]
 struct ReMatchArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -433,7 +433,7 @@ struct ReMatchArgs {
 
 /// Argument shape for `re.fullmatch(pattern, string, flags=0)` — see [`ReSearchArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "fullmatch", py_def)]
+#[from_args(name = "fullmatch", style = def)]
 struct ReFullmatchArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -445,7 +445,7 @@ struct ReFullmatchArgs {
 
 /// Argument shape for `re.findall(pattern, string, flags=0)` — see [`ReSearchArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "findall", py_def)]
+#[from_args(name = "findall", style = def)]
 struct ReFindallArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,
@@ -457,7 +457,7 @@ struct ReFindallArgs {
 
 /// Argument shape for `re.finditer(pattern, string, flags=0)` — see [`ReSearchArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "finditer", py_def)]
+#[from_args(name = "finditer", style = def)]
 struct ReFinditerArgs {
     #[from_args(static_string = "PatternAttr")]
     pattern: Value,

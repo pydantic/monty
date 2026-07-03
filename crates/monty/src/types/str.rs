@@ -88,7 +88,7 @@ impl Str {
 /// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
 /// `object` arg whose absence is the documented "return empty string" path.
 #[derive(FromArgs)]
-#[from_args(name = "str", c_error_named)]
+#[from_args(name = "str", style = c_named)]
 struct StrInitArgs {
     #[from_args(default)]
     object: Option<Value>,
@@ -1979,7 +1979,7 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
 /// out naturally because `Option<StrArg>::from_value` delegates to
 /// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "encode", bad_arg_named)]
+#[from_args(name = "encode", at_most_total, bad_arg_named)]
 struct EncodeArgs {
     #[from_args(default)]
     encoding: Option<StrArg>,

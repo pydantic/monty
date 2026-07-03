@@ -1033,19 +1033,16 @@ except TypeError as e:
     assert str(e) == 'function takes at most 3 arguments (4 given)', f'date too many args: {e}'
 
 # === date constructor: duplicate year kwarg (date.rs init) ===
-# CPython runs the missing-required check before the duplicate-arg check,
-# so it surfaces the missing `month` first; Monty fires the duplicate
-# error during dispatch. Both are TypeErrors, both make sense — but the
-# wording diverges until the macro is taught CPython's check ordering.
+# A kwarg naming an already-positional parameter is a *leftover* in CPython's
+# parser: every missing-required error beats it, so the missing param
+# surfaces first. (The conflict wording only appears when nothing else
+# fails — see the datetime dup-kwarg tests below.)
 
 try:
     datetime.date(2024, year=2024)
     assert False, 'date with duplicate year should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "argument for function given by name ('year') and position (1)", f'date dup year: {e}'
-    else:
-        assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
+    assert str(e) == "function missing required argument 'month' (pos 2)", f'date dup year: {e}'
 
 # === date constructor: duplicate month kwarg (date.rs init) ===
 
@@ -1053,10 +1050,7 @@ try:
     datetime.date(2024, 1, month=1)
     assert False, 'date with duplicate month should raise TypeError'
 except TypeError as e:
-    if _monty:
-        assert str(e) == "argument for function given by name ('month') and position (2)", f'date dup month: {e}'
-    else:
-        assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
+    assert str(e) == "function missing required argument 'day' (pos 3)", f'date dup month: {e}'
 
 # === date.replace() unexpected keyword (date.rs extract_date_replace_kwargs) ===
 
@@ -1081,19 +1075,16 @@ except OverflowError as e:
     assert str(e) == 'days=-1000000000; must have magnitude <= 999999999', f'td neg overflow: {e}'
 
 # === timedelta constructor: duplicate kwargs (timedelta.rs init) ===
-# CPython surfaces these via `__new__()` in C-style "argument for X given
-# by name (...) and position (...)" wording; Monty's Python-style FromArgs
-# config emits "timedelta() got multiple values for argument 'X'". Both
-# behaviours are correct rejections — fixing the wording divergence
-# requires switching timedelta's struct to `c_error` style + a
-# kwarg_error_name override pointing at `__new__()`.
+# Both engines use the clinic conflict wording "argument for X given by
+# name (...) and position (...)"; only the descriptor differs — CPython
+# reports the underlying `__new__()`, Monty the visible `timedelta()`.
 
 try:
     datetime.timedelta(1, days=1)
     assert False, 'timedelta with duplicate days should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'days'", f'td dup days: {e}'
+        assert str(e) == "argument for timedelta() given by name ('days') and position (1)", f'td dup days: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('days') and position (1)", f'td dup days: {e}'
 
@@ -1102,7 +1093,7 @@ try:
     assert False, 'timedelta with duplicate seconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'seconds'", f'td dup seconds: {e}'
+        assert str(e) == "argument for timedelta() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
     else:
         assert str(e) == "argument for __new__() given by name ('seconds') and position (2)", f'td dup seconds: {e}'
 
@@ -1111,7 +1102,9 @@ try:
     assert False, 'timedelta with duplicate microseconds should raise TypeError'
 except TypeError as e:
     if _monty:
-        assert str(e) == "timedelta() got multiple values for argument 'microseconds'", f'td dup micro: {e}'
+        assert str(e) == "argument for timedelta() given by name ('microseconds') and position (3)", (
+            f'td dup micro: {e}'
+        )
     else:
         assert str(e) == "argument for __new__() given by name ('microseconds') and position (3)", f'td dup micro: {e}'
 

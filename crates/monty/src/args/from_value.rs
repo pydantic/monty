@@ -60,7 +60,7 @@ pub(crate) enum FromValueFail {
 /// **Only use `FromValue`-typed fields for functions that are implemented in
 /// C in CPython** (builtins and extension modules, where CPython's argument
 /// clinic type-checks each argument *while binding* it). Functions that are
-/// pure-Python `def`s in CPython (`py_def` structs — the `re` module,
+/// pure-Python `def`s in CPython (`style = def` structs — the `re` module,
 /// `json.dumps`/`loads`, …) must declare fields as raw `Value` and coerce in
 /// the function body instead: CPython `def` binding never type-checks, so a
 /// coercion failure at extraction time would wrongly preempt later binding
@@ -157,16 +157,6 @@ pub(crate) trait FromValue: Sized {
                 _ => Self::type_error(got),
             }),
         }
-    }
-
-    /// Coerce like [`extract_into`](Self::extract_into) with `Plain` wording,
-    /// returning the value directly. Used by the derive for `*args` elements,
-    /// which have no argument position or name to report.
-    fn from_value_plain(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        Self::from_value(value, vm).map_err(|fail| match fail {
-            FromValueFail::Raise(err) => err,
-            FromValueFail::WrongType(got) => Self::type_error(got),
-        })
     }
 }
 

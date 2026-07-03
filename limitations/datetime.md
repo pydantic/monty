@@ -74,6 +74,13 @@ Attributes: `offset`, `name`.
 `timezone.utc` and `timezone.min` / `timezone.max` class constants are not
 defined. The abstract `tzinfo` base class is not exposed.
 
+One error-ordering corner: `timezone('x', offset=td)` (a non-`timedelta`
+positional *and* an `offset` kwarg) raises the name-and-position conflict in
+Monty, but the type error in CPython (`timezone() argument 1 must be
+datetime.timedelta, not str`) — CPython's parser type-checks `offset` while
+binding, whereas Monty validates the `timedelta` in the constructor body
+after binding completes.
+
 ## Formatting
 
 `strftime` supports the directives that map onto Rust's `chrono`
