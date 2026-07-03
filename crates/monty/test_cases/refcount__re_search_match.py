@@ -41,12 +41,14 @@ subject = 'hello' + ' world'
 # the subject is dropped by its defer_drop guard
 try:
     re.search(123, subject)
+    assert False, 'expected re.search with int pattern to raise TypeError'
 except TypeError:
     pass
 
 # Bad flags type: pattern already coerced, flags coercion fails
 try:
     re.search('h', subject, 'bad')
+    assert False, 'expected re.search with str flags to raise TypeError'
 except TypeError:
     pass
 
@@ -54,6 +56,7 @@ except TypeError:
 # bound subject and the overflow value
 try:
     re.search('h', subject, 0, subject)
+    assert False, 'expected re.search with 4 positional args to raise TypeError'
 except TypeError:
     pass
 
@@ -61,6 +64,7 @@ except TypeError:
 # compiled-pattern reference taken at extraction
 try:
     re.search(p, subject, 1)
+    assert False, 'expected re.search with compiled pattern and flags to raise ValueError'
 except ValueError:
     pass
 
