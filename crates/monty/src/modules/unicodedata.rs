@@ -157,7 +157,7 @@ fn uni_name(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 /// `unicodedata.lookup(name)` — the character with a given Unicode name.
 ///
 /// Raises `KeyError("undefined character name '<name>'")` when no character has
-/// that name. Unlike CPython, named sequences and name aliases are not resolved.
+/// that name. Unlike CPython, named sequences are not resolved.
 fn uni_lookup(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("lookup", vm.heap)?;
     defer_drop!(value, vm);

@@ -127,7 +127,8 @@ COPY_FILES = [
     # ==============================
     'math.pyi',
     'datetime.pyi',
-    'unicodedata.pyi',
+    # `unicodedata.pyi` is custom because Monty implements only part of the
+    # CPython module. See `custom/unicodedata.pyi`.
 ]
 # content for typeshed's `VERSIONS` file
 VERSIONS = """\
