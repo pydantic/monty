@@ -407,22 +407,27 @@ fn call_pattern_sub<'h>(
     defer_drop!(repl_val, vm);
     defer_drop!(string_val, vm);
 
-    let Some(count) = extract_count(count_val, vm)? else {
-        // Negative count — Pattern.sub returns the input string unchanged,
-        // so just typecheck and bump the refcount; no need to re-allocate.
-        if !string_val.is_str(vm.heap) {
-            let t = string_val.py_type(vm);
-            return Err(ExcType::type_error(format!("expected string, not {t}")));
-        }
-        return Ok(string_val.clone_with_heap(vm.heap));
-    };
+    let count = extract_count(count_val, vm)?;
 
-    // Check that repl is a string — callable replacement is not supported
+    // Check that repl is a string — callable replacement is not supported.
+    // CPython processes the replacement template *before* its match loop, so
+    // this check must precede the negative-count early return below: a bad
+    // repl raises even when zero substitutions will run.
     if !repl_val.is_str(vm.heap) {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
     }
+
+    let Some(count) = count else {
+        // Negative count — Pattern.sub returns the input string unchanged.
+        // The subject is still type-checked (`to_str` raises this method's
+        // `expected string, not {t}` wording) before the refcount bump; no
+        // need to re-allocate.
+        let _ = string_val.to_str(vm)?;
+        return Ok(string_val.clone_with_heap(vm.heap));
+    };
+
     let repl = repl_val.to_str(vm)?.to_owned();
     let text = string_val.to_str(vm)?.to_owned();
     pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)

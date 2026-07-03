@@ -1,6 +1,9 @@
 # Tests for the re (regular expression) module - basic functionality
 
 import re
+import sys
+
+_monty = 'Monty' in sys.version
 
 # === Constant ===
 assert re.NOFLAG == 0, 're.NOFLAG == 0'
@@ -289,6 +292,46 @@ try:
     assert False, 're.sub with int subject and negative count should raise TypeError'
 except TypeError as e:
     assert str(e) == "expected string or bytes-like object, got 'int'", f're.sub negative count subject: {e}'
+# ... and a non-str repl is rejected too — CPython processes the replacement
+# template before its match loop, even when zero substitutions will run
+# (messages differ: callable replacement is a Monty feature gap, see
+# limitations/re.md)
+try:
+    re.sub(r'\d', 123, '1a2', -1)
+    assert False, 're.sub with int repl and negative count should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub neg-count repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, int found', f're.sub neg-count repl: {e}'
+# ... with the repl error winning over a bad subject
+try:
+    re.sub(r'\d', None, 456, -1)
+    assert False, 're.sub with bad repl and bad subject should raise for the repl'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub repl-first: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, NoneType found', f're.sub repl-first: {e}'
+# Pattern.sub applies the same order
+try:
+    re.compile(r'\d').sub(123, '1a2', -1)
+    assert False, 'Pattern.sub with int repl and negative count should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f'Pattern.sub neg-count repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, int found', f'Pattern.sub neg-count repl: {e}'
+
+# === re.sub() non-str repl (positive-count path) ===
+try:
+    re.sub(r'\d', None, '1a2')
+    assert False, 're.sub with None repl should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub None repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, NoneType found', f're.sub None repl: {e}'
 
 # === Pattern.sub() error: missing repl ===
 pattern = re.compile(r'\d+')

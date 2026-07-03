@@ -293,7 +293,19 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
 
-    let Some(count) = extract_count(count, vm)? else {
+    let count = extract_count(count, vm)?;
+
+    // Check that repl is a string — callable replacement is not supported.
+    // CPython processes the replacement template *before* its match loop, so
+    // this check must precede the negative-count early return below: a bad
+    // repl raises even when zero substitutions will run.
+    if !repl.is_str(vm.heap) {
+        return Err(ExcType::type_error(
+            "callable replacement is not yet supported in re.sub()",
+        ));
+    }
+
+    let Some(count) = count else {
         // Negative count — re.sub returns the input string unchanged.
         // CPython still type-checks the subject before its (empty) match
         // loop, so validate first, then just bump the refcount; no need to
@@ -303,17 +315,9 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         return Ok(string.clone_with_heap(vm.heap));
     };
 
-    // Check that repl is a string — callable replacement is not supported
-    if !repl.is_str(vm.heap) {
-        return Err(ExcType::type_error(
-            "callable replacement is not yet supported in re.sub()",
-        ));
-    }
-    let repl = repl.to_str(vm)?;
-
     resolved
         .get(vm.heap)
-        .sub(repl, subject_str(string, vm)?, count, vm.heap)
+        .sub(repl.to_str(vm)?, subject_str(string, vm)?, count, vm.heap)
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern occurrences.

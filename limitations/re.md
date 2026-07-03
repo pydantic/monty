@@ -24,10 +24,17 @@ match CPython's, with these divergences:
   raises `first argument must be string or compiled pattern`, whereas
   CPython supports bytes patterns.
 - A non-str `repl` for `re.sub` raises `callable replacement is not yet
-  supported in re.sub()` for non-negative counts; CPython raises
-  `decoding to str: need a bytes-like object, int found`-style errors for
-  non-callable non-strings. With a negative count, Monty returns the subject
-  unchanged before validating `repl`, while CPython still validates `repl`.
+  supported in re.sub()`; CPython raises `decoding to str: need a
+  bytes-like object, int found`-style errors for non-callable non-strings.
+  Like CPython, the check runs even when a negative `count` means zero
+  substitutions.
+- `re.sub` replacement templates are not validated: CPython parses the
+  template eagerly (even with zero matches or a negative `count`) and
+  raises `PatternError` for an invalid group reference (`\2` with one
+  group: `invalid group reference 2 at position 1`) or an unknown escape
+  (`\q`: `bad escape \q at position 0`). Monty expands references to
+  missing groups as the empty string and passes unknown escapes through
+  literally.
 - A negative or `> 0xFFFF` integer `flags` value raises
   `TypeError: flags must be a non-negative integer`; CPython accepts larger
   int-sized values and handles negative values according to the resulting flag
