@@ -10,7 +10,7 @@
 //! calls, default expressions, and the final struct build.
 //!
 //! The `style` attribute names the CPython argument-parser family the target
-//! function uses (see `ErrorFamily` in `crates/monty/src/args/binder.rs` and
+//! function uses (see `ErrorFamily` in `crates/monty/src/args/bind_native.rs` and
 //! the table in `crates/monty-macros/README.md`); it selects both error
 //! wording and error ordering. Pick it by looking at how the function is
 //! implemented in CPython, not by the shape of the fields.

@@ -334,7 +334,7 @@ signature that has multiple positionals with defaults, keyword
 arguments, `*args`, or `**kwargs` — they are a known source of
 reference-count leaks, divergent error messages, and duplicated
 boilerplate. `FromArgs` emits a static param spec driven by the runtime
-binder (`crates/monty/src/args/binder.rs`), which handles dispatch,
+binder (`crates/monty/src/args/bind_native.rs`), which handles dispatch,
 conflict detection, default handling, and refcount cleanup mechanically.
 Pick `style = def | clinic | c | c_named | unpack` by the CPython parser
 family the target function uses — see

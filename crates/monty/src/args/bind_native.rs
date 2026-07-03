@@ -1,4 +1,5 @@
-//! Runtime argument binder driving `#[derive(FromArgs)]`.
+//! Runtime argument binder for *native* (Rust-implemented) callables,
+//! driving `#[derive(FromArgs)]`.
 //!
 //! The derive macro emits a `static` [`ParamSpec`] describing the signature
 //! and calls [`bind`], which does *all* of the dispatch work — arity
@@ -8,6 +9,16 @@
 //! Generated code is left with only the parts that must be compile-time:
 //! per-field [`FromValue`](super::FromValue) conversions, default
 //! expressions, and the final struct build.
+//!
+//! User-defined Python functions are bound by the sibling
+//! [`bind_python`](super::bind_python) module instead. The two binders are
+//! deliberately separate (different param representations, outputs, and
+//! error families), but [`ErrorFamily::Def`] here MUST stay behaviourally
+//! identical to `Signature::bind` — same kwargs-before-overflow ordering,
+//! same wording, same `(and N keyword-only argument(s))` counting. When
+//! changing `def` semantics in either file, change both; coverage lives in
+//! `test_cases/args__macro_errors.py` and
+//! `test_cases/function__arity_defaults.py`.
 //!
 //! No type conversion happens here: `bind` fills raw [`Value`] slots
 //! ([`Bound`], in place) and the generated code drains them in declaration order via

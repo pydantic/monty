@@ -9,7 +9,7 @@ Procedural macros used by the [`monty`](../monty/) crate. Not a public crate
 Generates the `from_args` body for a Rust-implemented Python function. The
 macro is deliberately thin: it emits a `static ParamSpec` describing the
 signature and one call to the runtime binder
-(`crates/monty/src/args/binder.rs`), which owns all positional/kwarg
+(`crates/monty/src/args/bind_native.rs`), which owns all positional/kwarg
 dispatch, arity checks, duplicate detection, and reference-count cleanup.
 The generated code then converts each raw slot via `FromValue` in
 declaration order and applies defaults.
@@ -50,7 +50,7 @@ surface unchanged. `str` arguments the function only reads should use
 The `style` attribute names the argument parser the target function uses in
 CPython. It selects both the error *wording* and the error *ordering*
 (binding errors vs conversion errors — see `ErrorFamily` in
-`crates/monty/src/args/binder.rs` for the exact contracts). Pick it by
+`crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
 looking at how the function is implemented in CPython:
 
 | CPython implementation | `style` | tell-tale error wording |

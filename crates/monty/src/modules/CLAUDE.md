@@ -14,7 +14,7 @@ Any function beyond the trivial 0/1/2-positional shapes (covered by
 `#[derive(FromArgs)]` struct. Never hand-roll `args.into_parts()` loops —
 they leak refcounts and diverge from CPython's wording. The derive emits a
 static param spec driven by the runtime binder
-(`crate::args::binder`), which handles dispatch, arity errors, kwarg
+(`crate::args::bind_native`), which handles dispatch, arity errors, kwarg
 matching, duplicate/conflict detection, and refcount cleanup mechanically.
 
 Full attribute reference: `crates/monty-macros/README.md` (including the

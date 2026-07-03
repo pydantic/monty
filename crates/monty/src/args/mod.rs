@@ -1,10 +1,12 @@
-mod binder;
+mod bind_native;
+mod bind_python;
 mod from_value;
 mod to_monty_object;
 
 use std::{mem, slice, vec::IntoIter};
 
-pub(crate) use binder::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
+pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, LaxBool, StrArg};
 pub(crate) use monty_macros::{FromArgs, ToArgs};
 pub(crate) use to_monty_object::ToMontyObject;

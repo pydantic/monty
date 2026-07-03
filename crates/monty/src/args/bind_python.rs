@@ -1,8 +1,19 @@
-//! Function signature representation and argument binding.
+//! Signature representation and argument binding for user-defined *Python*
+//! functions (`def` / `lambda`).
 //!
 //! This module handles Python function signatures including all parameter types:
 //! positional-only, positional-or-keyword, *args, keyword-only, and **kwargs.
 //! It also handles default values and the argument binding algorithm.
+//!
+//! Native (Rust-implemented) callables are bound by the sibling
+//! [`bind_native`](super::bind_native) module instead. The two binders are
+//! deliberately separate (different param representations, outputs, and
+//! error families), but [`Signature::bind`] MUST stay behaviourally
+//! identical to `bind_native`'s `ErrorFamily::Def` path — same
+//! kwargs-before-overflow ordering, same wording, same `(and N keyword-only
+//! argument(s))` counting. When changing `def` semantics in either file,
+//! change both; coverage lives in `test_cases/function__arity_defaults.py`
+//! and `test_cases/args__macro_errors.py`.
 
 use crate::{
     args::{ArgPosIter, ArgValues},

@@ -528,7 +528,7 @@ impl ExcType {
     }
 
     /// Message body for [`type_error_missing_positional_with_names`], exposed
-    /// separately so `signature.rs` can attach a call position to the same
+    /// separately so `args/bind_python.rs` can attach a call position to the same
     /// CPython-exact wording.
     #[must_use]
     pub(crate) fn missing_positional_msg(name: &str, missing_names: &[&str]) -> String {
@@ -588,7 +588,7 @@ impl ExcType {
     }
 
     /// Message body for [`type_error_too_many_positional_range`], exposed
-    /// separately so `signature.rs` can attach a call position to the same
+    /// separately so `args/bind_python.rs` can attach a call position to the same
     /// CPython-exact wording.
     #[must_use]
     pub(crate) fn too_many_positional_range_msg(
