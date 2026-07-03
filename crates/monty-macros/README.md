@@ -71,7 +71,13 @@ Since CPython's `def` binding never type-checks, `style = def` structs
 should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
 function body, so type errors carry the message the CPython function body
 would produce. `bad_arg` is rejected under `style = def` for the same
-reason.
+reason, and so is `varargs` (a `*args` signature can never raise
+too-many-positional, so the style would have no effect).
+
+`style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
+range, so the derive rejects anything outside that shape: every positional
+field must be `pos_only`, and `varargs`, `varkwargs`, and `at_most_total`
+are all incompatible.
 
 ### Modifiers
 
@@ -81,7 +87,9 @@ reason.
   the style. Litmus test: call the CPython function with valid positionals
   plus one bogus kwarg — if it reports `takes at most N arguments (M
   given)`, set the flag; if it reports `unexpected keyword argument`,
-  don't.
+  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
+  on signatures with a fixed maximum — rejected under `style = def` /
+  `style = unpack` and with `varargs`/`varkwargs`.
 - `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
   CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
   must be {expected}, not {got}`).
