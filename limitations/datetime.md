@@ -14,6 +14,15 @@ Class methods `today()`, `fromisoformat()`, `fromisocalendar()`,
 `fromtimestamp()`, `fromordinal()` are not implemented. `today()` is
 missing because the sandbox has no access to the host clock.
 
+Constructor overflow wording on Windows: CPython's `i` converter goes
+through C `long`, which is 32 bits on Windows, so `date(2**40, 1, 1)`
+raises `OverflowError: Python int too large to convert to C long` there,
+while 64-bit-`long` platforms raise the sign-aware `signed integer is
+greater than maximum` / `less than minimum`. Monty's ints are i64 on
+every host, so it always uses the 64-bit wording — matching CPython on
+Linux/macOS but not on Windows. (Same for `datetime`; values wider than
+i64 raise the `C long` message on all platforms, matching CPython.)
+
 ## `datetime`
 
 Constructor: `datetime(year, month, day, hour=0, minute=0, second=0,
@@ -50,11 +59,16 @@ got N`.
 
 ## `timedelta`
 
-Constructor: `timedelta(days=0, seconds=0, microseconds=0, minutes=0,
-hours=0)`. The CPython `milliseconds` and `weeks` parameters are not
-supported.
+Constructor: `timedelta(days=0, seconds=0, microseconds=0, *,
+milliseconds=0, minutes=0, hours=0, weeks=0)` — note `milliseconds`,
+`minutes`, `hours`, and `weeks` are keyword-only in Monty; CPython accepts
+all seven positionally.
 Attributes: `days`, `seconds`, `microseconds`.
-No methods (`.total_seconds()` is **not** implemented).
+Methods: `total_seconds`.
+
+A non-int component raises `TypeError: '{type}' object cannot be
+interpreted as an integer`; CPython names the offending component instead
+(`unsupported type for timedelta days component: str`).
 
 Arithmetic (`+`, `-`, `*`, comparisons) works between `timedelta`s and
 between `datetime`/`date` and `timedelta`. Division and floor-division of
@@ -68,6 +82,13 @@ Attributes: `offset`, `name`.
 
 `timezone.utc` and `timezone.min` / `timezone.max` class constants are not
 defined. The abstract `tzinfo` base class is not exposed.
+
+One error-ordering corner: `timezone('x', offset=td)` (a non-`timedelta`
+positional *and* an `offset` kwarg) raises the name-and-position conflict in
+Monty, but the type error in CPython (`timezone() argument 1 must be
+datetime.timedelta, not str`) — CPython's parser type-checks `offset` while
+binding, whereas Monty validates the `timedelta` in the constructor body
+after binding completes.
 
 ## Formatting
 

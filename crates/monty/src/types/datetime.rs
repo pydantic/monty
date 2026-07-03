@@ -234,13 +234,14 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 /// could still fit in the keyword-only tail (`actual <= 9`) the message is
 /// "function takes at most 8 *positional* arguments"; once it exceeds the
 /// total slot count it switches to "function takes at most 9 arguments".
-/// The macro implements that pivot via `at_most_positional` + the keyword-only
-/// `fold` field — the trailing kw-only slot is what bumps `max_total` to 9.
+/// The derive turns the pivot on automatically for `style = c` structs with
+/// keyword-only fields — the trailing kw-only `fold` slot is what bumps
+/// `max_total` to 9.
 ///
 /// `fold` itself is accepted for CPython parity but currently has no effect
 /// on the stored datetime — Monty does not track DST-fold disambiguation.
 #[derive(FromArgs)]
-#[from_args(name = "function", c_error, at_most_positional)]
+#[from_args(name = "function", style = c)]
 struct DatetimeInitArgs {
     year: i32,
     month: i32,
@@ -999,7 +1000,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = format_datetime_strftime(&dt, &format)?;
+                defer_drop!(format, vm);
+                let formatted = format_datetime_strftime(&dt, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {

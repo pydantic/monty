@@ -79,6 +79,12 @@ salsa = { version="0.27.0", default-features = false, features = [
 # data, no unsafe; its Unicode version may lag CPython's, affecting only
 # recently (re)assigned code points.
 unicode-general-category = "1"
+# `unicodedata` module backing data. Both are pure generated tables, no unsafe;
+# `unicode_names2` backs `name()`/`lookup()`, `unicode-normalization` backs
+# `normalize()`/`is_normalized()`/`combining()`. Their Unicode versions may lag
+# or lead CPython's, affecting only recently (re)assigned code points.
+unicode_names2 = "1"
+unicode-normalization = "0.1"
 # bigint and related crates
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"

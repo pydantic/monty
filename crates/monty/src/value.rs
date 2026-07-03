@@ -2075,6 +2075,31 @@ impl Value {
         }
     }
 
+    /// Borrows the value as a `&str` if it is a string (interned or heap `str`).
+    ///
+    /// Unlike [`as_either_str`](Self::as_either_str) this never allocates — both
+    /// interned and heap strings are returned by borrow — and it errors rather
+    /// than returning `None` for non-strings, with CPython's generic `expected
+    /// string, not <type>` message. Use it wherever a function reads a `str`
+    /// argument it does not need to own; the borrow keeps `self` and the heap
+    /// pinned, so drop/allocate only once it ends.
+    pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+        match self {
+            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
+            Self::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                HeapData::Str(s) => Ok(s.as_str()),
+                _ => Err(ExcType::type_error(format!(
+                    "expected string, not {}",
+                    self.py_type(vm)
+                ))),
+            },
+            _ => Err(ExcType::type_error(format!(
+                "expected string, not {}",
+                self.py_type(vm)
+            ))),
+        }
+    }
+
     /// check if the value is a string.
     pub fn is_str(&self, heap: &Heap<impl ResourceTracker>) -> bool {
         match self {
@@ -2082,25 +2107,6 @@ impl Value {
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
             _ => false,
         }
-    }
-
-    /// Extracts an `i32` from a `Value`, accepting `Bool` and `Int`.
-    ///
-    /// Used by `date`, `datetime`, and other constructors that expect
-    /// integer arguments matching CPython's `int` coercion rules.
-    pub fn to_i32(&self) -> RunResult<i32> {
-        let int_value = match self {
-            Self::Bool(b) => i64::from(*b),
-            Self::Int(i) => *i,
-            _ => {
-                return Err(
-                    SimpleException::new_msg(ExcType::TypeError, "an integer is required (got type float)").into(),
-                );
-            }
-        };
-        i32::try_from(int_value).map_err(|_| {
-            SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into()
-        })
     }
 }
 

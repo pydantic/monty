@@ -165,7 +165,8 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
 /// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
 ///
-/// Arity and missing-arg errors use the `dumps()` descriptor, but the
+/// Arity and missing-arg errors use the `dumps()` descriptor with `style =
+/// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
 /// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
 /// forwards unknown kwargs straight to the encoder constructor, which is what
 /// surfaces in the error. `kwarg_error_name` overrides the function name used
@@ -174,7 +175,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// (`py_bool`) or shape coercion (`parse_indent_value` /
 /// `parse_separators_value`) on the way through.
 #[derive(FromArgs)]
-#[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
+#[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
     obj: Value,
     #[from_args(kw_only, default = Value::None)]

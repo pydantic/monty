@@ -16,8 +16,9 @@ use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
@@ -125,13 +126,13 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
 /// Argument shape for `date(year, month, day)`.
 ///
-/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`) and uses
-/// `c_error` wording — "function takes at most N arguments", "function missing
-/// required argument 'X' (pos N)", etc. Unlike `datetime()` it does **not**
-/// prefix "positional" in the at-most message, so we leave `at_most_positional`
-/// unset.
+/// CPython's `date()` is C-implemented (`PyArg_ParseTupleAndKeywords`), hence
+/// `style = c` — "function takes at most N arguments", "function missing
+/// required argument 'X' (pos N)", etc. Unlike `datetime()` it has no
+/// keyword-only fields, so the derive keeps the plain (non-"positional")
+/// at-most wording automatically.
 #[derive(FromArgs)]
-#[from_args(name = "function", c_error, at_most_total)]
+#[from_args(name = "function", style = c, at_most_total)]
 struct DateInitArgs {
     year: i32,
     month: i32,
@@ -266,7 +267,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = format_date_strftime(date, &format)?;
+                defer_drop!(format, vm);
+                let formatted = format_date_strftime(date, format.as_str(vm))?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
@@ -403,7 +405,7 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 /// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.
 ///
 /// CPython implements `strftime` as a C method and reports errors with the
-/// bare method name (no class prefix), so we use `c_error_named` + the
+/// bare method name (no class prefix), so we use `style = c_named` + the
 /// `"strftime"` descriptor — matching wordings like
 /// `strftime() missing required argument 'format' (pos 1)` and
 /// `strftime() takes at most 1 argument (2 given)`.
@@ -413,9 +415,9 @@ pub(crate) fn invalid_strftime_error() -> RunError {
 /// `None`-vs-`NoneType` special case — so the type-check logic lives in
 /// the derive rather than a hand-written extract helper.
 #[derive(FromArgs)]
-#[from_args(name = "strftime", c_error_named, at_most_total, bad_arg)]
+#[from_args(name = "strftime", style = c_named, at_most_total, bad_arg)]
 pub(crate) struct StrftimeArgs {
-    pub(crate) format: String,
+    pub(crate) format: StrArg,
 }
 
 /// Keyword arguments for `date.replace()`. All keyword-only; absent fields

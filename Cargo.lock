@@ -2019,6 +2019,8 @@ dependencies = [
  "strum 0.27.2",
  "tempfile",
  "unicode-general-category",
+ "unicode-normalization",
+ "unicode_names2",
 ]
 
 [[package]]
@@ -2106,6 +2108,7 @@ dependencies = [
 name = "monty-macros"
 version = "0.0.18"
 dependencies = [
+ "insta",
  "proc-macro2",
  "quote",
  "syn",

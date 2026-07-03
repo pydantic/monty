@@ -547,7 +547,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
+          manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
@@ -561,7 +561,7 @@ jobs:
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
           target: ${{ matrix.target }}
-          manylinux: ${{ matrix.manylinux || 'auto' }}
+          manylinux: ${{ matrix.manylinux || 'manylinux_2_28' }}
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
@@ -632,7 +632,7 @@ jobs:
       - name: build cli wheel
         uses: PyO3/maturin-action@04ac600d27cdf7a9a280dadf7147097c42b757ad # v1.50.1
         with:
-          manylinux: auto
+          manylinux: manylinux_2_28
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI

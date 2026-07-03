@@ -127,6 +127,14 @@ d = {}
 d.update([('a', 1)], b=2)
 assert d == {'a': 1, 'b': 2}, 'update with iterable and kwargs'
 
+# `**` unpacking with a runtime-built (non-interned) string key must still
+# reach **kwargs — only genuinely non-string keys are rejected.
+runtime_key = 'zzz' + 'qqq'
+d = dict(**{runtime_key: 1})
+assert d == {'zzzqqq': 1}, 'dict(**) with runtime-built string key'
+d.update(**{runtime_key: 2})
+assert d == {'zzzqqq': 2}, 'dict.update(**) with runtime-built string key'
+
 # === Error message for unknown classmethod ===
 # Error message should say 'dict' not 'type'
 try:

@@ -1,8 +1,9 @@
 # Vendored types for a very minimal subset of the CPython stdlib
 
-Copied originally from <https://github.com/astral-sh/ruff/tree/main/crates/ty_vendored> but only parts of
-<https://github.com/python/typeshed/blob/main/stdlib/builtins.pyi> are kept, since those are the
-only functions supported from the stdlib.
+Copied originally from <https://github.com/astral-sh/ruff/tree/main/crates/ty_vendored>.
+Monty vendors only the stdlib modules it supports, and custom stubs in
+`custom/` strip or replace upstream typeshed files where Monty's runtime
+surface is intentionally smaller than CPython's.
 
 The `vendor/typeshed` directory is updated by calling `make update-typeshed` which calls the `update.py` script in this directory.
 

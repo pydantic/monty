@@ -1,8 +1,19 @@
-//! Function signature representation and argument binding.
+//! Signature representation and argument binding for user-defined *Python*
+//! functions (`def` / `lambda`).
 //!
 //! This module handles Python function signatures including all parameter types:
 //! positional-only, positional-or-keyword, *args, keyword-only, and **kwargs.
 //! It also handles default values and the argument binding algorithm.
+//!
+//! Native (Rust-implemented) callables are bound by the sibling
+//! [`bind_native`](super::bind_native) module instead. The two binders are
+//! deliberately separate (different param representations, outputs, and
+//! error families), but [`Signature::bind`] MUST stay behaviourally
+//! identical to `bind_native`'s `ErrorFamily::Def` path — same
+//! kwargs-before-overflow ordering, same wording, same `(and N keyword-only
+//! argument(s))` counting. When changing `def` semantics in either file,
+//! change both; coverage lives in `test_cases/function__arity_defaults.py`
+//! and `test_cases/args__macro_errors.py`.
 
 use crate::{
     args::{ArgPosIter, ArgValues},
@@ -212,7 +223,7 @@ impl Signature {
 
         // Convert kwargs to an iterator and guard it so remaining items are cleaned up
         // on any error path
-        let kwonly_given = keyword_args.len();
+        let n_kwargs = keyword_args.len();
         let keyword_args = keyword_args.into_iter();
         defer_drop_mut!(keyword_args, vm);
 
@@ -222,7 +233,7 @@ impl Signature {
         // signatures with only positional-or-keyword params and defaults.
         // This avoids the full binding algorithm overhead for common cases.
 
-        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && kwonly_given == 0 {
+        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && n_kwargs == 0 {
             match pos_iter {
                 ArgPosIter::Empty => {}
                 ArgPosIter::One(a) => {
@@ -271,19 +282,11 @@ impl Signature {
         let arg_param_count = self.arg_count();
         let total_positional_params = pos_param_count + arg_param_count;
 
-        // Check positional argument count against maximum
-        if let Some(max) = self.max_positional_count() {
-            let positional_count = pos_iter.len();
-            if positional_count > max {
-                let func = vm.interns.get_str(func_name.name_id);
-                return Err(ExcType::type_error_too_many_positional(
-                    func,
-                    max,
-                    positional_count,
-                    kwonly_given,
-                ));
-            }
-        }
+        // Too many positionals? Noted here but raised only *after* the keyword
+        // loop: CPython binds keyword arguments first, so unexpected-kwarg and
+        // multiple-values errors beat too-many-positional.
+        let positional_count = pos_iter.len();
+        let positional_overflow = self.max_positional_count().is_some_and(|max| positional_count > max);
 
         // Initialize result namespace with Undefined values for all slots
         // Layout: [pos_args][args][*args?][kwargs][**kwargs?]
@@ -319,12 +322,11 @@ impl Signature {
             }
         }
 
-        // 2. Collect excess positional args into *args tuple
+        // 2. Collect excess positional args into *args tuple. Without `*args`
+        // any excess (the deferred overflow) stays in `pos_iter`, drained by
+        // its guard when the overflow error returns below.
         if self.var_args.is_some() {
             namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap)?;
-        } else {
-            // If no *args, excess was already checked above via max_positional_count
-            debug_assert_eq!(pos_iter.len(), 0);
         }
 
         // 3. Bind keyword args
@@ -405,6 +407,26 @@ impl Signature {
             let func = vm.interns.get_str(func_name.name_id);
             let key_str = keyword_name.as_str(vm.interns);
             return Err(ExcType::type_error_unexpected_keyword(func, key_str));
+        }
+
+        // 3.4. Raise the deferred too-many-positional error now that every
+        // kwarg has bound (or errored). CPython reports the range form when
+        // some positional params have defaults, plus an `(and N keyword-only
+        // argument(s))` suffix counting only the kw-only params *bound by the
+        // call* — defaults have not been applied yet, exactly as in CPython's
+        // `too_many_positional`.
+        if positional_overflow {
+            let kwonly_given = (0..self.kwarg_count())
+                .filter(|i| (bound_params & (1 << (total_positional_params + i))) != 0)
+                .count();
+            let func = vm.interns.get_str(func_name.name_id);
+            return Err(ExcType::type_error_too_many_positional_range(
+                func,
+                self.required_positional_count(),
+                total_positional_params,
+                positional_count,
+                kwonly_given,
+            ));
         }
 
         // 3.5. Apply default values to unbound optional parameters
@@ -612,37 +634,23 @@ impl Signature {
     fn wrong_arg_count_error<T>(&self, actual_count: usize, interns: &Interns, func_name: Identifier) -> RunResult<T> {
         let name_str = interns.get_str(func_name.name_id);
         let param_count = self.param_count();
-        let msg = if let Some(missing_count) = param_count.checked_sub(actual_count) {
-            // Missing arguments - show actual parameter names
-            let mut msg = format!(
-                "{}() missing {} required positional argument{}: ",
-                name_str,
-                missing_count,
-                if missing_count == 1 { "" } else { "s" }
-            );
-            // Collect parameter names, skipping the ones already provided
-            let mut missing_names: Vec<_> = self
+        // Only reached from the Simple/SimpleWithDefaults fast paths, so there
+        // are no pos-only, kw-only, or `*args` params: every param is
+        // positional-or-keyword and `param_count` is the positional maximum.
+        let required = self.required_positional_count();
+        let msg = if actual_count < required {
+            // Missing arguments — CPython lists only the *required* params not
+            // yet provided (params with defaults are never "missing").
+            let missing_names: Vec<String> = self
                 .param_names()
+                .take(required)
                 .skip(actual_count)
-                .map(|string_id| format!("'{}'", interns.get_str(string_id)))
+                .map(|string_id| interns.get_str(string_id).to_string())
                 .collect();
-            let last = missing_names.pop().unwrap();
-            if !missing_names.is_empty() {
-                msg.push_str(&missing_names.join(", "));
-                msg.push_str(", and ");
-            }
-            msg.push_str(&last);
-            msg
+            let missing_refs: Vec<&str> = missing_names.iter().map(String::as_str).collect();
+            ExcType::missing_positional_msg(name_str, &missing_refs)
         } else {
-            // Too many arguments
-            format!(
-                "{}() takes {} positional argument{} but {} {} given",
-                name_str,
-                param_count,
-                if param_count == 1 { "" } else { "s" },
-                actual_count,
-                if actual_count == 1 { "was" } else { "were" }
-            )
+            ExcType::too_many_positional_range_msg(name_str, required, param_count, actual_count, 0)
         };
         Err(SimpleException::new_msg(ExcType::TypeError, msg)
             .with_position(func_name.position)

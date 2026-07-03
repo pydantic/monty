@@ -49,8 +49,16 @@ impl StringId {
 
     /// Returns the StringId for an ASCII byte.
     #[must_use]
-    pub fn from_ascii(byte: u8) -> Self {
-        Self(u32::from(byte))
+    pub const fn from_ascii(byte: u8) -> Self {
+        Self(byte as u32)
+    }
+
+    /// Const equivalent of `StringId::from(StaticStrings)`, for building
+    /// `static` tables (e.g. the `ParamSpec`s emitted by `derive(FromArgs)`)
+    /// where trait-based `From` conversions cannot be used.
+    #[must_use]
+    pub const fn from_static(value: StaticStrings) -> Self {
+        Self(value as u32)
     }
 }
 
@@ -698,6 +706,26 @@ pub enum StaticStrings {
     // same StringId-stability reason as the gc entries above).
     /// `sys.setrecursionlimit()` function (only callable under `test-hooks`).
     Setrecursionlimit,
+
+    // ==========================
+    // unicodedata module strings. The `name()` function reuses the existing
+    // `Name` variant (both intern to "name").
+    /// Module name for `import unicodedata`.
+    Unicodedata,
+    /// `unicodedata.normalize()` function.
+    Normalize,
+    /// `unicodedata.is_normalized()` function.
+    #[strum(serialize = "is_normalized")]
+    IsNormalized,
+    /// `unicodedata.category()` function.
+    Category,
+    /// `unicodedata.lookup()` function.
+    Lookup,
+    /// `unicodedata.combining()` function.
+    Combining,
+    /// `unicodedata.unidata_version` constant.
+    #[strum(serialize = "unidata_version")]
+    UnidataVersion,
 
     // ==========================
     // Module dunder values.

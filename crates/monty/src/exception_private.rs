@@ -524,20 +524,20 @@ impl ExcType {
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`
     #[must_use]
     pub(crate) fn type_error_missing_positional_with_names(name: &str, missing_names: &[&str]) -> RunError {
+        SimpleException::new_msg(Self::TypeError, Self::missing_positional_msg(name, missing_names)).into()
+    }
+
+    /// Message body for [`type_error_missing_positional_with_names`], exposed
+    /// separately so `args/bind_python.rs` can attach a call position to the same
+    /// CPython-exact wording.
+    #[must_use]
+    pub(crate) fn missing_positional_msg(name: &str, missing_names: &[&str]) -> String {
         let count = missing_names.len();
         let names_str = format_param_names(missing_names);
         if count == 1 {
-            SimpleException::new_msg(
-                Self::TypeError,
-                format!("{name}() missing 1 required positional argument: {names_str}"),
-            )
-            .into()
+            format!("{name}() missing 1 required positional argument: {names_str}")
         } else {
-            SimpleException::new_msg(
-                Self::TypeError,
-                format!("{name}() missing {count} required positional arguments: {names_str}"),
-            )
-            .into()
+            format!("{name}() missing {count} required positional arguments: {names_str}")
         }
     }
 
@@ -563,43 +563,58 @@ impl ExcType {
         }
     }
 
-    /// Creates a TypeError for too many positional arguments.
+    /// Creates a TypeError for too many positional arguments to a callable whose
+    /// positional count is a range (some positional parameters have defaults).
     ///
-    /// Matches CPython's format:
-    /// - Simple: `{name}() takes {max} positional argument(s) but {actual} were given`
-    /// - With kwonly: `{name}() takes {max} positional argument(s) but {actual} positional argument(s) (and N keyword-only argument(s)) were given`
+    /// Matches CPython's pure-Python `def` wording: when `min == max` it emits
+    /// `{name}() takes {max} positional argument(s) but {actual} was/were given`;
+    /// otherwise `{name}() takes from {min} to {max} positional arguments but
+    /// {actual} were given` (always-plural "arguments" in the range form). Both
+    /// get the `(and N keyword-only argument(s))` suffix when `kwonly_given > 0`.
+    /// Used by `FromArgs` structs marked `py_def` and by user `def` bindings.
     #[must_use]
-    pub(crate) fn type_error_too_many_positional(
+    pub(crate) fn type_error_too_many_positional_range(
         name: &str,
+        min: usize,
         max: usize,
         actual: usize,
         kwonly_given: usize,
     ) -> RunError {
-        let takes_word = if max == 1 { "argument" } else { "arguments" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            Self::too_many_positional_range_msg(name, min, max, actual, kwonly_given),
+        )
+        .into()
+    }
 
+    /// Message body for [`type_error_too_many_positional_range`], exposed
+    /// separately so `args/bind_python.rs` can attach a call position to the same
+    /// CPython-exact wording.
+    #[must_use]
+    pub(crate) fn too_many_positional_range_msg(
+        name: &str,
+        min: usize,
+        max: usize,
+        actual: usize,
+        kwonly_given: usize,
+    ) -> String {
+        let takes = if min == max {
+            // `max == 0` still reads "0 positional arguments" (plural) in CPython.
+            let takes_word = if max == 1 { "argument" } else { "arguments" };
+            format!("{max} positional {takes_word}")
+        } else {
+            format!("from {min} to {max} positional arguments")
+        };
         if kwonly_given > 0 {
             // CPython includes keyword-only args in the "given" part when present
             let given_word = if actual == 1 { "argument" } else { "arguments" };
             let kwonly_word = if kwonly_given == 1 { "argument" } else { "arguments" };
-            SimpleException::new_msg(
-                Self::TypeError,
-                format!(
-                    "{name}() takes {max} positional {takes_word} but {actual} positional {given_word} (and {kwonly_given} keyword-only {kwonly_word}) were given"
-                ),
+            format!(
+                "{name}() takes {takes} but {actual} positional {given_word} (and {kwonly_given} keyword-only {kwonly_word}) were given"
             )
-            .into()
-        } else if max == 0 {
-            SimpleException::new_msg(
-                Self::TypeError,
-                format!("{name}() takes 0 positional arguments but {actual} were given"),
-            )
-            .into()
         } else {
-            SimpleException::new_msg(
-                Self::TypeError,
-                format!("{name}() takes {max} positional {takes_word} but {actual} were given"),
-            )
-            .into()
+            let was_were = if actual == 1 { "was" } else { "were" };
+            format!("{name}() takes {takes} but {actual} {was_were} given")
         }
     }
 
@@ -1274,6 +1289,16 @@ impl ExcType {
     #[must_use]
     pub(crate) fn overflow_c_int() -> RunError {
         SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C int").into()
+    }
+
+    /// Creates an OverflowError when a Python int doesn't fit into a C `long` (i64).
+    ///
+    /// Matches CPython's format: `OverflowError: Python int too large to convert to C long`
+    /// CPython's `i` format code converts through C long first, so ints beyond
+    /// i64 report this even for C-int parameters (e.g. `datetime.date(2**100, 1, 1)`).
+    #[must_use]
+    pub(crate) fn overflow_c_long() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C long").into()
     }
 
     /// Creates a TypeError for unsupported binary operations.
@@ -1959,12 +1984,13 @@ impl RunError {
     }
 }
 
-/// Formats a list of parameter names for error messages.
+/// Formats a list of parameter names for error messages, matching CPython's
+/// `format_missing` joining (note the Oxford comma for three or more names).
 ///
 /// Examples:
 /// - `["a"]` -> `'a'`
 /// - `["a", "b"]` -> `'a' and 'b'`
-/// - `["a", "b", "c"]` -> `'a', 'b' and 'c'`
+/// - `["a", "b", "c"]` -> `'a', 'b', and 'c'`
 fn format_param_names(names: &[&str]) -> String {
     match names.len() {
         0 => String::new(),
@@ -1973,7 +1999,7 @@ fn format_param_names(names: &[&str]) -> String {
         _ => {
             let last = names.last().unwrap();
             let rest: Vec<_> = names[..names.len() - 1].iter().map(|n| format!("'{n}'")).collect();
-            format!("{} and '{last}'", rest.join(", "))
+            format!("{}, and '{last}'", rest.join(", "))
         }
     }
 }

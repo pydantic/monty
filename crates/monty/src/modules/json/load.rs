@@ -78,13 +78,14 @@ pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 
 /// Argument shape for `json.loads(s)`.
 ///
-/// CPython exposes a handful of additional kwargs (`cls`, `object_hook`, …)
-/// that Monty intentionally does not implement; leaving them off this struct
-/// means the macro emits the standard "unexpected keyword" error for them.
+/// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
+/// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
+/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
+/// …) are intentionally not implemented; leaving them off this struct means
+/// the macro emits the standard "unexpected keyword" error for them.
 #[derive(FromArgs)]
-#[from_args(name = "loads")]
+#[from_args(name = "loads", style = def)]
 struct JsonLoadsArgs {
-    #[from_args(pos_only)]
     s: Value,
 }
 

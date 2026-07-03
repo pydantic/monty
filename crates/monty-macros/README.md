@@ -6,17 +6,20 @@ Procedural macros used by the [`monty`](../monty/) crate. Not a public crate
 
 ## `#[derive(FromArgs)]`
 
-Generates the `from_args` body for a Rust-implemented Python function. Each
-field reads like a Python parameter, and the generated code handles
-positional/kwarg dispatch, defaults, duplicate detection, type coercion via
-`FromValue`, and reference-count cleanup on every error path.
+Generates the `from_args` body for a Rust-implemented Python function. The
+macro is deliberately thin: it emits a `static ParamSpec` describing the
+signature and one call to the runtime binder
+(`crates/monty/src/args/bind_native.rs`), which owns all positional/kwarg
+dispatch, arity checks, duplicate detection, and reference-count cleanup.
+The generated code then converts each raw slot via `FromValue` in
+declaration order and applies defaults.
 
 ```rust
 use monty::args::FromArgs;
 use monty::value::Value;
 
 #[derive(FromArgs)]
-#[from_args(name = "datetime", c_error, at_most_positional)]
+#[from_args(name = "function", style = c)]
 struct DatetimeArgs {
     year: i32,
     month: i32,
@@ -34,14 +37,76 @@ let DatetimeArgs { year, month, day, hour, tzinfo } =
 Fields must appear in Python signature order:
 `[pos_only…] [pos_or_keyword…] [varargs] [kw_only…] [varkwargs]`, with
 required fields before optional ones in each region. Field types must
-implement `FromValue` (impls live in `monty::args::from_value`).
+implement `FromValue` (impls live in `monty::args::from_value`). Coercion
+failures are structured (`FromValueFail`): wrong-type failures get their
+wording from the extraction site (`bad_arg`/`bad_arg_named`, or the impl's
+`type_error`), while value-level failures (`ValueError`, `OverflowError`)
+surface unchanged. `str` arguments the function only reads should use
+`StrArg`, which validates without copying the text and lends `&str` via
+`as_str(vm)`.
 
-The full attribute surface — struct-level wording flags (`c_error`,
-`c_error_named`, `at_most_total`, `bad_arg`, `kwargs_not_supported_yet`, …)
-and field-level roles (`pos_only`, `kw_only`, `varargs`, `varkwargs`,
-`default`, `static_string`) — is documented inline on `StructAttrs`, the
-`FieldKind` enum, and each `render_*` helper in
-[`src/from_args.rs`](src/from_args.rs).
+### `style` — pick the CPython parser family
+
+The `style` attribute names the argument parser the target function uses in
+CPython. It selects both the error *wording* and the error *ordering*
+(binding errors vs conversion errors — see `ErrorFamily` in
+`crates/monty/src/args/bind_native.rs` for the exact contracts). Pick it by
+looking at how the function is implemented in CPython:
+
+| CPython implementation | `style` | tell-tale error wording |
+|---|---|---|
+| pure-Python `def` (`re` module, `json.dumps`, `Path.mkdir`) | `def` | `f() takes from 1 to 2 positional arguments but 3 were given` |
+| Argument Clinic — most modern builtins/methods (look for clinic blocks / `*.c.h` includes in the CPython source) | `clinic` (the default — omit it) | `replace() takes at least 2 positional arguments (1 given)` |
+| `PyArg_ParseTupleAndKeywords`, no `:name` in the format string | `c` | `function missing required argument 'day' (pos 3)` |
+| `PyArg_ParseTupleAndKeywords` with `:name` | `c_named` | `timezone() missing required argument 'offset' (pos 1)` |
+| `PyArg_UnpackTuple` (positional-only, fixed `min..max`) | `unpack` | `name expected at most 2 arguments, got 3` (`expected N …` when min == max) |
+
+Style-derived behaviour that used to be separate flags: the C
+"… positional arguments …" overflow pivot turns on automatically for
+`style = c` structs with `kw_only` fields (CPython's `vgetargskeywords`
+behaves the same way), and `unpack` collapses to the exact-arity
+`expected N argument(s)` wording when no positional field has a default.
+
+Since CPython's `def` binding never type-checks, `style = def` structs
+should declare fields as raw `Value` (or `StrArg`-in-body) and coerce in the
+function body, so type errors carry the message the CPython function body
+would produce. `bad_arg` is rejected under `style = def` for the same
+reason, and so is `varargs` (a `*args` signature can never raise
+too-many-positional, so the style would have no effect).
+
+`style = unpack` models `PyArg_UnpackTuple`'s fixed positional `min..max`
+range, so the derive rejects anything outside that shape: every positional
+field must be `pos_only`, and `varargs`, `varkwargs`, and `at_most_total`
+are all incompatible.
+
+### Modifiers
+
+- `at_most_total` — pre-count positionals + kwargs against the positional
+  maximum before dispatch (`{name}() takes at most N arguments (M given)`).
+  This is a per-function empirical fact, not derivable from the fields or
+  the style. Litmus test: call the CPython function with valid positionals
+  plus one bogus kwarg — if it reports `takes at most N arguments (M
+  given)`, set the flag; if it reports `unexpected keyword argument`,
+  don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
+  on signatures with a fixed maximum — rejected under `style = def` /
+  `style = unpack` and with `varargs`/`varkwargs`.
+- `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
+  CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
+  must be {expected}, not {got}`).
+- `kwarg_error_name = "..."` — override the function name in the
+  unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
+- `kwargs_not_supported_yet` — reject every kwarg with a
+  `NotImplementedError`; a Monty TODO marker.
+
+Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
+runtime binder's fast paths skip the missing-keyword check, so required
+keyword-only params are rejected at derive time), `varargs` (must be
+`Vec<Value>` — elements are handed over unconverted), `varkwargs`,
+`default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
+variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
+fields). All are documented inline in
+[`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
+unit tests for every attribute-validation error.
 
 ## `#[derive(ToArgs)]`
 

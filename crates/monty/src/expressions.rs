@@ -1,11 +1,10 @@
 use crate::{
-    args::ArgExprs,
+    args::{ArgExprs, Signature},
     builtins::Builtins,
     fstring::FStringPart,
     intern::{BytesId, LongIntId, StringId},
     namespace::NamespaceId,
     parse::{CodeRange, ParsedSignature, Try},
-    signature::Signature,
     value::{EitherStr, Marker, Value},
 };
 

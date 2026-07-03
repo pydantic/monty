@@ -43,6 +43,11 @@ permission bits. The `missing_ok` and `target_is_directory` keyword arguments
 accepted by other CPython methods are not parsed; pass only the positional
 arguments documented above.
 
+`Path.mkdir()`'s too-many-positional error counts only the visible
+parameters (`Path.mkdir() takes from 0 to 3 positional arguments but 4 were
+given`); CPython counts the bound `self` as well (`takes from 1 to 4 … but 5
+were given`).
+
 Not implemented: `glob`, `rglob`, `touch`, `chmod`, `lchmod`, `owner`,
 `group`, `symlink_to`, `hardlink_to`, `link_to`, `readlink`, `lstat`,
 `samefile`, `walk`, `open` (use the builtin `open()` instead),

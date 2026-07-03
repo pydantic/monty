@@ -3,7 +3,7 @@ use std::mem;
 use ahash::{AHashMap, AHashSet};
 
 use crate::{
-    args::{ArgExprs, CallArg, CallKwarg},
+    args::{ArgExprs, CallArg, CallKwarg, Signature},
     builtins::Builtins,
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
@@ -14,7 +14,6 @@ use crate::{
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
-    signature::Signature,
 };
 
 /// Mutable handle to the module's global [`NameMap`], threaded through
