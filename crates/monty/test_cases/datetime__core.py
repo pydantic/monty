@@ -220,6 +220,46 @@ try:
 except TypeError as e:
     assert str(e) == 'timezone() takes at most 2 arguments (3 given)', f'timezone 3-arg error: {e}'
 
+# === constructor arguments too wide for the C parameter type ===
+# CPython's `i` format converts to C long first ("too large to convert"), then
+# range-checks C int with sign-aware wording; timedelta components report C int.
+
+try:
+    datetime.date(2**40, 1, 1)
+    assert False, 'date year above C int range should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'signed integer is greater than maximum', f'date year overflow: {e}'
+
+try:
+    datetime.date(-(2**40), 1, 1)
+    assert False, 'date year below C int range should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'signed integer is less than minimum', f'date year underflow: {e}'
+
+try:
+    datetime.date(2**100, 1, 1)
+    assert False, 'date year beyond C long should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C long', f'date year big-int: {e}'
+
+try:
+    datetime.datetime(2**100, 1, 1)
+    assert False, 'datetime year beyond C long should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C long', f'datetime year big-int: {e}'
+
+try:
+    datetime.timedelta(days=2**70)
+    assert False, 'timedelta days beyond i64 should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int', f'timedelta days big-int: {e}'
+
+try:
+    datetime.timedelta(weeks=2**100)
+    assert False, 'timedelta weeks beyond i64 should raise OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int', f'timedelta weeks big-int: {e}'
+
 # TODO(datetime): restore once overflow paths are finalized without VM-specific binary fallback branches.
 # try:
 #     datetime.date(1, 1, 1) - datetime.timedelta(days=1)

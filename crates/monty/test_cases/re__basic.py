@@ -279,6 +279,9 @@ try:
 except TypeError as e:
     assert str(e) == "'str' object cannot be interpreted as an integer", f're.sub string count error: {e}'
 
+# === re.sub() count wider than 32 bits still caps (never truncates to 0) ===
+assert re.sub(r'\d', 'X', '1a2', 2**32) == 'XaX', 're.sub huge count replaces all matches'
+
 # === re.sub() negative count returns the subject unchanged ===
 assert re.sub(r'\d', 'X', '1a2', -1) == '1a2', 're.sub negative count returns input unchanged'
 # ... but the pattern still compiles and the subject is still type-checked

@@ -69,15 +69,17 @@ struct IscloseArgs {
 ```
 
 A positional-only C function with typed extraction (`unicodedata.rs`) —
-`NormForm` is a custom `FromValue` impl doing both the str type-check and the
-form-name validation; `StrArg` borrows the text zero-copy:
+`StrArg` borrows the text zero-copy. Note the form *name* is validated in the
+body (`NormForm::parse`), not during extraction: CPython type-checks every
+argument before the body rejects a bad value, so value checks must not run
+inside `FromValue`:
 
 ```rust
 #[derive(FromArgs)]
 #[from_args(name = "normalize", style = unpack, bad_arg)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
-    form: NormForm,
+    form: StrArg,
     #[from_args(pos_only)]
     unistr: StrArg,
 }

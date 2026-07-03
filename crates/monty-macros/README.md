@@ -90,10 +90,13 @@ reason.
 - `kwargs_not_supported_yet` — reject every kwarg with a
   `NotImplementedError`; a Monty TODO marker.
 
-Field-level attributes: `pos_only`, `kw_only`, `varargs` (must be
+Field-level attributes: `pos_only`, `kw_only` (must carry a `default` — the
+runtime binder's fast paths skip the missing-keyword check, so required
+keyword-only params are rejected at derive time), `varargs` (must be
 `Vec<Value>` — elements are handed over unconverted), `varkwargs`,
 `default[ = expr]`, `static_string = "..."` (override the `StaticStrings`
-variant used for kwarg matching). All are documented inline in
+variant used for kwarg matching; neither applies to `varargs`/`varkwargs`
+fields). All are documented inline in
 [`src/from_args.rs`](src/from_args.rs), which also carries `#[cfg(test)]`
 unit tests for every attribute-validation error.
 

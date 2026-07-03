@@ -508,14 +508,12 @@ pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl Resource
 /// Non-ints get CPython's argument-clinic message. Shared by `Pattern.sub`
 /// and module-level `re.sub`.
 pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<usize>> {
-    #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "n is checked non-negative above"
-    )]
     match val {
         None => Ok(Some(0)),
-        Some(Value::Int(n)) if n >= 0 => Ok(Some(n as usize)),
+        // Saturate rather than `as`-cast: on 32-bit targets (wasm) a count
+        // above usize::MAX would otherwise truncate — e.g. 2**32 to 0, which
+        // means "replace all" instead of an unreachably large cap.
+        Some(Value::Int(n)) if n >= 0 => Ok(Some(usize::try_from(n).unwrap_or(usize::MAX))),
         Some(Value::Bool(b)) => Ok(Some(usize::from(b))),
         Some(Value::Int(_)) => Ok(None),
         Some(other) => {

@@ -18,7 +18,7 @@
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap},
+    heap::{ContainsHeap, DropWithHeap, HeapData},
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
@@ -128,10 +128,13 @@ pub(crate) trait FromValue: Sized {
     /// On error the input `value` has already been dropped by `from_value`; the
     /// caller remains responsible for draining the argument iterators.
     ///
-    /// [`FromValueFail::Raise`] errors surface unchanged, so an impl can layer
-    /// *value* validation on top of a type check — e.g. `NormForm` accepts
-    /// only `str` but rejects unknown form names with a `ValueError` — without
-    /// that error being clobbered into a bogus "must be str, not str".
+    /// [`FromValueFail::Raise`] errors surface unchanged, so an impl can
+    /// report a failure that is not a type mismatch — e.g. the int impls
+    /// raise `OverflowError` for out-of-range ints — without that error being
+    /// clobbered into a bogus "must be int, not int". Use `Raise` only for
+    /// checks CPython performs *during* argument conversion; validation
+    /// CPython does in the function body belongs in the body (see
+    /// `NormForm::parse` in `unicodedata.rs`).
     fn extract_into(
         value: Value,
         slot: &mut Option<Self>,
@@ -178,11 +181,16 @@ impl FromValue for i32 {
             Value::Bool(b) => Ok(Self::from(b)),
             // Overflow is a *value* failure: the argument is a genuine int,
             // so a bad-arg rewrite ("must be int, not int") would be wrong.
+            // CPython's `i` format range-checks with sign-aware wording.
             Value::Int(i) => Self::try_from(i).map_err(|_| {
-                FromValueFail::Raise(
-                    SimpleException::new_msg(ExcType::OverflowError, "signed integer is greater than maximum").into(),
-                )
+                let msg = if i < 0 {
+                    "signed integer is less than minimum"
+                } else {
+                    "signed integer is greater than maximum"
+                };
+                FromValueFail::Raise(SimpleException::new_msg(ExcType::OverflowError, msg).into())
             }),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
             _ => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
         };
         value.drop_with_heap(vm);
@@ -201,6 +209,7 @@ impl FromValue for i64 {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
             _ => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
         };
         value.drop_with_heap(vm);
@@ -215,6 +224,10 @@ impl FromValue for i64 {
 /// Accepts `Int` and `Bool`; widens to `i128`. Used by constructors like
 /// `timedelta()` that hold their intermediate component values in `i128` so
 /// the overflow check on the normalisation step doesn't silently wrap.
+///
+/// Ints wider than i64 are rejected with CPython's `C int` overflow wording,
+/// which is what `timedelta` — this impl's only consumer — reports for such
+/// components (its accumulator converts each one through C int).
 impl FromValue for i128 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
@@ -222,6 +235,7 @@ impl FromValue for i128 {
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(Self::from(i)),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
             _ => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
         };
         value.drop_with_heap(vm);
@@ -230,6 +244,18 @@ impl FromValue for i128 {
 
     fn type_error(got: Type) -> RunError {
         ExcType::type_error_not_integer(got)
+    }
+}
+
+/// True when `value` is a Python int wider than i64 (heap or interned
+/// `LongInt`). Such values are genuine ints, so the fixed-width impls above
+/// must raise `OverflowError` rather than report `WrongType` — a bad-arg
+/// rewrite would produce the absurd "must be int, not int".
+fn is_long_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::InternLongInt(_) => true,
+        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
+        _ => false,
     }
 }
 

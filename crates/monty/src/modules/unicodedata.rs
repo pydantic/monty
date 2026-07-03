@@ -28,7 +28,7 @@ use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
 use crate::{
-    args::{ArgValues, FromArgs, FromValue, FromValueFail, StrArg},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -181,15 +181,18 @@ fn uni_combining(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// `unicodedata.normalize(form, unistr)` — normalize a string to NFC/NFD/NFKC/NFKD.
 fn uni_normalize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
+    defer_drop!(form, vm);
     defer_drop!(unistr, vm);
+    let form = NormForm::parse(form.as_str(vm))?;
     normalize_with(form, unistr.as_str(vm), vm.heap)
 }
 
 /// `unicodedata.is_normalized(form, unistr)` — whether a string is already normalized.
 fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let IsNormalizedArgs { form, unistr } = IsNormalizedArgs::from_args(args, vm)?;
+    defer_drop!(form, vm);
     defer_drop!(unistr, vm);
-    let normalized = match form {
+    let normalized = match NormForm::parse(form.as_str(vm))? {
         NormForm::Nfc => unicode_normalization::is_nfc(unistr.as_str(vm)),
         NormForm::Nfd => unicode_normalization::is_nfd(unistr.as_str(vm)),
         NormForm::Nfkc => unicode_normalization::is_nfkc(unistr.as_str(vm)),
@@ -217,19 +220,18 @@ struct NameArgs {
 
 /// Argument shape for `normalize(form, unistr, /)`.
 ///
-/// Both arguments are positional-only. `form` coerces straight into a
-/// [`NormForm`] (its `FromValue` impl does the str type-check *and* the
-/// form-name value check); `unistr` is a zero-copy [`StrArg`]. `bad_arg`
-/// gives both the exact `normalize() argument N must be str, not <type>`
-/// type error, while `NormForm`'s `ValueError` for an unknown form is a
-/// `FromValueFail::Raise` and so survives unclobbered. `style = unpack`
-/// (with min == max here) reproduces CPython's `normalize expected 2
-/// arguments, got N` arity error.
+/// Both arguments are positional-only, zero-copy [`StrArg`]s: `bad_arg` gives
+/// the exact `normalize() argument N must be str, not <type>` type error for
+/// both. The form's *value* is validated by [`NormForm::parse`] in the body —
+/// CPython type-checks every argument before rejecting an unknown form name,
+/// so `normalize('XYZ', 123)` must raise the arg-2 `TypeError`, not the
+/// `ValueError`. `style = unpack` (with min == max here) reproduces CPython's
+/// `normalize expected 2 arguments, got N` arity error.
 #[derive(FromArgs)]
 #[from_args(name = "normalize", style = unpack, bad_arg)]
 struct NormalizeArgs {
     #[from_args(pos_only)]
-    form: NormForm,
+    form: StrArg,
     #[from_args(pos_only)]
     unistr: StrArg,
 }
@@ -239,7 +241,7 @@ struct NormalizeArgs {
 #[from_args(name = "is_normalized", style = unpack, bad_arg)]
 struct IsNormalizedArgs {
     #[from_args(pos_only)]
-    form: NormForm,
+    form: StrArg,
     #[from_args(pos_only)]
     unistr: StrArg,
 }
@@ -253,32 +255,19 @@ enum NormForm {
     Nfkd,
 }
 
-impl FromValue for NormForm {
-    /// Constrains the argument to `str`, so a non-str raises CPython's
-    /// `argument N must be str, not <type>` (via `bad_arg`).
-    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("str");
-
-    /// A non-`str` reports `WrongType` (rewritten by `bad_arg` into the
-    /// `argument N must be str, not <type>` message); a well-typed `str` that
-    /// names no known form is a *value* failure, so its `ValueError` reaches
-    /// the caller unchanged.
-    ///
-    /// Matches on the borrowed form name ([`Value::to_str`] borrows both
-    /// interned and heap strings) rather than allocating an owned `String`,
-    /// then drops the value once that borrow is released.
-    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
-        let result = match value.to_str(vm) {
-            Ok("NFC") => Ok(Self::Nfc),
-            Ok("NFD") => Ok(Self::Nfd),
-            Ok("NFKC") => Ok(Self::Nfkc),
-            Ok("NFKD") => Ok(Self::Nfkd),
-            Ok(_) => Err(FromValueFail::Raise(
-                SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into(),
-            )),
-            Err(_) => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
-        };
-        value.drop_with_heap(vm);
-        result
+impl NormForm {
+    /// Maps a form name to its variant; unknown names raise CPython's
+    /// `ValueError: invalid normalization form`. Called from the function
+    /// body — after `FromArgs` has type-checked every argument — because
+    /// CPython validates the form's *value* only once binding succeeds.
+    fn parse(name: &str) -> RunResult<Self> {
+        match name {
+            "NFC" => Ok(Self::Nfc),
+            "NFD" => Ok(Self::Nfd),
+            "NFKC" => Ok(Self::Nfkc),
+            "NFKD" => Ok(Self::Nfkd),
+            _ => Err(SimpleException::new_msg(ExcType::ValueError, "invalid normalization form").into()),
+        }
     }
 }
 

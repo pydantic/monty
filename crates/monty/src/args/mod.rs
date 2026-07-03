@@ -5,7 +5,7 @@ mod to_monty_object;
 use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use binder::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
-pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg};
+pub(crate) use from_value::{ArgErrCtx, FromValue, LaxBool, StrArg};
 pub(crate) use monty_macros::{FromArgs, ToArgs};
 pub(crate) use to_monty_object::ToMontyObject;
 
@@ -332,6 +332,10 @@ impl DropWithHeap for ArgPosIter {
 pub(crate) enum KwargsValues {
     Empty,
     Inline(Vec<(StringId, Value)>),
+    /// Kwargs whose keys are runtime string `Value`s — produced by the binder's
+    /// `varkwargs` collection, where `**{...}` unpacking can supply str keys
+    /// that have no interned id (`Inline` can only carry `StringId` keys).
+    Pairs(Vec<(Value, Value)>),
     Dict(Dict),
 }
 
@@ -342,6 +346,7 @@ impl KwargsValues {
         match self {
             Self::Empty => 0,
             Self::Inline(kvs) => kvs.len(),
+            Self::Pairs(kvs) => kvs.len(),
             Self::Dict(dict) => dict.len(),
         }
     }
@@ -366,6 +371,10 @@ impl KwargsValues {
                     (key, value)
                 })
                 .collect(),
+            Self::Pairs(kvs) => kvs
+                .into_iter()
+                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
+                .collect(),
             Self::Dict(dict) => dict
                 .into_iter()
                 .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
@@ -381,6 +390,12 @@ impl DropWithHeap for KwargsValues {
             Self::Empty => {}
             Self::Inline(kvs) => {
                 for (_, v) in kvs {
+                    v.drop_with_heap(heap);
+                }
+            }
+            Self::Pairs(kvs) => {
+                for (k, v) in kvs {
+                    k.drop_with_heap(heap);
                     v.drop_with_heap(heap);
                 }
             }
@@ -402,6 +417,7 @@ impl IntoIterator for KwargsValues {
         match self {
             Self::Empty => KwargsValuesIter::Empty,
             Self::Inline(kvs) => KwargsValuesIter::Inline(kvs.into_iter()),
+            Self::Pairs(kvs) => KwargsValuesIter::Pairs(kvs.into_iter()),
             Self::Dict(dict) => KwargsValuesIter::Dict(dict.into_iter()),
         }
     }
@@ -410,11 +426,12 @@ impl IntoIterator for KwargsValues {
 /// Iterator over keyword argument (key, value) pairs.
 ///
 /// For `Inline` kwargs, converts `StringId` keys to `Value::InternString`.
-/// For `Dict` kwargs, iterates directly over the dict's entries without
-/// intermediate allocation.
+/// For `Pairs` and `Dict` kwargs, iterates directly over the owned entries
+/// without intermediate allocation.
 pub(crate) enum KwargsValuesIter {
     Empty,
     Inline(IntoIter<(StringId, Value)>),
+    Pairs(IntoIter<(Value, Value)>),
     Dict(DictIntoIter),
 }
 
@@ -425,6 +442,7 @@ impl Iterator for KwargsValuesIter {
         match self {
             Self::Empty => None,
             Self::Inline(iter) => iter.next().map(|(k, v)| (Value::InternString(k), v)),
+            Self::Pairs(iter) => iter.next(),
             Self::Dict(iter) => iter.next(),
         }
     }
@@ -433,6 +451,7 @@ impl Iterator for KwargsValuesIter {
         match self {
             Self::Empty => (0, Some(0)),
             Self::Inline(iter) => iter.size_hint(),
+            Self::Pairs(iter) => iter.size_hint(),
             Self::Dict(iter) => iter.size_hint(),
         }
     }
@@ -446,6 +465,12 @@ impl DropWithHeap for KwargsValuesIter {
             Self::Empty => {}
             Self::Inline(iter) => {
                 for (_, v) in iter {
+                    v.drop_with_heap(heap);
+                }
+            }
+            Self::Pairs(iter) => {
+                for (k, v) in iter {
+                    k.drop_with_heap(heap);
                     v.drop_with_heap(heap);
                 }
             }

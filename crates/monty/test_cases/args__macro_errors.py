@@ -11,6 +11,7 @@
 # vs `expandtabs()`).
 import asyncio
 import datetime
+import json
 import re
 import sys
 
@@ -61,6 +62,32 @@ try:
     assert False, 're.split with pos+kw conflict should raise'
 except TypeError as e:
     assert str(e) == "split() got multiple values for argument 'pattern'", f'py-pos-kw: {e}'
+
+# === Python: def-style kwarg errors beat too-many-positional ===
+# CPython's `def` binding processes keyword arguments before its
+# too-many-positional check, so unexpected-kwarg and multiple-values
+# errors win even when there are also excess positionals.
+try:
+    re.sub('a', 'b', 'c', 'd', 'e', 'f', bogus=1)
+    assert False, 're.sub with excess positionals + unknown kwarg should raise unknown-kwarg'
+except TypeError as e:
+    assert str(e) == "sub() got an unexpected keyword argument 'bogus'", f'py-def-kw-beats-overflow: {e}'
+
+try:
+    re.sub('a', 'b', 'c', 'd', 'e', 'f', pattern='x')
+    assert False, 're.sub with excess positionals + duplicate kwarg should raise multiple-values'
+except TypeError as e:
+    assert str(e) == "sub() got multiple values for argument 'pattern'", f'py-def-dup-beats-overflow: {e}'
+
+# When every kwarg binds cleanly to a keyword-only param, the overflow
+# fires and counts them in the `(and N keyword-only argument(s))` suffix.
+try:
+    json.dumps(1, 2, indent=0)
+    assert False, 'json.dumps with excess positional + kw-only kwarg should raise overflow'
+except TypeError as e:
+    assert str(e) == (
+        'dumps() takes 1 positional argument but 2 positional arguments (and 1 keyword-only argument) were given'
+    ), f'py-def-overflow-kwonly: {e}'
 
 # === Python: missing required positional (PyArg_UnpackKeywords wording derived from `pos_only`) ===
 try:

@@ -300,6 +300,39 @@ impl Signature {
             ));
         }
 
+        // The runtime binder's fast paths return before the aggregated
+        // missing-keyword check runs, so a required kw_only slot could slip
+        // through binding unfilled and later surface `Bound::require`'s
+        // positional wording. No current signature needs one; reject until
+        // the fast paths learn to check for them.
+        if let Some(field) = self
+            .fields
+            .iter()
+            .find(|f| matches!(f.kind, FieldKind::KwOnly) && f.default.is_none())
+        {
+            return Err(syn::Error::new(
+                field.ident.span(),
+                "keyword-only fields must have a `default` — the runtime binder's fast \
+                 paths skip the aggregated missing-keyword check, so a required \
+                 keyword-only parameter would report the wrong error; extend the binder \
+                 before allowing this",
+            ));
+        }
+
+        // `default` / `static_string` describe a named parameter slot; on the
+        // collector fields they would be silently dead configuration.
+        for idx in [self.varargs_idx, self.varkwargs_idx].into_iter().flatten() {
+            let field = &self.fields[idx];
+            if field.default.is_some() || field.static_string.is_some() {
+                return Err(syn::Error::new(
+                    field.ident.span(),
+                    "`default` and `static_string` cannot be applied to `varargs` / \
+                     `varkwargs` fields — they configure a named parameter slot, which \
+                     collector fields don't own",
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -545,6 +578,13 @@ fn resolve_field_roles(fields: &mut [Field]) -> syn::Result<(Option<usize>, Opti
                     return Err(syn::Error::new(
                         field.ident.span(),
                         "only one `#[from_args(varargs)]` field is allowed",
+                    ));
+                }
+                if seen_kw_only {
+                    return Err(syn::Error::new(
+                        field.ident.span(),
+                        "`varargs` cannot appear after keyword-only fields — Python has no \
+                         signature form with `*args` following keyword-only parameters",
                     ));
                 }
                 seen_varargs = true;
@@ -1056,6 +1096,56 @@ mod tests {
             }
         });
         assert_snapshot!(err, @"positional-only fields must come before positional-or-keyword, varargs, and keyword-only fields");
+    }
+
+    #[test]
+    fn varargs_after_kw_only_rejected() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(kw_only, default)]
+                a: Value,
+                #[from_args(varargs)]
+                rest: Vec<Value>,
+            }
+        });
+        assert_snapshot!(err, @"`varargs` cannot appear after keyword-only fields — Python has no signature form with `*args` following keyword-only parameters");
+    }
+
+    #[test]
+    fn required_kw_only_rejected() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(kw_only)]
+                a: Value,
+            }
+        });
+        assert_snapshot!(err, @"keyword-only fields must have a `default` — the runtime binder's fast paths skip the aggregated missing-keyword check, so a required keyword-only parameter would report the wrong error; extend the binder before allowing this");
+    }
+
+    #[test]
+    fn default_on_varargs_rejected() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(varargs, default)]
+                rest: Vec<Value>,
+            }
+        });
+        assert_snapshot!(err, @"`default` and `static_string` cannot be applied to `varargs` / `varkwargs` fields — they configure a named parameter slot, which collector fields don't own");
+    }
+
+    #[test]
+    fn static_string_on_varkwargs_rejected() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "f")]
+            struct S {
+                #[from_args(varkwargs, static_string = "PatternAttr")]
+                kwargs: KwargsValues,
+            }
+        });
+        assert_snapshot!(err, @"`default` and `static_string` cannot be applied to `varargs` / `varkwargs` fields — they configure a named parameter slot, which collector fields don't own");
     }
 
     #[test]

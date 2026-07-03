@@ -34,7 +34,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId},
     intern::StaticStrings,
@@ -290,10 +290,13 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
     } = ReSubArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     defer_drop!(repl, vm);
+    // `count` must outlive `resolve_pattern`'s `?` (pattern errors win over a
+    // bad count, so it cannot be extracted yet) — guard it, then `take` it out.
+    defer_drop_mut!(count, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
 
-    let count = extract_count(count, vm)?;
+    let count = extract_count(count.take(), vm)?;
 
     // Check that repl is a string — callable replacement is not supported.
     // CPython processes the replacement template *before* its match loop, so
@@ -332,10 +335,13 @@ fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         flags,
     } = ReSplitArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
+    // As in `call_sub`: `maxsplit` must survive a pattern/flags error, so
+    // guard it before `resolve_pattern` and `take` it out afterwards.
+    defer_drop_mut!(maxsplit, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
 
-    let maxsplit = extract_maxsplit(maxsplit, vm)?;
+    let maxsplit = extract_maxsplit(maxsplit.take(), vm)?;
     resolved.get(vm.heap).split(subject_str(string, vm)?, maxsplit, vm.heap)
 }
 

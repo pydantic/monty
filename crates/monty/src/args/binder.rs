@@ -47,10 +47,12 @@ use crate::{
 /// real calls — take a fast path that fills the slots directly: with no kwargs
 /// and the count inside `n_required_positional..=n_positional`, *no* check in
 /// the slow path can fire (every pre-check needs kwargs or an out-of-range
-/// count, and the derive guarantees required positional params precede
-/// defaulted ones, so the first `n` slots are exactly the ones a valid call
-/// fills). Keeping this function `#[inline]` lets the shape dispatch fold into
-/// each derive's call site while `bind_slow` stays outlined.
+/// count, the derive guarantees required positional params precede defaulted
+/// ones — so the first `n` slots are exactly the ones a valid call fills —
+/// and the derive rejects required `kw_only` fields, so skipping the
+/// aggregated missing-keyword check is safe). Keeping this function
+/// `#[inline]` lets the shape dispatch fold into each derive's call site
+/// while `bind_slow` stays outlined.
 #[inline]
 pub(crate) fn bind<const N: usize>(
     spec: &'static ParamSpec,
@@ -128,17 +130,22 @@ fn bind_slow<const N: usize>(
         ));
     }
 
-    // Positional overflow is checked before filling: no conversion happens in
-    // `bind`, so erroring up front is observationally identical to erroring at
-    // the first excess argument, and matches CPython's parsers (all of which
-    // check arity before running converters).
-    if n_pos > spec.n_positional && !spec.varargs {
-        return Err(positional_overflow_error(spec, n_pos, n_kw, state, vm));
+    // Positional overflow: every C parser checks arity before touching kwargs,
+    // but pure-Python `def` binding processes keyword arguments first — its
+    // unexpected-kwarg and multiple-values errors beat too-many-positional —
+    // so for `Def` the check is deferred to after the kwarg loop below.
+    let positional_overflow = n_pos > spec.n_positional && !spec.varargs;
+    if positional_overflow && !matches!(spec.family, ErrorFamily::Def) {
+        return Err(positional_overflow_error(spec, n_pos, n_kw));
     }
     for slot in bound.slots.iter_mut().take(n_pos.min(spec.n_positional)) {
         *slot = state.pos.next();
     }
-    bound.varargs.extend(state.pos.by_ref());
+    // On (deferred) overflow without `*args` the excess stays in the iterator;
+    // the guard drains it when the overflow error returns below.
+    if spec.varargs {
+        bound.varargs.extend(state.pos.by_ref());
+    }
 
     for (key, value) in state.kwargs.by_ref() {
         let Some(key_str) = key.as_either_str(vm.heap) else {
@@ -173,13 +180,11 @@ fn bind_slow<const N: usize>(
                 }
             }
             None if spec.varkwargs => {
-                let Some(id) = key_str.string_id() else {
-                    // TODO: intern heap-string keys via `Interns` instead of rejecting.
-                    (key, value).drop_with_heap(vm);
-                    return Err(ExcType::type_error_kwargs_nonstring_key());
-                };
-                key.drop_with_heap(vm);
-                bound.varkwargs.push((id, value));
+                // The key is already known to be a string (`as_either_str`
+                // succeeded above) — keep it as a `Value` so runtime-built
+                // heap strings (e.g. `dict(**{k: 1})`) work, not just
+                // interned ids.
+                bound.varkwargs.push((key, value));
             }
             None if spec.family.defers_unknown_kwarg() => {
                 // C families raise unknown-kwarg *last* (after every missing,
@@ -202,6 +207,21 @@ fn bind_slow<const N: usize>(
                 return Err(ExcType::type_error_unexpected_keyword(err_name, &name));
             }
         }
+    }
+
+    // The deferred `def` overflow: every kwarg bound cleanly, so report
+    // too-many-positional with CPython's `(and N keyword-only argument(s))`
+    // suffix, N = keyword-only slots *filled by the call* (CPython's
+    // `too_many_positional` scans localsplus before defaults are applied).
+    if positional_overflow {
+        let kwonly_given = bound.slots[spec.n_positional..].iter().filter(|s| s.is_some()).count();
+        return Err(ExcType::type_error_too_many_positional_range(
+            spec.func_name,
+            spec.n_required_positional,
+            spec.n_positional,
+            n_pos,
+            kwonly_given,
+        ));
     }
 
     // `def`/clinic/unpack report every missing required name in one aggregated
@@ -358,7 +378,7 @@ pub(crate) struct Bound<const N: usize> {
     spec: &'static ParamSpec,
     slots: [Option<Value>; N],
     varargs: Vec<Value>,
-    varkwargs: Vec<(StringId, Value)>,
+    varkwargs: Vec<(Value, Value)>,
     /// C families only: leftover-kwarg errors raised by [`finish`](Self::finish).
     /// Boxed because `RunError` is large and `Bound` is moved by value through
     /// the generated code — the common no-leftover call pays one niche'd word.
@@ -423,7 +443,7 @@ impl<const N: usize> Bound<N> {
         if self.varkwargs.is_empty() {
             KwargsValues::Empty
         } else {
-            KwargsValues::Inline(mem::take(&mut self.varkwargs))
+            KwargsValues::Pairs(mem::take(&mut self.varkwargs))
         }
     }
 
@@ -478,7 +498,8 @@ impl<const N: usize> DropWithHeap for Bound<N> {
             slot.drop_with_heap(heap);
         }
         self.varargs.drop_with_heap(heap);
-        for (_, v) in self.varkwargs {
+        for (k, v) in self.varkwargs {
+            k.drop_with_heap(heap);
             v.drop_with_heap(heap);
         }
     }
@@ -580,33 +601,17 @@ fn total_overflow_error(spec: &ParamSpec, total: usize) -> RunError {
     }
 }
 
-/// Too-many-positional error for specs without `*args`. The non-`def` families
-/// fold the kwarg count into the reported total (matching the C parsers'
-/// "(M given)" figure); `def` counts positionals only and drain-counts kwargs
-/// naming keyword-only params for the `(and N keyword-only argument(s))` suffix.
+/// Too-many-positional error for the non-`def` families without `*args`,
+/// folding the kwarg count into the reported total (matching the C parsers'
+/// "(M given)" figure). `def` never reaches here — its overflow is deferred
+/// past the kwarg loop and worded inline in [`bind_slow`].
 #[cold]
-fn positional_overflow_error(
-    spec: &ParamSpec,
-    n_pos: usize,
-    n_kw: usize,
-    state: &mut IterState,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunError {
+fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError {
     let max = spec.n_positional;
     match spec.family {
-        ErrorFamily::Def => {
-            let kwonly_given = drain_count_kwonly(spec, state, vm);
-            ExcType::type_error_too_many_positional_range(
-                spec.func_name,
-                spec.n_required_positional,
-                max,
-                n_pos,
-                kwonly_given,
-            )
-        }
-        // Unreachable: the unpack pre-check already covered both directions.
-        // Match its wording anyway rather than panicking.
-        ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
+        // Unreachable: `def` defers, the unpack pre-check already covered both
+        // directions. Match unpack's wording anyway rather than panicking.
+        ErrorFamily::Def | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
         _ if spec.uses_c_method_arity() => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
         ErrorFamily::C {
             positional_pivot: false,
@@ -619,25 +624,6 @@ fn positional_overflow_error(
         ErrorFamily::CNamed => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
         ErrorFamily::Clinic => ExcType::type_error_at_most(spec.func_name, max, n_pos + n_kw),
     }
-}
-
-/// Drain the kwargs iterator (we are erroring anyway), dropping each pair and
-/// counting the keys that name a keyword-only param — the `def` overflow
-/// message reports them separately. Non-string keys simply don't count.
-fn drain_count_kwonly(spec: &ParamSpec, state: &mut IterState, vm: &mut VM<'_, impl ResourceTracker>) -> usize {
-    let mut count = 0;
-    for (key, value) in state.kwargs.by_ref() {
-        let is_kwonly = key.as_either_str(vm.heap).is_some_and(|key_str| {
-            spec.params[spec.n_positional..]
-                .iter()
-                .any(|p| p.kwarg_id.is_some_and(|id| key_str.matches(id, vm.interns)))
-        });
-        if is_kwonly {
-            count += 1;
-        }
-        (key, value).drop_with_heap(vm);
-    }
-    count
 }
 
 /// Collect the names of required-but-unfilled params in `start..end` (the

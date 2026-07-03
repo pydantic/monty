@@ -212,7 +212,7 @@ impl Signature {
 
         // Convert kwargs to an iterator and guard it so remaining items are cleaned up
         // on any error path
-        let kwonly_given = keyword_args.len();
+        let n_kwargs = keyword_args.len();
         let keyword_args = keyword_args.into_iter();
         defer_drop_mut!(keyword_args, vm);
 
@@ -222,7 +222,7 @@ impl Signature {
         // signatures with only positional-or-keyword params and defaults.
         // This avoids the full binding algorithm overhead for common cases.
 
-        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && kwonly_given == 0 {
+        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && n_kwargs == 0 {
             match pos_iter {
                 ArgPosIter::Empty => {}
                 ArgPosIter::One(a) => {
@@ -271,22 +271,11 @@ impl Signature {
         let arg_param_count = self.arg_count();
         let total_positional_params = pos_param_count + arg_param_count;
 
-        // Check positional argument count against maximum. When some
-        // positional params have defaults CPython reports the range form
-        // (`takes from {min} to {max} positional arguments ...`).
-        if let Some(max) = self.max_positional_count() {
-            let positional_count = pos_iter.len();
-            if positional_count > max {
-                let func = vm.interns.get_str(func_name.name_id);
-                return Err(ExcType::type_error_too_many_positional_range(
-                    func,
-                    self.required_positional_count(),
-                    max,
-                    positional_count,
-                    kwonly_given,
-                ));
-            }
-        }
+        // Too many positionals? Noted here but raised only *after* the keyword
+        // loop: CPython binds keyword arguments first, so unexpected-kwarg and
+        // multiple-values errors beat too-many-positional.
+        let positional_count = pos_iter.len();
+        let positional_overflow = self.max_positional_count().is_some_and(|max| positional_count > max);
 
         // Initialize result namespace with Undefined values for all slots
         // Layout: [pos_args][args][*args?][kwargs][**kwargs?]
@@ -322,12 +311,11 @@ impl Signature {
             }
         }
 
-        // 2. Collect excess positional args into *args tuple
+        // 2. Collect excess positional args into *args tuple. Without `*args`
+        // any excess (the deferred overflow) stays in `pos_iter`, drained by
+        // its guard when the overflow error returns below.
         if self.var_args.is_some() {
             namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap)?;
-        } else {
-            // If no *args, excess was already checked above via max_positional_count
-            debug_assert_eq!(pos_iter.len(), 0);
         }
 
         // 3. Bind keyword args
@@ -408,6 +396,26 @@ impl Signature {
             let func = vm.interns.get_str(func_name.name_id);
             let key_str = keyword_name.as_str(vm.interns);
             return Err(ExcType::type_error_unexpected_keyword(func, key_str));
+        }
+
+        // 3.4. Raise the deferred too-many-positional error now that every
+        // kwarg has bound (or errored). CPython reports the range form when
+        // some positional params have defaults, plus an `(and N keyword-only
+        // argument(s))` suffix counting only the kw-only params *bound by the
+        // call* — defaults have not been applied yet, exactly as in CPython's
+        // `too_many_positional`.
+        if positional_overflow {
+            let kwonly_given = (0..self.kwarg_count())
+                .filter(|i| (bound_params & (1 << (total_positional_params + i))) != 0)
+                .count();
+            let func = vm.interns.get_str(func_name.name_id);
+            return Err(ExcType::type_error_too_many_positional_range(
+                func,
+                self.required_positional_count(),
+                total_positional_params,
+                positional_count,
+                kwonly_given,
+            ));
         }
 
         // 3.5. Apply default values to unbound optional parameters

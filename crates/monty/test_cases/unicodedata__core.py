@@ -69,6 +69,21 @@ try:
 except ValueError as exc:
     assert str(exc) == 'invalid normalization form', 'is_normalized invalid form'
 
+# All arguments are type-checked before the form's *value* is validated:
+# a bad form plus a non-str unistr raises the arg-2 TypeError, not ValueError.
+try:
+    u.normalize('XYZ', 123)
+    assert False, 'expected non-str unistr to win over invalid form'
+except TypeError as exc:
+    assert str(exc) == 'normalize() argument 2 must be str, not int', 'normalize type check precedes form value check'
+try:
+    u.is_normalized('XYZ', 123)
+    assert False, 'expected non-str unistr to win over invalid form'
+except TypeError as exc:
+    assert str(exc) == 'is_normalized() argument 2 must be str, not int', (
+        'is_normalized type check precedes form value check'
+    )
+
 # A non-str form/string is a type error, numbered by argument position.
 try:
     u.normalize(123, 'abc')

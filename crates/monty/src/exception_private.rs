@@ -1291,6 +1291,16 @@ impl ExcType {
         SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C int").into()
     }
 
+    /// Creates an OverflowError when a Python int doesn't fit into a C `long` (i64).
+    ///
+    /// Matches CPython's format: `OverflowError: Python int too large to convert to C long`
+    /// CPython's `i` format code converts through C long first, so ints beyond
+    /// i64 report this even for C-int parameters (e.g. `datetime.date(2**100, 1, 1)`).
+    #[must_use]
+    pub(crate) fn overflow_c_long() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C long").into()
+    }
+
     /// Creates a TypeError for unsupported binary operations.
     ///
     /// For `+` or `+=` with str/list on the left side, uses CPython's special format:
