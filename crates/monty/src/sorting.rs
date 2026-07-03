@@ -155,8 +155,8 @@ fn compare_values(
         Ok(Some(ord)) => return if reverse { ord.reverse() } else { ord },
         Ok(None) => ExcType::type_error(format!(
             "'<' not supported between instances of '{}' and '{}'",
-            a.py_type(vm),
-            b.py_type(vm)
+            a.py_type_name(vm),
+            b.py_type_name(vm)
         )),
         Err(e) => e,
     };

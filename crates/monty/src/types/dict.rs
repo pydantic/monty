@@ -482,7 +482,7 @@ impl<'h> HeapRead<'h, Dict> {
     fn find_index_hash(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<(Option<usize>, u64)> {
         let hash = key
             .py_hash(vm)?
-            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type(vm)))?
+            .ok_or_else(|| ExcType::type_error_unhashable_dict_key(key.py_type_name(vm)))?
             .raw();
 
         // Dict keys are typically shallow (strings, ints, tuples of primitives),
@@ -889,7 +889,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::Dict.static_name(),
+                attr.as_str(vm.interns),
+            ));
         };
 
         let value = match method {
@@ -965,7 +968,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             StaticStrings::Fromkeys => dict_fromkeys(args, vm),
             _ => {
                 args.drop_with_heap(vm);
-                return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(
+                    Type::Dict.static_name(),
+                    attr.as_str(vm.interns),
+                ));
             }
         };
         value.map(CallResult::Value)

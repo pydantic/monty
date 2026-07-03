@@ -244,13 +244,13 @@ impl FromValue for DeltaComponent {
             Value::Bool(b) => Ok(Self(i128::from(b))),
             Value::Int(i) => Ok(Self(i128::from(i))),
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
-            _ => Err(FromValueFail::WrongType(value.py_type_heap(vm.heap))),
+            _ => Err(FromValueFail::WrongType),
         };
         value.drop_with_heap(vm);
         result
     }
 
-    fn type_error(got: Type) -> RunError {
+    fn type_error(got: &str) -> RunError {
         ExcType::type_error_not_integer(got)
     }
 }
@@ -378,7 +378,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
             args.check_zero_args("timedelta.total_seconds", vm.heap)?;
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
-        Err(ExcType::attribute_error(Type::TimeDelta, attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(
+            Type::TimeDelta.static_name(),
+            attr.as_str(vm.interns),
+        ))
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {

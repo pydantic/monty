@@ -280,7 +280,7 @@ impl ExcType {
     ///
     /// Matches CPython's format for setting attributes on built-in types.
     #[must_use]
-    pub(crate) fn attribute_error_no_setattr(type_: Type, attr_name: &str) -> RunError {
+    pub(crate) fn attribute_error_no_setattr(type_: &str, attr_name: &str) -> RunError {
         SimpleException::new_msg(
             Self::AttributeError,
             format!("'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes"),
@@ -306,7 +306,7 @@ impl ExcType {
     }
 
     #[must_use]
-    pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
     }
 
@@ -314,7 +314,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object can't be awaited`
     #[must_use]
-    pub(crate) fn object_not_awaitable(type_: Type) -> RunError {
+    pub(crate) fn object_not_awaitable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
@@ -329,7 +329,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
     #[must_use]
-    pub(crate) fn type_error_not_sub_assignment(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub_assignment(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("'{type_}' object does not support item assignment"),
@@ -341,7 +341,7 @@ impl ExcType {
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
-    pub(crate) fn type_error_unhashable(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("unhashable type: '{type_}'")).into()
     }
 
@@ -350,7 +350,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
     #[must_use]
-    pub(crate) fn type_error_unhashable_dict_key(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_dict_key(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
@@ -363,7 +363,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
     #[must_use]
-    pub(crate) fn type_error_unhashable_set_element(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_set_element(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
@@ -380,7 +380,7 @@ impl ExcType {
     pub(crate) fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(s) => s.into_owned(),
-            Err(_) => format!("<{}>", key.py_type(vm)),
+            Err(_) => format!("<{}>", key.py_type_name(vm)),
         };
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
@@ -813,11 +813,10 @@ impl ExcType {
     /// failure so the caller sees the same wording as CPython's C-implemented
     /// functions (e.g. `strftime() argument 1 must be str, not None`).
     ///
-    /// The `got` type label should come from [`Type::cpython_arg_name`] so
+    /// The `got` type label should come from `Type::cpython_arg_name` so
     /// that `NoneType` becomes `"None"` to match CPython's special case.
     ///
     /// [`FromValue`]: crate::args::FromValue
-    /// [`Type::cpython_arg_name`]: crate::types::Type::cpython_arg_name
     #[must_use]
     pub(crate) fn type_error_bad_arg_pos(name: &str, pos: usize, expected: &str, got: impl fmt::Display) -> RunError {
         SimpleException::new_msg(
@@ -868,7 +867,7 @@ impl ExcType {
     /// Note: this differs from [`type_error_kwargs_not_mapping`] which is used for
     /// function-call `**kwargs` and includes the function name in the message.
     #[must_use]
-    pub(crate) fn type_error_not_mapping(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_mapping(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not a mapping")).into()
     }
 
@@ -884,7 +883,7 @@ impl ExcType {
     ///
     /// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
     #[must_use]
-    pub(crate) fn type_error_tzinfo(ty: Type) -> RunError {
+    pub(crate) fn type_error_tzinfo(ty: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("tzinfo argument must be None or of a tzinfo subclass, not type '{ty}'"),
@@ -902,7 +901,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: __init__() should return None, not '{type}'`
     #[must_use]
-    pub(crate) fn type_error_init_return(type_name: &str) -> RunError {
+    pub(crate) fn type_error_init_return(type_name: impl Display) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("__init__() should return None, not '{type_name}'"),
@@ -919,7 +918,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
     #[must_use]
-    pub(crate) fn type_error_bytes_init(type_: Type) -> RunError {
+    pub(crate) fn type_error_bytes_init(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("cannot convert '{type_}' object to bytes")).into()
     }
 
@@ -927,7 +926,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot create '{type}' instances`
     #[must_use]
-    pub(crate) fn type_error_not_callable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_callable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("cannot create '{type_}' instances")).into()
     }
 
@@ -935,7 +934,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not callable`
     #[must_use]
-    pub(crate) fn type_error_not_callable_object(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_callable_object(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not callable")).into()
     }
 
@@ -943,7 +942,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not iterable`
     #[must_use]
-    pub(crate) fn type_error_not_iterable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_iterable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
@@ -954,7 +953,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: Value after * must be an iterable, not {type}`
     #[must_use]
-    pub(crate) fn type_error_value_after_star(type_: Type) -> RunError {
+    pub(crate) fn type_error_value_after_star(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("Value after * must be an iterable, not {type_}"),
@@ -966,7 +965,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: int() argument must be a string, a bytes-like object or a real number, not '{type}'`
     #[must_use]
-    pub(crate) fn type_error_int_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_int_conversion(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("int() argument must be a string, a bytes-like object or a real number, not '{type_}'"),
@@ -978,7 +977,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: float() argument must be a string or a real number, not '{type}'`
     #[must_use]
-    pub(crate) fn type_error_float_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_float_conversion(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("float() argument must be a string or a real number, not '{type_}'"),
@@ -1140,10 +1139,13 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
     #[must_use]
-    pub(crate) fn type_error_indices(type_str: Type, index_type: Type) -> RunError {
+    pub(crate) fn type_error_indices(type_str: Type, index_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!("{type_str} indices must be integers, not '{index_type}'"),
+            format!(
+                "{} indices must be integers, not '{index_type}'",
+                type_str.static_name()
+            ),
         )
         .into()
     }
@@ -1152,7 +1154,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
     #[must_use]
-    pub(crate) fn type_error_list_assignment_indices(index_type: Type) -> RunError {
+    pub(crate) fn type_error_list_assignment_indices(index_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("list indices must be integers or slices, not {index_type}"),
@@ -1345,11 +1347,11 @@ impl ExcType {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    pub(crate) fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
-        let message = if (op == "+" || op == "+=") && (lhs_type == Type::Str || lhs_type == Type::List) {
-            format!("can only concatenate {lhs_type} (not \"{rhs_type}\") to {lhs_type}")
+    pub(crate) fn binary_type_error(op: &str, lhs_type: Type, lhs_name: &str, rhs_name: &str) -> RunError {
+        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+            format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
-            format!("unsupported operand type(s) for {op}: '{lhs_type}' and '{rhs_type}'")
+            format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
         };
         SimpleException::new_msg(Self::TypeError, message).into()
     }
@@ -1358,7 +1360,7 @@ impl ExcType {
     ///
     /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`
     #[must_use]
-    pub(crate) fn unary_type_error(op: &str, value_type: Type) -> RunError {
+    pub(crate) fn unary_type_error(op: &str, value_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("bad operand type for unary {op}: '{value_type}'"),
@@ -1370,7 +1372,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object cannot be interpreted as an integer`
     #[must_use]
-    pub(crate) fn type_error_not_integer(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_integer(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("'{type_}' object cannot be interpreted as an integer"),
@@ -1408,7 +1410,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: sequence item {index}: expected str instance, {type} found`
     #[must_use]
-    pub(crate) fn type_error_join_item(index: usize, item_type: Type) -> RunError {
+    pub(crate) fn type_error_join_item(index: usize, item_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("sequence item {index}: expected str instance, {item_type} found"),
@@ -1648,7 +1650,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `the JSON object must be str, bytes or bytearray, not {type}`
     #[must_use]
-    pub(crate) fn json_loads_type_error(type_: Type) -> RunError {
+    pub(crate) fn json_loads_type_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("the JSON object must be str, bytes or bytearray, not {type_}"),
@@ -1669,7 +1671,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `Object of type {type} is not JSON serializable`
     #[must_use]
-    pub(crate) fn json_not_serializable_error(type_: Type) -> RunError {
+    pub(crate) fn json_not_serializable_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("Object of type {type_} is not JSON serializable"),
@@ -1682,7 +1684,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `keys must be str, int, float, bool or None, not {type}`
     #[must_use]
-    pub(crate) fn json_invalid_key_error(type_: Type) -> RunError {
+    pub(crate) fn json_invalid_key_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("keys must be str, int, float, bool or None, not {type_}"),

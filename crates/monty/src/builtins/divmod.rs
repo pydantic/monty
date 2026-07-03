@@ -11,7 +11,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
     resource::{ResourceTracker, check_div_size},
-    types::{LongInt, PyTrait, allocate_tuple},
+    types::{LongInt, allocate_tuple},
     value::{Value, floor_divmod},
 };
 
@@ -115,8 +115,8 @@ pub fn builtin_divmod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
             }
         }
         _ => {
-            let a_type = a.py_type(vm);
-            let b_type = b.py_type(vm);
+            let a_type = a.py_type_name(vm);
+            let b_type = b.py_type_name(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),

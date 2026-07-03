@@ -269,8 +269,8 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
 
 #[cold]
 fn ord_not_supported(left: &Value, right: &Value, is_min: bool, vm: &VM<'_, impl ResourceTracker>) -> RunError {
-    let left_type = left.py_type(vm);
-    let right_type = right.py_type(vm);
+    let left_type = left.py_type_name(vm);
+    let right_type = right.py_type_name(vm);
     let operator = if is_min { '<' } else { '>' };
     ExcType::type_error(format!(
         "'{operator}' not supported between instances of '{left_type}' and '{right_type}'"

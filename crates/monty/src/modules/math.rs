@@ -36,7 +36,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{LongInt, Module, PyTrait, allocate_tuple},
+    types::{LongInt, Module, allocate_tuple},
     value::Value,
 };
 
@@ -355,7 +355,7 @@ fn math_floor(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -374,7 +374,7 @@ fn math_ceil(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -392,7 +392,7 @@ fn math_trunc(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         _ => Err(ExcType::type_error(format!(
             "type {} doesn't define __trunc__ method",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -967,7 +967,7 @@ fn math_factorial(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
         _ => {
             return Err(ExcType::type_error(format!(
                 "'{}' object cannot be interpreted as an integer",
-                value.py_type(vm)
+                value.py_type_name(vm)
             )));
         }
     };
@@ -1362,7 +1362,7 @@ fn value_to_float(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -1377,7 +1377,7 @@ fn value_to_int(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<i
         Value::Bool(b) => Ok(i64::from(*b)),
         _ => Err(ExcType::type_error(format!(
             "'{}' object cannot be interpreted as an integer",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }

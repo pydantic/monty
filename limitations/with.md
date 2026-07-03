@@ -25,9 +25,9 @@ exception, `return`, `break`, `continue`), and a truthy return from
 - **User-defined classes** cannot be context managers: `__enter__` / `__exit__`
   are not dispatched for instances of sandbox-defined classes (see
   [classes.md](classes.md)), even when both methods are defined. Using such an
-  instance in a `with` raises `TypeError: 'object' object does not support the
-  context manager protocol` at runtime. Only built-in types can be context
-  managers.
+  instance in a `with` raises `TypeError: 'Foo' object does not support the
+  context manager protocol (missed __exit__ method)` at runtime. Only built-in
+  types can be context managers.
 - **`contextlib`** (`@contextmanager`, `ExitStack`, etc.) — the module is not
   available; only the language-level `with` statement is.
 

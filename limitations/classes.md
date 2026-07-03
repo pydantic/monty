@@ -81,12 +81,6 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   creates a fresh object, so `obj.method == obj.method` is `False` and two
   accesses hash differently. CPython compares/hashes bound methods by
   `(instance, func)`, making separate accesses equal.
-- **Errors about instances name the type `'object'`**: operator, `len()`,
-  iteration, membership, and context-manager errors render `Type::Instance` as
-  the generic `'object'` rather than the class name — `Foo() + 1` gives
-  `unsupported operand type(s) for +: 'object' and 'int'` where CPython says
-  `'Foo'`. (Attribute errors and `__init__`-contract errors already use the
-  real class name.)
 - **Bound-method `repr`** is the bare `<bound method>`; CPython renders
   `<bound method Foo.m of <__main__.Foo object at 0x..>>`.
 - **Assigning `Foo.__name__`** stores an ordinary class member: unlike CPython

@@ -41,7 +41,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::{
-        Module, PyTrait, RePattern, Type,
+        Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit},
         str::allocate_string,
     },
@@ -495,7 +495,7 @@ fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_, impl ResourceTracker>) -> Ru
         // sre reports `type(x).__name__`, so `None` reads 'NoneType'.
         Err(ExcType::type_error(format!(
             "expected string or bytes-like object, got '{}'",
-            value.py_type_heap(vm.heap)
+            value.py_type_name(vm)
         )))
     }
 }
@@ -564,7 +564,12 @@ impl ReFlags {
                 .map(Self)
                 .map_err(|_| ExcType::type_error("flags must be a non-negative integer")),
             Value::Bool(b) => Ok(Self(u16::from(b))),
-            _ => Err(ExcType::binary_type_error("&", value.py_type_heap(vm.heap), Type::Int)),
+            _ => Err(ExcType::binary_type_error(
+                "&",
+                value.py_type_heap(vm.heap),
+                value.py_type_name(vm),
+                "int",
+            )),
         };
         value.drop_with_heap(vm);
         result
@@ -685,7 +690,7 @@ fn call_escape(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     let Ok(text) = pattern.to_str(vm) else {
         // CPython's escape() falls back to `str(pattern, 'latin1')` for
         // non-str input, so this is the (incidental) message it raises.
-        let t = pattern.py_type(vm);
+        let t = pattern.py_type_name(vm);
         return Err(ExcType::type_error(format!(
             "decoding to str: need a bytes-like object, {t} found"
         )));

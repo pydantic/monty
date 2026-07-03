@@ -102,13 +102,13 @@ fn extract_string_kwarg(value: &Value, name: &str, vm: &VM<'_, impl ResourceTrac
             }
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
-                format!("{} must be None or a string, not {}", name, value.py_type(vm)),
+                format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),
             )
             .into())
         }
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{} must be None or a string, not {}", name, value.py_type(vm)),
+            format!("{} must be None or a string, not {}", name, value.py_type_name(vm)),
         )
         .into()),
     }

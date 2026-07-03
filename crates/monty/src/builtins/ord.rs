@@ -7,7 +7,6 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
     resource::ResourceTracker,
-    types::PyTrait,
     value::Value,
 };
 
@@ -47,7 +46,7 @@ pub fn builtin_ord(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             }
         }
         _ => {
-            let type_name = value.py_type(vm);
+            let type_name = value.py_type_name(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("ord() expected string of length 1, but {type_name} found"),

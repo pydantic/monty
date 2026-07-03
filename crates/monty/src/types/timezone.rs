@@ -77,7 +77,7 @@ impl TimeZone {
         // `None`: CPython accepts `timezone(td)` but rejects `timezone(td,
         // None)` with `TypeError: timezone() argument 2 must be str, not None`.
         defer_drop!(offset, vm);
-        let offset_seconds = extract_offset_seconds(offset, vm.heap)?;
+        let offset_seconds = extract_offset_seconds(offset, vm.heap, vm.interns)?;
         let name_str: Option<String> = match name {
             None => None,
             Some(name) => {
@@ -136,11 +136,11 @@ impl Hash for TimeZone {
     }
 }
 
-fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<i32> {
+fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<i32> {
     let bad_type = || {
         ExcType::type_error(format!(
             "timezone() argument 1 must be datetime.timedelta, not {}",
-            offset_arg.py_type_heap(heap).cpython_arg_name(),
+            offset_arg.py_type_heap(heap).cpython_arg_name(heap, interns),
         ))
     };
     let Value::Ref(offset_id) = offset_arg else {
@@ -200,18 +200,18 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::Str(s) => Ok(Some(s.as_str().to_owned())),
-            _ => Err(bad_name_arg(name_arg, heap)),
+            _ => Err(bad_name_arg(name_arg, heap, interns)),
         },
-        _ => Err(bad_name_arg(name_arg, heap)),
+        _ => Err(bad_name_arg(name_arg, heap, interns)),
     }
 }
 
 /// Builds the `timezone() argument 2 must be str, not <type>` error CPython
 /// raises for any non-`str` `name` argument (including explicit `None`).
-fn bad_name_arg(name_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunError {
+fn bad_name_arg(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunError {
     ExcType::type_error(format!(
         "timezone() argument 2 must be str, not {}",
-        name_arg.py_type_heap(heap).cpython_arg_name()
+        name_arg.py_type_heap(heap).cpython_arg_name(heap, interns)
     ))
 }
 

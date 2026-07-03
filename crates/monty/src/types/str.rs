@@ -267,7 +267,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::Str.static_name(),
+                attr.as_str(vm.interns),
+            ));
         };
 
         let s = heap_read_ref_as_field!(self, Str, 0);
@@ -298,7 +301,10 @@ pub fn call_str_method(
 ) -> RunResult<Value> {
     let args_guard = HeapGuard::new(args, vm.heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
+        return Err(ExcType::attribute_error(
+            Type::Str.static_name(),
+            vm.interns.get_str(method_id),
+        ));
     };
     let args = args_guard.into_inner();
     call_str_method_impl(&vm.heap.protect(s), method, args, vm)
@@ -436,7 +442,7 @@ fn call_str_method_impl<'h>(
         }
         _ => {
             args.drop_with_heap(vm);
-            Err(ExcType::attribute_error(Type::Str, method.into()))
+            Err(ExcType::attribute_error(Type::Str.static_name(), method.into()))
         }
     }
 }
@@ -484,12 +490,12 @@ fn str_join<'h>(
                 if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                     result.push_str(s.as_str());
                 } else {
-                    let t = item.py_type(vm);
+                    let t = item.py_type_name(vm);
                     return Err(ExcType::type_error_join_item(index, t));
                 }
             }
             _ => {
-                let t = item.py_type(vm);
+                let t = item.py_type_name(vm);
                 return Err(ExcType::type_error_join_item(index, t));
             }
         }

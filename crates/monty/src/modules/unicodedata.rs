@@ -37,7 +37,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     string_builder::StringBuilder,
-    types::{Module, PyTrait, str::allocate_string},
+    types::{Module, str::allocate_string},
     value::Value,
 };
 
@@ -323,7 +323,7 @@ fn single_char(
     if !value.is_str(vm.heap) {
         return Err(ExcType::type_error(format!(
             "{fn_name}() {arg_word} must be a unicode character, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         )));
     }
     let s = value.to_str(vm)?;

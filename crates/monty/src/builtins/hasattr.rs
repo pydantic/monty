@@ -8,7 +8,6 @@ use crate::{
     exception_private::{RunError, RunResult, SimpleException},
     heap::DropWithHeap,
     resource::ResourceTracker,
-    types::PyTrait,
     value::Value,
 };
 
@@ -40,7 +39,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     let Some(name) = name.as_either_str(vm.heap) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("attribute name must be string, not '{}'", name.py_type(vm)),
+            format!("attribute name must be string, not '{}'", name.py_type_name(vm)),
         )
         .into());
     };

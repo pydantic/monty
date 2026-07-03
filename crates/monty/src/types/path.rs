@@ -313,12 +313,12 @@ fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, impl ResourceTracker>) ->
             HeapData::Path(p) => Ok(p.as_str()),
             _ => Err(ExcType::type_error(format!(
                 "expected str or Path, got {}",
-                val.py_type(vm)
+                val.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "expected str or Path, got {}",
-            val.py_type(vm)
+            val.py_type_name(vm)
         ))),
     }
 }
@@ -519,7 +519,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::Path.static_name(),
+                attr.as_str(vm.interns),
+            ));
         };
 
         // Check if this is an OS method that requires host system access.
@@ -600,7 +603,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             }
             _ => {
                 args.drop_with_heap(vm);
-                return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(
+                    Type::Path.static_name(),
+                    attr.as_str(vm.interns),
+                ));
             }
         };
         value.map(CallResult::Value)
@@ -612,7 +618,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             if let Some(v) = self.get(vm.heap).getattr_by_static(ss, vm.heap)? {
                 return Ok(Some(CallResult::Value(v)));
             }
-            return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::Path.static_name(),
+                attr.as_str(vm.interns),
+            ));
         }
         // Slow path: heap-allocated strings need string comparison
         let attr_str = attr.as_str(vm.interns);
@@ -623,7 +632,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             "suffix" => StaticStrings::Suffix,
             "suffixes" => StaticStrings::Suffixes,
             "parts" => StaticStrings::Parts,
-            _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
+            _ => return Err(ExcType::attribute_error(Type::Path.static_name(), attr_str)),
         };
         let v = self
             .get(vm.heap)

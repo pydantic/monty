@@ -21,7 +21,7 @@ pub fn builtin_len(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             i64::try_from(len).map_err(|_| ExcType::overflow_c_ssize_t())?,
         ))
     } else {
-        let type_name = value.py_type(vm);
+        let type_name = value.py_type_name(vm);
         Err(SimpleException::new_msg(ExcType::TypeError, format!("object of type '{type_name}' has no len()")).into())
     }
 }

@@ -86,7 +86,7 @@ impl Builtins {
         match self {
             Self::Function(b) => write!(f, "<built-in function {b}>"),
             Self::ExcType(e) => write!(f, "<class '{e}'>"),
-            Self::Type(t) => write!(f, "<class '{t}'>"),
+            Self::Type(t) => write!(f, "<class '{}'>", t.static_name()),
         }
     }
 

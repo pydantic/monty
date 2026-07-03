@@ -231,9 +231,9 @@ impl HeapData {
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
             Self::Dataclass(_) => Type::Dataclass,
-            // A class object's type is `type`; an instance's is the generic marker.
+            // A class object's type is `type`; an instance's carries its class id.
             Self::Class(_) => Type::Type,
-            Self::Instance(_) => Type::Instance,
+            Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
@@ -542,7 +542,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
-                let type_name = vm.heap.read(self_id).py_type(vm);
+                let type_name = vm.heap.read(self_id).py_type(vm).name(vm.heap, vm.interns);
                 Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
             }
         }
@@ -570,7 +570,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::OpenFile(file) => file.py_enter(self_id, vm),
             #[cfg(feature = "test-hooks")]
             HeapReadOutput::TestContextManager(cm) => cm.py_enter(self_id, vm),
-            _ => Err(ExcType::attribute_error(self.py_type(vm), "__enter__")),
+            _ => Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                "__enter__",
+            )),
         }
     }
 
@@ -584,7 +587,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::OpenFile(file) => file.py_exit(self_id, vm, exc),
             #[cfg(feature = "test-hooks")]
             HeapReadOutput::TestContextManager(cm) => cm.py_exit(self_id, vm, exc),
-            _ => Err(ExcType::attribute_error(self.py_type(vm), "__exit__")),
+            _ => Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                "__exit__",
+            )),
         }
     }
 
@@ -789,7 +795,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 .interns
                 .get_function(fd.get(vm.heap).func_id)
                 .py_repr_fmt(f, vm.interns, 0)?),
-            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm))?),
+            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
             Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
@@ -984,7 +990,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dict(d) => d.py_getitem(key, vm),
             Self::Range(r) => r.py_getitem(key, vm),
             Self::ReMatch(m) => m.py_getitem(key, vm),
-            _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
+            _ => Err(ExcType::type_error_not_sub(self.py_type(vm).name(vm.heap, vm.interns))),
         }
     }
 
@@ -995,7 +1001,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             _ => {
                 key.drop_with_heap(vm);
                 value.drop_with_heap(vm);
-                Err(ExcType::type_error_not_sub_assignment(self.py_type(vm)))
+                Err(ExcType::type_error_not_sub_assignment(
+                    self.py_type(vm).name(vm.heap, vm.interns),
+                ))
             }
         }
     }

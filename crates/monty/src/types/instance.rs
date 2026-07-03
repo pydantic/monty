@@ -16,9 +16,10 @@ use crate::{
     exception_private::{ExcType, RunResult},
     hash::HashValue,
     heap::{
-        BorrowedHeapReadMut, DropWithHeap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        BorrowedHeapReadMut, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
     },
+    intern::Interns,
     resource::ResourceTracker,
     value::{EitherStr, Value},
 };
@@ -88,8 +89,8 @@ impl<'h> HeapRead<'h, Instance> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
-        Type::Instance
+    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::Instance(self.get(vm.heap).class)
     }
 
     fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
@@ -127,7 +128,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let class_id = self.get(vm.heap).class;
-        Ok(write!(f, "<{} object>", class_name(class_id, vm))?)
+        Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
     }
 
     fn py_call_attr(
@@ -164,7 +165,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
         // 3. No such attribute.
         args.drop_with_heap(vm);
-        Err(ExcType::attribute_error(class_name(class_id, vm), attr_str))
+        Err(ExcType::attribute_error(
+            class_name(class_id, vm.heap, vm.interns),
+            attr_str,
+        ))
     }
 }
 
@@ -273,7 +277,10 @@ pub(crate) fn instance_getattr(
         vm.heap.inc_ref(class_id);
         Ok(CallResult::Value(Value::Ref(class_id)))
     } else {
-        Err(ExcType::attribute_error(class_name(class_id, vm), attr_str))
+        Err(ExcType::attribute_error(
+            class_name(class_id, vm.heap, vm.interns),
+            attr_str,
+        ))
     }
 }
 
@@ -335,7 +342,7 @@ fn value_into_string(
         },
         _ => None,
     };
-    let type_name = value.py_type(vm);
+    let type_name = value.py_type_name(vm);
     value.drop_with_heap(vm);
     match extracted {
         Some(s) => Ok(Cow::Owned(s)),
@@ -348,7 +355,11 @@ fn value_into_string(
 /// The default `repr` for an instance with no user `__repr__`.
 fn default_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> String {
     let class_id = instance_class(self_id, vm);
-    format!("<{} object at 0x{:x}>", class_name(class_id, vm), self_id.index())
+    format!(
+        "<{} object at 0x{:x}>",
+        class_name(class_id, vm.heap, vm.interns),
+        self_id.index()
+    )
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
@@ -371,10 +382,15 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>)
 }
 
 /// Returns a class object's name as a string slice for error messages / repr
-/// (or `"object"` as a defensive fallback for a non-class id).
-pub(crate) fn class_name<'a>(class_id: HeapId, vm: &'a VM<'_, impl ResourceTracker>) -> &'a str {
-    match vm.heap.get(class_id) {
-        HeapData::Class(class) => vm.interns.get_str(class.name_id()),
+/// (or `"object"` as a defensive fallback for a non-class id, which also keeps
+/// crafted-snapshot bogus ids panic-free).
+///
+/// Takes `heap` + `interns` rather than a `&VM` so heap-only contexts (e.g.
+/// `Type::name`) can resolve names; the returned slice borrows only
+/// the interner, so it survives subsequent heap mutation.
+pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+    match heap.get(class_id) {
+        HeapData::Class(class) => interns.get_str(class.name_id()),
         _ => "object",
     }
 }

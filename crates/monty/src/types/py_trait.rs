@@ -324,7 +324,10 @@ pub trait PyTrait<'h> {
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
         // references on the error path (caught by `memory-model-checks`).
         args.drop_with_heap(vm);
-        Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            attr.as_str(vm.interns),
+        ))
     }
 
     /// Whether this type implements the context-manager protocol.
@@ -363,7 +366,10 @@ pub trait PyTrait<'h> {
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_enter(&mut self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(self.py_type(vm), "__enter__"))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            "__enter__",
+        ))
     }
 
     /// Context-manager exit hook (`__exit__`).
@@ -391,7 +397,10 @@ pub trait PyTrait<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
         _exc: Option<HeapId>,
     ) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(self.py_type(vm), "__exit__"))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            "__exit__",
+        ))
     }
 
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
@@ -404,7 +413,7 @@ pub trait PyTrait<'h> {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(vm)))
+        Err(ExcType::type_error_not_sub(self.py_type(vm).name(vm.heap, vm.interns)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -418,7 +427,10 @@ pub trait PyTrait<'h> {
         value.drop_with_heap(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("'{}' object does not support item assignment", self.py_type(vm)),
+            format!(
+                "'{}' object does not support item assignment",
+                self.py_type(vm).name(vm.heap, vm.interns)
+            ),
         )
         .into())
     }

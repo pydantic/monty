@@ -1345,7 +1345,7 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type(vm))),
+                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type_name(vm))),
                 };
 
                 let s = interns.get_str(*string_id);
@@ -1367,14 +1367,14 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type(vm))),
+                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type_name(vm))),
                 };
 
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
             }
-            _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
+            _ => Err(ExcType::type_error_not_sub(self.py_type_name(vm))),
         }
     }
 
@@ -1383,7 +1383,7 @@ impl PyTrait<'_> for Value {
             Self::Ref(id) => vm.heap.read(*id).py_setitem(key, value, vm),
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
-                self.py_type(vm)
+                self.py_type_name(vm)
             ))),
         }
     }
@@ -1403,6 +1403,25 @@ impl Value {
             Self::Ref(id) => heap.get(*id).py_type(),
             _ => self.py_type_shallow(),
         }
+    }
+
+    /// Resolved display name of this value's type for error messages and
+    /// reprs — user-class instances render as their real class name rather
+    /// than the generic `"object"`.
+    ///
+    /// The returned slice borrows only `vm.interns` (never the heap), so it
+    /// can be captured before `drop_with_heap` cleanup and formatted after.
+    #[must_use]
+    pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h, impl ResourceTracker>) -> &'h str {
+        self.py_type(vm).name(vm.heap, vm.interns)
+    }
+
+    /// [`py_type_name`](Self::py_type_name) for contexts without a `&VM` —
+    /// notably the macro-generated `from_args` bodies, which are passed
+    /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
+    #[must_use]
+    pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+        self.py_type_heap(heap).name(heap, interns)
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1735,9 +1754,9 @@ impl Value {
                         Ok(range.contains(n))
                     }
                     _ => {
-                        let type_name = self.py_type(vm);
+                        let type_name = self.py_type_name(vm);
                         Err(ExcType::type_error(format!(
-                            "argument of type '{type_name}' is not iterable"
+                            "argument of type '{type_name}' is not a container or iterable"
                         )))
                     }
                 }
@@ -1747,9 +1766,9 @@ impl Value {
                 str_contains(container_str, item, vm.heap, vm.interns)
             }
             _ => {
-                let type_name = self.py_type(vm);
+                let type_name = self.py_type_name(vm);
                 Err(ExcType::type_error(format!(
-                    "argument of type '{type_name}' is not iterable"
+                    "argument of type '{type_name}' is not a container or iterable"
                 )))
             }
         }
@@ -1781,8 +1800,7 @@ impl Value {
                     |ss| ss == StaticStrings::DunderName,
                 );
                 if is_dunder_name {
-                    let name_str = t.to_string();
-                    return Ok(CallResult::Value(allocate_string(name_str, vm.heap)?));
+                    return Ok(CallResult::Value(allocate_string(t.static_name(), vm.heap)?));
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
                     return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));
@@ -1790,7 +1808,7 @@ impl Value {
             }
             _ => {}
         }
-        let type_name = self.py_type(vm);
+        let type_name = self.py_type_name(vm);
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
     }
 
@@ -1810,7 +1828,7 @@ impl Value {
                 }
                 HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
                 other => {
-                    let type_name = other.py_type(vm);
+                    let type_name = other.py_type(vm).name(vm.heap, vm.interns);
                     value.drop_with_heap(vm);
                     return Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)));
                 }
@@ -1818,7 +1836,7 @@ impl Value {
             old_value.drop_with_heap(vm);
             Ok(())
         } else {
-            let type_name = self.py_type(vm);
+            let type_name = self.py_type_name(vm);
             value.drop_with_heap(vm);
             Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
         }
@@ -1851,12 +1869,12 @@ impl Value {
                 if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                     li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
                 } else {
-                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(vm));
+                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
                     Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
                 }
             }
             _ => {
-                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type(vm));
+                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
                 Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
             }
         }
@@ -1880,10 +1898,10 @@ impl Value {
                 if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                     li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
                 } else {
-                    Err(ExcType::type_error_indices(container_type, self.py_type(vm)))
+                    Err(ExcType::type_error_indices(container_type, self.py_type_name(vm)))
                 }
             }
-            _ => Err(ExcType::type_error_indices(container_type, self.py_type(vm))),
+            _ => Err(ExcType::type_error_indices(container_type, self.py_type_name(vm))),
         }
     }
 
@@ -1904,7 +1922,8 @@ impl Value {
     ) -> Result<Self, RunError> {
         // Capture types for error messages
         let lhs_type = self.py_type(vm);
-        let rhs_type = other.py_type(vm);
+        let lhs_name = self.py_type_name(vm);
+        let rhs_name = other.py_type_name(vm);
 
         // Extract BigInt from all numeric types
         let lhs_bigint = extract_bigint(self, vm.heap);
@@ -1962,7 +1981,7 @@ impl Value {
             // Convert result back to Value, demoting to i64 if it fits
             LongInt::new(result).into_value(vm.heap).map_err(Into::into)
         } else {
-            Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
+            Err(ExcType::binary_type_error(op.as_str(), lhs_type, lhs_name, rhs_name))
         }
     }
 
@@ -2104,12 +2123,12 @@ impl Value {
                 HeapData::Str(s) => Ok(s.as_str()),
                 _ => Err(ExcType::type_error(format!(
                     "expected string, not {}",
-                    self.py_type(vm)
+                    self.py_type_name(vm)
                 ))),
             },
             _ => Err(ExcType::type_error(format!(
                 "expected string, not {}",
-                self.py_type(vm)
+                self.py_type_name(vm)
             ))),
         }
     }

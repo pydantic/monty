@@ -356,7 +356,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(this);
+                let type_name = obj.py_type_name(this);
                 args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
@@ -431,7 +431,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                let ty = callable.py_type(self);
+                let ty = callable.py_type_name(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
         }
@@ -472,7 +472,8 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                return Err(ExcType::type_error("object is not callable"));
+                let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
+                return Err(ExcType::type_error_not_callable_object(type_name));
             }
         };
 
@@ -895,7 +896,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     Ok(CallResult::Value(Value::Ref(instance_id)))
                 } else {
                     args.drop_with_heap(self);
-                    let name = self.class_display_name(class_id);
+                    let name = class_name(class_id, self.heap, self.interns);
                     Value::Ref(instance_id).drop_with_heap(self);
                     Err(ExcType::type_error(format!("{name}() takes no arguments")))
                 }
@@ -941,10 +942,10 @@ impl<T: ResourceTracker> VM<'_, T> {
                     match this.evaluate_function("__init__", init_func, init_args) {
                         Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
                         Ok(result) => {
-                            let type_name = this.value_type_display_name(&result);
+                            let type_name = result.py_type_name(this);
                             result.drop_with_heap(this);
                             Value::Ref(instance_id).drop_with_heap(this);
-                            Err(ExcType::type_error_init_return(&type_name))
+                            Err(ExcType::type_error_init_return(type_name))
                         }
                         Err(e) => {
                             Value::Ref(instance_id).drop_with_heap(this);
@@ -953,24 +954,6 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
             }
-        }
-    }
-
-    /// Returns a class object's name for error messages (or `"object"` as a defensive fallback).
-    fn class_display_name(&self, class_id: HeapId) -> String {
-        class_name(class_id, self).to_owned()
-    }
-
-    /// Returns a value's type name for error messages, resolving user-defined
-    /// instances to their class name — `Type::Instance` would otherwise display
-    /// as the generic `"object"`.
-    pub(super) fn value_type_display_name(&self, value: &Value) -> String {
-        if let Value::Ref(id) = value
-            && let HeapData::Instance(instance) = self.heap.get(*id)
-        {
-            self.class_display_name(instance.class())
-        } else {
-            value.py_type(self).to_string()
         }
     }
 

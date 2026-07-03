@@ -1088,7 +1088,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
             }
             _ => {
                 args.drop_with_heap(vm);
-                return Err(ExcType::attribute_error(Type::Set, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(
+                    Type::Set.static_name(),
+                    attr.as_str(vm.interns),
+                ));
             }
         };
         value.map(CallResult::Value)
@@ -1348,7 +1351,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
             }
             _ => {
                 args.drop_with_heap(vm);
-                return Err(ExcType::attribute_error(Type::FrozenSet, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(
+                    Type::FrozenSet.static_name(),
+                    attr.as_str(vm.interns),
+                ));
             }
         };
         value.map(CallResult::Value)
@@ -1444,6 +1450,6 @@ impl<'de> serde::Deserialize<'de> for FrozenSet {
 fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
     match value.py_hash(vm)? {
         Some(h) => Ok(h.raw()),
-        None => Err(ExcType::type_error_unhashable_set_element(value.py_type(vm))),
+        None => Err(ExcType::type_error_unhashable_set_element(value.py_type_name(vm))),
     }
 }

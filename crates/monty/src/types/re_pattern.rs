@@ -329,7 +329,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(
+                Type::RePattern.static_name(),
+                attr.as_str(vm.interns),
+            )),
         }
     }
 
@@ -373,7 +376,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 let text = arg.to_str(vm)?.to_owned();
                 self.get(vm.heap).finditer(&text, vm.heap)
             }
-            _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
+            _ => {
+                return Err(ExcType::attribute_error(
+                    Type::RePattern.static_name(),
+                    attr.as_str(vm.interns),
+                ));
+            }
         }?;
         Ok(CallResult::Value(result))
     }
@@ -492,7 +500,7 @@ pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl Resource
         Some(Value::Int(n)) => Ok(n),
         Some(Value::Bool(b)) => Ok(i64::from(b)),
         Some(other) => {
-            let t = other.py_type(vm);
+            let t = other.py_type_name(vm);
             other.drop_with_heap(vm);
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"
@@ -517,7 +525,7 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTra
         Some(Value::Bool(b)) => Ok(Some(usize::from(b))),
         Some(Value::Int(_)) => Ok(None),
         Some(other) => {
-            let t = other.py_type(vm);
+            let t = other.py_type_name(vm);
             other.drop_with_heap(vm);
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"

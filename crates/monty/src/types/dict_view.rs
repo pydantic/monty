@@ -182,7 +182,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
                 defer_drop!(other, vm);
                 Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
             }
-            _ => Err(ExcType::attribute_error(Type::DictKeys, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(
+                Type::DictKeys.static_name(),
+                attr.as_str(vm.interns),
+            )),
         }
     }
 }
@@ -338,7 +341,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
                 defer_drop!(other, vm);
                 Ok(CallResult::Value(Value::Bool(self.isdisjoint_from_value(other, vm)?)))
             }
-            _ => Err(ExcType::attribute_error(Type::DictItems, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(
+                Type::DictItems.static_name(),
+                attr.as_str(vm.interns),
+            )),
         }
     }
 }

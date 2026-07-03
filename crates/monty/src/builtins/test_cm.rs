@@ -15,7 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::HeapData,
     resource::ResourceTracker,
-    types::{PyTrait, TestContextManager},
+    types::TestContextManager,
     value::Value,
 };
 
@@ -49,7 +49,7 @@ pub fn builtin_test_cm(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
             }
             return Err(ExcType::type_error(format!(
                 "_test_cm() behavior must be str, not {}",
-                behavior_value.py_type(vm)
+                behavior_value.py_type_name(vm)
             )));
         };
         configure(&mut cm, &behavior_str, payload, vm)?;
@@ -106,7 +106,7 @@ fn configure(
             let Value::Int(n) = p else {
                 return Err(ExcType::type_error(format!(
                     "_test_cm('enter_value', n) requires int payload, not {}",
-                    p.py_type(vm)
+                    p.py_type_name(vm)
                 )));
             };
             cm.enter_value = Some(*n);
@@ -143,7 +143,7 @@ fn extract_str_payload(
     let Some(s) = value_as_owned_str(p, vm) else {
         return Err(ExcType::type_error(format!(
             "_test_cm('{behavior}', msg) requires str payload, not {}",
-            p.py_type(vm)
+            p.py_type_name(vm)
         )));
     };
     Ok(s)

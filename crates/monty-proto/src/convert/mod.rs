@@ -37,7 +37,7 @@ pub enum ProtoConvertError {
     MissingField(&'static str),
     /// An exception type name that monty does not know.
     UnknownExcType(String),
-    /// A type name that monty's `Type::from_type_name` does not know.
+    /// A type name that monty's `MontyType::from_type_name` does not know.
     UnknownType(String),
     /// A builtin function name that monty does not know.
     UnknownBuiltinFunction(String),

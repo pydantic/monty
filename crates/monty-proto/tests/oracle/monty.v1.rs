@@ -22,7 +22,7 @@ pub struct Unit {}
 pub struct MontyObject {
     #[prost(
         oneof = "monty_object::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
     )]
     pub kind: ::core::option::Option<monty_object::Kind>,
 }
@@ -94,6 +94,13 @@ pub mod monty_object {
         /// OUTPUT-ONLY marker breaking reference cycles in container output.
         #[prost(message, tag = "27")]
         Cycle(super::Cycle),
+        /// The type object of a sandbox-defined class, named by its class name,
+        /// e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
+        /// name ("int") cannot be confused with the builtin type. Accepted by the
+        /// decoder but rejected as an execution input (the class binding cannot be
+        /// reconstructed from a name).
+        #[prost(string, tag = "28")]
+        InstanceType(::prost::alloc::string::String),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

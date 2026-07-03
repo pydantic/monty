@@ -25,7 +25,7 @@ use crate::{
     intern::FunctionId,
     resource::ResourceTracker,
     run_progress::ExtFunctionResult,
-    types::{List, PyTrait},
+    types::List,
     value::Value,
 };
 
@@ -56,7 +56,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     HeapReadOutput::Coroutine(coro) => return this.await_coroutine(coro),
                     HeapReadOutput::GatherFuture(gather) => this.await_gather_future(heap_id, gather, awaiter)?,
                     HeapReadOutput::ExternalFuture(mut fut) => this.await_external_future(&mut fut, awaiter)?,
-                    _ => return Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
+                    _ => return Err(ExcType::object_not_awaitable(awaitable.py_type_name(this))),
                 };
                 match poll {
                     Poll::Ready(value) => Ok(AwaitResult::ValueReady(value)),
@@ -66,7 +66,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     }
                 }
             }
-            _ => Err(ExcType::object_not_awaitable(awaitable.py_type(this))),
+            _ => Err(ExcType::object_not_awaitable(awaitable.py_type_name(this))),
         }
     }
 

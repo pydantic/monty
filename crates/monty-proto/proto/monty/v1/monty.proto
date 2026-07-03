@@ -74,6 +74,12 @@ message MontyObject {
     string repr = 26;
     // OUTPUT-ONLY marker breaking reference cycles in container output.
     Cycle cycle = 27;
+    // The type object of a sandbox-defined class, named by its class name,
+    // e.g. "Foo". Kept separate from `type` so a class shadowing a builtin
+    // name ("int") cannot be confused with the builtin type. Accepted by the
+    // decoder but rejected as an execution input (the class binding cannot be
+    // reconstructed from a name).
+    string instance_type = 28;
   }
 }
 

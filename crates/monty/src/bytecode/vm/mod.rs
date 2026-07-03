@@ -1149,13 +1149,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 }
                             }
                             _ => {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                             }
                         },
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
                         }
@@ -1172,13 +1172,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 // LongInt - return as-is (value already has correct refcount)
                                 self.push(value);
                             } else {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
                         }
@@ -1200,13 +1200,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
                         }
@@ -1679,9 +1679,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             // CPython raises at the `Foo(...)` call site: the
                             // initializer frame is already popped, so the traceback
                             // matches (no `__init__` frame).
-                            let type_name = self.value_type_display_name(&value);
+                            let type_name = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            let err = ExcType::type_error_init_return(&type_name);
+                            let err = ExcType::type_error_init_return(type_name);
                             if stop {
                                 // The initializer was driven by `evaluate_function`
                                 // and its frame boundary is already popped —

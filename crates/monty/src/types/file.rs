@@ -545,7 +545,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         write!(
             f,
             "<{} name={} mode={}>",
-            file.file_type(),
+            file.file_type().static_name(),
             StringRepr(file.path()),
             StringRepr(file.mode())
         )?;
@@ -561,7 +561,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                attr.as_str(vm.interns),
+            ));
         };
 
         match method {
@@ -578,7 +581,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             StaticStrings::Seekable => self.seekable(vm, args),
             _ => {
                 args.drop_with_heap(vm);
-                Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(
+                    self.py_type(vm).name(vm.heap, vm.interns),
+                    attr.as_str(vm.interns),
+                ))
             }
         }
     }
@@ -618,7 +624,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let Some(method) = attr.static_string() else {
-            return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                attr.as_str(vm.interns),
+            ));
         };
 
         let file = self.get(vm.heap);
@@ -627,7 +636,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             StaticStrings::Mode => allocate_string(file.mode.as_str().to_owned(), vm.heap)?,
             StaticStrings::Closed => Value::Bool(file.closed),
             StaticStrings::Encoding if !file.mode.is_binary() => allocate_string("utf-8", vm.heap)?,
-            _ => return Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns))),
+            _ => {
+                return Err(ExcType::attribute_error(
+                    self.py_type(vm).name(vm.heap, vm.interns),
+                    attr.as_str(vm.interns),
+                ));
+            }
         };
         Ok(Some(CallResult::Value(value)))
     }
@@ -1612,7 +1626,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_, impl ResourceTrac
         } else {
             Err(ExcType::type_error(format!(
                 "a bytes-like object is required, not '{}'",
-                data.py_type(vm)
+                data.py_type_name(vm)
             )))
         }
     } else if data.is_str(vm.heap) {
@@ -1620,7 +1634,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_, impl ResourceTrac
     } else {
         Err(ExcType::type_error(format!(
             "write() argument must be str, not {}",
-            data.py_type(vm)
+            data.py_type_name(vm)
         )))
     }
 }

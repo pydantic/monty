@@ -424,7 +424,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             Some(StaticStrings::Count) => tuple_count(self, args, vm).map(CallResult::Value),
             _ => {
                 args.drop_with_heap(vm);
-                Err(ExcType::attribute_error(Type::Tuple, attr.as_str(vm.interns)))
+                Err(ExcType::attribute_error(
+                    Type::Tuple.static_name(),
+                    attr.as_str(vm.interns),
+                ))
             }
         }
     }

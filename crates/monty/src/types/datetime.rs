@@ -222,7 +222,7 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         );
     }
 
-    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap)?;
+    let (tz, tz_ref) = tzinfo_from_value(tzinfo, vm.heap, vm.interns)?;
     let dt = from_components(year, month, day, hour, minute, second, microsecond, tz, tz_ref, vm.heap)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(dt))?))
 }
@@ -288,7 +288,7 @@ fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
 
     for (index, arg) in pos.by_ref().enumerate() {
         if index == 0 {
-            if let Err(e) = validate_tz_arg(&arg, heap) {
+            if let Err(e) = validate_tz_arg(&arg, heap, interns) {
                 arg.drop_with_heap(heap);
                 pos.drop_with_heap(heap);
                 kwargs_iter.drop_with_heap(heap);
@@ -327,7 +327,7 @@ fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
             tz_value.drop_with_heap(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, 2));
         }
-        if let Err(e) = validate_tz_arg(&value, heap) {
+        if let Err(e) = validate_tz_arg(&value, heap, interns) {
             value.drop_with_heap(heap);
             kwargs_iter.drop_with_heap(heap);
             tz_value.drop_with_heap(heap);
@@ -609,14 +609,15 @@ pub(crate) fn py_sub_datetime(
 fn tzinfo_from_value(
     value: &Value,
     heap: &Heap<impl ResourceTracker>,
+    interns: &Interns,
 ) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(ExcType::type_error_tzinfo(other.py_type())),
+            other => Err(ExcType::type_error_tzinfo(other.py_type().name(heap, interns))),
         },
-        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow())),
+        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name(heap, interns))),
     }
 }
 
@@ -625,14 +626,14 @@ fn tzinfo_from_value(
 /// Used by `class_now` to validate the `tz` argument before passing it through
 /// to the OS call. Unlike `tzinfo_from_value`, this does not extract the timezone
 /// data — it only checks the type.
-fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<()> {
+fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
     match value {
         Value::None => Ok(()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(_) => Ok(()),
-            other => Err(ExcType::type_error_tzinfo(other.py_type())),
+            other => Err(ExcType::type_error_tzinfo(other.py_type().name(heap, interns))),
         },
-        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow())),
+        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name(heap, interns))),
     }
 }
 
@@ -828,7 +829,7 @@ fn extract_datetime_replace_kwargs(
         None => (timezone_info(dt), dt.tzinfo_ref),
         Some(tzinfo_value) => {
             defer_drop_mut!(tzinfo_value, vm);
-            tzinfo_from_value(tzinfo_value, vm.heap)?
+            tzinfo_from_value(tzinfo_value, vm.heap, vm.interns)?
         }
     };
 
@@ -1034,7 +1035,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
             }
-            _ => Err(ExcType::attribute_error(Type::DateTime, attr.as_str(vm.interns))),
+            _ => Err(ExcType::attribute_error(
+                Type::DateTime.static_name(),
+                attr.as_str(vm.interns),
+            )),
         }
     }
 

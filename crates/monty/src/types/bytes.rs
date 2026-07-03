@@ -192,9 +192,9 @@ impl Bytes {
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
-                _ => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
+                _ => return Err(ExcType::type_error_bytes_init(v.py_type_name(vm))),
             },
-            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
+            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type_name(vm))),
         };
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))
@@ -310,7 +310,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(
+                Type::Bytes.static_name(),
+                attr.as_str(vm.interns),
+            ));
         };
 
         let field = heap_read_ref_as_field!(self, Bytes, 0);
@@ -341,7 +344,10 @@ pub fn call_bytes_method(
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
         args.drop_with_heap(vm);
-        return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
+        return Err(ExcType::attribute_error(
+            Type::Bytes.static_name(),
+            vm.interns.get_str(method_id),
+        ));
     };
     call_bytes_method_impl(&vm.heap.protect(bytes), method, args, vm)
 }
@@ -451,7 +457,7 @@ fn call_bytes_method_impl<'h>(
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
             args.drop_with_heap(vm.heap);
-            Err(ExcType::attribute_error(Type::Bytes, method.into()))
+            Err(ExcType::attribute_error(Type::Bytes.static_name(), method.into()))
         }
     }
 }
@@ -759,7 +765,7 @@ fn extract_bytes_for_prefix_suffix(
                     if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
                         prefixes.push(b);
                     } else {
-                        let item_type = item.py_type(vm);
+                        let item_type = item.py_type_name(vm);
                         return Err(ExcType::type_error(format!(
                             "{method_name} first arg must be bytes or a tuple of bytes, \
                              not tuple containing {item_type} at index {i}"
@@ -770,12 +776,12 @@ fn extract_bytes_for_prefix_suffix(
             }
             _ => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-                value.py_type(vm)
+                value.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -2001,14 +2007,14 @@ fn bytes_join<'h>(
                 if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
                     result.extend_from_slice(b.as_slice());
                 } else {
-                    let t = item.py_type(vm);
+                    let t = item.py_type_name(vm);
                     return Err(ExcType::type_error(format!(
                         "sequence item {index}: expected a bytes-like object, {t} found"
                     )));
                 }
             }
             _ => {
-                let t = item.py_type(vm);
+                let t = item.py_type_name(vm);
                 return Err(ExcType::type_error(format!(
                     "sequence item {index}: expected a bytes-like object, {t} found"
                 )));
@@ -2186,7 +2192,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
             }
         }
         _ => {
-            let t = hex_value.py_type(vm);
+            let t = hex_value.py_type_name(vm);
             return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
         }
     };

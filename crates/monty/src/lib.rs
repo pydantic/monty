@@ -42,7 +42,7 @@ pub use crate::{
     io::{PrintStream, PrintWriter, PrintWriterCallback},
     object::{
         DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-        MontyTimeZone,
+        MontyTimeZone, MontyType,
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -59,5 +59,5 @@ pub use crate::{
     run_progress::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },
-    types::{file::FileMode, str::StringRepr, r#type::Type},
+    types::{file::FileMode, str::StringRepr},
 };

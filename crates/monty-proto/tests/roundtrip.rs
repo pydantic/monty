@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use monty::{
     CodeLoc, DictPairs, ExcData, ExcType, ExtFunctionResult, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, NameLookupResult, ResourceLimits, StackFrame, Type,
+    MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult, ResourceLimits, StackFrame,
     UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
@@ -144,9 +144,10 @@ fn exception_and_type_values_round_trip() {
         exc_type: ExcType::JsonDecodeError,
         arg: None,
     });
-    assert_value_round_trip(&MontyObject::Type(Type::Int));
-    assert_value_round_trip(&MontyObject::Type(Type::DateTime));
-    assert_value_round_trip(&MontyObject::Type(Type::Exception(ExcType::KeyError)));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Int));
+    assert_value_round_trip(&MontyObject::Type(MontyType::DateTime));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
+    assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");
     assert_value_round_trip(&builtin);
 }

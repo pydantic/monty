@@ -17,7 +17,7 @@
 
 use monty::{
     DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta,
-    MontyTimeZone, Type,
+    MontyTimeZone, MontyType,
 };
 use monty_proto::{WireFunctionCall, WireObject, WireOsCall, pb};
 use num_bigint::{BigInt, Sign};
@@ -136,8 +136,9 @@ fn corpus() -> Vec<MontyObject> {
             exc_type: ExcType::JsonDecodeError,
             arg: Some(String::new()),
         },
-        MontyObject::Type(Type::Int),
-        MontyObject::Type(Type::Exception(ExcType::KeyError)),
+        MontyObject::Type(MontyType::Int),
+        MontyObject::Type(MontyType::Exception(ExcType::KeyError)),
+        MontyObject::Type(MontyType::Instance("Foo".to_owned())),
         MontyObject::builtin_function_from_name("len").expect("len is a builtin"),
         MontyObject::Path(String::new()),
         MontyObject::Path("/mnt/data/file.txt".to_owned()),
@@ -240,6 +241,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             exc_type: exc_type.to_string(),
             arg: arg.clone(),
         }),
+        MontyObject::Type(MontyType::Instance(name)) => Kind::InstanceType(name.clone()),
         MontyObject::Type(t) => Kind::Type(t.to_string()),
         MontyObject::BuiltinFunction(bf) => Kind::BuiltinFunction(bf.to_string()),
         MontyObject::Path(p) => Kind::Path(p.clone()),

@@ -93,7 +93,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// rather than per-dunder, but the user-visible text matches CPython so
 /// traceback-equivalence tests pass.
 fn not_a_context_manager<T: ResourceTracker>(vm: &VM<'_, T>) -> RunError {
-    let ty = vm.peek().py_type(vm);
+    let ty = vm.peek().py_type_name(vm);
     SimpleException::new_msg(
         ExcType::TypeError,
         format!("'{ty}' object does not support the context manager protocol (missed __exit__ method)"),
