@@ -20,7 +20,7 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     os::OsFunctionCall,
     resource::ResourceTracker,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
+    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -958,10 +958,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Returns a class object's name for error messages (or `"object"` as a defensive fallback).
     fn class_display_name(&self, class_id: HeapId) -> String {
-        match self.heap.get(class_id) {
-            HeapData::Class(class) => self.interns.get_str(class.name_id()).to_owned(),
-            _ => "object".to_owned(),
-        }
+        class_name(class_id, self).to_owned()
     }
 
     /// Returns a value's type name for error messages, resolving user-defined

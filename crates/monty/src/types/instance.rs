@@ -229,10 +229,11 @@ impl HeapItem for BoundMethod {
 /// Reads an instance attribute for `obj.attr` (the `LoadAttr` path).
 ///
 /// Mirrors Python's lookup order: the instance `__dict__` first, then the class
-/// namespace. A class method becomes a [`BoundMethod`] (binding `self`); a class
-/// variable is returned as-is. A missing attribute raises `AttributeError` with
-/// the real class name. Takes `self_id` (available at the `Value` level) because
-/// binding a method needs the instance's `HeapId`.
+/// namespace, then the `__class__` special case. A class method becomes a
+/// [`BoundMethod`] (binding `self`); a class variable is returned as-is. A missing
+/// attribute raises `AttributeError` with the real class name. Takes `self_id`
+/// (available at the `Value` level) because binding a method needs the instance's
+/// `HeapId`.
 pub(crate) fn instance_getattr(
     self_id: HeapId,
     attr: &EitherStr,
@@ -265,6 +266,12 @@ pub(crate) fn instance_getattr(
         } else {
             Ok(CallResult::Value(member))
         }
+    } else if attr_str == "__class__" {
+        // 3. `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
+        // Checked after the dict/namespace lookups so an explicit member of the
+        // same name wins, mirroring the `__name__` handling on class objects.
+        vm.heap.inc_ref(class_id);
+        Ok(CallResult::Value(Value::Ref(class_id)))
     } else {
         Err(ExcType::attribute_error(class_name(class_id, vm), attr_str))
     }
@@ -363,8 +370,9 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>)
     }
 }
 
-/// Returns a class object's name as a string slice for error messages / repr.
-fn class_name<'a>(class_id: HeapId, vm: &'a VM<'_, impl ResourceTracker>) -> &'a str {
+/// Returns a class object's name as a string slice for error messages / repr
+/// (or `"object"` as a defensive fallback for a non-class id).
+pub(crate) fn class_name<'a>(class_id: HeapId, vm: &'a VM<'_, impl ResourceTracker>) -> &'a str {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => vm.interns.get_str(class.name_id()),
         _ => "object",

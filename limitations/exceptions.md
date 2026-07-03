@@ -82,3 +82,8 @@ Known caret divergences:
   `...<N lines>...` elision — but never draws caret markers under it, where
   CPython draws multi-line carets for partial-line ranges (e.g. a multi-line
   binary expression).
+
+Monty never emits CPython's `Did you mean: '...'?` suggestions on
+`NameError`/`AttributeError`. Note this divergence is invisible to the test
+suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
+before comparison, so traceback tests cannot catch it.

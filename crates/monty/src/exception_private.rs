@@ -258,6 +258,24 @@ impl ExcType {
         })
     }
 
+    /// Creates an AttributeError for a missing attribute on a class object.
+    ///
+    /// Matches CPython's wording for type objects: `type object 'Foo' has no
+    /// attribute 'nope'` (instances use [`Self::attribute_error`] instead).
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
+    #[must_use]
+    pub(crate) fn attribute_error_type(class_name: &str, attr: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::AttributeError,
+            format!("type object '{class_name}' has no attribute '{attr}'"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
+    }
+
     /// Creates an AttributeError for attribute assignment on types that don't support it.
     ///
     /// Matches CPython's format for setting attributes on built-in types.

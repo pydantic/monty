@@ -1796,45 +1796,43 @@ impl Value {
 
     /// Sets an attribute on this value.
     ///
-    /// Only Dataclass objects and user-defined class instances support
-    /// attribute setting. Returns AttributeError for other types.
+    /// Only Dataclass objects, user-defined class instances, and class objects
+    /// support attribute setting. Returns AttributeError for other types.
     ///
     /// Takes ownership of `value` and drops it on error.
     /// On success, drops the old attribute value if one existed.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
-            match vm.heap.read(*heap_id) {
-                HeapReadOutput::Dataclass(mut dc) => {
-                    let name_value = match name {
-                        EitherStr::Interned(string_id) => Self::InternString(*string_id),
-                        // TODO: should avoid needing to clone String via `EitherStr` - maybe
-                        // `EitherStr` should store a `HeapRead<Str>`?
-                        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
-                    };
-                    let old_value = dc.set_attr(name_value, value, vm)?;
-                    old_value.drop_with_heap(vm);
-                    Ok(())
-                }
+            let old_value = match vm.heap.read(*heap_id) {
+                HeapReadOutput::Dataclass(mut dc) => dc.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
                 HeapReadOutput::Instance(mut instance) => {
-                    let name_value = match name {
-                        EitherStr::Interned(string_id) => Self::InternString(*string_id),
-                        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
-                    };
-                    let old_value = instance.set_attr(name_value, value, vm)?;
-                    old_value.drop_with_heap(vm);
-                    Ok(())
+                    instance.set_attr(Self::attr_name_value(name, vm)?, value, vm)?
                 }
+                HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
                 other => {
                     let type_name = other.py_type(vm);
                     value.drop_with_heap(vm);
-                    Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
+                    return Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)));
                 }
-            }
+            };
+            old_value.drop_with_heap(vm);
+            Ok(())
         } else {
             let type_name = self.py_type(vm);
             value.drop_with_heap(vm);
             Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
         }
+    }
+
+    /// Converts an attribute `name` into a dict-key `Value` for `set_attr` calls,
+    /// reusing the interned id when available.
+    fn attr_name_value(name: &EitherStr, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        Ok(match name {
+            EitherStr::Interned(string_id) => Self::InternString(*string_id),
+            // TODO: should avoid needing to clone String via `EitherStr` - maybe
+            // `EitherStr` should store a `HeapRead<Str>`?
+            EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
+        })
     }
 
     /// Extracts an integer value from the Value.

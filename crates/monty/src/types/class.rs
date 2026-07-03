@@ -14,8 +14,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{DropWithHeap, HeapId, HeapItem, HeapRead},
-    intern::{StaticStrings, StringId},
+    heap::{BorrowedHeapReadMut, DropWithHeap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    intern::StringId,
     resource::ResourceTracker,
     types::str::allocate_string,
     value::{EitherStr, Value},
@@ -60,6 +60,26 @@ impl Class {
     }
 }
 
+impl<'h> HeapRead<'h, Class> {
+    fn namespace_mut(&mut self) -> BorrowedHeapReadMut<'_, 'h, Dict> {
+        heap_read_ref_as_field_mut!(self, Class, namespace)
+    }
+
+    /// Sets a class attribute (`Foo.x = 1`), returning the previous value (if any)
+    /// for the caller to drop. Takes ownership of both `name` and `value`.
+    ///
+    /// Existing instances observe the change immediately: instance attribute reads
+    /// fall through to this namespace.
+    pub fn set_attr(
+        &mut self,
+        name: Value,
+        value: Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        self.namespace_mut().set(name, value, vm)
+    }
+}
+
 impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         // The type of a class object is `type` (matching `type(Foo) is type`).
@@ -94,15 +114,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let attr_str = attr.as_str(vm.interns);
-        // `Foo.__name__` returns the class name.
-        if attr.static_string() == Some(StaticStrings::DunderName) || attr_str == "__name__" {
+        // `Foo.__name__` returns the class name — before the namespace lookup
+        // because in CPython `type.__name__` is a metaclass data descriptor that
+        // shadows a same-named class-dict member (`class Foo: __name__ = 'bar'`
+        // still reads `'Foo'`; only instances see the member).
+        if attr_str == "__name__" {
             let name = vm.interns.get_str(self.get(vm.heap).name).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap)?)));
         }
         // Otherwise look up a member (method or class variable) in the namespace.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
-            None => Err(ExcType::attribute_error(
+            None => Err(ExcType::attribute_error_type(
                 vm.interns.get_str(self.get(vm.heap).name),
                 attr_str,
             )),
@@ -129,7 +152,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
             vm.call_function(member, args)
         } else {
             args.drop_with_heap(vm);
-            Err(ExcType::attribute_error(
+            Err(ExcType::attribute_error_type(
                 vm.interns.get_str(self.get(vm.heap).name),
                 attr_str,
             ))

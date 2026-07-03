@@ -2,8 +2,7 @@
 
 Monty supports the `with` statement for built-in types that implement
 `__enter__` / `__exit__` (currently just file objects produced by
-[`open()`](open.md); user-defined classes are not yet supported anywhere in
-Monty). Semantics follow CPython for the supported subset: `__enter__` runs
+[`open()`](open.md)). Semantics follow CPython for the supported subset: `__enter__` runs
 before the body, `__exit__` runs on every exit path (normal completion,
 exception, `return`, `break`, `continue`), and a truthy return from
 `__exit__` suppresses an in-flight exception.
@@ -23,10 +22,12 @@ exception, `return`, `break`, `continue`), and a truthy return from
 
 - **Async `with`** (`async with EXPR:`) is rejected at parse time with
   `SyntaxError: async context managers (async with) is not yet implemented`.
-- **User-defined classes** cannot define `__enter__` / `__exit__` because
-  `class` definitions are not yet implemented in Monty
-  (`SyntaxError: class definitions is not yet implemented`). Only built-in
-  types can be context managers.
+- **User-defined classes** cannot be context managers: `__enter__` / `__exit__`
+  are not dispatched for instances of sandbox-defined classes (see
+  [classes.md](classes.md)), even when both methods are defined. Using such an
+  instance in a `with` raises `TypeError: 'object' object does not support the
+  context manager protocol` at runtime. Only built-in types can be context
+  managers.
 - **`contextlib`** (`@contextmanager`, `ExitStack`, etc.) — the module is not
   available; only the language-level `with` statement is.
 

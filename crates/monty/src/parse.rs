@@ -5,7 +5,8 @@ use num_traits::Num;
 use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
-    helpers::any_over_expr, name::Name,
+    name::Name,
+    visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange};
@@ -669,7 +670,8 @@ impl<'a> Parser<'a> {
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
     /// recorded in `members`, in source order, for namespace assembly.
     ///
-    /// `pass` and a leading docstring are ignored. Inheritance/metaclass syntax
+    /// `pass` and `...` are ignored; a leading docstring becomes a synthesized
+    /// `__doc__` member (defaulting to `None`). Inheritance/metaclass syntax
     /// (`class Foo(Bar):`), class/method decorators, and anything else in the
     /// body (arbitrary control flow, complex targets) are rejected with a
     /// not-implemented error, reserving the syntax for later.
@@ -697,7 +699,15 @@ impl<'a> Parser<'a> {
         let mut body = Vec::new();
         let mut members = Vec::new();
 
-        for stmt in class.body {
+        // CPython stores the class docstring as a real `__doc__` entry in the
+        // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
+        // or None>` binding as the first class-body statement — `Foo.__doc__` and
+        // `obj.__doc__` then work through ordinary namespace lookup. An explicit
+        // `__doc__ = ...` later in the body overwrites it, as in CPython.
+        let doc_target = Identifier::new(self.interner.intern("__doc__"), self.convert_range(class.name.range));
+        let mut doc_value = ExprLoc::new(self.convert_range(class.name.range), Expr::Literal(Literal::None));
+
+        for (i, stmt) in class.body.into_iter().enumerate() {
             match stmt {
                 Stmt::FunctionDef(function) => {
                     if !function.decorator_list.is_empty() {
@@ -735,10 +745,7 @@ impl<'a> Parser<'a> {
                         ));
                     };
                     let ident = self.identifier(id, *name_range);
-                    self.reject_class_body_walrus(&value)?;
-                    let object = self.parse_expression(*value)?;
-                    members.push(ident);
-                    body.push(Node::Assign { target: ident, object });
+                    self.parse_class_var(ident, *value, &mut members, &mut body)?;
                 }
                 // `name: T = <expr>` — an annotated class-level variable. A bare
                 // `name: T` (no value) is just an annotation and creates nothing.
@@ -751,22 +758,26 @@ impl<'a> Parser<'a> {
                         }) = *target
                         else {
                             return Err(ParseError::not_implemented(
-                                "only simple `name = <expr>` class variables are supported",
+                                "complex class variable targets (only `name = <expr>` is allowed)",
                                 self.convert_range(range),
                             ));
                         };
                         let ident = self.identifier(&id, name_range);
-                        self.reject_class_body_walrus(&value)?;
-                        let object = self.parse_expression(*value)?;
-                        members.push(ident);
-                        body.push(Node::Assign { target: ident, object });
+                        self.parse_class_var(ident, *value, &mut members, &mut body)?;
                     }
                 }
-                // `pass`, `...` (the common `class C: ...` stub idiom) and a
-                // leading docstring are no-ops in the class body.
+                // `pass` and `...` (the common `class C: ...` stub idiom) are
+                // no-ops. A leading string literal is the class docstring and
+                // becomes the synthesized `__doc__` value; later bare string
+                // literals are no-ops.
                 Stmt::Pass(_) => {}
                 Stmt::Expr(ast::StmtExpr { value, .. })
-                    if matches!(*value, AstExpr::StringLiteral(_) | AstExpr::EllipsisLiteral(_)) => {}
+                    if matches!(*value, AstExpr::StringLiteral(_) | AstExpr::EllipsisLiteral(_)) =>
+                {
+                    if i == 0 && matches!(*value, AstExpr::StringLiteral(_)) {
+                        doc_value = self.parse_expression(*value)?;
+                    }
+                }
                 other => {
                     return Err(ParseError::not_implemented(
                         "class bodies containing anything other than methods and simple class variables",
@@ -776,9 +787,22 @@ impl<'a> Parser<'a> {
             }
         }
 
+        // The synthesized `__doc__` binding runs first (like CPython's docstring
+        // store); the namespace assembly loads final local values, so an explicit
+        // `__doc__` member still wins.
+        members.insert(0, doc_target);
+        body.insert(
+            0,
+            Node::Assign {
+                target: doc_target,
+                object: doc_value,
+            },
+        );
+
         // Wrap the body statements in a synthetic zero-arg function. The class
         // name's `name_id` is reused for nicer tracebacks; this function is never
-        // registered in any scope (prepared with `register_name = false`).
+        // registered in any scope (`prepare_class_def` prepares it directly,
+        // without binding a function name).
         let body = RawFunctionDef {
             name,
             signature: ParsedSignature::default(),
@@ -794,16 +818,34 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Rejects `:=` anywhere in an expression evaluated in a class-body scope
-    /// (class-variable values and method parameter defaults).
+    /// Parses a class-variable value and records the binding: rejects class-scope
+    /// walrus, parses the value expression, and appends the member / `Assign` pair
+    /// shared by the `Assign` and `AnnAssign` class-body arms.
+    fn parse_class_var(
+        &mut self,
+        ident: Identifier,
+        value: AstExpr,
+        members: &mut Vec<Identifier>,
+        body: &mut Vec<ParseNode>,
+    ) -> Result<(), ParseError> {
+        self.reject_class_body_walrus(&value)?;
+        let object = self.parse_expression(value)?;
+        members.push(ident);
+        body.push(Node::Assign { target: ident, object });
+        Ok(())
+    }
+
+    /// Rejects `:=` that binds in a class-body scope (in class-variable values
+    /// and method parameter defaults).
     ///
     /// A walrus target in such an expression binds in the class body, so in
     /// CPython it becomes a class member (`class C: x = (y := 5)` gives `C.y`).
     /// Monty's namespace assembly only records directly-assigned names, so the
     /// binding would be silently dropped — reject the syntax until class-scope
-    /// walrus is implemented.
+    /// walrus is implemented. A walrus inside a lambda *body* binds in the
+    /// lambda's own scope and is allowed (see [`contains_class_scope_walrus`]).
     fn reject_class_body_walrus(&self, expr: &AstExpr) -> Result<(), ParseError> {
-        if any_over_expr(expr, |e| matches!(e, AstExpr::Named(_))) {
+        if contains_class_scope_walrus(expr) {
             Err(ParseError::not_implemented(
                 "assignment expressions (`:=`) in class bodies",
                 self.convert_range(expr.range()),
@@ -1942,6 +1984,43 @@ fn convert_conversion_flag(flag: RuffConversionFlag) -> ConversionFlag {
         RuffConversionFlag::Repr => ConversionFlag::Repr,
         RuffConversionFlag::Ascii => ConversionFlag::Ascii,
     }
+}
+
+/// Does `expr` contain a `:=` that binds in the enclosing (class-body) scope?
+///
+/// Like ruff's `any_over_expr`, but scope-aware for lambdas: a walrus inside a
+/// lambda *body* binds in the lambda's own scope (legal CPython, e.g.
+/// `class C: f = lambda: (z := 1)`) and is skipped, while lambda parameter
+/// *defaults* evaluate in the enclosing scope and are still searched.
+/// Comprehensions ARE descended into: CPython also rejects an assignment
+/// expression within a comprehension in a class body (as a `SyntaxError`).
+fn contains_class_scope_walrus(expr: &AstExpr) -> bool {
+    /// Expression visitor that records whether a class-scope-binding walrus
+    /// was seen, pruning lambda bodies from the walk.
+    struct Finder {
+        found: bool,
+    }
+    impl<'a> Visitor<'a> for Finder {
+        fn visit_expr(&mut self, expr: &'a AstExpr) {
+            match expr {
+                _ if self.found => {}
+                AstExpr::Named(_) => self.found = true,
+                AstExpr::Lambda(lambda) => {
+                    // Only the parameter defaults evaluate in the enclosing scope.
+                    for param in lambda.parameters.iter().flat_map(|p| p.iter_non_variadic_params()) {
+                        if let Some(default) = param.default.as_deref() {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                _ => walk_expr(self, expr),
+            }
+        }
+    }
+
+    let mut finder = Finder { found: false };
+    finder.visit_expr(expr);
+    finder.found
 }
 
 /// Short human-readable name for an `AstExpr` variant, for use in

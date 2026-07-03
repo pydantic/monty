@@ -75,8 +75,8 @@ const MAX_COMP_GENERATORS: usize = 255;
 /// Converts a `usize` namespace size into the `u16` slot count expected by
 /// the bytecode, surfacing a `CompileError` if the limit is exceeded.
 ///
-/// `kind` ("module", "function", or "lambda") is interpolated into the error
-/// message so the user can distinguish which scope hit the cap. The position
+/// `kind` ("module", "function", "lambda", or "class body") is interpolated
+/// into the error message so the user can distinguish which scope hit the cap. The position
 /// is left as the default `CodeRange` because the relevant location is the
 /// whole compile unit — there is no single offending statement to highlight.
 fn check_namespace_size_u16(size: usize, kind: &'static str) -> Result<u16, CompileError> {

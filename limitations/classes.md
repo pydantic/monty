@@ -38,9 +38,15 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   parameters (methods are ordinary functions; `self` is the first parameter).
 - Instance attribute get/set (`obj.x`, `obj.x = ...`), including attributes
   not declared in `__init__`.
+- Class attribute assignment (`Foo.x = 1`, `Foo.count += 1`, `setattr(Foo, ...)`),
+  visible to existing instances; a function assigned to a class attribute
+  becomes a method (binds `self` when accessed via an instance).
 - Instance methods, bound methods (`m = obj.method; m()`).
 - Class variables, read via the class (`Foo.count`) or an instance
   (`obj.count`).
+- `obj.__class__` (returns the class object, `obj.__class__ is Foo`),
+  `Foo.__doc__` / `obj.__doc__` (the class docstring, or `None` when absent —
+  stored as a real class-namespace member as in CPython).
 - `__repr__` and `__str__` dispatch (via `repr()`, `str()`, f-strings,
   `print`, and inside container reprs). `str()` falls back to `__repr__`.
 - `type(obj)` returns the class object; `type(obj) is Foo` and
@@ -75,9 +81,18 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   creates a fresh object, so `obj.method == obj.method` is `False` and two
   accesses hash differently. CPython compares/hashes bound methods by
   `(instance, func)`, making separate accesses equal.
-- A user `__str__` returning a non-`str` raises `TypeError: __str__ returned
-  non-string (type X)` (and likewise for `__repr__`); the wording may differ
-  from CPython.
+- **Errors about instances name the type `'object'`**: operator, `len()`,
+  iteration, membership, and context-manager errors render `Type::Instance` as
+  the generic `'object'` rather than the class name — `Foo() + 1` gives
+  `unsupported operand type(s) for +: 'object' and 'int'` where CPython says
+  `'Foo'`. (Attribute errors and `__init__`-contract errors already use the
+  real class name.)
+- **Bound-method `repr`** is the bare `<bound method>`; CPython renders
+  `<bound method Foo.m of <__main__.Foo object at 0x..>>`.
+- **Assigning `Foo.__name__`** stores an ordinary class member: unlike CPython
+  (where `type.__name__` is a metaclass descriptor whose setter renames the
+  class), it does not rename the class, so `Foo.__name__` reads and `repr(Foo)`
+  keep the original name while instances see the member.
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
   has its own scope that skips the class scope, so only the *leftmost iterable*
@@ -106,15 +121,26 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   `__call__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`,
   `__contains__`, `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`,
   `__bool__`, etc. are not dispatched for user-defined instances.
+- Introspection attributes other than `__name__`, `__doc__`, and
+  `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
+  `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit
+  `obj.__repr__()` / `obj.__str__()` calls when the class defines none — all
+  raise `AttributeError`.
 - Class-body statements other than a `def`, a simple `name [: T] = <expr>`
   variable assignment, `pass`, `...`, or a docstring — e.g. `if`/`for`/`while`
   in the class body, or tuple/multiple assignment targets (rejected at parse
   time).
-- Assignment expressions (`:=`) in class-variable values or method parameter
+- Assignment expressions (`:=`) that bind in the class-body scope — in
+  class-variable values, method parameter defaults, and lambda parameter
   defaults (rejected at parse time). In CPython the walrus target becomes a
   class member (`class C: x = (y := 5)` gives `C.y`); Monty's class-namespace
   assembly only records directly-assigned names, so the syntax is reserved
-  rather than silently dropping the binding.
+  rather than silently dropping the binding. A walrus inside a lambda *body*
+  (`f = lambda: (z := 1)`) binds in the lambda's own scope and works. A walrus
+  in a comprehension in the class body is also rejected (CPython rejects that
+  too, but as a `SyntaxError` with different wording). A walrus in an
+  *annotation* (`x: (y := int) = 5`) runs in Monty — annotations are ignored
+  generally — where CPython raises `SyntaxError`.
 - `del obj.attr` (the `del` statement is unsupported generally).
 
 ## `FrozenInstanceError`

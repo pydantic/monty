@@ -313,6 +313,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // (`enclosing_locals`) — but must NOT see sibling methods or class
                 // variables by bare name. So we deliberately omit our own locals
                 // (`assigned_names`/`locals`), which are the class members.
+                // NOTE: both the `free_var_map` union and the `global_names`
+                // retain are defensive: the class body's free vars are names
+                // bound in enclosing scopes (already in `enclosing_locals`), and
+                // `global` statements are rejected in class bodies at parse
+                // time, so `global_names` is always empty. Kept so this arm
+                // stays correct if either parse-time restriction is lifted.
                 let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
@@ -366,14 +372,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
         panic!("free_var '{name_str}' not found in enclosing scope's cell_var_map, free_var_map, or globals");
     }
 
-    /// Safety net for the inner-to-outer scope hand-off when nested function
-    /// preparation discovers a capture that wasn't predicted by scope analysis.
+    /// Inner-to-outer scope hand-off when a just-prepared child scope reports a
+    /// capture that wasn't predicted by scope analysis.
     ///
-    /// With the recursive [`collect_referenced_names_from_node`] pass below,
-    /// every transitively captured name is already known and pre-populated
-    /// in the right map before the body is walked, so this method is
-    /// expected to be a no-op in practice. It still classifies the late
-    /// discovery correctly:
+    /// The recursive [`collect_referenced_names_from_node`] pass below
+    /// pre-populates most transitively captured names before the body is
+    /// walked, but its `ClassDef` arm deliberately collects nothing — so for a
+    /// capture chain that flows through a class body (a method capturing an
+    /// enclosing function's local), this bubble-up is **load-bearing**, not a
+    /// safety net: it is the only mechanism that registers the intermediate
+    /// scopes' cells. It classifies each late discovery:
     ///
     /// - Already a cell or free var here → nothing to do.
     /// - Bound locally (params or body-assigned) → register as a cell var here.
@@ -442,11 +450,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
         param_names: &[StringId],
         position: CodeRange,
     ) -> Result<FinalizedScope, ParseError> {
-        // Bubble-up: each captured name in the child's `free_var_map` must
-        // be backed by a slot in OUR namespace. With the recursive scope
-        // analysis, `cell_var_names` already covers every transitively
-        // captured local of ours, but we keep this loop as a safety net for
-        // names that scope analysis missed.
+        // Bubble-up: each captured name in the child's `free_var_map` must be
+        // backed by a slot in OUR namespace. Recursive scope analysis predicts
+        // most of these via `cell_var_names`, but captures that flow through a
+        // class body are only discovered here (see `bubble_up_captured_name`),
+        // so this loop is required for correctness — do not remove it on the
+        // assumption that scope analysis already covered everything.
         for &captured_name in inner_free_var_map.keys() {
             self.bubble_up_captured_name(captured_name, position)?;
         }
@@ -802,7 +811,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     body,
                     is_async,
                 }) => {
-                    let func = self.prepare_function_def(name, &signature, body, is_async, true)?;
+                    let func = self.prepare_function_def(name, &signature, body, is_async)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
                     // scope, above) must see the pre-binding state.
@@ -1538,24 +1547,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         parsed_sig: &ParsedSignature,
         body: Vec<ParseNode>,
         is_async: bool,
-        register_name: bool,
     ) -> Result<PreparedFunctionDef, ParseError> {
-        // A top-level/nested `def` binds its name in the enclosing scope. A method
-        // (`register_name = false`) does not: its value is stored into the class
-        // namespace rather than an enclosing slot, so — like a lambda — it gets a
-        // synthetic name with a placeholder slot that is never used for a store.
-        // The real `name_id` is preserved either way for repr/tracebacks.
-        let name = if register_name {
-            self.names_assigned_in_order.insert(name.name_id);
-            self.get_id(name)?
-        } else {
-            Identifier::new_with_scope(
-                name.name_id,
-                name.position,
-                NamespaceId::new(0).expect("slot 0 fits in u16"),
-                NameScope::Local,
-            )
-        };
+        // A `def` (top-level, nested, or method — class bodies are function scopes
+        // too) binds its name in the enclosing scope.
+        self.names_assigned_in_order.insert(name.name_id);
+        let name = self.get_id(name)?;
 
         // Extract param names from the parsed signature for scope analysis
         let param_names: Vec<StringId> = parsed_sig.param_names().collect();
