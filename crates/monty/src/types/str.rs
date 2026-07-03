@@ -1955,7 +1955,9 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    let is_utf8 = encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8");
+    let is_utf8 = encoding.eq_ignore_ascii_case("utf-8")
+        || encoding.eq_ignore_ascii_case("utf8")
+        || encoding.eq_ignore_ascii_case("utf_8");
     let is_ascii = encoding.eq_ignore_ascii_case("ascii")
         || encoding.eq_ignore_ascii_case("us-ascii")
         || encoding.eq_ignore_ascii_case("us_ascii");
