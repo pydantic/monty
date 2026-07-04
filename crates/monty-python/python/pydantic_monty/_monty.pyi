@@ -24,6 +24,7 @@ __all__ = [
     'CollectString',
     'Frame',
     'Monty',
+    'MontyConversionError',
     'MontyCrashedError',
     'MontyError',
     'MontyFileHandle',
@@ -145,6 +146,16 @@ class MontyRuntimeError(MontyError):
                   'type-msg' - 'ExceptionType: message' format
                   'msg' - just the message
         """
+
+@final
+class MontyConversionError(MontyError):
+    """Raised when a host value cannot be converted across the Monty/host boundary.
+
+    A value Monty cannot represent — an `external_lookup` entry or an `inputs`
+    value of an unsupported type — rejects the feed with this error rather than
+    crossing into the sandbox. Inherits `exception()` (a native `TypeError`) and
+    `__str__()` (the conversion message) from `MontyError`.
+    """
 
 @final
 class Frame:

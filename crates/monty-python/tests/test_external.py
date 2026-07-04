@@ -553,12 +553,24 @@ def test_external_lookup_absent_name_raises(monty_run: RunMonty):
     assert str(inner) == snapshot("name 'missing' is not defined")
 
 
-def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty):
-    """A non-callable value of an unsupported type surfaces a conversion error,
-    not a misleading NameError."""
-    with pytest.raises(TypeError) as exc_info:
-        monty_run('x', external_lookup={'x': object()})
-    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+@pytest.mark.parametrize(
+    'value, message',
+    [
+        (object(), snapshot('Cannot convert builtins.object to Monty value')),
+        (re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
+        (io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+    ],
+)
+def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty, value: Any, message: str):
+    """A non-callable external_lookup *value* of a type Monty cannot represent
+    rejects the turn host-side. Because external_lookup may hold untrusted
+    values, the conversion failure surfaces as a MontyConversionError (a
+    MontyError), never a misleading NameError."""
+    with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
+        monty_run('x', external_lookup={'x': value})
+    assert isinstance(exc_info.value, pydantic_monty.MontyError)
+    assert str(exc_info.value) == message
+    assert isinstance(exc_info.value.exception(), TypeError)
 
 
 def test_external_lookup_type_object_round_trips(monty_run: RunMonty):
@@ -591,7 +603,7 @@ def test_external_lookup_name_conversion_error_discards_session(session: MontySe
     worker rather than wedging it: the feed raises, and a follow-up feed on the
     same session fails fast instead of hanging on a dangling name-lookup
     suspension the aborted feed never answered."""
-    with pytest.raises(TypeError) as exc_info:
+    with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
         session.feed_run('x', external_lookup={'x': object()})
     assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
     # the worker was discarded, so the session can no longer be fed

@@ -11,7 +11,8 @@
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
 //! ├── MontyRuntimeError        # Raised when code fails during execution
 //! ├── MontyTypingError         # Raised when type checking finds errors in the code
-//! └── MontyCrashedError        # Raised when a worker process dies or times out
+//! ├── MontyCrashedError        # Raised when a worker process dies or times out
+//! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
 
 use std::sync::Arc;
@@ -89,6 +90,53 @@ impl MontyError {
         } else {
             format!("MontyError({exc_type_name})")
         }
+    }
+}
+
+/// Raised when a host value cannot be converted across the Monty/host boundary
+/// — an `external_lookup` value or an `inputs` value of a type Monty cannot
+/// represent. Inherits from `MontyError` (so `except MontyError` catches it) and
+/// carries the "Cannot convert X to Monty value" message; the stored type is
+/// `TypeError`, so `exception()` reconstructs a native `TypeError`.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyConversionError;
+
+impl MontyConversionError {
+    /// Builds a `MontyConversionError` carrying `message`, stored as a
+    /// `TypeError`. Raised via [`Self::value_conversion_err`] for a genuine
+    /// unrepresentable-type failure.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::TypeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self);
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+
+    /// Surfaces a failure from converting a host value into a Monty value
+    /// (`py_to_monty_value`). An unrepresentable *type* (`TypeError`, "Cannot
+    /// convert X to Monty value") becomes a `MontyConversionError`; any other
+    /// exception the converter raises — notably the `RuntimeError` from
+    /// exceeding the max input nesting depth — keeps its own type as a
+    /// `MontyRuntimeError`, so a depth guard is not mislabeled a conversion
+    /// error.
+    #[must_use]
+    pub fn value_conversion_err(py: Python<'_>, exc: MontyException) -> PyErr {
+        if exc.exc_type() == ExcType::TypeError {
+            Self::new_err(py, exc.into_message().unwrap_or_default())
+        } else {
+            MontyError::new_err(py, exc)
+        }
+    }
+}
+
+#[pymethods]
+impl MontyConversionError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyConversionError({})", slf.as_super().message().unwrap_or_default())
     }
 }
 

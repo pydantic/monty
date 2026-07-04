@@ -164,8 +164,13 @@ properties that real CPython does not provide, per the caveat above.
   any *other value* is converted and returned directly, and an absent name
   raises `NameError`. It is the lazy counterpart to the eager `inputs` (a name
   present in both is served by the `inputs` binding, so no lookup fires). A
-  non-callable value that cannot be converted surfaces host-side (a conversion
-  error that rejects the turn), **not** as a misleading `NameError`. The two
+  non-callable value that cannot be converted rejects the turn host-side —
+  because `external_lookup` (and `inputs`) may hold untrusted values, an
+  unrepresentable *type* surfaces as a dedicated `MontyError` subclass (in
+  `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
+  native `TypeError`), **never** as a masquerading `NameError`; other converter
+  failures, such as exceeding the max input nesting depth, keep their own type
+  (`MontyRuntimeError`). The two
   workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
   worker caches it in the namespace slot, so a second reference in the same feed
   does not re-fire `NameLookup` (a later host mutation of the dict entry is not

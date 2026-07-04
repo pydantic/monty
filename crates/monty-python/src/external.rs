@@ -17,7 +17,7 @@ use pyo3::{
 use crate::{
     convert::{monty_to_py, py_to_monty, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::{exc_monty_to_py, exc_py_to_monty},
+    exceptions::{MontyConversionError, exc_py_to_monty},
 };
 
 /// Dispatches a dataclass method call back to the original Python object.
@@ -114,7 +114,10 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     /// Monty models converts to `MontyObject::Type`, not a proxy); a function
     /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
     /// the `FunctionCall` hits the same dict entry. An unconvertible value
-    /// surfaces as a `PyErr` rather than masquerading as `NameError`.
+    /// rejects the turn via [`MontyConversionError::value_conversion_err`] —
+    /// because `external_lookup` may hold untrusted values, an unrepresentable
+    /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
+    /// not a masquerading `NameError`.
     pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);
@@ -122,7 +125,9 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
         let Some(value) = lookup.get_item(name)? else {
             return Ok(None);
         };
-        let obj = match py_to_monty_value(&value, self.dc_registry).map_err(|exc| exc_monty_to_py(self.py, exc))? {
+        let obj = match py_to_monty_value(&value, self.dc_registry)
+            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
+        {
             MontyObject::Function { docstring, .. } => MontyObject::Function {
                 name: name.to_owned(),
                 docstring,

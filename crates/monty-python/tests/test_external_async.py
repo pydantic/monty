@@ -72,7 +72,7 @@ async def test_async_external_lookup_name_conversion_error_discards_session():
     and a follow-up feed on the same session fails fast instead of hanging."""
     async with pydantic_monty.AsyncMonty() as pool:
         async with pool.checkout() as session:
-            with pytest.raises(TypeError) as exc_info:
+            with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
                 await session.feed_run('x', external_lookup={'x': object()})
             assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
             # the worker was discarded, so the session can no longer be fed
