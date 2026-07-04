@@ -126,6 +126,14 @@ class NamedBar:
 assert NamedBar.__name__ == 'NamedBar', 'type.__name__ descriptor shadows the member'
 assert NamedBar().__name__ == 'bar', 'instances see the __name__ member'
 
+# `__name__` is always a plain str, so calling it raises the same TypeError
+# CPython gives for calling any non-callable str, not an AttributeError.
+try:
+    NamedBar.__name__()
+    assert False, 'expected calling __name__ to fail'
+except TypeError as exc:
+    assert str(exc) == "'str' object is not callable", 'calling __name__ reports the str-not-callable TypeError'
+
 # === type-object attribute errors ===
 try:
     Point.nope

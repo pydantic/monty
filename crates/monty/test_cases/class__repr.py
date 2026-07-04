@@ -75,3 +75,21 @@ pl = Plain()
 assert repr(pl).startswith('<Plain object at 0x'), 'default repr includes class name and address'
 assert str(pl) == repr(pl), 'default str falls back to default repr'
 assert type(pl).__name__ == 'Plain', 'default-repr class still has a name'
+
+# === __repr__/__str__ set to an already-bound method: no extra `self` is bound ===
+# `Bar.__repr__` here is a `BoundMethod`, not a plain function, so dispatch must
+# not re-inject `self` (unlike descriptor binding for a plain-function member).
+
+
+class Greeter:
+    def greet(self) -> str:
+        return 'hi'
+
+
+class Bar:
+    __repr__ = Greeter().greet
+    __str__ = Greeter().greet
+
+
+assert repr(Bar()) == 'hi', 'a bound-method __repr__ is called with no extra self argument'
+assert str(Bar()) == 'hi', 'a bound-method __str__ is called with no extra self argument'

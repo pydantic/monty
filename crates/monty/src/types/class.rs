@@ -135,6 +135,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let attr_str = attr.as_str(vm.interns);
+        // `__name__` is a synthesized string, not a namespace member (see
+        // `py_getattr`), so calling it goes through the normal callable
+        // dispatch and raises CPython's `TypeError: 'str' object is not
+        // callable` rather than a spurious `AttributeError`.
+        if attr_str == "__name__" {
+            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
+            let name_val = match allocate_string(name, vm.heap) {
+                Ok(v) => v,
+                Err(e) => {
+                    args.drop_with_heap(vm);
+                    return Err(e.into());
+                }
+            };
+            defer_drop!(name_val, vm);
+            return vm.call_function(name_val, args);
+        }
         // `Foo.method(args)` calls the raw (unbound) member with the given args —
         // no `self` is inserted, the caller passes the instance explicitly.
         let member = self

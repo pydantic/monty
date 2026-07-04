@@ -388,8 +388,16 @@ fn instance_call_str_dunder(
         return Ok(None);
     };
     defer_drop!(func, vm);
-    vm.heap.inc_ref(self_id);
-    let result = vm.evaluate_function(dunder, func, ArgValues::One(Value::Ref(self_id)))?;
+    // Only a plain function binds `self` as a descriptor (CPython's method
+    // lookup protocol, mirrored by `call_member_bound`); an already-bound
+    // method or other callable value is invoked with no extra argument.
+    let args = if is_method_value(func, vm) {
+        vm.heap.inc_ref(self_id);
+        ArgValues::One(Value::Ref(self_id))
+    } else {
+        ArgValues::Empty
+    };
+    let result = vm.evaluate_function(dunder, func, args)?;
     value_into_string(result, dunder, vm).map(Some)
 }
 
