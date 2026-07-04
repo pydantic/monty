@@ -336,8 +336,7 @@ fn parse_ref_counts(s: &str) -> AHashMap<String, usize> {
 }
 
 // Shared CPython-side fixtures (external function implementations for iter
-// mode tests, plus the `_test_cm` synthetic context-manager shim) live in
-// `scripts/test_fixtures.py`. The module is imported once via pyo3
+// mode tests) live in `scripts/test_fixtures.py`. The module is imported once via pyo3
 // (cached in `sys.modules`) and its `exported_globals` dict is merged into
 // each CPython test's globals — see `import_shared_test_globals`.
 
@@ -2213,7 +2212,7 @@ fn try_run_cpython_test(
         let globals = PyDict::new(py);
 
         // Inject the shared CPython-side fixtures (iter-mode external
-        // functions and `_test_cm`) into every test's globals from the
+        // functions) into every test's globals from the
         // single `exported_globals` dict in `test_fixtures.py`. The
         // module is imported once and cached, so this is just an
         // `update()` of a small dict — no re-exec per test.

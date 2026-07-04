@@ -390,10 +390,6 @@ pub enum MontyType {
     Property,
     RePattern,
     ReMatch,
-    /// See the internal `Type::TestContextManager` — only exists under the
-    /// `test-hooks` cargo feature.
-    #[cfg(feature = "test-hooks")]
-    TestContextManager,
 }
 
 impl fmt::Display for MontyType {
@@ -477,8 +473,6 @@ impl MontyType {
             Self::Property => Some(Type::Property),
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager => Some(Type::TestContextManager),
         }
     }
 
@@ -532,8 +526,6 @@ impl MontyType {
             Type::Property => Self::Property,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
-            #[cfg(feature = "test-hooks")]
-            Type::TestContextManager => Self::TestContextManager,
         }
     }
 

@@ -1009,6 +1009,17 @@ fn dispatch_dunder<T: ResourceTracker>(
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = StaticStrings::from_string_id(name_id)?;
+    // User-defined instances are never intercepted: an explicit
+    // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
+    // ordinary method call in CPython — the instance `__dict__` can shadow
+    // the class method and the arguments must reach the user function
+    // verbatim (the trait hooks reduce them to an `Option<HeapId>`, which
+    // is lossy). The `with` statement still uses the trait hooks via the
+    // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
+    // CPython type-level (class-only) lookup.
+    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
+        return None;
+    }
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");

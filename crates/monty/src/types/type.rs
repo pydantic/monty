@@ -129,13 +129,6 @@ pub enum Type {
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     #[strum(serialize = "re.Match")]
     ReMatch,
-    /// Synthetic context manager exposed via the `_test_cm` builtin. Only
-    /// reachable under the `test-hooks` cargo feature; intentionally a
-    /// distinct `Type` variant rather than one of the existing ones so a
-    /// production sandbox can't get confused with it via stale snapshots.
-    #[cfg(feature = "test-hooks")]
-    #[strum(serialize = "_test_cm")]
-    TestContextManager,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

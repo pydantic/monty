@@ -343,9 +343,15 @@ pub trait PyTrait<'h> {
     /// Default is `false`; types implementing the protocol override this
     /// alongside [`py_enter`] / [`py_exit`].
     ///
+    /// Takes `&VM` (not just the heap) because user-defined instances resolve
+    /// the check against their class namespace, which needs both heap and
+    /// interns access. Mirroring CPython, the check is for `__exit__` — the
+    /// dunder CPython's own protocol error names first — while a missing
+    /// `__enter__` is reported by [`py_enter`] itself.
+    ///
     /// [`py_enter`]: PyTrait::py_enter
     /// [`py_exit`]: PyTrait::py_exit
-    fn py_is_context_manager(&self) -> bool {
+    fn py_is_context_manager(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
         false
     }
 

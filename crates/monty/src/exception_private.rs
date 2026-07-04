@@ -897,6 +897,25 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
+    /// Creates the TypeError raised when a `with` statement's context expression
+    /// does not implement the context-manager protocol.
+    ///
+    /// Matches CPython 3.14's wording, which names the specific missing dunder:
+    /// `__exit__` when the protocol check fails outright (`BeforeWith`'s
+    /// [`py_is_context_manager`](crate::types::PyTrait::py_is_context_manager)
+    /// gate), `__enter__` when a user class defines `__exit__` but not
+    /// `__enter__`.
+    #[must_use]
+    pub(crate) fn type_error_not_context_manager(type_name: impl Display, missing_dunder: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!(
+                "'{type_name}' object does not support the context manager protocol (missed {missing_dunder} method)"
+            ),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for `__init__` returning a value other than `None`.
     ///
     /// Matches CPython's format: `TypeError: __init__() should return None, not '{type}'`

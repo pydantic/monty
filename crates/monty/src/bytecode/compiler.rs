@@ -3649,6 +3649,16 @@ impl<'a> Compiler<'a> {
         // Evaluate context expr and invoke __enter__.
         self.compile_expr(context)?;
         self.code.emit(Opcode::BeforeWith)?;
+        // Padding between `BeforeWith` and the protected region. A user-class
+        // `__enter__` runs as a *pushed frame*; an exception escaping that
+        // frame is attributed to the parent frame's resume point — the
+        // instruction after `BeforeWith` (see `pop_frame`). That offset must
+        // sit OUTSIDE the exception-table entry, or a failing `__enter__`
+        // would incorrectly invoke `__exit__` (CPython only protects the body
+        // once `__enter__` has returned). The Nop keeps the resume point
+        // outside the region while the unpack/Pop that follows stays inside,
+        // so `with cm as (a, b):` unpack failures still call `__exit__`.
+        self.code.emit(Opcode::Nop)?;
 
         // Track early exits inside the body so we can call __exit__ before
         // they propagate. Mirrors the FinallyTarget push in `compile_try`.

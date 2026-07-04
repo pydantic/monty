@@ -10,7 +10,8 @@ use ahash::AHashSet;
 
 use super::{Dict, PyTrait, Type};
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
+    builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
@@ -155,12 +156,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         let class_id = self.get(vm.heap).class;
         if let Some(member) = class_member(class_id, attr_str, vm) {
             defer_drop!(member, vm);
-            return if is_method_value(member, vm) {
-                vm.heap.inc_ref(self_id);
-                vm.call_function(member, args.prepend(Value::Ref(self_id)))
-            } else {
-                vm.call_function(member, args)
-            };
+            return call_member_bound(member, self_id, args, vm);
         }
 
         // 3. No such attribute.
@@ -169,6 +165,80 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
             class_name(class_id, vm.heap, vm.interns),
             attr_str,
         ))
+    }
+
+    fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
+        // CPython names `__exit__` in the protocol TypeError, so that is the
+        // dunder the `BeforeWith` gate checks; a class with `__exit__` but no
+        // `__enter__` passes the gate and gets the "missed __enter__ method"
+        // error from `py_enter` instead — matching CPython's check order.
+        // Special-method lookup goes through the class only, never the
+        // instance `__dict__` (CPython looks these up on the type).
+        let class_id = self.get(vm.heap).class;
+        match vm.heap.get(class_id) {
+            HeapData::Class(class) => class.namespace().get_by_str("__exit__", vm.heap, vm.interns).is_some(),
+            _ => false,
+        }
+    }
+
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+        let class_id = self.get(vm.heap).class;
+        let Some(enter) = class_member(class_id, "__enter__", vm) else {
+            return Err(ExcType::type_error_not_context_manager(
+                class_name(class_id, vm.heap, vm.interns),
+                "__enter__",
+            ));
+        };
+        defer_drop!(enter, vm);
+        // A plain-function `__enter__` runs as a real pushed frame
+        // (`CallResult::FramePushed`), so — unlike `__repr__`/`__str__` — it
+        // can suspend on external/OS calls; the frame's return value becomes
+        // the `as` target via the normal `ReturnValue` push.
+        call_member_bound(enter, self_id, ArgValues::Empty, vm)
+    }
+
+    fn py_exit(
+        &mut self,
+        self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        exc: Option<HeapId>,
+    ) -> RunResult<CallResult> {
+        let class_id = self.get(vm.heap).class;
+        let Some(exit) = class_member(class_id, "__exit__", vm) else {
+            // Unreachable via `with` in practice (`py_is_context_manager` gates
+            // on `__exit__`), but the class namespace is mutable during the
+            // body, so a reassigned-away `__exit__` surfaces the same
+            // AttributeError CPython's failed lookup would.
+            return Err(ExcType::attribute_error(
+                class_name(class_id, vm.heap, vm.interns),
+                "__exit__",
+            ));
+        };
+        defer_drop!(exit, vm);
+        // Build CPython's `(exc_type, exc_value, traceback)` triple. The type
+        // is constructed as `Builtins::ExcType` — the same value the bare
+        // exception name resolves to — so the idiomatic `if typ is ValueError:`
+        // works inside a user `__exit__`. Monty has no traceback objects, so
+        // the third slot is always `None` (see limitations/with.md).
+        let (typ, val) = match exc {
+            Some(exc_id) => {
+                let HeapData::Exception(e) = vm.heap.get(exc_id) else {
+                    // Instances only receive `Some(exc)` from `WithExceptStart`,
+                    // which always passes the in-flight exception object
+                    // (explicit `obj.__exit__(...)` calls go through normal
+                    // method dispatch, never this trait hook).
+                    unreachable!("Instance py_exit called with a non-exception heap id");
+                };
+                vm.heap.inc_ref(exc_id);
+                (Value::Builtin(Builtins::ExcType(e.exc_type())), Value::Ref(exc_id))
+            }
+            None => (Value::None, Value::None),
+        };
+        let args = ArgValues::ArgsKargs {
+            args: vec![typ, val, Value::None],
+            kwargs: KwargsValues::Empty,
+        };
+        call_member_bound(exit, self_id, args, vm)
     }
 }
 
@@ -404,6 +474,25 @@ pub(crate) fn class_name<'i>(
             EitherStr::Heap(s) => Cow::Owned(s.clone()),
         },
         _ => unreachable!("class_name called with a non-class heap id"),
+    }
+}
+
+/// Calls a class member with CPython's descriptor-binding semantics: a
+/// plain user-defined function binds `self` (prepended to `args`), while any
+/// other callable value is called as-is. Shared by `py_call_attr` and the
+/// context-manager hooks (`py_enter`/`py_exit`) so dunder invocation and
+/// ordinary method calls dispatch identically.
+fn call_member_bound(
+    member: &Value,
+    self_id: HeapId,
+    args: ArgValues,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<CallResult> {
+    if is_method_value(member, vm) {
+        vm.heap.inc_ref(self_id);
+        vm.call_function(member, args.prepend(Value::Ref(self_id)))
+    } else {
+        vm.call_function(member, args)
     }
 }
 

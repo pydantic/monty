@@ -49,6 +49,12 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   stored as a real class-namespace member as in CPython).
 - `__repr__` and `__str__` dispatch (via `repr()`, `str()`, f-strings,
   `print`, and inside container reprs). `str()` falls back to `__repr__`.
+- `__enter__` / `__exit__` dispatch — instances of classes defining both
+  work as `with` context managers, with CPython's protocol checks, error
+  wording, and suppress semantics. They run as real frames and so *can*
+  suspend on external/OS calls (unlike `__repr__`/`__str__`). Divergences
+  (always-`None` traceback argument, exit-time `__exit__` lookup) are
+  documented in [with.md](with.md).
 - `type(obj)` returns the class object; `type(obj) is Foo` and
   `isinstance(obj, Foo)` work.
 - `Foo.__name__`.
@@ -134,10 +140,11 @@ order and error wording, but with these divergences:
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - `@classmethod`, `@staticmethod`, `@property`, and any other class/method
   decorators (rejected at parse time).
-- Dunder protocols other than `__init__`, `__repr__`, `__str__`: `__new__`,
-  `__call__`, `__iter__`, `__next__`, `__getitem__`, `__setitem__`,
-  `__contains__`, `__enter__`, `__exit__`, `__add__`, `__eq__`, `__hash__`,
-  `__bool__`, etc. are not dispatched for user-defined instances.
+- Dunder protocols other than `__init__`, `__repr__`, `__str__`,
+  `__enter__`, and `__exit__`: `__new__`, `__call__`, `__iter__`,
+  `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,
+  `__eq__`, `__hash__`, `__bool__`, etc. are not dispatched for
+  user-defined instances.
 - Introspection attributes other than `__name__`, `__doc__`, and
   `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
   `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit

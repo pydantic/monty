@@ -589,7 +589,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         }
     }
 
-    fn py_is_context_manager(&self) -> bool {
+    fn py_is_context_manager(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
         true
     }
 
