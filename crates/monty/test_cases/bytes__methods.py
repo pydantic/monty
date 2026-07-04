@@ -460,6 +460,43 @@ except UnicodeDecodeError as e:
         f'decode ascii strict single-byte bytes: {e}'
     )
 
+# surrogatepass only special-cases surrogate sequences in the UTF codecs, so
+# with the ascii codec it re-raises exactly like strict.
+assert b'hello'.decode('ascii', 'surrogatepass') == 'hello', 'unused surrogatepass handler'
+try:
+    b'h\xe9llo'.decode('ascii', 'surrogatepass')
+    assert False, 'decode ascii surrogatepass of non-ascii bytes should error'
+except UnicodeDecodeError as e:
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 1: ordinal not in range(128)", (
+        f'decode ascii surrogatepass behaves like strict: {e}'
+    )
+
+# xmlcharrefreplace/namereplace are encode-only handlers: unused they pass
+# (lazy lookup), but a bad byte triggers CPython's callback TypeError.
+assert b'hello'.decode('ascii', 'xmlcharrefreplace') == 'hello', 'unused xmlcharrefreplace handler'
+assert b'hello'.decode('ascii', 'namereplace') == 'hello', 'unused namereplace handler'
+try:
+    b'h\xe9llo'.decode('ascii', 'xmlcharrefreplace')
+    assert False, 'decode ascii xmlcharrefreplace of non-ascii bytes should error'
+except TypeError as e:
+    assert str(e) == "don't know how to handle UnicodeDecodeError in error callback", (
+        f'decode ascii xmlcharrefreplace callback error: {e}'
+    )
+try:
+    b'h\xe9llo'.decode('ascii', 'namereplace')
+    assert False, 'decode ascii namereplace of non-ascii bytes should error'
+except TypeError as e:
+    assert str(e) == "don't know how to handle UnicodeDecodeError in error callback", (
+        f'decode ascii namereplace callback error: {e}'
+    )
+
+# surrogateescape passes unused (lazy lookup, like CPython); a bad byte raises
+# NotImplementedError in Monty — CPython would produce a lone surrogate, which
+# Monty strings cannot represent. The divergent-error path is covered by a
+# Rust-side regression test (`crates/monty/tests/main.rs`) since this suite
+# also runs under CPython.
+assert b'hello'.decode('ascii', 'surrogateescape') == 'hello', 'unused surrogateescape handler'
+
 # Like CPython, an unknown error handler name is only looked up if it's actually needed.
 assert b'hello'.decode('ascii', 'bogus') == 'hello', 'unused error handler name is never validated'
 try:

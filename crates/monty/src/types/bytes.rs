@@ -503,8 +503,8 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
 ///
 /// Converts bytes to a string. Supports UTF-8 (`errors` is accepted for
 /// parity but ignored on invalid bytes — see `limitations/encoding.md`) and
-/// ASCII (with full `strict`/`ignore`/`replace`/`backslashreplace` handling
-/// of bytes >= 0x80 via [`decode_ascii`]).
+/// ASCII (handling bytes >= 0x80 with CPython's built-in error handlers via
+/// [`decode_ascii`]).
 fn bytes_decode<'h>(
     bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
@@ -542,6 +542,15 @@ fn bytes_decode<'h>(
 /// lazy `codecs.lookup_error` — an unrecognized `errors` value is silently
 /// accepted if the bytes turn out to be all-ASCII.
 ///
+/// CPython's built-in handlers behave as follows here: `ignore`, `replace`,
+/// and `backslashreplace` substitute; `strict` and `surrogatepass` raise
+/// `UnicodeDecodeError` (with the ASCII codec, `surrogatepass` only
+/// special-cases surrogate byte sequences in UTF codecs, so it re-raises like
+/// `strict`, matching CPython); the encode-only `xmlcharrefreplace` /
+/// `namereplace` raise CPython's callback `TypeError`. `surrogateescape`
+/// would produce lone surrogates, which Monty strings cannot represent, so
+/// it raises `NotImplementedError` — see `limitations/encoding.md`.
+///
 /// The output is bounded by a small constant multiple of `bytes.len()` (at
 /// most 4 bytes per input byte for `backslashreplace`'s `\xNN` form). This
 /// avoids unbounded amplification, though the temporary accumulator is still
@@ -557,7 +566,9 @@ fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
             "ignore" => {}
             "replace" => result.push('\u{FFFD}'),
             "backslashreplace" => write!(result, "\\x{byte:02x}").expect("String writes are infallible"),
-            "strict" => return Err(ExcType::unicode_decode_error_ascii(byte, idx)),
+            "strict" | "surrogatepass" => return Err(ExcType::unicode_decode_error_ascii(byte, idx)),
+            "xmlcharrefreplace" | "namereplace" => return Err(ExcType::type_error_decode_error_callback()),
+            "surrogateescape" => return Err(ExcType::not_implemented_surrogateescape_decode()),
             _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
         }
     }

@@ -13,31 +13,26 @@ names CPython recognizes (`latin-1`, `utf-16`, `cp1252`, `iso-8859-1`, ...).
 
 ## Error handlers
 
-`strict`, `ignore`, `replace`, and `backslashreplace` are supported for
-`str.encode('ascii', errors=...)` and `bytes.decode('ascii', errors=...)`,
-matching CPython's per-character/per-byte behavior.
-
-For the `utf-8` codec:
-- `str.encode('utf-8', errors=...)` — `errors` is accepted but never
-  consulted, since a Monty `str` is always already valid UTF-8; there is
-  nothing for any handler to do.
-- `bytes.decode('utf-8', errors=...)` — **`errors` is accepted but ignored
-  on invalid UTF-8 bytes; decoding always behaves as `strict`; raising
-  `UnicodeDecodeError` regardless of the requested handler.** The error
-  message is Monty's generic invalid-UTF-8 wording rather than CPython's
-  byte-and-position-specific message. CPython's
-  `ignore`/`replace`/`backslashreplace` handlers for invalid UTF-8 are not
-  implemented.
-
-As in CPython, an unrecognized `errors` value is only looked up (and raises
-`LookupError: unknown error handler name '{name}'`) if a character/byte
-actually needs handling — `'hello'.encode('ascii', 'bogus')` succeeds
-because there's nothing for the (invalid) handler to do.
+- `bytes.decode('ascii', errors='surrogateescape')` raises
+  `NotImplementedError` when a byte actually needs handling: CPython maps
+  undecodable bytes to lone surrogates (U+DC80–U+DCFF), which Monty's
+  strict-UTF-8 strings cannot contain. All other built-in handlers behave
+  as in CPython.
+- `namereplace` output for recently-added code points is subject to the
+  Unicode version skew described in [unicodedata.md](unicodedata.md).
+- Custom handlers registered via `codecs.register_error` do not exist
+  (there is no `codecs` module); any name outside the built-in set raises
+  `LookupError: unknown error handler name '{name}'`.
+- `bytes.decode('utf-8', errors=...)` — `errors` is ignored on invalid
+  UTF-8 bytes; decoding always behaves as `strict`, raising
+  `UnicodeDecodeError` regardless of the requested handler (where CPython
+  would apply the handler, or raise `LookupError` for an unknown name),
+  and with Monty's generic invalid-UTF-8 wording rather than CPython's
+  byte-and-position-specific message.
 
 ## `UnicodeEncodeError` / `UnicodeDecodeError`
 
 Both are message-only, like every other Monty exception — see
 [exceptions.md](exceptions.md#constructor-signature). CPython's
-`encoding`/`object`/`start`/`end`/`reason` attributes are not exposed.
-For ASCII encode/decode errors, `str(exc)` (the formatted message) matches
-CPython. Invalid UTF-8 decode errors use the generic message noted above.
+`encoding`/`object`/`start`/`end`/`reason` attributes are not exposed, and
+invalid UTF-8 decode errors use the generic message noted above.

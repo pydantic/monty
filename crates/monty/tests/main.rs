@@ -54,6 +54,31 @@ fn dataclass_method_call_in_standard_mode_errors() {
     );
 }
 
+/// Test that `bytes.decode(..., errors='surrogateescape')` on undecodable
+/// bytes raises Monty's dedicated `NotImplementedError`.
+///
+/// CPython's `surrogateescape` handler produces lone surrogates, which Monty
+/// strings (strict UTF-8) cannot represent, so Monty raises instead (see
+/// `limitations/encoding.md`). CPython succeeds here, so the comparative
+/// Python test-case suite cannot cover this divergence.
+#[test]
+fn decode_surrogateescape_reports_not_implemented() {
+    let ex = MontyRun::new(
+        "b'h\\xe9'.decode('ascii', 'surrogateescape')".to_owned(),
+        "test.py",
+        vec![],
+    )
+    .unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @r#"
+    Traceback (most recent call last):
+      File "test.py", line 1, in <module>
+        b'h\xe9'.decode('ascii', 'surrogateescape')
+        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    NotImplementedError: the 'surrogateescape' error handler is not supported by Monty for decoding: Monty strings cannot contain the lone surrogate characters it produces
+    "#);
+}
+
 /// Test that subscript augmented matrix multiplication reports the dedicated
 /// unsupported-operation compile error.
 ///

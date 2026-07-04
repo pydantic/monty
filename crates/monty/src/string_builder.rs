@@ -86,7 +86,7 @@ pub struct StringBuilder<'t, T: ResourceTracker> {
     reserved: usize,
     /// Tracker error captured during a [`fmt::Write`] call. `fmt::Error` is
     /// payload-free, so we stash the real error here and surface it via
-    /// [`finish`](Self::finish) or [`take_error`](Self::take_error). Direct
+    /// [`finish`](Self::finish) or [`finish_raw`](Self::finish_raw). Direct
     /// callers of [`push`](Self::push) / [`push_str`](Self::push_str) never
     /// set this — they receive the [`ResourceError`] in the return value.
     pending_error: Option<ResourceError>,
@@ -154,6 +154,23 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
         }
         self.release();
         Ok(allocate_string(mem::take(&mut self.inner), heap)?)
+    }
+
+    /// Consumes the builder and returns the raw `String`, releasing the
+    /// tracker reservation. Like [`finish`](Self::finish), a stashed
+    /// [`fmt::Write`] tracker error is surfaced here.
+    ///
+    /// The result is **not** re-tracked — the caller must immediately hand it
+    /// to a tracked allocation (e.g. `Heap::allocate` for a `bytes` object
+    /// built via `String::into_bytes`) so the final size is counted exactly
+    /// once, mirroring `finish`'s handoff to `allocate_string`.
+    pub fn finish_raw(mut self) -> RunResult<String> {
+        if let Some(e) = self.pending_error.take() {
+            // The reservation is released by Drop, as in `finish`.
+            return Err(e.into());
+        }
+        self.release();
+        Ok(mem::take(&mut self.inner))
     }
 
     fn ensure(&mut self, needed: usize) -> Result<(), ResourceError> {

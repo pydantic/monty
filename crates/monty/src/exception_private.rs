@@ -1548,6 +1548,36 @@ impl ExcType {
         SimpleException::new_msg(Self::LookupError, format!("unknown error handler name '{name}'")).into()
     }
 
+    /// Creates a TypeError for an encode-only error handler (`xmlcharrefreplace`,
+    /// `namereplace`) invoked for a decode error.
+    ///
+    /// Matches CPython's format: `TypeError: don't know how to handle
+    /// UnicodeDecodeError in error callback`
+    #[must_use]
+    pub(crate) fn type_error_decode_error_callback() -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            "don't know how to handle UnicodeDecodeError in error callback",
+        )
+        .into()
+    }
+
+    /// Creates a NotImplementedError for `bytes.decode(..., errors='surrogateescape')`.
+    ///
+    /// CPython's `surrogateescape` maps undecodable bytes to lone surrogates
+    /// (U+DC80–U+DCFF) in the resulting string. Monty strings are strict UTF-8
+    /// and cannot represent lone surrogates, so the handler cannot be
+    /// supported — see `limitations/encoding.md`.
+    #[must_use]
+    pub(crate) fn not_implemented_surrogateescape_decode() -> RunError {
+        SimpleException::new_msg(
+            Self::NotImplementedError,
+            "the 'surrogateescape' error handler is not supported by Monty for decoding: \
+             Monty strings cannot contain the lone surrogate characters it produces",
+        )
+        .into()
+    }
+
     /// Creates a `re.PatternError` for an invalid regex pattern or unsupported regex feature.
     ///
     /// Matches CPython's exception type: `re.PatternError: {message}`

@@ -1946,8 +1946,8 @@ struct ExpandtabsArgs {
 ///
 /// Returns an encoded version of the string as a bytes object. Supports
 /// UTF-8 (the native encoding for Rust strings, so `errors` never triggers)
-/// and ASCII (with full `strict`/`ignore`/`replace`/`backslashreplace` handling
-/// of non-ASCII characters via [`encode_ascii`]).
+/// and ASCII (handling non-ASCII characters with all of CPython's built-in
+/// error handlers via [`encode_ascii`]).
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     defer_drop!(encoding, vm);
@@ -1971,7 +1971,7 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let bytes = if is_utf8 {
         s.get(vm.heap).as_bytes().to_vec()
     } else {
-        encode_ascii(s.get(vm.heap), errors)?
+        encode_ascii(s.get(vm.heap), errors, vm.heap.tracker())?
     };
 
     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
@@ -1983,40 +1983,47 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
 /// matching CPython's lazy `codecs.lookup_error` - an unrecognized `errors`
 /// value is silently accepted if the string turns out to be all-ASCII.
 ///
-/// Builds into a `String` rather than a `Vec<u8>` — every byte pushed (ASCII
-/// input, `?`, or a `\xNN`/`\uNNNN`/`\UNNNNNNNN` escape) is itself valid
-/// ASCII, so the accumulator is always valid UTF-8 and `into_bytes()` at the
-/// end is free. This also lets `backslashreplace` escape a character with a
-/// single `write!` instead of two intermediate heap allocations.
+/// All of CPython's built-in handlers are covered: `ignore`, `replace`,
+/// `backslashreplace`, `xmlcharrefreplace`, and `namereplace` substitute,
+/// while `strict`, `surrogateescape`, and `surrogatepass` raise
+/// `UnicodeEncodeError` — the latter two only special-case lone surrogates,
+/// which a Monty string (strict UTF-8) can never contain, so with the ASCII
+/// codec they re-raise exactly like `strict`, matching CPython.
 ///
-/// The output is bounded by a small constant multiple of `s.len()` (at most
-/// 10 bytes per input character for `backslashreplace`'s `\Uxxxxxxxx` form).
-/// This avoids unbounded amplification, though the temporary accumulator is
-/// still allocated outside the heap tracker until the final bytes object is
-/// allocated.
-fn encode_ascii(s: &str, errors: &str) -> RunResult<Vec<u8>> {
-    let mut out = String::with_capacity(s.len());
+/// Builds into a tracker-protected [`StringBuilder`] rather than a `Vec<u8>` —
+/// every byte pushed is itself valid ASCII, so the accumulator is always valid
+/// UTF-8 and `into_bytes()` at the end is free. The tracking matters because
+/// `namereplace` amplifies a single character into up to ~90 bytes
+/// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
+/// far past the memory limit before the final allocation was checked.
+fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+    let mut out = StringBuilder::with_capacity(s.len(), tracker)?;
     let mut chars = s.chars().enumerate().peekable();
     while let Some((idx, c)) = chars.next() {
         if c.is_ascii() {
-            out.push(c);
+            out.push(c)?;
             continue;
         }
         match errors {
             "ignore" => {}
-            "replace" => out.push('?'),
+            "replace" => out.push('?')?,
+            // A failed `write!` stashes the tracker error on the builder and
+            // short-circuits later writes; `finish_raw` below surfaces it.
             "backslashreplace" => {
-                let code = c as u32;
-                let result = if code <= 0xFF {
-                    write!(out, "\\x{code:02x}")
-                } else if code <= 0xFFFF {
-                    write!(out, "\\u{code:04x}")
-                } else {
-                    write!(out, "\\U{code:08x}")
-                };
-                result.expect("writing to a String is infallible");
+                let _ = write_backslash_escape(&mut out, c);
             }
-            "strict" => {
+            "xmlcharrefreplace" => {
+                let _ = write!(out, "&#{};", c as u32);
+            }
+            "namereplace" => {
+                // Characters without a Unicode name (e.g. C1 controls) fall
+                // back to backslash escapes, matching CPython.
+                let _ = match unicode_names2::name(c) {
+                    Some(name) => write!(out, "\\N{{{name}}}"),
+                    None => write_backslash_escape(&mut out, c),
+                };
+            }
+            "strict" | "surrogateescape" | "surrogatepass" => {
                 // CPython reports a single position for a lone bad character,
                 // but merges a contiguous run of unencodable characters into
                 // one `position start-end` range.
@@ -2033,7 +2040,22 @@ fn encode_ascii(s: &str, errors: &str) -> RunResult<Vec<u8>> {
             _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
         }
     }
-    Ok(out.into_bytes())
+    Ok(out.finish_raw()?.into_bytes())
+}
+
+/// Writes the `backslashreplace` escape for a non-ASCII character: `\xNN` for
+/// codepoints <= 0xFF, `\uNNNN` up to the BMP, `\UNNNNNNNN` beyond. Shared by
+/// the `backslashreplace` handler and `namereplace`'s unnamed-character
+/// fallback in [`encode_ascii`].
+fn write_backslash_escape(out: &mut impl fmt::Write, c: char) -> fmt::Result {
+    let code = c as u32;
+    if code <= 0xFF {
+        write!(out, "\\x{code:02x}")
+    } else if code <= 0xFFFF {
+        write!(out, "\\u{code:04x}")
+    } else {
+        write!(out, "\\U{code:08x}")
+    }
 }
 
 /// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.

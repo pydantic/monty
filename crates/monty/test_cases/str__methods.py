@@ -362,6 +362,43 @@ except UnicodeEncodeError as e:
         f'encode ascii strict single-char string: {e}'
     )
 
+# xmlcharrefreplace substitutes decimal XML character references.
+assert 'héllo ⚡'.encode('ascii', 'xmlcharrefreplace') == b'h&#233;llo &#9889;', (
+    'encode ascii xmlcharrefreplace uses decimal character references'
+)
+assert 'a\U0001f600b'.encode('ascii', 'xmlcharrefreplace') == b'a&#128512;b', (
+    'encode ascii xmlcharrefreplace handles non-BMP chars'
+)
+# namereplace substitutes \N{...} escapes, falling back to backslash escapes
+# for characters with no Unicode name (e.g. C1 controls).
+assert (
+    'héllo ⚡'.encode('ascii', 'namereplace') == b'h\\N{LATIN SMALL LETTER E WITH ACUTE}llo \\N{HIGH VOLTAGE SIGN}'
+), 'encode ascii namereplace uses unicode name escapes'
+assert '一'.encode('ascii', 'namereplace') == b'\\N{CJK UNIFIED IDEOGRAPH-4E00}', (
+    'encode ascii namereplace handles algorithmic CJK names'
+)
+assert 'a\x80\x9fb'.encode('ascii', 'namereplace') == b'a\\x80\\x9fb', (
+    'encode ascii namereplace falls back to backslash escapes for unnamed chars'
+)
+# surrogateescape/surrogatepass only special-case lone surrogates, which a
+# valid str can never contain here, so they re-raise exactly like strict.
+assert 'hello'.encode('ascii', 'surrogateescape') == b'hello', 'unused surrogateescape handler'
+assert 'hello'.encode('ascii', 'surrogatepass') == b'hello', 'unused surrogatepass handler'
+try:
+    'héllo'.encode('ascii', 'surrogateescape')
+    assert False, 'encode ascii surrogateescape of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii surrogateescape behaves like strict: {e}'
+    )
+try:
+    'héllo'.encode('ascii', 'surrogatepass')
+    assert False, 'encode ascii surrogatepass of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii surrogatepass behaves like strict: {e}'
+    )
+
 # Like CPython, an unknown error handler name is only looked up if it's actually needed.
 assert 'hello'.encode('ascii', 'bogus') == b'hello', 'unused error handler name is never validated'
 try:
