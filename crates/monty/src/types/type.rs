@@ -1,3 +1,5 @@
+use std::fmt;
+
 use num_bigint::BigInt;
 
 use crate::{
@@ -23,7 +25,16 @@ use crate::{
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumIter, strum::IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumString,
+    strum::IntoStaticStr,
 )]
 #[strum(serialize_all = "lowercase")]
 #[expect(
@@ -76,6 +87,13 @@ pub enum Type {
     /// boundary enum `MontyType` carries the resolved name as a `String`).
     #[strum(disabled)]
     Instance(HeapId),
+    /// Exception types render/parse via `ExcType`'s own strum name
+    /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
+    /// `#[strum(disabled)]`: every strum consumer (`Display`, [`Type::name`],
+    /// [`Type::from_type_name`]) peels `Exception` off explicitly, and
+    /// enabling it would make `EnumString` accept the meaningless
+    /// `"exception"`.
+    #[strum(disabled)]
     Exception(ExcType),
     Function,
     #[strum(serialize = "builtin_function_or_method")]
@@ -120,41 +138,44 @@ pub enum Type {
     TestContextManager,
 }
 
-impl Type {
-    /// Canonical static name of every non-[`Instance`](Self::Instance) variant —
-    /// the single name table backing [`Type::name`] and `MontyType`'s `Display`.
-    ///
-    /// The names live on the enum via the `IntoStaticStr` derive
-    /// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
-    /// the two dynamic cases are handled here: `Exception` delegates to
-    /// `ExcType`'s own strum name, and `Instance` renders as `"object"` as a
-    /// defensive fallback — callers with heap access resolve the real class
-    /// name via [`Type::name`], and the boundaries where no heap exists
-    /// (`Builtins::Type`, `MontyObject`, the wire protocol) can never hold an
-    /// `Instance`, so the `debug_assert` catches regressions while crafted
-    /// snapshot data stays panic-free.
-    #[must_use]
-    pub(crate) fn static_name(self) -> &'static str {
-        match self {
+/// Writes the canonical static name of every non-[`Instance`](Type::Instance)
+/// variant — the single name table backing [`Type::name`] and `MontyType`'s
+/// `Display`.
+///
+/// The names live on the enum via the `IntoStaticStr` derive
+/// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
+/// `Exception` delegates to `ExcType`'s own strum name.
+///
+/// # Panics
+/// On `Instance`, which has no static name — callers with heap access must
+/// resolve the real class name via [`Type::name`]. Well-formed data never
+/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
+/// the wire protocol), so this is a programmer-error tripwire. A crafted
+/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
+/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
+/// heap access.
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match *self {
             Self::Exception(exc_type) => exc_type.into(),
-            Self::Instance(_) => {
-                debug_assert!(false, "Type::Instance must be rendered via Type::name");
-                "object"
-            }
+            Self::Instance(_) => unreachable!("Type::Instance must be rendered via Type::name"),
             other => other.into(),
-        }
+        })
     }
+}
 
+impl Type {
     /// The Python-visible name of this type: the real class name for
-    /// [`Instance`](Self::Instance), [`static_name`](Self::static_name)
-    /// otherwise — the primary way to render a `Type` in error messages and
-    /// reprs. The returned slice borrows only `interns` (never the heap), so
-    /// it can be captured before heap-mutating cleanup (`drop_with_heap`) at
-    /// error sites and formatted after.
+    /// [`Instance`](Self::Instance), the static `Display` name otherwise —
+    /// the primary way to render a `Type` in error messages and reprs. The
+    /// returned slice borrows only `interns` (never the heap), so it can be
+    /// captured before heap-mutating cleanup (`drop_with_heap`) at error
+    /// sites and formatted after.
     pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
         match self {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
-            other => other.static_name(),
+            Self::Exception(exc_type) => exc_type.into(),
+            other => other.into(),
         }
     }
 
@@ -228,66 +249,27 @@ impl Type {
         }
     }
 
-    /// The inverse of [`Type::static_name`]: resolves any string it produces
-    /// back to the `Type`, including internal names (`"iterator"`,
+    /// The inverse of `Display`: resolves any string it produces back to the
+    /// `Type`, including internal names (`"iterator"`,
     /// `"_io.TextIOWrapper"`, ...) and exception types.
     ///
     /// Unlike [`Type::from_builtin_name`] this is NOT restricted to nameable
     /// builtins — it exists for boundaries that serialize a type by its
     /// display name (e.g. the subprocess wire protocol) and must round-trip
-    /// every variant. [`Instance`](Self::Instance) is intentionally excluded
-    /// (`"object"` returns `None`): its `HeapId` payload cannot be
-    /// reconstructed from a name, and no boundary may carry it. Keep in
-    /// lockstep with `static_name`; the round-trip is enforced by a test over
-    /// all variants.
+    /// every variant; the round-trip is enforced by a test over all variants.
+    /// [`Instance`](Self::Instance) is intentionally excluded (`"object"`
+    /// returns `None`): its `HeapId` payload cannot be reconstructed from a
+    /// name, and no boundary may carry it.
     #[must_use]
     pub(crate) fn from_type_name(name: &str) -> Option<Self> {
-        match name {
-            "ellipsis" => Some(Self::Ellipsis),
-            "type" => Some(Self::Type),
-            "NoneType" => Some(Self::NoneType),
-            "bool" => Some(Self::Bool),
-            "int" => Some(Self::Int),
-            "float" => Some(Self::Float),
-            "range" => Some(Self::Range),
-            "slice" => Some(Self::Slice),
-            "date" => Some(Self::Date),
-            "datetime.datetime" => Some(Self::DateTime),
-            "timedelta" => Some(Self::TimeDelta),
-            "timezone" => Some(Self::TimeZone),
-            "str" => Some(Self::Str),
-            "bytes" => Some(Self::Bytes),
-            "list" => Some(Self::List),
-            "tuple" => Some(Self::Tuple),
-            "namedtuple" => Some(Self::NamedTuple),
-            "dict" => Some(Self::Dict),
-            "dict_keys" => Some(Self::DictKeys),
-            "dict_items" => Some(Self::DictItems),
-            "dict_values" => Some(Self::DictValues),
-            "set" => Some(Self::Set),
-            "frozenset" => Some(Self::FrozenSet),
-            "dataclass" => Some(Self::Dataclass),
-            "function" => Some(Self::Function),
-            "builtin_function_or_method" => Some(Self::BuiltinFunction),
-            "cell" => Some(Self::Cell),
-            "iterator" => Some(Self::Iterator),
-            "coroutine" => Some(Self::Coroutine),
-            "module" => Some(Self::Module),
-            "_io.TextIOWrapper" => Some(Self::TextIOWrapper),
-            "_io.BufferedReader" => Some(Self::BufferedReader),
-            "_io.BufferedWriter" => Some(Self::BufferedWriter),
-            "_io.BufferedRandom" => Some(Self::BufferedRandom),
-            "typing._SpecialForm" => Some(Self::SpecialForm),
-            "PosixPath" => Some(Self::Path),
-            "property" => Some(Self::Property),
-            "re.Pattern" => Some(Self::RePattern),
-            "re.Match" => Some(Self::ReMatch),
-            #[cfg(feature = "test-hooks")]
-            "_test_cm" => Some(Self::TestContextManager),
-            // Exception types display as their exception name ("ValueError",
-            // "json.JSONDecodeError", ...) — fall back to the ExcType parser.
-            other => other.parse::<ExcType>().ok().map(Self::Exception),
-        }
+        // `EnumString` parses via the same strum `serialize` attributes that
+        // `IntoStaticStr`/`Display` render with, so the two stay in lockstep
+        // by construction. Exception types display as their exception name
+        // ("ValueError", "json.JSONDecodeError", ...) — fall back to the
+        // ExcType parser.
+        name.parse::<Self>()
+            .ok()
+            .or_else(|| name.parse::<ExcType>().ok().map(Self::Exception))
     }
 
     /// Checks if a value of type `self` is an instance of `other`.
@@ -385,7 +367,7 @@ impl Type {
             _ => {
                 let method_name = vm.interns.get_str(method_id);
                 args.drop_with_heap(vm.heap);
-                Err(ExcType::attribute_error(self.static_name(), method_name))
+                Err(ExcType::attribute_error(self, method_name))
             }
         }
     }

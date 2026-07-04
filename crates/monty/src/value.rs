@@ -1800,7 +1800,10 @@ impl Value {
                     |ss| ss == StaticStrings::DunderName,
                 );
                 if is_dunder_name {
-                    return Ok(CallResult::Value(allocate_string(t.static_name(), vm.heap)?));
+                    return Ok(CallResult::Value(allocate_string(
+                        t.name(vm.heap, vm.interns),
+                        vm.heap,
+                    )?));
                 }
                 if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
                     return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));

@@ -505,10 +505,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(
-                Type::List.static_name(),
-                attr.as_str(vm.interns),
-            ));
+            return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
         call_list_method(self, method, args, vm).map(CallResult::Value)
@@ -580,7 +577,7 @@ fn call_list_method<'h>(
         // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
             args.drop_with_heap(heap);
-            Err(ExcType::attribute_error(Type::List.static_name(), method.into()))
+            Err(ExcType::attribute_error(Type::List, method.into()))
         }
     }
 }

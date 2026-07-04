@@ -312,10 +312,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 let v = allocate_string(self.get(vm.heap).input_string.as_str(), vm.heap)?;
                 Ok(Some(CallResult::Value(v)))
             }
-            _ => Err(ExcType::attribute_error(
-                Type::ReMatch.static_name(),
-                attr.as_str(vm.interns),
-            )),
+            _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
         }
     }
 
@@ -352,10 +349,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 self.get(vm.heap).get_span(n, vm.heap)?
             }
             _ => {
-                return Err(ExcType::attribute_error(
-                    Type::ReMatch.static_name(),
-                    attr.as_str(vm.interns),
-                ));
+                return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns)));
             }
         };
         Ok(CallResult::Value(result))

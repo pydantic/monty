@@ -1035,10 +1035,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
             }
-            _ => Err(ExcType::attribute_error(
-                Type::DateTime.static_name(),
-                attr.as_str(vm.interns),
-            )),
+            _ => Err(ExcType::attribute_error(Type::DateTime, attr.as_str(vm.interns))),
         }
     }
 

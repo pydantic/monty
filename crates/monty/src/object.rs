@@ -409,9 +409,12 @@ impl MontyType {
     pub fn name(&self) -> &str {
         match self {
             Self::Instance(name) => name,
-            // `to_internal` is `Some` for every non-Instance variant; the
-            // fallback is unreachable but keeps this panic-free.
-            other => other.to_internal().map_or("object", Type::static_name),
+            Self::Exception(exc_type) => (*exc_type).into(),
+            // `to_internal` is `Some` for every remaining variant, and strum's
+            // `IntoStaticStr` on `Type` names them all (`Exception`/`Instance`
+            // are peeled off above); the fallback is unreachable but keeps
+            // this panic-free.
+            other => other.to_internal().map_or("object", Into::into),
         }
     }
 
@@ -479,11 +482,13 @@ impl MontyType {
         }
     }
 
-    /// Mirrors a runtime [`Type`] whose class identity is NOT needed:
-    /// `Instance` falls back to the defensive `Instance("object")` (it is
-    /// unreachable on every current call path — `Builtins::Type` and
-    /// `from_type_name` never hold/produce it). Use
+    /// Mirrors a runtime [`Type`] whose class identity is NOT needed. Use
     /// [`from_internal`](Self::from_internal) when a heap is available.
+    ///
+    /// # Panics
+    /// On `Instance`, whose class name cannot be resolved without a heap; it
+    /// is unreachable on every current call path (`Builtins::Type` and
+    /// `from_type_name` never hold/produce it).
     pub(crate) fn from_internal_static(ty: Type) -> Self {
         match ty {
             Type::Ellipsis => Self::Ellipsis,
@@ -510,13 +515,7 @@ impl MontyType {
             Type::Set => Self::Set,
             Type::FrozenSet => Self::FrozenSet,
             Type::Dataclass => Self::Dataclass,
-            Type::Instance(_) => {
-                debug_assert!(
-                    false,
-                    "Type::Instance requires heap access — use MontyType::from_internal"
-                );
-                Self::Instance("object".to_owned())
-            }
+            Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
             Type::Exception(exc_type) => Self::Exception(exc_type),
             Type::Function => Self::Function,
             Type::BuiltinFunction => Self::BuiltinFunction,
@@ -539,8 +538,7 @@ impl MontyType {
     }
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// name via the heap (with `class_name`'s defensive `"object"` fallback
-    /// for bogus ids).
+    /// name via the heap.
     pub(crate) fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
         match ty {
             Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).to_owned()),
@@ -1794,7 +1792,7 @@ impl fmt::Display for MontyFileHandle {
         write!(
             f,
             "<{} name={} mode={}>",
-            self.mode.file_type().static_name(),
+            self.mode.file_type(),
             StringRepr(&self.path),
             StringRepr(self.mode.as_str())
         )

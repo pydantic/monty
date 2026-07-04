@@ -381,17 +381,20 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>)
     }
 }
 
-/// Returns a class object's name as a string slice for error messages / repr
-/// (or `"object"` as a defensive fallback for a non-class id, which also keeps
-/// crafted-snapshot bogus ids panic-free).
+/// Returns a class object's name as a string slice for error messages / repr.
 ///
 /// Takes `heap` + `interns` rather than a `&VM` so heap-only contexts (e.g.
 /// `Type::name`) can resolve names; the returned slice borrows only
 /// the interner, so it survives subsequent heap mutation.
+///
+/// # Panics
+/// If `class_id` does not refer to a `Class` heap entry — every producer of a
+/// class id (`Instance.class`, class values) guarantees it does, so this is a
+/// programmer-error tripwire.
 pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
     match heap.get(class_id) {
         HeapData::Class(class) => interns.get_str(class.name_id()),
-        _ => "object",
+        _ => unreachable!("class_name called with a non-class heap id"),
     }
 }
 

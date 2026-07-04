@@ -329,10 +329,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 Ok(Some(CallResult::Value(v)))
             }
             Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
-            _ => Err(ExcType::attribute_error(
-                Type::RePattern.static_name(),
-                attr.as_str(vm.interns),
-            )),
+            _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }
     }
 
@@ -377,10 +374,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 self.get(vm.heap).finditer(&text, vm.heap)
             }
             _ => {
-                return Err(ExcType::attribute_error(
-                    Type::RePattern.static_name(),
-                    attr.as_str(vm.interns),
-                ));
+                return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns)));
             }
         }?;
         Ok(CallResult::Value(result))

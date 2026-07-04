@@ -15,6 +15,8 @@
 //! `WrongType` lets the extraction site pick CPython's wording, `Raise`
 //! surfaces a fully-formed error unchanged.
 
+use std::borrow::Cow;
+
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -153,8 +155,8 @@ pub(crate) trait FromValue: Sized {
         // `EXPECTED_TYPE_NAME`) can report `WrongType`, so the lookup is
         // skipped for accept-anything impls. The slice borrows only the
         // interner, so it stays valid after the value is dropped.
-        let got_name = Self::EXPECTED_TYPE_NAME
-            .map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
+        let got_name =
+            Self::EXPECTED_TYPE_NAME.map(|_| value.py_type_heap(vm.heap).cpython_arg_name(vm.heap, vm.interns));
         match Self::from_value(value, vm) {
             Ok(extracted) => {
                 *slot = Some(extracted);
@@ -165,7 +167,7 @@ pub(crate) trait FromValue: Sized {
                 // `WrongType` is only reported by impls with an
                 // `EXPECTED_TYPE_NAME`, so the snapshot is always present;
                 // "object" keeps that unreachable arm honest without a panic.
-                let got = got_name.unwrap_or("object");
+                let got = got_name.unwrap_or(Cow::Borrowed("object"));
                 Err(match (ctx, Self::EXPECTED_TYPE_NAME) {
                     (ArgErrCtx::BadArgPos { func_name, pos }, Some(expected)) => {
                         ExcType::type_error_bad_arg_pos(func_name, pos, expected, got)
@@ -173,7 +175,7 @@ pub(crate) trait FromValue: Sized {
                     (ArgErrCtx::BadArgNamed { func_name, arg_name }, Some(expected)) => {
                         ExcType::type_error_bad_arg_named(func_name, arg_name, expected, got)
                     }
-                    _ => Self::type_error(got),
+                    _ => Self::type_error(&got),
                 })
             }
         }

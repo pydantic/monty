@@ -310,10 +310,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
             args.drop_with_heap(vm);
-            return Err(ExcType::attribute_error(
-                Type::Bytes.static_name(),
-                attr.as_str(vm.interns),
-            ));
+            return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
 
         let field = heap_read_ref_as_field!(self, Bytes, 0);
@@ -344,10 +341,7 @@ pub fn call_bytes_method(
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
         args.drop_with_heap(vm);
-        return Err(ExcType::attribute_error(
-            Type::Bytes.static_name(),
-            vm.interns.get_str(method_id),
-        ));
+        return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
     call_bytes_method_impl(&vm.heap.protect(bytes), method, args, vm)
 }
@@ -457,7 +451,7 @@ fn call_bytes_method_impl<'h>(
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
             args.drop_with_heap(vm.heap);
-            Err(ExcType::attribute_error(Type::Bytes.static_name(), method.into()))
+            Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
 }

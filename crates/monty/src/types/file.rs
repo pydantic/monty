@@ -545,7 +545,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         write!(
             f,
             "<{} name={} mode={}>",
-            file.file_type().static_name(),
+            file.file_type(),
             StringRepr(file.path()),
             StringRepr(file.mode())
         )?;

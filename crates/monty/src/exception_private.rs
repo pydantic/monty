@@ -1142,10 +1142,7 @@ impl ExcType {
     pub(crate) fn type_error_indices(type_str: Type, index_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!(
-                "{} indices must be integers, not '{index_type}'",
-                type_str.static_name()
-            ),
+            format!("{type_str} indices must be integers, not '{index_type}'"),
         )
         .into()
     }

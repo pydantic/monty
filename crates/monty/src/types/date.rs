@@ -299,10 +299,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
                     date.0.weekday().number_from_monday(),
                 ))))
             }
-            _ => Err(ExcType::attribute_error(
-                Type::Date.static_name(),
-                attr.as_str(vm.interns),
-            )),
+            _ => Err(ExcType::attribute_error(Type::Date, attr.as_str(vm.interns))),
         }
     }
 
