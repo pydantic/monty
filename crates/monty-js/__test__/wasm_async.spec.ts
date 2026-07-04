@@ -362,6 +362,27 @@ test('runMontyAsync resolves a falsy value', async (t) => {
   t.is(await runMontyAsync(m, { externalLookup: { n: 0 } }), 1)
 })
 
+test('runMontyAsync resolves null and undefined values to None', async (t) => {
+  t.is(await runMontyAsync(new Monty('x is None'), { externalLookup: { x: null } }), true)
+  t.is(await runMontyAsync(new Monty('y is None'), { externalLookup: { y: undefined } }), true)
+})
+
+test('runMontyAsync calling a proxy whose entry is now non-callable raises TypeError', async (t) => {
+  // Calls dispatch by name against the *current* lookup on every call: the
+  // first call replaces the entry with a plain value, so the second raises
+  // what CPython would for calling that value.
+  const lookup: Record<string, unknown> = {
+    f: () => {
+      lookup.f = 5
+      return 1
+    },
+  }
+  const error = await t.throwsAsync(runMontyAsync(new Monty('f()\nf()'), { externalLookup: lookup }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "TypeError: 'int' object is not callable")
+})
+
 test('runMontyAsync mixes an async function and a value', async (t) => {
   // The host awaits the JS promise and hands the sandbox the resolved value, so
   // the sandbox calls the function directly (no `await`). `url`/`suffix` are

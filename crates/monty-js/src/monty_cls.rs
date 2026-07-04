@@ -284,9 +284,9 @@ impl Monty {
                             return Ok(Either::A(monty_to_js(&result, env)?));
                         }
                         RunProgress::FunctionCall(call) => {
-                            // Dispatching the call can fail (arg/result conversion,
-                            // a callable-type check). Restore the mount table before
-                            // propagating so the shared slots are not left empty.
+                            // Dispatching the call can fail (arg/result conversion).
+                            // Restore the mount table before propagating so the
+                            // shared slots are not left empty.
                             let return_value = match call_external_function(
                                 env,
                                 external_lookup.as_ref(),
@@ -310,9 +310,8 @@ impl Monty {
                             };
                         }
                         RunProgress::NameLookup(lookup) => {
-                            // Resolving the name can fail (converting a non-callable
-                            // `external_lookup` value). Restore the mount table before
-                            // propagating so the shared slots are not left empty.
+                            // As above: resolution can fail (converting a non-callable
+                            // value), so restore the mount table before propagating.
                             let result = match resolve_name_lookup(env, external_lookup.as_ref(), &lookup.name) {
                                 Ok(r) => r,
                                 Err(err) => {
@@ -1588,9 +1587,10 @@ struct SerializedNameLookupOwned {
 ///
 /// Converts args/kwargs from Monty format, calls the JS function, and converts
 /// the result back to Monty format (or an exception). Only a callable *own*
-/// property is invocable — an absent name, an inherited member (e.g.
-/// `Object.prototype.toString`), or a non-callable value all raise `NameError`,
-/// matching how a `FunctionCall` only ever follows a callable name resolution.
+/// property is invocable: an absent name or an inherited member (e.g.
+/// `Object.prototype.toString`) raises `NameError`, while an own non-callable
+/// entry — a cached function proxy whose entry was later replaced by a plain
+/// value — raises the `TypeError` CPython would for calling that value.
 fn call_external_function(
     env: &Env,
     external_lookup: Option<&Object<'_>>,
@@ -1598,8 +1598,7 @@ fn call_external_function(
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> Result<ExtFunctionResult> {
-    // NameError matches Python's behavior for a name that is not a callable
-    // exposed by the lookup.
+    // NameError matches Python's behavior for a name the lookup does not expose.
     let name_error = || {
         ExtFunctionResult::Error(MontyException::new(
             ExcType::NameError,
@@ -1615,7 +1614,13 @@ fn call_external_function(
     }
     let callable: Unknown = lookup.get_named_property(function_name)?;
     if callable.get_type()? != ValueType::Function {
-        return Ok(name_error());
+        // Converting just to name the type is fine on this cold path; values
+        // with no Monty equivalent (symbols etc.) fall back to `object`.
+        let type_name = js_to_monty(callable, *env).map_or("object", |obj| obj.type_name());
+        return Ok(ExtFunctionResult::Error(MontyException::new(
+            ExcType::TypeError,
+            Some(format!("'{type_name}' object is not callable")),
+        )));
     }
 
     let mut js_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);

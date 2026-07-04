@@ -516,6 +516,12 @@ def test_external_lookup_value(monty_run: RunMonty):
     assert monty_run('x + 1', external_lookup={'x': 41}) == snapshot(42)
 
 
+def test_external_lookup_value_none(monty_run: RunMonty):
+    """A `None` entry is a present name resolving to `None`, not a `NameError`
+    (pins consistency with the JS bindings' `null`/`undefined` entries)."""
+    assert monty_run('x is None', external_lookup={'x': None}) == snapshot(True)
+
+
 def test_external_lookup_value_container(monty_run: RunMonty):
     """Container values convert and round-trip through a name lookup."""
     assert monty_run('data["a"] + data["b"]', external_lookup={'data': {'a': 1, 'b': 2}}) == snapshot(3)
@@ -530,9 +536,11 @@ def test_external_lookup_mixed_function_and_value(monty_run: RunMonty):
     assert monty_run('double(n)', external_lookup={'double': double, 'n': 21}) == snapshot(42)
 
 
-def test_external_lookup_value_cached(monty_run: RunMonty):
-    """The monty interpreter caches a resolved value, so referencing the same
-    name twice in one feed reads a single resolved value."""
+def test_external_lookup_value_repeated_reference(monty_run: RunMonty):
+    """Referencing the same lazily-resolved name twice in one feed works. The
+    worker caches the resolved value, but dict reads are not observable
+    host-side (`get_item` bypasses subclass hooks), so this only pins the
+    result; the JS test observes the single read via a getter."""
     assert monty_run('x + x', external_lookup={'x': 21}) == snapshot(42)
 
 
@@ -559,6 +567,23 @@ def test_external_lookup_type_object_round_trips(monty_run: RunMonty):
     because a type is callable."""
     assert monty_run('isinstance(5, IntType)', external_lookup={'IntType': int}) == snapshot(True)
     assert monty_run('isinstance(5, StrType)', external_lookup={'StrType': str}) == snapshot(False)
+
+
+def test_external_lookup_stale_proxy_not_callable(session: MontySession):
+    """A function proxy cached in one feed dispatches by name against the
+    *current* dict on each call: with the entry replaced by a plain value,
+    calling it raises the TypeError CPython would for calling that value (the
+    JS bindings synthesize the same error)."""
+
+    def double(x: int) -> int:
+        return x * 2
+
+    session.feed_run('f = double', external_lookup={'double': double})
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        session.feed_run('f(2)', external_lookup={'double': 5})
+    inner = exc_info.value.exception()
+    assert type(inner) is TypeError
+    assert str(inner) == snapshot("'int' object is not callable")
 
 
 def test_external_lookup_name_conversion_error_discards_session(session: MontySession):

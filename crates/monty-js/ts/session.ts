@@ -10,7 +10,14 @@
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
 import type { NativeSession } from '../index.js'
-import { MontyCrashedError, MontyError, montyErrorFromNative, MontyTypingError, ProtocolError } from './errors.js'
+import {
+  MontyCrashedError,
+  MontyError,
+  montyErrorFromNative,
+  MontyTypingError,
+  notCallableMessage,
+  ProtocolError,
+} from './errors.js'
 import { PYTHON_EXC_NAMES } from './errors.js'
 import { mountsToNative, type MountDir } from './mount.js'
 import type {
@@ -378,7 +385,9 @@ export class MontySession {
           // other value is converted and returned directly; an absent name is
           // left undefined so the sandbox raises NameError. Only own keys count
           // — an inherited member (`toString`, `constructor`, …) must never
-          // satisfy a lookup the host did not deliberately expose.
+          // satisfy a lookup the host did not deliberately expose. The value is
+          // wrapped in `{ value }` so `null`/`undefined` entries resolve to
+          // `None` instead of reading as "no value" through napi.
           const lookup = options.externalLookup
           if (lookup === undefined || !Object.prototype.hasOwnProperty.call(lookup, turn.name)) {
             next = this.native.resumeNameLookup(null, null, onPrint)
@@ -387,7 +396,7 @@ export class MontySession {
             if (typeof v === 'function') {
               next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
             } else {
-              next = this.native.resumeNameLookup(null, v, onPrint)
+              next = this.native.resumeNameLookup(null, { value: v }, onPrint)
             }
           }
           break
@@ -421,16 +430,17 @@ export class MontySession {
         onPrint,
       )
     }
-    // Only callable entries are invocable: a non-callable can never have
-    // produced a function proxy, so treat it as "no such function". Restrict to
-    // own keys so an inherited callable (e.g. `Object.prototype.toString`) can
-    // never be dispatched as a host function.
-    const entry =
-      externalLookup !== undefined && Object.prototype.hasOwnProperty.call(externalLookup, call.functionName)
-        ? externalLookup[call.functionName]
-        : undefined
-    if (typeof entry !== 'function') {
+    // Own keys only, as in the nameLookup branch: an inherited callable (e.g.
+    // `Object.prototype.toString`) must never be dispatched as a host function.
+    if (externalLookup === undefined || !Object.prototype.hasOwnProperty.call(externalLookup, call.functionName)) {
       return this.native.resumeNotFound(onPrint)
+    }
+    const entry = externalLookup[call.functionName]
+    if (typeof entry !== 'function') {
+      // A cached function proxy whose entry was later replaced by a plain
+      // value: raise what CPython would for calling that value, matching the
+      // Python binding (which really calls the entry).
+      return this.native.resumeError('TypeError', notCallableMessage(entry), onPrint)
     }
     const fn = entry as ExternalFunction
     let returned: unknown

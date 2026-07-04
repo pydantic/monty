@@ -79,23 +79,15 @@ fn dispatch_method_call_inner(
     py_to_monty(&result, dc_registry, 0)
 }
 
-/// The session's `external_lookup` dict (`name -> value`) plus the machinery to
-/// resolve names against it. Bundles the `Python` token, the dict (absent when
-/// the caller passed none), and the dataclass registry — the three things every
-/// lookup needs — so both halves of the lazy-resolution protocol live together:
-///
-/// - [`resolve_name`](Self::resolve_name) answers a `NameLookup` (the first
-///   reference to an undefined name): a callable entry becomes a host function
-///   proxy, any other value is converted and returned directly, an absent name
-///   (or absent dict) yields `None` → the sandbox raises `NameError`.
-/// - [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
-///   answer the follow-up `FunctionCall` by invoking the callable. Only
-///   callable entries ever reach here — a `FunctionCall` happens only after
-///   `resolve_name` handed back a function proxy — so a non-callable entry can
-///   never be called.
-///
-/// Dataclass types in return values are auto-registered into `dc_registry`
-/// transparently.
+/// The session's `external_lookup` dict (`name -> value`, absent when the
+/// caller passed none) plus the `Python` token and dataclass registry every
+/// resolution needs. Owns both halves of the lazy-resolution protocol:
+/// [`resolve_name`](Self::resolve_name) answers a `NameLookup`, and
+/// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
+/// answer the follow-up `FunctionCall` by invoking the current dict entry —
+/// which may have been replaced since it resolved, so calling a now
+/// non-callable entry raises `TypeError` exactly as CPython would. Dataclass
+/// types in return values are auto-registered into `dc_registry` transparently.
 pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
     lookup: Option<&'py Bound<'py, PyDict>>,
@@ -114,20 +106,15 @@ impl<'a, 'py> ExternalLookup<'a, 'py> {
     }
 
     /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
-    /// becomes a lazy host function proxy (`MontyObject::Function`, invoked on
-    /// the eventual `FunctionCall`), any other value — including a type object
-    /// Monty models, which is technically callable but must round-trip as a
-    /// `MontyObject::Type` rather than degrade to a proxy — is converted and
-    /// returned directly, and an absent name (or absent dict) yields `None` →
-    /// the sandbox raises `NameError`.
+    /// becomes a host function proxy invoked on the eventual `FunctionCall`,
+    /// any other value is converted and returned directly, and an absent name
+    /// (or absent dict) yields `None` → the sandbox raises `NameError`.
     ///
-    /// Conversion is delegated to [`py_to_monty_value`] so the callable-vs-type
-    /// ordering lives in one place; a resulting function proxy is renamed to the
-    /// lookup *key* (not the callable's `__name__`) so the follow-up
-    /// `FunctionCall` resolves against the same dict key in [`call`](Self::call).
-    ///
-    /// A non-callable value that cannot be converted surfaces as a `PyErr`
-    /// rather than masquerading as `NameError`, so callers `?` it.
+    /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
+    /// Monty models converts to `MontyObject::Type`, not a proxy); a function
+    /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
+    /// the `FunctionCall` hits the same dict entry. An unconvertible value
+    /// surfaces as a `PyErr` rather than masquerading as `NameError`.
     pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
         let Some(lookup) = self.lookup else {
             return Ok(None);

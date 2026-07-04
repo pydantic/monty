@@ -171,7 +171,13 @@ properties that real CPython does not provide, per the caveat above.
   does not re-fire `NameLookup` (a later host mutation of the dict entry is not
   observed), whereas the `monty-cpython` worker caches only function proxies and
   re-fires `NameLookup` on every value reference (re-reading live). Function
-  proxies are cached by both. `feed_start` / `feedStart` take no
+  proxies are cached by both — but unlike a CPython function object, a proxy
+  dispatches by *name* against the dict passed to the current feed at call
+  time: replacing an entry rebinds every reference already holding the proxy,
+  and replacing it with a non-callable makes calls raise the `TypeError`
+  CPython would for calling that value (`'int' object is not callable`).
+  Because only *undefined* names fire lookups, an entry shadowing a builtin
+  (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
   `external_lookup` — they surface name lookups as snapshots, which resolve only
   to a function (see below).
 - **Dependency installation is only available on the embedded-CPython worker.**

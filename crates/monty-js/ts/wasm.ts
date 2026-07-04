@@ -31,6 +31,7 @@ import {
   MontyException as NativeMontyException,
   MontyTypingError as NativeMontyTypingError,
 } from '../index.js'
+import { notCallableMessage } from './errors.js'
 
 export type {
   MontyOptions,
@@ -684,7 +685,10 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
       // own value is returned directly, and an absent name raises NameError.
       const name = progress.variableName
       if (hasOwn(name)) {
-        progress = progress.resume({ value: externalLookup[name] })
+        // `resume({ value: undefined })` means "unresolved" in the snapshot
+        // API, so an entry that *is* undefined crosses as null (Python None).
+        const v = externalLookup[name]
+        progress = progress.resume({ value: v === undefined ? null : v })
       } else {
         // Unknown name — resume with no value to raise NameError
         progress = progress.resume()
@@ -693,18 +697,28 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
     }
 
     // MontySnapshot — external function call. Only an own callable is
-    // invocable; anything else is treated as "no such function".
+    // invocable; these branches shouldn't normally fire (NameLookup already
+    // filtered), but the host can mutate `externalLookup` mid-run.
     const snapshot = progress
     const funcName = snapshot.functionName
-    const extFunction = hasOwn(funcName) ? externalLookup[funcName] : undefined
 
-    if (typeof extFunction !== 'function') {
-      // Not a callable — this shouldn't normally happen since NameLookup
-      // would have raised NameError, but handle it defensively
+    if (!hasOwn(funcName)) {
       progress = snapshot.resume({
         exception: {
           type: 'NameError',
           message: `name '${funcName}' is not defined`,
+        },
+      })
+      continue
+    }
+    const extFunction = externalLookup[funcName]
+    if (typeof extFunction !== 'function') {
+      // A function proxy whose entry was replaced by a plain value: raise what
+      // CPython would for calling that value.
+      progress = snapshot.resume({
+        exception: {
+          type: 'TypeError',
+          message: notCallableMessage(extFunction),
         },
       })
       continue

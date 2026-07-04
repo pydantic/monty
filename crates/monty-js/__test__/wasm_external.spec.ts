@@ -381,6 +381,26 @@ test('externalLookup resolves a falsy value', (t) => {
   t.is(m.run({ externalLookup: { n: 0 } }), 1)
 })
 
+test('externalLookup resolves null and undefined values to None', (t) => {
+  t.is(new Monty('x is None').run({ externalLookup: { x: null } }), true)
+  t.is(new Monty('y is None').run({ externalLookup: { y: undefined } }), true)
+})
+
+test('calling a proxy whose entry is now non-callable raises TypeError', (t) => {
+  // Calls dispatch by name against the *current* lookup on every call: the
+  // first call replaces the entry with a plain value, so the second raises
+  // what CPython would for calling that value.
+  const lookup: Record<string, unknown> = {
+    f: () => {
+      lookup.f = 5
+      return 1
+    },
+  }
+  const m = new Monty('f()\nf()')
+  const error = t.throws(() => m.run({ externalLookup: lookup }), isRuntimeError)
+  t.is(error.message, "TypeError: 'int' object is not callable")
+})
+
 test('externalLookup mixes a function and a value', (t) => {
   const m = new Monty('double(n)')
   const double = (x: number) => x * 2

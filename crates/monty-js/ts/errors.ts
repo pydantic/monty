@@ -240,3 +240,39 @@ export function montyErrorFromNative(exc: NativeException): MontySyntaxError | M
   }
   return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback)
 }
+
+/**
+ * CPython-style `TypeError` message for calling a non-callable
+ * `externalLookup` entry — reachable when a cached function proxy's entry is
+ * later replaced by a plain value. Mirrors what CPython raises when calling
+ * that value, matching the Python binding (which really calls the entry).
+ */
+export function notCallableMessage(value: unknown): string {
+  return `'${pyTypeName(value)}' object is not callable`
+}
+
+/** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */
+function pyTypeName(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'NoneType'
+  }
+  switch (typeof value) {
+    case 'boolean':
+      return 'bool'
+    case 'number':
+      return Number.isInteger(value) ? 'int' : 'float'
+    case 'bigint':
+      return 'int'
+    case 'string':
+      return 'str'
+    case 'object':
+      if (value instanceof Uint8Array) return 'bytes'
+      if (value instanceof Map) return 'dict'
+      if (value instanceof Set) return 'set'
+      if (Array.isArray(value)) return 'list'
+      return 'dict'
+    default:
+      // symbols and other exotic values have no Monty equivalent
+      return 'object'
+  }
+}

@@ -3,7 +3,7 @@ import test from 'ava'
 import { MontyRuntimeError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool(test)
+const { run, pool } = setupPool(test)
 
 // =============================================================================
 // Basic external function tests
@@ -392,9 +392,24 @@ test('externalLookup mixes a function and a value', async (t) => {
 })
 
 test('externalLookup caches a resolved value within a feed', async (t) => {
-  // the monty interpreter caches a resolved name, so a second reference reads
-  // the cached value rather than re-resolving
-  t.is(await run('x + x', { externalLookup: { x: 21 } }), 42)
+  // the monty worker caches a resolved name in its namespace slot, so the
+  // second reference must not re-read the lookup — a getter observes the reads
+  let reads = 0
+  const lookup = {
+    get x() {
+      reads++
+      return 21
+    },
+  }
+  t.is(await run('x + x', { externalLookup: lookup }), 42)
+  t.is(reads, 1)
+})
+
+test('externalLookup resolves null and undefined values to None', async (t) => {
+  // null/undefined are present own keys, so they resolve to Python None
+  // rather than falling into the absent-name NameError path
+  t.is(await run('x is None', { externalLookup: { x: null } }), true)
+  t.is(await run('y is None', { externalLookup: { y: undefined } }), true)
 })
 
 test('externalLookup absent name raises name error', async (t) => {
@@ -402,6 +417,23 @@ test('externalLookup absent name raises name error', async (t) => {
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, "NameError: name 'missing' is not defined")
+})
+
+test('calling a stale proxy whose entry is now non-callable raises TypeError', async (t) => {
+  // A function proxy cached in feed 1 dispatches by name against the *current*
+  // dict on each call: with the entry replaced by a plain value, calling it
+  // raises what CPython would for calling that value (as the Python binding
+  // does by really calling the entry).
+  const session = await pool().checkout()
+  try {
+    await session.feedRun('f = double', { externalLookup: { double: (x: number) => x * 2 } })
+    const error = await t.throwsAsync(() => session.feedRun('f(2)', { externalLookup: { double: 5 } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(error.message, "TypeError: 'int' object is not callable")
+  } finally {
+    await session.close()
+  }
 })
 
 test('externalLookup unconvertible value rejects the turn', async (t) => {

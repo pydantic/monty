@@ -1056,12 +1056,8 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
     };
 
     loop {
-        // `Complete` ends the loop; every other event needs an answer, and
-        // computing that answer can fail (e.g. converting an `external_lookup`
-        // value for a `NameLookup`). At that point the worker is already
-        // suspended awaiting a resume, so on failure discard the checkout rather
-        // than leave the session wedged on a dangling suspension the aborted
-        // feed will never answer.
+        // `Complete` ends the loop; on any other event a failure to compute the
+        // answer discards the checkout (see `sync_turn_answer`).
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &dc_registry),
             event => match sync_turn_answer(py, event, &lookup, os.as_ref(), &dc_registry) {
@@ -1155,11 +1151,10 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
     .await?;
 
     loop {
-        // As in `drive_sync`, a suspension the loop cannot answer (a conversion
-        // failure, or the futures it awaits erroring) leaves the worker waiting
-        // for a resume forever, so discard the checkout on those paths rather
-        // than wedge the session. `Complete` and `ResolveFutures` stay inline —
-        // the latter must await the pending tasks.
+        // As in `drive_sync`, a failure to answer a suspension (including the
+        // futures `ResolveFutures` awaits erroring) discards the checkout.
+        // `Complete` and `ResolveFutures` stay inline — the latter must await
+        // the pending tasks.
         let answer: TurnAnswer = match event {
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &dc_registry));
@@ -1205,11 +1200,9 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
     }
 }
 
-/// Computes the resume answer for an async `FunctionCall` / `OsCall` /
-/// `NameLookup` suspension. Split out of [`drive_async`]'s loop so a failure —
-/// e.g. converting an `external_lookup` value for a `NameLookup` — can discard
+/// Async counterpart of [`sync_turn_answer`] (minus `ResolveFutures`, which
+/// must await in [`drive_async`]'s loop): a failure here lets the loop discard
 /// the suspended worker instead of leaving it waiting forever for a resume.
-/// `Complete` and the awaiting `ResolveFutures` stay in the loop.
 fn async_turn_answer(
     event: TurnEvent,
     external_lookup: Option<&Py<PyDict>>,
