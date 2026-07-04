@@ -2,13 +2,13 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
+use std::{borrow::Cow, cell::Cell, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-use super::{Bytes, MontyIter, PyTrait};
+use super::{Bytes, CmpOrder, MontyIter, PyTrait};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -234,8 +234,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         !self.get(vm.heap).0.is_empty()
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_repr_fmt(

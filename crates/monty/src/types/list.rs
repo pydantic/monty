@@ -3,7 +3,7 @@ use std::{cmp::Ordering, fmt::Write, mem};
 use ahash::AHashSet;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{CmpOrder, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
@@ -212,11 +212,12 @@ impl<'h> HeapRead<'h, List> {
     ///
     /// Element-by-element left-to-right; the first non-equal pair decides. If all
     /// compared elements are equal, the shorter list is less (`[1] < [1, 2]`).
-    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`),
-    /// so the caller raises the `'<' not supported ...` `TypeError`. Mirrors
-    /// [`Tuple::py_cmp`](super::Tuple) — the `ListIter` holds the recursion token
-    /// that bounds nested-container depth.
-    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
+    /// The first differing pair's [`CmpOrder`] propagates: a `NaN` element makes
+    /// the list [`CmpOrder::Unordered`] (`[nan] < [1]` is `False`), a
+    /// type-mismatched element makes it [`CmpOrder::Incomparable`] (`[1] < ['a']`
+    /// raises `TypeError`). Mirrors [`Tuple::py_cmp`](super::Tuple) — the
+    /// `ListIter` holds the recursion token that bounds nested-container depth.
+    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
@@ -229,18 +230,21 @@ impl<'h> HeapRead<'h, List> {
             let bv = other.clone_item(i, vm);
             defer_drop!(bv, vm);
             match av.py_cmp(bv, vm)? {
-                Some(Ordering::Equal) => {}
-                Some(ord) => return Ok(Some(ord)),
+                CmpOrder::Ordered(Ordering::Equal) => {}
+                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
+                // A `NaN` element is never `==`-equal, so it is the first
+                // differing pair and the list is unordered (yields `False`).
+                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
                 // CPython checks `__eq__` first and only orders non-equal pairs, so
                 // equal-but-unorderable elements (e.g. `None == None`) don't block.
-                None => {
+                CmpOrder::Incomparable => {
                     if !av.py_eq(bv, vm)? {
-                        return Ok(None);
+                        return Ok(CmpOrder::Incomparable);
                     }
                 }
             }
         }
-        Ok(Some(a_len.cmp(&b_len)))
+        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
     /// Clones all items from this list with proper refcount management.

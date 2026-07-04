@@ -5,7 +5,6 @@
 
 use std::{
     borrow::Cow,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
@@ -26,7 +25,7 @@ use crate::{
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, Type,
+        AttrCallResult, CmpOrder, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -224,8 +223,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

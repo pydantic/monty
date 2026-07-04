@@ -5,7 +5,6 @@
 
 use std::{
     borrow::Cow,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -29,7 +28,7 @@ use crate::{
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, TimeZone, Type,
+        AttrCallResult, CmpOrder, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
@@ -919,16 +918,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
         if is_aware(a) != is_aware(b) {
-            return Ok(None);
+            // Comparing offset-naive and offset-aware datetimes has no ordering
+            // in CPython (it raises `TypeError`), so report it as incomparable.
+            return Ok(CmpOrder::Incomparable);
         }
+        // Both sides compare on an integer microsecond count — always ordered.
         if is_aware(a) {
-            return Ok(utc_micros(a).partial_cmp(&utc_micros(b)));
+            return Ok(CmpOrder::Ordered(utc_micros(a).cmp(&utc_micros(b))));
         }
-        Ok(local_micros(a).partial_cmp(&local_micros(b)))
+        Ok(CmpOrder::Ordered(local_micros(a).cmp(&local_micros(b))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

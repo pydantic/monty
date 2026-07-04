@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::HeapGuard,
     resource::ResourceTracker,
-    types::{MontyIter, PyTrait},
+    types::{CmpOrder, MontyIter, PyTrait},
     value::Value,
 };
 
@@ -250,8 +250,13 @@ fn candidate_wins(
     is_min: bool,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<bool> {
-    let Some(ordering) = candidate.py_cmp(current, vm)? else {
-        return Err(ord_not_supported(candidate, current, is_min, vm));
+    let ordering = match candidate.py_cmp(current, vm)? {
+        CmpOrder::Ordered(ordering) => ordering,
+        // A `NaN` candidate (or `NaN`-carrying container) is neither smaller nor
+        // larger, so it never displaces the incumbent — matching CPython, where
+        // `min`/`max` only swap on a strict `<`/`>` and `NaN` yields neither.
+        CmpOrder::Unordered => return Ok(false),
+        CmpOrder::Incomparable => return Err(ord_not_supported(candidate, current, is_min, vm)),
     };
 
     Ok((is_min && ordering == Ordering::Less) || (!is_min && ordering == Ordering::Greater))

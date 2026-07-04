@@ -67,7 +67,6 @@
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use std::{
     cell::Cell,
-    cmp::Ordering,
     ffi::c_int,
     fmt::{self, Write},
     mem, ops, str,
@@ -76,7 +75,7 @@ use std::{
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type};
+use super::{CmpOrder, MontyIter, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -284,8 +283,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(Some(hash))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

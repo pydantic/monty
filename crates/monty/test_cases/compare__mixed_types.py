@@ -180,3 +180,50 @@ try:
     assert False, 'expected list >= str to raise'
 except TypeError as exc:
     assert str(exc) == "'>=' not supported between instances of 'list' and 'str'", 'list >= str message'
+
+# === NaN ordering returns False, never raises (NaN is unordered, not incomparable) ===
+# CPython: every ordering operator against a NaN yields False, for both directions
+# and for two NaNs. This is distinct from a type mismatch, which raises.
+nan = float('nan')
+assert not (nan < 1), 'nan < int is False'
+assert not (nan <= 1), 'nan <= int is False'
+assert not (nan > 1), 'nan > int is False'
+assert not (nan >= 1), 'nan >= int is False'
+assert not (1 < nan), 'int < nan is False'
+assert not (1 >= nan), 'int >= nan is False'
+assert not (nan < nan), 'nan < nan is False'
+assert not (nan >= nan), 'nan >= nan is False'
+assert not (nan < 10**30), 'nan < LongInt is False'
+assert not (nan < 1.5), 'nan < float is False'
+assert not (nan < True), 'nan < bool is False'
+
+# NaN combined with a genuine type mismatch still raises (numeric-vs-str)
+try:
+    nan < 'a'
+    assert False, 'expected nan < str to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'float' and 'str'", 'nan < str raises'
+
+# === NaN inside containers ===
+# The first differing element decides: a NaN element makes the container unordered
+# (False), a type-mismatched element makes it incomparable (raises).
+assert not ([nan] < [1]), 'list with nan element is unordered'
+assert not ((nan,) < (1,)), 'tuple with nan element is unordered'
+assert not ([1, nan] < [1, 2]), 'nan as second element is unordered'
+try:
+    [nan] < ['a']
+    assert False, 'expected list with float/str element mismatch to raise'
+except TypeError:
+    # Both raise TypeError; only the message text diverges (Monty names the
+    # outer 'list'/'list', CPython the inner 'float'/'str') — see
+    # limitations/language.md, so the exact message is not asserted here.
+    pass
+
+# === sorted / min / max with NaN do not raise ===
+# NaN compares as neither less nor greater, so it never triggers a swap; CPython
+# leaves such elements in place rather than erroring.
+assert sorted([3, 1, 2]) == [1, 2, 3], 'sorted without nan still works'
+assert sorted([nan, 1, 2, nan])[1:3] == [1, 2], 'sorted with nan does not raise'
+assert min([nan, 1, 2]) != min([nan, 1, 2]), 'min keeps leading nan (nan != nan)'
+assert max([1, nan, 2]) == 2, 'max skips nan'
+assert min([1, 2, nan]) == 1, 'min skips trailing nan'

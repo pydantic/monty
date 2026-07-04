@@ -99,13 +99,24 @@ leak into the sandbox.
 `<`, `<=`, `>`, `>=` on operands with no defined ordering raise
 `TypeError: '<' not supported between instances of '{a}' and '{b}'`, matching
 CPython (int vs str, `None` vs `None`, user-class instances without comparison
-dunders, etc.). Lists and tuples order lexicographically as in CPython.
+dunders, etc.). Lists and tuples order lexicographically as in CPython. A `NaN`
+operand is *unordered* rather than incomparable, so `float('nan') < 1` (and
+every operator/direction, including two NaNs) returns `False` without raising —
+also matching CPython, and likewise inside `sorted`/`min`/`max`.
 
 One message divergence: when a **list or tuple** compares unequal only because
 an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
 the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
 element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
 differs.
+
+One value divergence: CPython's sequence comparison shortcuts equality by
+*object identity* (`x is x` ⇒ equal) before falling back to `==`, so a shared
+`NaN` element in a prefix position makes the shorter sequence compare less
+(`x = float('nan'); [1, x] < [1, x, 3]` is `True`). Monty has no object identity
+for immediate floats, so it treats the two `NaN`s as a differing pair and yields
+`False`. Distinct `NaN` objects (`[1, float('nan')] < [1, float('nan'), 3]`)
+give `False` on both.
 
 ## What *does* work
 

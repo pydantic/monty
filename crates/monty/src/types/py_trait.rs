@@ -66,6 +66,62 @@ impl From<AttrCallResult> for CallResult {
     }
 }
 
+/// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
+///
+/// A plain `Option<Ordering>` conflated two very different "no ordering" cases;
+/// this enum splits them so callers reproduce CPython exactly:
+///
+/// - [`Ordered`](Self::Ordered) — a definite `<` / `==` / `>` result.
+/// - [`Unordered`](Self::Unordered) — the operands *are* valid comparison
+///   partners but have no ordering because a `NaN` is involved (directly, or as
+///   the first differing element of a list/tuple). CPython's ordering operators
+///   (`<`, `<=`, `>`, `>=`) all yield `False` here rather than raising, and
+///   `sorted`/`min`/`max` treat it as "no swap".
+/// - [`Incomparable`](Self::Incomparable) — the operand types (or the types of
+///   their first differing elements) have no defined ordering at all; ordering
+///   operators raise `TypeError`.
+///
+/// Collapsing `Unordered` into `Incomparable` is exactly the bug that made
+/// `float('nan') < 1` raise instead of returning `False`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CmpOrder {
+    /// A definite ordering between the two operands.
+    Ordered(Ordering),
+    /// Valid partners, but unordered because a `NaN` is involved.
+    Unordered,
+    /// The operand types have no defined ordering.
+    Incomparable,
+}
+
+impl CmpOrder {
+    /// Maps an `Option<Ordering>` from a numeric comparison helper, where `None`
+    /// can *only* mean a `NaN` operand (`f64::partial_cmp`, `i64_cmp_f64`,
+    /// `bigint_cmp_f64`, and `LongInt::partial_cmp_f64` all return `None`
+    /// exclusively for `NaN`). `None` therefore becomes [`Unordered`], never
+    /// [`Incomparable`].
+    ///
+    /// [`Unordered`]: Self::Unordered
+    /// [`Incomparable`]: Self::Incomparable
+    pub(crate) fn from_numeric(ordering: Option<Ordering>) -> Self {
+        match ordering {
+            Some(ordering) => Self::Ordered(ordering),
+            None => Self::Unordered,
+        }
+    }
+
+    /// Maps an `Option<Ordering>` from a *total*-order comparison (strings,
+    /// bytes, dates, timedeltas), where `None` never arises from a valid pair —
+    /// so `None` means the types don't compare at all ([`Incomparable`]).
+    ///
+    /// [`Incomparable`]: Self::Incomparable
+    pub(crate) fn from_total(ordering: Option<Ordering>) -> Self {
+        match ordering {
+            Some(ordering) => Self::Ordered(ordering),
+            None => Self::Incomparable,
+        }
+    }
+}
+
 /// Common operations for heap-allocated Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
@@ -121,8 +177,8 @@ pub trait PyTrait<'h> {
     /// recognise `other`, so the caller should try the reflected `other == self`.
     /// The reflection and the final "unequal" fallback are driven by
     /// [`Value::py_eq`]; implementations only handle their own side and must
-    /// not attempt reflection themselves. This is the same convention as
-    /// [`py_cmp`](Self::py_cmp)'s `Option<Ordering>` (`None` = NotImplemented).
+    /// not attempt reflection themselves. This mirrors the `NotImplemented`
+    /// half of [`py_cmp`](Self::py_cmp)'s [`CmpOrder::Incomparable`].
     ///
     /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
     /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
@@ -142,10 +198,14 @@ pub trait PyTrait<'h> {
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
-    /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
-    /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(None)
+    /// Returns a [`CmpOrder`] distinguishing a definite ordering, a
+    /// `NaN`-driven unordered-but-valid result (ordering operators yield
+    /// `False`), and a genuine type mismatch (ordering operators raise
+    /// `TypeError`) — see [`CmpOrder`] for why the distinction matters. The
+    /// default is [`CmpOrder::Incomparable`] (the type has no ordering).
+    /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Incomparable)
     }
 
     /// Returns the truthiness of the value following Python semantics.

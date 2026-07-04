@@ -24,7 +24,7 @@ use crate::{
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{CmpOrder, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -328,8 +328,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(
+            total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
+        ))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

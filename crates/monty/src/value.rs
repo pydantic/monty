@@ -28,7 +28,7 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        Bytes, CmpOrder, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
@@ -219,68 +219,76 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<CmpOrder> {
         let interns = vm.interns;
         // py_cmp handles numbers, strings, bytes, tuples, and lists.
         // Recursion depth tracking for tuples/lists is handled by their iterators.
+        //
+        // `from_numeric` maps a `None` from a numeric helper to
+        // `CmpOrder::Unordered` (only `NaN` yields `None` there), while
+        // `from_total` maps `None` from a total-order comparison to
+        // `CmpOrder::Incomparable`. Any operand pair with no comparison at all
+        // falls through to the `Incomparable` catch-alls below.
         match (self, other) {
-            (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
-            (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
+            (Self::Int(s), Self::Int(o)) => Ok(CmpOrder::Ordered(s.cmp(o))),
+            (Self::Float(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(s.partial_cmp(o))),
             // Int/float ordering is exact (no rounding of either operand).
-            (Self::Int(s), Self::Float(o)) => Ok(i64_cmp_f64(*s, *o)),
-            (Self::Float(s), Self::Int(o)) => Ok(i64_cmp_f64(*o, *s).map(Ordering::reverse)),
+            (Self::Int(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*s, *o))),
+            (Self::Float(s), Self::Int(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*o, *s).map(Ordering::reverse))),
             // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
             // to at most 2 levels (Bool→Int, then Int matches directly above).
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
             (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), vm),
             // Int vs LongInt comparison
             (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(BigInt::from(*a).partial_cmp(li.inner()))
+                Ok(CmpOrder::Ordered(BigInt::from(*a).cmp(li.inner())))
             }
             // LongInt vs Int comparison
             (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(li.inner().partial_cmp(&BigInt::from(*b)))
+                Ok(CmpOrder::Ordered(li.inner().cmp(&BigInt::from(*b))))
             }
             // Float vs LongInt comparison (exact, no precision loss)
-            (Self::Float(s), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(bigint_cmp_f64(li.inner(), *s).map(Ordering::reverse))
-            }
+            (Self::Float(s), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => Ok(
+                CmpOrder::from_numeric(bigint_cmp_f64(li.inner(), *s).map(Ordering::reverse)),
+            ),
             // LongInt vs Float comparison (exact, no precision loss)
             (Self::Ref(id), Self::Float(o)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(li.partial_cmp_f64(*o))
+                Ok(CmpOrder::from_numeric(li.partial_cmp_f64(*o)))
             }
             // Ref vs Ref comparison: handles LongInt, Str, Tuple, and List
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
                 (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                    Ok(a.get(vm.heap).inner().partial_cmp(b.get(vm.heap).inner()))
+                    Ok(CmpOrder::Ordered(a.get(vm.heap).inner().cmp(b.get(vm.heap).inner())))
                 }
                 (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                    Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
+                    Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap))),
+                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
+                    Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
+                }
                 (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
+                    Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }
-                _ => Ok(None),
+                _ => Ok(CmpOrder::Incomparable),
             },
             // Interned string comparisons
             (Self::InternString(s1), Self::InternString(s2)) => {
-                Ok(interns.get_str(*s1).partial_cmp(interns.get_str(*s2)))
+                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(interns.get_str(*s2))))
             }
             // Cross-type string comparisons: interned vs heap-allocated
             (Self::InternString(s1), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                Ok(interns.get_str(*s1).partial_cmp(s2.as_str()))
+                Ok(CmpOrder::Ordered(interns.get_str(*s1).cmp(s2.as_str())))
             }
             (Self::Ref(id1), Self::InternString(s2)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                Ok(s1.as_str().partial_cmp(interns.get_str(*s2)))
+                Ok(CmpOrder::Ordered(s1.as_str().cmp(interns.get_str(*s2))))
             }
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
-                Ok(interns.get_bytes(*b1).partial_cmp(interns.get_bytes(*b2)))
+                Ok(CmpOrder::Ordered(interns.get_bytes(*b1).cmp(interns.get_bytes(*b2))))
             }
-            _ => Ok(None),
+            _ => Ok(CmpOrder::Incomparable),
         }
     }
 
