@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use monty::{
-    CodeLoc, DictPairs, ExcType, ExtFunctionResult, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    CodeLoc, DictPairs, ExcData, ExcType, ExtFunctionResult, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
     MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, NameLookupResult, ResourceLimits, StackFrame, Type,
+    UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -291,6 +292,56 @@ fn exception_without_traceback_round_trips() {
     let exc = MontyException::new(ExcType::TypeError, None);
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
+}
+
+/// Builds a wire `UnicodeDecodeError` whose payload fields a byzantine child
+/// controls, for probing the receive-side sanitizer.
+fn unicode_exception(encoding: String, object: Vec<u8>, start: u64, end: u64, reason: String) -> pb::RaisedException {
+    pb::RaisedException {
+        exc_type: "UnicodeDecodeError".to_owned(),
+        message: Some("boom".to_owned()),
+        traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
+                encoding,
+                object: Some(pb::unicode_error_data::Object::ObjectBytes(object)),
+                start,
+                end,
+                reason,
+            })),
+        }),
+    }
+}
+
+#[test]
+fn bogus_unicode_payloads_are_dropped_not_trusted() {
+    let oversized = "x".repeat(UnicodeErrorData::MAX_OBJECT_LEN + 1);
+    // Every rejected payload still converts — only the structured data is
+    // dropped, since a hostile child must not be able to block error reporting.
+    let bogus = [
+        unicode_exception(oversized.clone(), vec![0xFF], 0, 1, "reason".to_owned()),
+        unicode_exception("utf-8".to_owned(), vec![0xFF], 0, 1, oversized.clone()),
+        unicode_exception("utf-8".to_owned(), oversized.into_bytes(), 0, 1, "reason".to_owned()),
+        // empty and inverted ranges, and a range beyond the object
+        unicode_exception("utf-8".to_owned(), vec![0xFF], 1, 1, "reason".to_owned()),
+        unicode_exception("utf-8".to_owned(), vec![0xFF], 1, 0, "reason".to_owned()),
+        unicode_exception("utf-8".to_owned(), vec![0xFF], 0, 2, "reason".to_owned()),
+    ];
+    for proto in bogus {
+        let back = MontyException::try_from(proto).expect("malformed payload must not block conversion");
+        assert_eq!(back.data(), &ExcData::None);
+    }
+
+    // An in-bounds payload survives sanitization intact.
+    let back = MontyException::try_from(unicode_exception(
+        "utf-8".to_owned(),
+        vec![0x61, 0xFF],
+        1,
+        2,
+        "invalid start byte".to_owned(),
+    ))
+    .unwrap();
+    assert!(matches!(back.data(), ExcData::Unicode(data) if data.start == 1 && data.end == 2));
 }
 
 #[test]

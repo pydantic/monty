@@ -76,10 +76,18 @@ impl From<&UnicodeErrorData> for pb::UnicodeErrorData {
 }
 
 /// Validates an untrusted wire `UnicodeErrorData`, returning `None` when any
-/// field is missing or out of range. Enforces the same object-size cap the
-/// sender applies ([`UnicodeErrorData::MAX_OBJECT_LEN`]) so a compromised
-/// child cannot pin unbounded parent memory through an exception payload.
+/// field is missing or out of range. Enforces the same size cap the sender
+/// applies to `object` ([`UnicodeErrorData::MAX_OBJECT_LEN`]) on all three
+/// string fields — legitimate senders only ever fill `encoding`/`reason` with
+/// short static codec names and reason phrases — so a compromised child
+/// cannot pin large amounts of parent memory through an exception payload.
 fn sanitize_unicode_data(data: pb::UnicodeErrorData) -> Option<Box<UnicodeErrorData>> {
+    // Real `encoding`/`reason` values are tiny ("utf-8", "invalid start
+    // byte", ...), so anything near the object cap is bogus; reusing that cap
+    // avoids a second constant without meaningfully loosening the bound.
+    if data.encoding.len() > UnicodeErrorData::MAX_OBJECT_LEN || data.reason.len() > UnicodeErrorData::MAX_OBJECT_LEN {
+        return None;
+    }
     // `object_len` is measured in the same units as `start`/`end`: bytes for
     // decode errors, characters for encode errors. The size cap matches the
     // sender's byte-length check.
