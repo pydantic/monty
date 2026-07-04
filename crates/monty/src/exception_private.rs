@@ -1501,6 +1501,13 @@ impl ExcType {
         end: usize,
         reason: &str,
     ) -> RunError {
+        // Callers must pass a non-empty range; checked in debug builds only so
+        // a wrong caller can't panic the VM in release (it gets a garbled
+        // message position instead, which is harmless).
+        debug_assert!(
+            end > start,
+            "unicode_encode_error: end ({end}) must be > start ({start})"
+        );
         let msg = if end - start == 1 {
             format!(
                 "'{codec}' codec can't encode character '{}' in position {start}: {reason}",
@@ -1676,6 +1683,13 @@ impl ExcType {
 /// so the fs layer can produce the identical wording when converting a
 /// `MountError::InvalidUtf8` from a text-mode file read into an exception.
 pub(crate) fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
+    // Callers must pass a non-empty range; checked in debug builds only so a
+    // wrong caller can't panic the VM in release (it gets a garbled message
+    // position instead, which is harmless).
+    debug_assert!(
+        end > start,
+        "unicode_decode_error_msg: end ({end}) must be > start ({start})"
+    );
     if end - start == 1 {
         format!("'{codec}' codec can't decode byte 0x{first_byte:02x} in position {start}: {reason}")
     } else {
