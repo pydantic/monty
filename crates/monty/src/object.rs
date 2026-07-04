@@ -791,6 +791,10 @@ impl MontyObject {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
             Self::Dataclass { name, field_names, .. } => name.len() + names_len(field_names),
+            // A `Type::Instance` carries the resolved class name as an owned leaf
+            // `String` (the other `MontyType`s are payload-free), so charge it here
+            // like the `String`/`Function`/... names above.
+            Self::Type(MontyType::Instance(name)) => name.len(),
             _ => 0,
         };
         BASE + payload

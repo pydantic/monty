@@ -149,6 +149,17 @@ try:
     assert False, 'expected sorted to fail'
 except TypeError as exc:
     assert str(exc) == "'<' not supported between instances of 'Foo' and 'Foo'", 'sorted ordering'
+# the direct `<` / `>=` operators raise too (not just via sorted)
+try:
+    f < Foo()
+    assert False, 'expected f < Foo() to fail'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'Foo' and 'Foo'", 'direct < ordering'
+try:
+    f >= Foo()
+    assert False, 'expected f >= Foo() to fail'
+except TypeError as exc:
+    assert str(exc) == "'>=' not supported between instances of 'Foo' and 'Foo'", 'direct >= ordering'
 
 # === string / io / json sinks ===
 try:

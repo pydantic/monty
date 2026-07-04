@@ -65,6 +65,12 @@ explicit `obj.__enter__()` call, which is an ordinary method call).
   so this is not observable in practice. User-class instances are exempt:
   their explicit dunder calls are ordinary method calls and receive all
   three arguments verbatim.
+- Direct `obj.__exit__(...)` on a **built-in** context manager requires
+  **exactly three** positional arguments — any other arity raises
+  `TypeError`. CPython's file/`IOBase.__exit__` is declared `*args` and
+  accepts any number, so `f.__exit__()` returns `None` there but raises in
+  Monty. (User-class `__exit__` is an ordinary method, so its arity matches
+  whatever the user defined, exactly as in CPython.)
 
 ## Current implementers of the protocol
 

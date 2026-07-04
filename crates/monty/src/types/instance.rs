@@ -1,10 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
+use std::{borrow::Cow, fmt::Write, mem};
 
 use ahash::AHashSet;
 
@@ -15,7 +9,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    hash::HashValue,
+    hash::{HashValue, identity_hash},
     heap::{
         BorrowedHeapReadMut, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
@@ -98,11 +92,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         None
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        // Instances are always truthy (no user `__bool__`/`__len__` in v1).
-        true
-    }
-
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
         // Identity equality, resolved by `Value::py_eq_impl` before reaching here.
         Ok(None)
@@ -110,9 +99,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         // Instances hash by identity (CPython's default for objects without `__hash__`).
-        let mut hasher = DefaultHasher::new();
-        self_id.hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(identity_hash(self_id)))
     }
 
     /// Heap-level `repr` fallback.
@@ -159,7 +146,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
             return call_member_bound(member, self_id, args, vm);
         }
 
-        // 3. No such attribute.
+        // 3. `obj.__class__(...)` constructs a new instance — the callable form of
+        // the `obj.__class__` special attribute (see `instance_getattr` step 3).
+        // Checked after the dict/namespace lookups so a same-named member wins.
+        // The class value is a fresh owned ref (inc_ref) dropped by the guard once
+        // `call_function` has borrowed it; `instantiate_class` takes its own ref
+        // for the new instance.
+        if attr_str == "__class__" {
+            vm.heap.inc_ref(class_id);
+            let class_val = Value::Ref(class_id);
+            defer_drop!(class_val, vm);
+            return vm.call_function(class_val, args);
+        }
+
+        // 4. No such attribute.
         args.drop_with_heap(vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
@@ -205,10 +205,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     ) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(exit) = class_member(class_id, "__exit__", vm) else {
-            // Unreachable via `with` in practice (`py_is_context_manager` gates
-            // on `__exit__`), but the class namespace is mutable during the
-            // body, so a reassigned-away `__exit__` surfaces the same
-            // AttributeError CPython's failed lookup would.
+            // Defensive tripwire — unreachable via `with`. `py_is_context_manager`
+            // gates on `__exit__` being present at entry, and Monty has no `del`,
+            // so the member cannot be removed mid-body. A reassignment (e.g. to a
+            // non-callable like `None`) keeps the member present, so this branch
+            // is not taken — that case fails later in `call_member_bound` as a
+            // `TypeError: 'NoneType' object is not callable`.
             return Err(ExcType::attribute_error(
                 class_name(class_id, vm.heap, vm.interns),
                 "__exit__",
@@ -263,10 +265,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         None
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        true
-    }
-
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
         Ok(None)
     }
@@ -274,9 +272,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
     fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         // Bound methods hash by identity, consistent with their identity-only
         // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
-        let mut hasher = DefaultHasher::new();
-        self_id.hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(identity_hash(self_id)))
     }
 
     fn py_repr_fmt(
@@ -380,8 +376,8 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker
 /// so — unlike `__init__` — it cannot suspend on external/OS calls (see
 /// `limitations/classes.md`). NOTE: recursion (e.g. a `__repr__` that reprs
 /// `self`) re-enters the VM on the *Rust* stack and is currently NOT bounded
-/// before the native stack overflows — a pre-existing `evaluate_function` issue
-/// tracked in recursion_error.md.
+/// before the native stack overflows — a pre-existing `evaluate_function`
+/// limitation documented in `limitations/classes.md`.
 fn instance_call_str_dunder(
     self_id: HeapId,
     dunder: &'static str,

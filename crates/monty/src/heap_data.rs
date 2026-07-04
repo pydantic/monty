@@ -16,7 +16,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
-    hash::{HashValue, hash_python_str},
+    hash::{HashValue, hash_python_str, identity_hash},
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
@@ -729,11 +729,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Ok(Some(HashValue::new(hasher.finish())))
             }
             // Cell uses identity hashing (matches Python's default for cell objects).
-            Self::Cell(_) => {
-                let mut hasher = DefaultHasher::new();
-                self_id.hash(&mut hasher);
-                Ok(Some(HashValue::new(hasher.finish())))
-            }
+            Self::Cell(_) => Ok(Some(identity_hash(self_id))),
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
             Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),

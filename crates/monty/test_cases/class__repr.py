@@ -72,6 +72,6 @@ class Plain:
 
 
 pl = Plain()
-assert 'Plain object at 0x' in repr(pl), 'default repr includes class name and address'
+assert repr(pl).startswith('<Plain object at 0x'), 'default repr includes class name and address'
 assert str(pl) == repr(pl), 'default str falls back to default repr'
 assert type(pl).__name__ == 'Plain', 'default-repr class still has a name'

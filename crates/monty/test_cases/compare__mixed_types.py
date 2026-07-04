@@ -149,3 +149,34 @@ assert 'b' in ['a', 'b', 'c'], 'str in list'
 # === Containment: in/not in tuple (found) ===
 assert 'b' in ('a', 'b', 'c'), 'str in tuple'
 assert 2 in (1, 2, 3), 'int in tuple'
+
+# === List ordering (lexicographic, like tuples) ===
+assert [1, 2] < [1, 3], 'list lt by element'
+assert [1, 2, 3] > [1, 2], 'longer list gt when prefix equal'
+assert [1] < [1, 2], 'shorter list lt when prefix equal'
+assert [1, 2] <= [1, 2], 'equal lists le'
+assert [1, 2] >= [1, 2], 'equal lists ge'
+assert ['a', 'b'] < ['a', 'c'], 'str-element list lt'
+assert [[1], [2]] < [[1], [3]], 'nested list lt'
+assert not ([2] < [1]), 'list not lt'
+# equal-but-unorderable elements don't block ordering (None == None), like CPython
+assert [None, 1] < [None, 2], 'None prefix does not block later ordering'
+
+# === Unorderable comparisons raise TypeError (not silently False) ===
+try:
+    1 < 'a'
+    assert False, 'expected int < str to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'int' and 'str'", 'int < str message'
+
+try:
+    None < None
+    assert False, 'expected None < None to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'NoneType' and 'NoneType'", 'None < None message'
+
+try:
+    [1] >= 'a'
+    assert False, 'expected list >= str to raise'
+except TypeError as exc:
+    assert str(exc) == "'>=' not supported between instances of 'list' and 'str'", 'list >= str message'

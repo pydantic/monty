@@ -9,11 +9,15 @@ any code runs.
 
 - **`class` definitions** — simple classes are supported (instance methods,
   `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
-  Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`), class
-  and method decorators (so `@dataclass`, `@classmethod`, `@staticmethod`,
-  `@property` are unavailable), and class-body statements other than `def`, a
-  simple `name [: T] = <expr>` assignment, `pass`, or a docstring. There is no
-  inheritance and no general dunder protocol. See [classes.md](classes.md).
+  Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
+  class-body statements other than `def`, a simple `name [: T] = <expr>`
+  assignment, `pass`, or a docstring. There is no inheritance and no general
+  dunder protocol. See [classes.md](classes.md).
+- **Decorators** (`@deco`) — rejected at parse time on functions, methods, and
+  classes alike (so `@dataclass`, `@classmethod`, `@staticmethod`, `@property`,
+  and any user decorator are unavailable). Previously top-level `def` decorators
+  were silently ignored; they now raise `NotImplementedError` rather than
+  changing behaviour without warning.
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator
   *expressions* (`(x for x in ...)`) parse but currently materialize to a
@@ -90,9 +94,23 @@ exposing `None` would diverge on type — and a real loader is neither available
 nor safe to surface in the sandbox. `__file__` is omitted so no host path can
 leak into the sandbox.
 
+## Ordering comparisons
+
+`<`, `<=`, `>`, `>=` on operands with no defined ordering raise
+`TypeError: '<' not supported between instances of '{a}' and '{b}'`, matching
+CPython (int vs str, `None` vs `None`, user-class instances without comparison
+dunders, etc.). Lists and tuples order lexicographically as in CPython.
+
+One message divergence: when a **list or tuple** compares unequal only because
+an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
+the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
+element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
+differs.
+
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures, decorators.
+- Functions (`def`, `async def`), nested functions, closures (but not
+  decorators — see above).
 - List / dict / set comprehensions (generator comprehensions degrade to
   lists — see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.

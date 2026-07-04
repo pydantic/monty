@@ -26,38 +26,19 @@ The host can also construct dataclass and namedtuple values (using the
 `MontyObject` API) and pass them in; those are a separate mechanism whose
 methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 
-## What works
+## Supported surface
 
-- `class Foo: ...` with a body of instance methods and class variables
-  (`name = <expr>` or `name: T = <expr>`, where `<expr>` is any expression,
-  including calls, comprehensions, and references to earlier class variables).
-- Class variable values run in the class-body scope, top-to-bottom; because
-  that body is a real, suspendable frame, a class-variable value may call an
-  external/OS function.
-- `__init__` with arbitrary positional/keyword/default/`*args`/`**kwargs`
-  parameters (methods are ordinary functions; `self` is the first parameter).
-- Instance attribute get/set (`obj.x`, `obj.x = ...`), including attributes
-  not declared in `__init__`.
-- Class attribute assignment (`Foo.x = 1`, `Foo.count += 1`, `setattr(Foo, ...)`),
-  visible to existing instances; a function assigned to a class attribute
-  becomes a method (binds `self` when accessed via an instance).
-- Instance methods, bound methods (`m = obj.method; m()`).
-- Class variables, read via the class (`Foo.count`) or an instance
-  (`obj.count`).
-- `obj.__class__` (returns the class object, `obj.__class__ is Foo`),
-  `Foo.__doc__` / `obj.__doc__` (the class docstring, or `None` when absent —
-  stored as a real class-namespace member as in CPython).
-- `__repr__` and `__str__` dispatch (via `repr()`, `str()`, f-strings,
-  `print`, and inside container reprs). `str()` falls back to `__repr__`.
-- `__enter__` / `__exit__` dispatch — instances of classes defining both
-  work as `with` context managers, with CPython's protocol checks, error
-  wording, and suppress semantics. They run as real frames and so *can*
-  suspend on external/OS calls (unlike `__repr__`/`__str__`). Divergences
-  (always-`None` traceback argument, exit-time `__exit__` lookup) are
-  documented in [with.md](with.md).
-- `type(obj)` returns the class object; `type(obj) is Foo` and
-  `isinstance(obj, Foo)` work.
-- `Foo.__name__`.
+Per the `limitations/` convention this file documents only *divergences* from
+CPython; the supported surface is summarized here just to bound what the
+divergences below apply to. Working, CPython-matching features: instance
+methods, `__init__` (full parameter shapes), instance and class attribute
+get/set (including `setattr(Foo, ...)` and function-attributes-become-methods),
+bound methods, class variables (arbitrary expressions, evaluated in a real
+suspendable class-body scope), `__repr__`/`__str__`/`__enter__`/`__exit__`
+dispatch, `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
+`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg `type()` constructor. The
+`__enter__`/`__exit__` divergences are in [with.md](with.md). Everything else
+below is where Monty differs from or does not implement CPython behaviour.
 
 ## Dynamic class creation — `type(name, bases, dict)`
 
@@ -91,6 +72,19 @@ order and error wording, but with these divergences:
   'y'`, where CPython says `Foo.__init__() missing ...`.
 - **`type(obj)`** returns the class object (so identity works), but its own
   `repr` is `<class 'Foo'>` with the bare name (CPython qualifies it).
+- **The class object is not itself a `type` instance.** The bare name `type`
+  resolves to the builtin `type` *function*, not a type object, so
+  `type(Foo) is type` is `False` (CPython: `True`) and `isinstance(Foo, type)`
+  raises `TypeError: isinstance() arg 2 must be a type, a tuple of types, or a
+  union` (CPython: `True`). There is no metaclass.
+- **Bound methods report `function`, not `method`.** `type(obj.method)` is
+  `<class 'function'>` where CPython says `<class 'method'>` — Monty has no
+  dedicated `method` type.
+- **Ordering comparisons on instances raise, but a user `__lt__`/`__gt__`/… is
+  not dispatched.** `a < b` on instances of a class with no comparison dunders
+  raises `TypeError: '<' not supported between instances of 'Foo' and 'Foo'`
+  (matching CPython). A class that *defines* `__lt__` etc. still raises — those
+  dunders are not dispatched (see the not-dispatched dunder list below).
 - **`__repr__`/`__str__` cannot suspend**: they are run to completion
   synchronously, so a `__repr__`/`__str__` that calls an external/OS function
   raises rather than yielding to the host. `__init__` and regular methods
@@ -115,6 +109,21 @@ order and error wording, but with these divergences:
   (where `type.__name__` is a metaclass descriptor whose setter renames the
   class), it does not rename the class, so `Foo.__name__` reads and `repr(Foo)`
   keep the original name while instances see the member.
+- **Assigning `obj.__class__`** stores an ordinary instance attribute rather
+  than reassigning the object's class. `obj.__class__ = X` then reads back `X`,
+  but `type(obj)` and `isinstance` still report the original class — an
+  internally inconsistent object. CPython either reassigns the class (for a
+  compatible class) or raises `TypeError: __class__ must be set to a class, not
+  '...' object`.
+- **Recursive/deep `__repr__`/`__str__` aborts the process.** A `__repr__` (or
+  `__str__`) that reprs `self`, or a deep-but-finite chain of instances whose
+  reprs nest (a ~600-deep linked list), overflows the native Rust stack and
+  aborts (`fatal runtime error: stack overflow`) *before* the Python recursion
+  limit (1000) can raise a catchable `RecursionError`. This is a pre-existing
+  `evaluate_function` re-entry limitation that user classes make far easier to
+  reach; on subprocess workers the pool recovers, but on the in-process/wasm
+  API it takes the host process down. A bounded native-recursion guard is
+  planned; until it lands, avoid unbounded/very-deep repr recursion.
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
   has its own scope that skips the class scope, so only the *leftmost iterable*
@@ -145,6 +154,11 @@ order and error wording, but with these divergences:
   `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,
   `__eq__`, `__hash__`, `__bool__`, etc. are not dispatched for
   user-defined instances.
+- Attribute-access hooks are **never** dispatched: `__getattr__`,
+  `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
+  attribute always raises the default `AttributeError` even when the class
+  defines `__getattr__`, and attribute writes always go straight to the
+  instance `__dict__`.
 - Introspection attributes other than `__name__`, `__doc__`, and
   `obj.__class__`: `Foo.__dict__`, `obj.__dict__`, `Foo.__bases__`,
   `Foo.__mro__`, `Foo.__qualname__`, `Foo.__module__`, and explicit

@@ -72,6 +72,12 @@ assert p.__class__ is Point, '__class__ returns the class object'
 assert Point(0).__class__ is Point, '__class__ on a fresh instance'
 assert p.__class__.__name__ == 'Point', '__class__.__name__ chains'
 assert type(p) is p.__class__, 'type(obj) and obj.__class__ agree'
+# calling `obj.__class__(...)` constructs a new instance, both when accessed as
+# a value first and when called directly (the two must be consistent)
+cls = p.__class__
+assert cls(5).x == 5, 'obj.__class__ is callable to construct a new instance'
+assert p.__class__(6).x == 6, 'obj.__class__(...) direct call constructs an instance'
+assert p.__class__(7).__class__ is Point, 'instance from __class__ call has the right class'
 
 
 # === __doc__ ===

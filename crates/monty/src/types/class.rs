@@ -1,9 +1,4 @@
-use std::{
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 
@@ -13,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    hash::HashValue,
+    hash::{HashValue, identity_hash},
     heap::{BorrowedHeapReadMut, DropWithHeap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
     resource::ResourceTracker,
     types::str::allocate_string,
@@ -100,9 +95,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
     fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
         // Class objects hash by identity (like CPython type objects).
-        let mut hasher = DefaultHasher::new();
-        self_id.hash(&mut hasher);
-        Ok(Some(HashValue::new(hasher.finish())))
+        Ok(Some(identity_hash(self_id)))
     }
 
     fn py_repr_fmt(

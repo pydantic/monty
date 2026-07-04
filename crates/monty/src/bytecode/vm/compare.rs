@@ -40,8 +40,15 @@ impl<T: ResourceTracker> VM<'_, T> {
         Ok(())
     }
 
-    /// Ordering comparison with a predicate.
-    pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
+    /// Ordering comparison (`<`, `<=`, `>`, `>=`) with a predicate.
+    ///
+    /// `operator` is the source symbol, used only for the error message when the
+    /// operands have no defined ordering. In that case (`py_cmp` returns `None` —
+    /// e.g. `1 < 'a'`, `None < None`, or two instances of a user class without
+    /// comparison dunders) this raises CPython's
+    /// `TypeError: '{op}' not supported between instances of ...` rather than
+    /// silently yielding `False`.
+    pub(super) fn compare_ord<F>(&mut self, operator: &str, check: F) -> Result<(), RunError>
     where
         F: FnOnce(Ordering) -> bool,
     {
@@ -52,9 +59,14 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
-        this.push(Value::Bool(result));
-        Ok(())
+        if let Some(ordering) = lhs.py_cmp(rhs, this)? {
+            this.push(Value::Bool(check(ordering)));
+            Ok(())
+        } else {
+            let left_type = lhs.py_type_name(this);
+            let right_type = rhs.py_type_name(this);
+            Err(ExcType::type_error_ordering(operator, &left_type, &right_type))
+        }
     }
 
     /// Identity comparison (is/is not).

@@ -52,6 +52,15 @@ fn class_decorators_return_not_implemented_error() {
 }
 
 #[test]
+fn function_decorators_return_not_implemented_error() {
+    // A top-level `def` decorator is rejected rather than silently ignored:
+    // silently dropping a decorator would change behaviour without warning.
+    let err = get_parse_err("@deco\ndef foo(): pass");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support function decorators");
+}
+
+#[test]
 fn class_var_walrus_returns_not_implemented_error() {
     // A walrus target in a class-variable value binds in the class body, so
     // CPython makes it a class member; Monty's namespace assembly would

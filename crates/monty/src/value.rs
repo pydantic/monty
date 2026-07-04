@@ -221,8 +221,8 @@ impl PyTrait<'_> for Value {
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
         let interns = vm.interns;
-        // py_cmp handles numbers, strings, bytes, and tuples.
-        // Recursion depth tracking for tuples is handled in Tuple::py_cmp.
+        // py_cmp handles numbers, strings, bytes, tuples, and lists.
+        // Recursion depth tracking for tuples/lists is handled by their iterators.
         match (self, other) {
             (Self::Int(s), Self::Int(o)) => Ok(s.partial_cmp(o)),
             (Self::Float(s), Self::Float(o)) => Ok(s.partial_cmp(o)),
@@ -249,7 +249,7 @@ impl PyTrait<'_> for Value {
             (Self::Ref(id), Self::Float(o)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 Ok(li.partial_cmp_f64(*o))
             }
-            // Ref vs Ref comparison: handles LongInt, Str, and Tuple
+            // Ref vs Ref comparison: handles LongInt, Str, Tuple, and List
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
                 (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                     Ok(a.get(vm.heap).inner().partial_cmp(b.get(vm.heap).inner()))
@@ -258,6 +258,7 @@ impl PyTrait<'_> for Value {
                     Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap))),
                 (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {

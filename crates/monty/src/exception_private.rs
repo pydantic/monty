@@ -310,6 +310,21 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
     }
 
+    /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
+    /// between values whose types define no ordering, e.g. `1 < 'a'` or two
+    /// instances of a user class without comparison dunders.
+    ///
+    /// Matches CPython's format:
+    /// `TypeError: '{op}' not supported between instances of '{left}' and '{right}'`
+    #[must_use]
+    pub(crate) fn type_error_ordering(operator: &str, left_type: &str, right_type: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{operator}' not supported between instances of '{left_type}' and '{right_type}'"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for awaiting a non-awaitable object.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object can't be awaited`

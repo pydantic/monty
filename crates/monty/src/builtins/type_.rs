@@ -19,6 +19,11 @@ use crate::{
 /// `type(name, bases, dict)` dynamically creates a new class, mirroring
 /// CPython (except that `bases` must be empty — Monty classes cannot
 /// inherit). Any other positional count is a `TypeError`.
+///
+/// This hand-rolls `args.into_parts()` rather than using `#[derive(FromArgs)]`
+/// because the "exactly 1 *or* 3 positionals, same name" overload isn't
+/// expressible by any of the binder families — CPython special-cases `type`'s
+/// argument parsing in `type_new`/`type_init` for the same reason.
 pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {

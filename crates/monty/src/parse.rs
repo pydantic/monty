@@ -619,9 +619,18 @@ impl<'a> Parser<'a> {
     ///
     /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
     /// parsing in [`parse_class_def`](Self::parse_class_def). Decorators are
-    /// accepted but ignored here (matching existing function handling); the
-    /// class-body path rejects decorated methods before calling this.
+    /// rejected here rather than silently ignored — a silently-dropped decorator
+    /// changes behaviour without warning, which is unacceptable in a sandbox. The
+    /// class-body path rejects decorated methods earlier with a more specific
+    /// message, so this only fires for top-level `def`s in practice.
     fn parse_function_def(&mut self, function: ast::StmtFunctionDef) -> Result<RawFunctionDef, ParseError> {
+        if !function.decorator_list.is_empty() {
+            return Err(ParseError::not_implemented(
+                "function decorators",
+                self.convert_range(function.range),
+            ));
+        }
+
         let params = &function.parameters;
 
         // Parse positional-only parameters (before /)

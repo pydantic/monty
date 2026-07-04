@@ -413,13 +413,13 @@ pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {
     BUILTINS.get_or_try_init(py, || py.import("builtins").map(Bound::unbind))
 }
 
-/// Reconstructs the host Python *type object* for a Monty [`Type`] crossing the
+/// Reconstructs the host Python *type object* for a Monty [`MontyType`] crossing the
 /// boundary as a value (e.g. sandbox code passing `type(Path('/x'))` to a host call).
 ///
 /// Genuine builtins resolve from `builtins`; modeled stdlib types resolve from their
 /// real defining module (the `Path` class maps to `PurePosixPath`, like its instances).
-/// The import path can differ from [`Type`]'s `Display` (io types show `_io.*` but live
-/// in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
+/// The import path can differ from [`MontyType`]'s `Display` (io types show `_io.*` but
+/// live in `io`). Unmodeled types fall through to `builtins` and raise `AttributeError`.
 /// Each modeled type's host class is cached in its own `PyOnceLock` (imported once).
 fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
     // Each expansion gets a distinct hygienic `LOCK` static, so every arm caches
