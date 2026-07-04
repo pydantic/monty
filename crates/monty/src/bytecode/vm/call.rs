@@ -772,17 +772,9 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
     ///
-    /// Locals are built in the reusable `namespace_scratch` buffer under a
-    /// [`HeapGuard`] (which drops the bound values with the heap on any error
-    /// path) and then drained onto the VM stack. The frame's `stack_base`
-    /// points to the start of this locals region, and operands are pushed
-    /// above it.
-    ///
-    /// The caller's call-site offset is captured cheaply via
-    /// [`current_offset`](Self::current_offset) (resolved to a source range
-    /// lazily, only if a traceback is later built); it is `None` when no frames
-    /// are on the stack (e.g. host-initiated calls via
-    /// [`MontyRepl`](crate::MontyRepl)).
+    /// Locals are built in the reusable `namespace_scratch` buffer (under a
+    /// [`HeapGuard`] for cleanup on error) and moved onto the VM stack, where
+    /// `stack_base` points to the start of the locals region.
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
@@ -804,14 +796,9 @@ impl<T: ResourceTracker> VM<'_, T> {
         let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
-        // 1. Build the namespace in the reusable scratch buffer, then drain it
-        //    onto the stack below. Reusing one allocation across calls avoids a
-        //    `malloc`/`free` per call. The buffer is always empty when taken
-        //    (drained + restored at the end of the previous call), and it is
-        //    never held across user-code execution, so this is safe under
-        //    recursion. On an error path the `HeapGuard` drops the buffer
-        //    entirely (leaving `namespace_scratch` empty); the pooling simply
-        //    restarts on the next successful call.
+        // 1. Build the namespace in the reusable scratch buffer to avoid a
+        //    per-call allocation. On error `HeapGuard` drops the buffer, so the
+        //    pool just restarts empty next call.
         let mut namespace = mem::take(&mut self.namespace_scratch);
         namespace.reserve(namespace_size);
         let mut namespace_guard = HeapGuard::new(namespace, self);
@@ -833,11 +820,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         let code = &func.code;
 
         // 6. Commit the guard (no rollback) and push the frame. The operand
-        // stack starts immediately above the locals region — any
-        // comprehensions emit their own push/pop bytecode at entry/exit, so
-        // no frame-level region is reserved here. Drain (rather than move) the
-        // locals onto the stack so the buffer keeps its allocation, then return
-        // it to the pool for the next call.
+        // stack starts immediately above the locals region — comprehensions
+        // emit their own push/pop bytecode, so no frame-level region is
+        // reserved here. `append` empties the buffer (keeping its allocation)
+        // so it can return to the pool.
         let (mut namespace, this) = namespace_guard.into_parts();
         this.stack.append(&mut namespace);
         this.namespace_scratch = namespace;

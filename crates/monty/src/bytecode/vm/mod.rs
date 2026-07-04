@@ -356,15 +356,9 @@ pub struct CallFrame<'code> {
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
-    /// Caller's bytecode offset at the call site, resolved to a source
-    /// [`CodeRange`] only when a traceback is actually built (see
-    /// [`current_offset`](Self::current_offset)).
-    ///
-    /// Stored raw rather than pre-resolved because resolving requires a linear
-    /// scan of the caller's location table — pure waste on the (common) path
-    /// where the call never raises. `None` for the root/module frame, which has
-    /// no caller. On unwind the offset is resolved against the *caller* frame's
-    /// `code`, which is the current frame once this frame has been popped.
+    /// Caller's bytecode offset at the call site (for tracebacks). Stored raw
+    /// and resolved to a `CodeRange` lazily on unwind (see `resolve_offset`) to
+    /// skip the location-table scan unless the call raises. `None` at the root.
     call_offset: Option<u32>,
 
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
@@ -733,15 +727,9 @@ pub struct VM<'h, T: ResourceTracker> {
     /// count on `restore` and rebalanced per-task across async switches.
     recursion_depth: usize,
 
-    /// Reusable scratch buffer for building a sync call's locals region.
-    ///
-    /// `call_sync_function` binds arguments and installs cell/free-var slots
-    /// into this buffer, then drains it onto the operand stack. Reusing one
-    /// allocation across calls avoids a `malloc`/`free` per function call — a
-    /// major cost on call-heavy code (see the `fib` bench). The buffer is only
-    /// ever held transiently *within* `call_sync_function` (never across
-    /// user-code execution), so a single shared buffer is safe even under
-    /// recursion: it is always empty and back in place before the callee runs.
+    /// Reusable scratch buffer for building a sync call's locals, avoiding a
+    /// `malloc`/`free` per call. Only held transiently within
+    /// `call_sync_function`, so one shared buffer is safe under recursion.
     namespace_scratch: Vec<Value>,
 }
 
@@ -2050,25 +2038,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         )
     }
 
-    /// Returns the caller's raw bytecode offset for a call site, or `None` when
-    /// no frame is on the stack (host-initiated calls).
+    /// Captures the caller's current bytecode offset for a call site, or `None`
+    /// when no frame is on the stack (host-initiated calls).
     ///
     /// The cheap counterpart to [`current_position`](Self::current_position):
-    /// it captures `instruction_ip` without scanning the location table, so it
-    /// is called on every function call. The offset is resolved to a
-    /// [`CodeRange`] lazily, only when a traceback is built (see
-    /// [`resolve_offset`](Self::resolve_offset)). Offsets beyond `u32::MAX`
-    /// (an invariant violation) degrade to `None` rather than panicking.
+    /// no location-table scan, so it is affordable on every call. Out-of-range
+    /// offsets (an invariant violation) degrade to `None` rather than panic.
     pub(super) fn current_offset(&self) -> Option<u32> {
         self.frames.last()?;
         u32::try_from(self.instruction_ip).ok()
     }
 
-    /// Resolves a raw caller offset (from `CallFrame::call_offset`) to a source
-    /// [`CodeRange`] against the *current* frame's code.
-    ///
-    /// Called during traceback unwinding after the failing frame has been
-    /// popped, so the current frame is the caller that owns `offset`.
+    /// Resolves a raw caller offset (`CallFrame::call_offset`) to a source
+    /// [`CodeRange`] against the current frame's code, during traceback unwind
+    /// once the failing frame has been popped so the current frame is the caller.
     pub(super) fn resolve_offset(&self, offset: u32) -> CodeRange {
         self.frames
             .last()
