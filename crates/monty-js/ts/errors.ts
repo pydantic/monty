@@ -252,6 +252,23 @@ export function notCallableMessage(value: unknown): string {
   return `'${pyTypeName(value)}' object is not callable`
 }
 
+/**
+ * `__monty_type__` marker → the Python type its conversion produces. `Type`
+ * and `BuiltinFunction` cannot round-trip and convert to reprs; an unknown
+ * marker converts as a plain dict.
+ */
+const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
+  Ellipsis: 'ellipsis',
+  Exception: 'Exception',
+  Date: 'date',
+  DateTime: 'datetime',
+  TimeDelta: 'timedelta',
+  TimeZone: 'timezone',
+  Type: 'repr',
+  BuiltinFunction: 'repr',
+  Dataclass: 'dataclass',
+}
+
 /** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */
 function pyTypeName(value: unknown): string {
   if (value === null || value === undefined) {
@@ -266,12 +283,18 @@ function pyTypeName(value: unknown): string {
       return 'int'
     case 'string':
       return 'str'
-    case 'object':
+    case 'function':
+      return 'function'
+    case 'object': {
       if (value instanceof Uint8Array) return 'bytes'
       if (value instanceof Map) return 'dict'
       if (value instanceof Set) return 'set'
-      if (Array.isArray(value)) return 'list'
-      return 'dict'
+      if (Array.isArray(value)) {
+        return (value as { __tuple__?: boolean }).__tuple__ ? 'tuple' : 'list'
+      }
+      const marker = (value as { __monty_type__?: unknown }).__monty_type__
+      return typeof marker === 'string' ? (MARKED_TYPE_NAMES[marker] ?? 'dict') : 'dict'
+    }
     default:
       // symbols and other exotic values have no Monty equivalent
       return 'object'

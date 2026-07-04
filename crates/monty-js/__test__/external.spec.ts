@@ -436,6 +436,27 @@ test('calling a stale proxy whose entry is now non-callable raises TypeError', a
   }
 })
 
+test('stale proxy TypeError names tuple-marked and __monty_type__ values', async (t) => {
+  // The type in the message follows the js->monty conversion, honoring the
+  // `__tuple__` array marker and `__monty_type__` object markers.
+  const session = await pool().checkout()
+  try {
+    await session.feedRun('f = fn', { externalLookup: { fn: () => 1 } })
+    const tupleError = await t.throwsAsync(
+      () => session.feedRun('f()', { externalLookup: { fn: Object.assign([1, 2], { __tuple__: true }) } }),
+      { instanceOf: MontyRuntimeError },
+    )
+    t.is(tupleError.message, "TypeError: 'tuple' object is not callable")
+    const markedError = await t.throwsAsync(
+      () => session.feedRun('f()', { externalLookup: { fn: { __monty_type__: 'DateTime' } } }),
+      { instanceOf: MontyRuntimeError },
+    )
+    t.is(markedError.message, "TypeError: 'datetime' object is not callable")
+  } finally {
+    await session.close()
+  }
+})
+
 test('externalLookup unconvertible value rejects the turn', async (t) => {
   // a non-callable value that cannot cross the wire surfaces as a conversion
   // error (not a misleading NameError); the worker never observed the name
