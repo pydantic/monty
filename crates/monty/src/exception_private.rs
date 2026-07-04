@@ -1344,7 +1344,12 @@ impl ExcType {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    pub(crate) fn binary_type_error(op: &str, lhs_type: Type, lhs_name: &str, rhs_name: &str) -> RunError {
+    pub(crate) fn binary_type_error(
+        op: &str,
+        lhs_type: Type,
+        lhs_name: impl Display,
+        rhs_name: impl Display,
+    ) -> RunError {
         let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {

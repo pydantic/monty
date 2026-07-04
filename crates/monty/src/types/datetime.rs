@@ -615,9 +615,9 @@ fn tzinfo_from_value(
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(ExcType::type_error_tzinfo(other.py_type().name(heap, interns))),
+            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
         },
-        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name(heap, interns))),
+        _ => Err(ExcType::type_error_tzinfo(&value.py_type_shallow().name(heap, interns))),
     }
 }
 
@@ -631,9 +631,9 @@ fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
         Value::None => Ok(()),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(_) => Ok(()),
-            other => Err(ExcType::type_error_tzinfo(other.py_type().name(heap, interns))),
+            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
         },
-        _ => Err(ExcType::type_error_tzinfo(value.py_type_shallow().name(heap, interns))),
+        _ => Err(ExcType::type_error_tzinfo(&value.py_type_shallow().name(heap, interns))),
     }
 }
 

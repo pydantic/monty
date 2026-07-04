@@ -485,12 +485,12 @@ fn str_join<'h>(
                     result.push_str(s.as_str());
                 } else {
                     let t = item.py_type_name(vm);
-                    return Err(ExcType::type_error_join_item(index, t));
+                    return Err(ExcType::type_error_join_item(index, &t));
                 }
             }
             _ => {
                 let t = item.py_type_name(vm);
-                return Err(ExcType::type_error_join_item(index, t));
+                return Err(ExcType::type_error_join_item(index, &t));
             }
         }
         index += 1;

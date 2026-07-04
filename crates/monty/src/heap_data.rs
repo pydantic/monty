@@ -990,7 +990,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dict(d) => d.py_getitem(key, vm),
             Self::Range(r) => r.py_getitem(key, vm),
             Self::ReMatch(m) => m.py_getitem(key, vm),
-            _ => Err(ExcType::type_error_not_sub(self.py_type(vm).name(vm.heap, vm.interns))),
+            _ => Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns))),
         }
     }
 
@@ -1002,7 +1002,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 key.drop_with_heap(vm);
                 value.drop_with_heap(vm);
                 Err(ExcType::type_error_not_sub_assignment(
-                    self.py_type(vm).name(vm.heap, vm.interns),
+                    &self.py_type(vm).name(vm.heap, vm.interns),
                 ))
             }
         }

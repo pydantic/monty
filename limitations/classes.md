@@ -53,6 +53,28 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
   `isinstance(obj, Foo)` work.
 - `Foo.__name__`.
 
+## Dynamic class creation — `type(name, bases, dict)`
+
+The 3-arg `type()` form creates classes at runtime with CPython's validation
+order and error wording, but with these divergences:
+
+- **`bases` must be the empty tuple `()`.** Any non-empty bases tuple — even
+  `(object,)` — raises `TypeError: type() bases are not supported` (the
+  runtime counterpart of the parse-time `class Foo(Bar)` rejection; no
+  inheritance).
+- **Keywords are always rejected.** CPython forwards extra keywords to
+  `__init_subclass__`; Monty has no `__init_subclass__`, but the error
+  message matches what `object.__init_subclass__` produces
+  (`A.__init_subclass__() takes no keyword arguments`).
+- Only `__doc__` is synthesized into the namespace when absent (as `None`,
+  matching CPython). CPython also sets `__module__`, `__qualname__`,
+  `__dict__`, `__weakref__`, etc. — those attributes raise `AttributeError`
+  in Monty, as for compiled classes.
+- **Non-string namespace keys raise `TypeError`**
+  (`non-string key (int) in the namespace of class 'A'`). CPython accepts
+  them with only a `RuntimeWarning`; Monty has no warnings machinery, so it
+  raises rather than silently accepting.
+
 ## Divergences from CPython
 
 - **Default `repr`** (no user `__repr__`) is `<Foo object at 0x..>` using the
@@ -104,7 +126,8 @@ methods dispatch back to the host (see `test_cases/dataclass__basic.py`).
 ## What does NOT exist for user code
 
 - `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at
-  parse time: "class inheritance and metaclasses").
+  parse time: "class inheritance and metaclasses"; the runtime equivalent
+  `type('Foo', (Bar,), {})` raises `TypeError`, see above).
 - Metaclasses, `__init_subclass__`, `__set_name__`, and any other
   metaclass-driven namespace customization.
 - `__slots__`, descriptors (`__get__` / `__set__` / `__delete__`).

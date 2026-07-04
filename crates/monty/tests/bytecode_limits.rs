@@ -304,8 +304,9 @@ mod function_parameter_limits {
 /// assert reading the last one back through the class object.
 ///
 /// Namespace assembly pushes two operand-stack entries (name const + value) per
-/// member before `BuildClass` pops them all, so counts above 16383 overflow an
-/// `i16` stack-effect accumulator — a regression guard for the i16→i32 widening.
+/// member before `BuildDict` pops them all into the `type()` call's namespace
+/// argument, so counts above 16383 overflow an `i16` stack-effect accumulator —
+/// a regression guard for the i16→i32 widening.
 fn generate_many_class_members(count: usize) -> String {
     let mut code = String::from("class C:\n");
     for i in 0..count {

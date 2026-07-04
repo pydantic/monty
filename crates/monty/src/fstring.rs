@@ -774,7 +774,7 @@ pub fn format_with_spec(
     if let Value::Ref(id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
-        return format_long_int(li, value_type.name(vm.heap, vm.interns), spec, vm.heap.tracker());
+        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, vm.heap.tracker());
     }
 
     match (value, spec.type_char) {

@@ -520,16 +520,6 @@ pub enum Opcode {
     /// available — we synthesise the equivalent by peeking the receiver.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     MethodDictMerge,
-    /// Pop `2 * member_count` key/value pairs, build a class object, push it.
-    /// Operands: u16 const index of the class name (an interned string) + u16
-    /// member count.
-    ///
-    /// The compiler emits, for a `class Foo: ...`, the `(name, value)` pairs for
-    /// each method and class variable, then this op pops them, builds the class
-    /// namespace dict, and wraps it in a [`HeapData::Class`](crate::heap::HeapData).
-    /// Stack: `[..., k1, v1, ..., kN, vN] -> [..., class]`.
-    /// Appended at the end to preserve the serialized byte values of all older opcodes.
-    BuildClass,
 }
 
 impl TryFrom<u8> for Opcode {
@@ -592,7 +582,7 @@ impl Opcode {
     /// Returns the operand-stack effect of this opcode paired with `operand`
     /// (positive = push, negative = pop).
     ///
-    /// Returns `i32` because u16-count opcodes (`BuildDict`, `BuildClass`)
+    /// Returns `i32` because u16-count opcodes (notably `BuildDict`)
     /// can pop up to `2 * u16::MAX` values, which overflows `i16`; the
     /// builder's depth tracker accumulates in `i32` anyway.
     ///
@@ -747,9 +737,6 @@ impl Opcode {
 
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
-            // `BuildClass(name_const, member_count)` pops `2 * member_count`
-            // key/value pairs and pushes the class object.
-            (BuildClass, Operand::U16U16(_, member_count)) => 1 - 2 * i32::from(member_count),
 
             // === Jumps: fall-through effect (what the tracker absorbs after the bytes are written).
             // Use `Offset` arguments to sanity check that jumps are correctly paired with offsets. ===
@@ -825,8 +812,8 @@ mod tests {
     fn test_serialized_opcode_values_remain_stable() {
         // Locks the tail-opcode discriminants for the current wire-format version. Removing
         // an opcode in the middle of the enum (e.g. `LoadLocalCallable`/`W` in v3) shifts
-        // everything after it down — update both these assertions and bump
-        // `SERIALIZATION_VERSION` in `monty-python/src/serialization.rs` when that happens.
+        // everything after it down — update these assertions when that happens (any released
+        // serialized-`Code` format would also need a version bump, none exists today).
         assert_eq!(Opcode::RaiseImportError as u8, 108);
         assert_eq!(Opcode::Dup2 as u8, 109);
         assert_eq!(Opcode::DeleteGlobal as u8, 110);
@@ -842,14 +829,12 @@ mod tests {
         // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
         // tail so older opcode bytes keep their discriminants.
         assert_eq!(Opcode::MethodDictMerge as u8, 118);
-        // Class construction opcode, appended at the tail.
-        assert_eq!(Opcode::BuildClass as u8, 119);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::BuildClass as u8 + 1);
+        let result = Opcode::try_from(Opcode::MethodDictMerge as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

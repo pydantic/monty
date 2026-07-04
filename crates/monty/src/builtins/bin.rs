@@ -36,7 +36,7 @@ pub fn builtin_bin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             let bin_str = format_bigint_bin(li.inner());
             Ok(allocate_string_no_interning(bin_str, vm.heap)?)
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type_name(vm))),
+        _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
 

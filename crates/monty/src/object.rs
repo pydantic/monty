@@ -541,7 +541,7 @@ impl MontyType {
     /// name via the heap.
     pub(crate) fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
         match ty {
-            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).to_owned()),
+            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
             other => Self::from_internal_static(other),
         }
     }

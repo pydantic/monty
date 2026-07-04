@@ -192,9 +192,9 @@ impl Bytes {
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
-                _ => return Err(ExcType::type_error_bytes_init(v.py_type_name(vm))),
+                _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
-            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type_name(vm))),
+            Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
         };
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))

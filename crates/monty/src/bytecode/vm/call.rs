@@ -470,7 +470,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             _ => {
                 args.drop_with_heap(self);
                 let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
-                return Err(ExcType::type_error_not_callable_object(type_name));
+                return Err(ExcType::type_error_not_callable_object(&type_name));
             }
         };
 

@@ -15,7 +15,6 @@ use crate::{
     exception_private::{ExcType, RunResult},
     hash::HashValue,
     heap::{BorrowedHeapReadMut, DropWithHeap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
-    intern::StringId,
     resource::ResourceTracker,
     types::str::allocate_string,
     value::{EitherStr, Value},
@@ -34,8 +33,11 @@ use crate::{
 /// the rest of the design.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Class {
-    /// Interned class name (e.g. `Foo`), used for `repr` and `__name__`.
-    name: StringId,
+    /// Class name (e.g. `Foo`), used for `repr` and `__name__`. Interned for
+    /// compiled `class` statements; heap-owned for classes created at runtime
+    /// via the 3-arg `type(name, bases, dict)` form, whose name cannot be
+    /// interned because the intern table is frozen after prepare.
+    name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
 }
@@ -43,14 +45,14 @@ pub(crate) struct Class {
 impl Class {
     /// Creates a new class object from its name and member namespace.
     #[must_use]
-    pub fn new(name: StringId, namespace: Dict) -> Self {
+    pub fn new(name: EitherStr, namespace: Dict) -> Self {
         Self { name, namespace }
     }
 
-    /// Returns the interned class name id.
+    /// Returns the class name (interned or heap-owned).
     #[must_use]
-    pub fn name_id(&self) -> StringId {
-        self.name
+    pub fn name(&self) -> &EitherStr {
+        &self.name
     }
 
     /// Returns a reference to the class member namespace.
@@ -109,7 +111,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        Ok(write!(f, "<class '{}'>", vm.interns.get_str(self.get(vm.heap).name))?)
+        Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
@@ -119,14 +121,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         // shadows a same-named class-dict member (`class Foo: __name__ = 'bar'`
         // still reads `'Foo'`; only instances see the member).
         if attr_str == "__name__" {
-            let name = vm.interns.get_str(self.get(vm.heap).name).to_owned();
+            let name = self.get(vm.heap).name.as_str(vm.interns).to_owned();
             return Ok(Some(CallResult::Value(allocate_string(name, vm.heap)?)));
         }
         // Otherwise look up a member (method or class variable) in the namespace.
         match self.get(vm.heap).namespace.get_by_str(attr_str, vm.heap, vm.interns) {
             Some(value) => Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap)))),
             None => Err(ExcType::attribute_error_type(
-                vm.interns.get_str(self.get(vm.heap).name),
+                self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,
             )),
         }
@@ -153,7 +155,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         } else {
             args.drop_with_heap(vm);
             Err(ExcType::attribute_error_type(
-                vm.interns.get_str(self.get(vm.heap).name),
+                self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,
             ))
         }
@@ -162,7 +164,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
 impl HeapItem for Class {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.namespace.py_estimate_size()
+        mem::size_of::<Self>() + self.name.py_estimate_size() + self.namespace.py_estimate_size()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

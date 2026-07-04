@@ -413,7 +413,7 @@ pub trait PyTrait<'h> {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(vm).name(vm.heap, vm.interns)))
+        Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.

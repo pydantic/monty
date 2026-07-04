@@ -7,7 +7,7 @@ use crate::{
     heap::{HeapData, HeapGuard, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
-    types::{Class, Dict, List, Set, Slice, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
+    types::{Dict, List, Set, Slice, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
     value::{VALUE_SIZE, Value},
 };
 
@@ -47,38 +47,6 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
-        Ok(())
-    }
-
-    /// Builds a class object from `member_count` key/value pairs on the stack.
-    ///
-    /// The compiler pushes each class member as a `(name, value)` pair, then emits
-    /// `BuildClass` with the class-name constant (an interned string) and the
-    /// member count. This pops the pairs into the class namespace dict and wraps it
-    /// in a [`Class`].
-    pub(super) fn build_class(&mut self, name_const_idx: u16, member_count: usize) -> Result<(), RunError> {
-        // The class name is an interned-string constant in this frame's pool.
-        let Value::InternString(name_id) = self.current_frame().code.constants().get(name_const_idx) else {
-            return Err(RunError::internal(
-                "BuildClass: name constant is not an interned string",
-            ));
-        };
-        let name_id = *name_id;
-
-        // Pop the member pairs and build the namespace dict (ownership transfers).
-        let items = self.pop_n(member_count * 2);
-        let mut namespace = Dict::new();
-        let mut iter = items.into_iter();
-        while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            // A name bound more than once in the class body (`x = 1; x = 2`)
-            // appears twice in the pairs; drop the replaced value or it leaks.
-            if let Some(old_value) = namespace.set(key, value, self)? {
-                old_value.drop_with_heap(self);
-            }
-        }
-
-        let class_id = self.heap.allocate(HeapData::Class(Class::new(name_id, namespace)))?;
-        self.push(Value::Ref(class_id));
         Ok(())
     }
 
@@ -154,7 +122,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 }
                 _ => {
                     let type_ = iterable.py_type_name(this);
-                    return Err(ExcType::type_error_value_after_star(type_));
+                    return Err(ExcType::type_error_value_after_star(&type_));
                 }
             },
             Value::InternString(id) => {
@@ -168,7 +136,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 let type_ = iterable.py_type_name(this);
-                return Err(ExcType::type_error_value_after_star(type_));
+                return Err(ExcType::type_error_value_after_star(&type_));
             }
         };
 
@@ -353,11 +321,11 @@ impl<T: ResourceTracker> VM<'_, T> {
                     .collect()
             } else {
                 let type_ = mapping.py_type_name(this);
-                return Err(ExcType::type_error_not_mapping(type_));
+                return Err(ExcType::type_error_not_mapping(&type_));
             }
         } else {
             let type_ = mapping.py_type_name(this);
-            return Err(ExcType::type_error_not_mapping(type_));
+            return Err(ExcType::type_error_not_mapping(&type_));
         };
 
         // The target dict sits at `depth` positions below TOS (which is now gone after pop)
@@ -417,7 +385,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 }
                 _ => {
                     let type_ = iterable.py_type_name(this);
-                    return Err(ExcType::type_error_not_iterable(type_));
+                    return Err(ExcType::type_error_not_iterable(&type_));
                 }
             },
             Value::InternString(id) => {
@@ -431,7 +399,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 let type_ = iterable.py_type_name(this);
-                return Err(ExcType::type_error_not_iterable(type_));
+                return Err(ExcType::type_error_not_iterable(&type_));
             }
         };
 
@@ -611,14 +579,14 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     _ => {
                         let type_name = value.py_type_name(this);
-                        return Err(unpack_type_error(type_name));
+                        return Err(unpack_type_error(&type_name));
                     }
                 }
             }
             // Non-iterable types
             _ => {
                 let type_name = value.py_type_name(this);
-                return Err(unpack_type_error(type_name));
+                return Err(unpack_type_error(&type_name));
             }
         };
 
@@ -690,13 +658,13 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     _ => {
                         let type_name = value.py_type_name(this);
-                        return Err(unpack_type_error(type_name));
+                        return Err(unpack_type_error(&type_name));
                     }
                 }
             }
             _ => {
                 let type_name = value.py_type_name(this);
-                return Err(unpack_type_error(type_name));
+                return Err(unpack_type_error(&type_name));
             }
         };
 

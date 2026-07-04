@@ -1345,7 +1345,7 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Str, key.py_type_name(vm))),
+                    _ => return Err(ExcType::type_error_indices(Type::Str, &key.py_type_name(vm))),
                 };
 
                 let s = interns.get_str(*string_id);
@@ -1367,14 +1367,14 @@ impl PyTrait<'_> for Value {
                 let index = match key {
                     Self::Int(i) => *i,
                     Self::Bool(b) => i64::from(*b),
-                    _ => return Err(ExcType::type_error_indices(Type::Bytes, key.py_type_name(vm))),
+                    _ => return Err(ExcType::type_error_indices(Type::Bytes, &key.py_type_name(vm))),
                 };
 
                 let bytes = interns.get_bytes(*bytes_id);
                 let byte = get_byte_at_index(bytes, index).ok_or_else(ExcType::bytes_index_error)?;
                 Ok(Self::Int(i64::from(byte)))
             }
-            _ => Err(ExcType::type_error_not_sub(self.py_type_name(vm))),
+            _ => Err(ExcType::type_error_not_sub(&self.py_type_name(vm))),
         }
     }
 
@@ -1409,10 +1409,10 @@ impl Value {
     /// reprs — user-class instances render as their real class name rather
     /// than the generic `"object"`.
     ///
-    /// The returned slice borrows only `vm.interns` (never the heap), so it
-    /// can be captured before `drop_with_heap` cleanup and formatted after.
+    /// The result borrows only `vm.interns` (never the heap), so it can be
+    /// captured before `drop_with_heap` cleanup and formatted after.
     #[must_use]
-    pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h, impl ResourceTracker>) -> &'h str {
+    pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h, impl ResourceTracker>) -> Cow<'h, str> {
         self.py_type(vm).name(vm.heap, vm.interns)
     }
 
@@ -1420,7 +1420,11 @@ impl Value {
     /// notably the macro-generated `from_args` bodies, which are passed
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
-    pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+    pub(crate) fn py_type_name_heap<'i>(
+        &self,
+        heap: &Heap<impl ResourceTracker>,
+        interns: &'i Interns,
+    ) -> Cow<'i, str> {
         self.py_type_heap(heap).name(heap, interns)
     }
 
@@ -1833,7 +1837,7 @@ impl Value {
                 other => {
                     let type_name = other.py_type(vm).name(vm.heap, vm.interns);
                     value.drop_with_heap(vm);
-                    return Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)));
+                    return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)));
                 }
             };
             old_value.drop_with_heap(vm);
@@ -1841,7 +1845,7 @@ impl Value {
         } else {
             let type_name = self.py_type_name(vm);
             value.drop_with_heap(vm);
-            Err(ExcType::attribute_error_no_setattr(type_name, name.as_str(vm.interns)))
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
         }
     }
 
@@ -1901,10 +1905,10 @@ impl Value {
                 if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
                     li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
                 } else {
-                    Err(ExcType::type_error_indices(container_type, self.py_type_name(vm)))
+                    Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm)))
                 }
             }
-            _ => Err(ExcType::type_error_indices(container_type, self.py_type_name(vm))),
+            _ => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
         }
     }
 

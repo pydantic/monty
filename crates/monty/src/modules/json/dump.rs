@@ -461,9 +461,9 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     defer_drop_vm!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }
-                _ => Err(ExcType::json_not_serializable_error(value.py_type_name(self.vm))),
+                _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
             },
-            _ => Err(ExcType::json_not_serializable_error(value.py_type_name(self.vm))),
+            _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
         }
     }
 
@@ -542,7 +542,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
         if self.config.skipkeys() {
             skip_disallowed_dict_keys(entries, self.vm);
         } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
-            return Err(ExcType::json_invalid_key_error(key.py_type_name(self.vm)));
+            return Err(ExcType::json_invalid_key_error(&key.py_type_name(self.vm)));
         }
 
         if self.config.sort_keys() {
@@ -669,9 +669,9 @@ fn write_json_key(
                 long_int.check_str_digits_limit()?;
                 write_json_display_key(long_int.inner(), out);
             }
-            _ => return Err(ExcType::json_invalid_key_error(key.py_type_name(vm))),
+            _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
         },
-        _ => return Err(ExcType::json_invalid_key_error(key.py_type_name(vm))),
+        _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }
     Ok(())
 }

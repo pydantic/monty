@@ -731,6 +731,16 @@ pub enum StaticStrings {
     // Module dunder values.
     #[strum(serialize = "__main__")]
     DunderMain,
+
+    // ==========================
+    // Class dunder attributes.
+    /// `__doc__` — synthesized into the namespace of classes created by the
+    /// 3-arg `type()` builtin when the caller's dict omits it (compiled
+    /// `class` bodies get theirs from the parser). Appended at the enum end:
+    /// StaticStrings discriminants are serialized `StringId`s, so mid-enum
+    /// insertion would shift every later id.
+    #[strum(serialize = "__doc__")]
+    DunderDoc,
 }
 
 impl StaticStrings {

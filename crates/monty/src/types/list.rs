@@ -381,12 +381,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
                     }
                 } else {
                     let key_type = key.py_type_name(vm);
-                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                    return Err(ExcType::type_error_list_assignment_indices(&key_type));
                 }
             }
             _ => {
                 let key_type = key.py_type_name(vm);
-                return Err(ExcType::type_error_list_assignment_indices(key_type));
+                return Err(ExcType::type_error_list_assignment_indices(&key_type));
             }
         };
 

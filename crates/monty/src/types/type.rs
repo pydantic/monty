@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use num_bigint::BigInt;
 
@@ -168,14 +168,15 @@ impl Type {
     /// The Python-visible name of this type: the real class name for
     /// [`Instance`](Self::Instance), the static `Display` name otherwise —
     /// the primary way to render a `Type` in error messages and reprs. The
-    /// returned slice borrows only `interns` (never the heap), so it can be
-    /// captured before heap-mutating cleanup (`drop_with_heap`) at error
-    /// sites and formatted after.
-    pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+    /// result borrows only `interns` (never the heap — heap-owned dynamic
+    /// class names are cloned into `Cow::Owned`), so it can be captured
+    /// before heap-mutating cleanup (`drop_with_heap`) at error sites and
+    /// formatted after.
+    pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
-            Self::Exception(exc_type) => exc_type.into(),
-            other => other.into(),
+            Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
+            other => Cow::Borrowed(other.into()),
         }
     }
 
@@ -185,9 +186,9 @@ impl Type {
     /// `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`, and since `NoneType`
     /// is a singleton, branching on the type is equivalent to branching on the
     /// value. Use for the "not Y" half of arg-type error messages only.
-    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
         match self {
-            Self::NoneType => "None",
+            Self::NoneType => Cow::Borrowed("None"),
             other => other.name(heap, interns),
         }
     }
@@ -410,9 +411,9 @@ impl Type {
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
                         HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
-                        _ => Err(ExcType::type_error_int_conversion(v.py_type_name(vm))),
+                        _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
                     },
-                    _ => Err(ExcType::type_error_int_conversion(v.py_type_name(vm))),
+                    _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
                 }
             }
             Self::Float => {
@@ -430,9 +431,9 @@ impl Type {
                     }
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                        _ => Err(ExcType::type_error_float_conversion(v.py_type_name(vm))),
+                        _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     },
-                    _ => Err(ExcType::type_error_float_conversion(v.py_type_name(vm))),
+                    _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                 }
             }
             Self::Bool => {
@@ -444,7 +445,7 @@ impl Type {
             }
 
             // Non-callable types - raise TypeError
-            _ => Err(ExcType::type_error_not_callable(self.name(vm.heap, vm.interns))),
+            _ => Err(ExcType::type_error_not_callable(&self.name(vm.heap, vm.interns))),
         }
     }
 }

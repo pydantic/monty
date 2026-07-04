@@ -91,3 +91,35 @@ fn external_function_as_init_raises_not_implemented() {
         "Traceback (most recent call last):\n  File \"test.py\", line 4, in <module>\n    Foo()\n    ~~~~~\nNotImplementedError: __init__: external functions are not yet supported in this context"
     );
 }
+
+/// The 3-arg `type()` form rejects non-empty bases because Monty classes
+/// cannot inherit (documented in `limitations/classes.md`). Kept as a
+/// Rust-side test because CPython accepts bases, so the comparative
+/// test-case suite cannot cover the divergence.
+#[test]
+fn dynamic_type_with_bases_raises_type_error() {
+    let code = "type('A', (int,), {})";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type() bases are not supported"
+    );
+}
+
+/// The 3-arg `type()` form rejects non-string namespace keys with a
+/// `TypeError` — CPython only emits a `RuntimeWarning`, and Monty has no
+/// warnings machinery, so silently accepting them would hide the mistake
+/// (documented in `limitations/classes.md`). Kept as a Rust-side test
+/// because CPython succeeds here, so the comparative test-case suite
+/// cannot cover the divergence.
+#[test]
+fn dynamic_type_with_non_string_key_raises_type_error() {
+    let code = "type('A', (), {1: 'one'})";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (), {1: 'one'})\n    ~~~~~~~~~~~~~~~~~~~~~~~~~\nTypeError: non-string key (int) in the namespace of class 'A'"
+    );
+}

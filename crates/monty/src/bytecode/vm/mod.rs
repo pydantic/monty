@@ -1151,13 +1151,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             _ => {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                             }
                         },
                         _ => {
                             let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                         }
                     }
                 }
@@ -1174,13 +1174,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             } else {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                         }
                     }
                 }
@@ -1202,13 +1202,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             } else {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                         }
                     }
                 }
@@ -1250,14 +1250,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::BuildSet => {
                     let count = cached_frame.fetch_u16() as usize;
                     try_catch_sync!(self, cached_frame, self.build_set(count));
-                }
-                Opcode::BuildClass => {
-                    let (name_const_idx, member_count) = cached_frame.fetch_u16_u16();
-                    try_catch_sync!(
-                        self,
-                        cached_frame,
-                        self.build_class(name_const_idx, member_count as usize)
-                    );
                 }
                 Opcode::FormatValue => {
                     let flags = cached_frame.fetch_u8();

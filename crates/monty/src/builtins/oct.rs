@@ -36,7 +36,7 @@ pub fn builtin_oct(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             let oct_str = format_bigint_oct(li.inner());
             Ok(allocate_string_no_interning(oct_str, vm.heap)?)
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type_name(vm))),
+        _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
 

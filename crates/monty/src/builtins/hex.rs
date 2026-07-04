@@ -37,7 +37,7 @@ pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             let hex_str = format_bigint_hex(li.inner());
             Ok(allocate_string_no_interning(hex_str, heap)?)
         }
-        _ => Err(ExcType::type_error_not_integer(value.py_type_name(vm))),
+        _ => Err(ExcType::type_error_not_integer(&value.py_type_name(vm))),
     }
 }
 

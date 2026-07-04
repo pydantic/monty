@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
     exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
@@ -850,10 +850,11 @@ impl<'a> Compiler<'a> {
 
     /// Compiles a class body, mirroring
     /// [`compile_function_body`](Self::compile_function_body) but replacing the
-    /// implicit `LoadNone; ReturnValue` tail with namespace assembly: for each
-    /// member (in source order) push `LoadConst <name>` then load the member's
-    /// value from its class-body slot, then `BuildClass` (pops the pairs, builds
-    /// the namespace dict, wraps it in a `Class`) and `ReturnValue`.
+    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
+    /// call: push the class name and an empty bases tuple, then for each
+    /// member (in source order) push `LoadConst <name>` and the member's value
+    /// from its class-body slot, build the namespace dict, and call the 3-arg
+    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
     ///
     /// Members are plain locals (the prepare phase forces class-body locals to
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
@@ -871,19 +872,28 @@ impl<'a> Compiler<'a> {
         let mut compiler = Compiler::new(interns, functions, false, num_locals);
         compiler.compile_block(body)?;
 
-        // Assemble the namespace: push (name, value) for each member in order.
+        // Assembly errors (e.g. resource limits while building the dict)
+        // should point at the class statement, not the last member's line.
+        compiler.code.set_location(position, None);
+
+        // type(name, (), {members...}): push the name and empty bases tuple...
+        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
+        compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
+
+        // ...then the namespace dict: (name, value) for each member in order.
         for member in members {
             let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
             compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
             compiler.compile_name(member)?;
         }
-
-        // BuildClass(name_const, member_count) pops the pairs and builds the class.
         let member_count = check_collection_size_u16(members.len(), position)?;
-        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
+        compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
+
+        // ...and call the 3-arg type() builtin, which builds the class object.
         compiler
             .code
-            .emit_u16_u16(Opcode::BuildClass, class_name_const, member_count)?;
+            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
         compiler.code.emit(Opcode::ReturnValue)?;
 
         Ok((compiler.code.build(num_locals), compiler.functions))

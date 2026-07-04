@@ -21,6 +21,6 @@ pub fn builtin_hash(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
             // Python's hash() returns a signed integer; reinterpret bits for large values
             Ok(Value::Int(hash.raw().cast_signed()))
         }
-        None => Err(ExcType::type_error_unhashable(value.py_type_name(vm))),
+        None => Err(ExcType::type_error_unhashable(&value.py_type_name(vm))),
     }
 }

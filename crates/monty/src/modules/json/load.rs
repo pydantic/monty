@@ -101,9 +101,9 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Run
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => Cow::Owned(s.as_str().as_bytes().to_vec()),
             HeapData::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
-            _ => return Err(ExcType::json_loads_type_error(value.py_type_name(vm))),
+            _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
         },
-        _ => return Err(ExcType::json_loads_type_error(value.py_type_name(vm))),
+        _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
     };
     parse_json_bytes(bytes.as_ref(), vm)
 }

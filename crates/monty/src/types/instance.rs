@@ -381,19 +381,28 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>)
     }
 }
 
-/// Returns a class object's name as a string slice for error messages / repr.
+/// Returns a class object's name for error messages / repr.
 ///
 /// Takes `heap` + `interns` rather than a `&VM` so heap-only contexts (e.g.
-/// `Type::name`) can resolve names; the returned slice borrows only
-/// the interner, so it survives subsequent heap mutation.
+/// `Type::name`) can resolve names. The result borrows only the interner —
+/// interned names are `Cow::Borrowed`, while heap-owned names (classes created
+/// by the 3-arg `type()` form) are cloned into `Cow::Owned` here, so either way
+/// the result survives subsequent heap mutation.
 ///
 /// # Panics
 /// If `class_id` does not refer to a `Class` heap entry — every producer of a
 /// class id (`Instance.class`, class values) guarantees it does, so this is a
 /// programmer-error tripwire.
-pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> &'i str {
+pub(crate) fn class_name<'i>(
+    class_id: HeapId,
+    heap: &Heap<impl ResourceTracker>,
+    interns: &'i Interns,
+) -> Cow<'i, str> {
     match heap.get(class_id) {
-        HeapData::Class(class) => interns.get_str(class.name_id()),
+        HeapData::Class(class) => match class.name() {
+            EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+            EitherStr::Heap(s) => Cow::Owned(s.clone()),
+        },
         _ => unreachable!("class_name called with a non-class heap id"),
     }
 }
