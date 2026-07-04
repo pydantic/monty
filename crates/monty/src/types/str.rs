@@ -12,6 +12,7 @@ use super::{Bytes, MontyIter, PyTrait};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    codecs::Codec,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::{HashValue, hash_python_str},
@@ -1944,10 +1945,12 @@ struct ExpandtabsArgs {
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
-/// Returns an encoded version of the string as a bytes object. Supports
-/// UTF-8 (the native encoding for Rust strings, so `errors` never triggers)
-/// and ASCII (handling non-ASCII characters with all of CPython's built-in
-/// error handlers via [`encode_ascii`]).
+/// Returns an encoded version of the string as a bytes object. Encoding-name
+/// resolution and the codec implementations (UTF-8, ASCII, UTF-16/32
+/// families) live in [`crate::codecs`]. Like CPython, the error handler name
+/// is only looked up (and validated) when an actual encoding error occurs —
+/// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
+/// the handler to do.
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
     defer_drop!(encoding, vm);
@@ -1955,107 +1958,10 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    let is_utf8 = encoding.eq_ignore_ascii_case("utf-8")
-        || encoding.eq_ignore_ascii_case("utf8")
-        || encoding.eq_ignore_ascii_case("utf_8");
-    let is_ascii = encoding.eq_ignore_ascii_case("ascii")
-        || encoding.eq_ignore_ascii_case("us-ascii")
-        || encoding.eq_ignore_ascii_case("us_ascii");
-    if !is_utf8 && !is_ascii {
-        return Err(ExcType::lookup_error_unknown_encoding(encoding));
-    }
-
-    // Like CPython, the error handler name is only looked up (and validated)
-    // when an actual encoding error occurs - `'hello'.encode('ascii', 'bogus')`
-    // succeeds because there's nothing for the handler to do.
-    let bytes = if is_utf8 {
-        s.get(vm.heap).as_bytes().to_vec()
-    } else {
-        encode_ascii(s.get(vm.heap), errors, vm.heap.tracker())?
-    };
-
+    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+    let bytes = codec.encode(s.get(vm.heap), errors, vm.heap.tracker())?;
     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
     Ok(Value::Ref(heap_id))
-}
-
-/// Encodes `s` as ASCII bytes, applying `errors` to any non-ASCII characters.
-/// `errors` is only matched against known handler names on first use,
-/// matching CPython's lazy `codecs.lookup_error` - an unrecognized `errors`
-/// value is silently accepted if the string turns out to be all-ASCII.
-///
-/// All of CPython's built-in handlers are covered: `ignore`, `replace`,
-/// `backslashreplace`, `xmlcharrefreplace`, and `namereplace` substitute,
-/// while `strict`, `surrogateescape`, and `surrogatepass` raise
-/// `UnicodeEncodeError` — the latter two only special-case lone surrogates,
-/// which a Monty string (strict UTF-8) can never contain, so with the ASCII
-/// codec they re-raise exactly like `strict`, matching CPython.
-///
-/// Builds into a tracker-protected [`StringBuilder`] rather than a `Vec<u8>` —
-/// every byte pushed is itself valid ASCII, so the accumulator is always valid
-/// UTF-8 and `into_bytes()` at the end is free. The tracking matters because
-/// `namereplace` amplifies a single character into up to ~90 bytes
-/// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
-/// far past the memory limit before the final allocation was checked.
-fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
-    let mut out = StringBuilder::with_capacity(s.len(), tracker)?;
-    let mut chars = s.chars().enumerate().peekable();
-    while let Some((idx, c)) = chars.next() {
-        if c.is_ascii() {
-            out.push(c)?;
-            continue;
-        }
-        match errors {
-            "ignore" => {}
-            "replace" => out.push('?')?,
-            // A failed `write!` stashes the tracker error on the builder and
-            // short-circuits later writes; `finish_raw` below surfaces it.
-            "backslashreplace" => {
-                let _ = write_backslash_escape(&mut out, c);
-            }
-            "xmlcharrefreplace" => {
-                let _ = write!(out, "&#{};", c as u32);
-            }
-            "namereplace" => {
-                // Characters without a Unicode name (e.g. C1 controls) fall
-                // back to backslash escapes, matching CPython.
-                let _ = match unicode_names2::name(c) {
-                    Some(name) => write!(out, "\\N{{{name}}}"),
-                    None => write_backslash_escape(&mut out, c),
-                };
-            }
-            "strict" | "surrogateescape" | "surrogatepass" => {
-                // CPython reports a single position for a lone bad character,
-                // but merges a contiguous run of unencodable characters into
-                // one `position start-end` range.
-                let mut end = idx + 1;
-                while let Some(&(_, next_c)) = chars.peek() {
-                    if next_c.is_ascii() {
-                        break;
-                    }
-                    chars.next();
-                    end += 1;
-                }
-                return Err(ExcType::unicode_encode_error_ascii(c, idx, end));
-            }
-            _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
-        }
-    }
-    Ok(out.finish_raw()?.into_bytes())
-}
-
-/// Writes the `backslashreplace` escape for a non-ASCII character: `\xNN` for
-/// codepoints <= 0xFF, `\uNNNN` up to the BMP, `\UNNNNNNNN` beyond. Shared by
-/// the `backslashreplace` handler and `namereplace`'s unnamed-character
-/// fallback in [`encode_ascii`].
-fn write_backslash_escape(out: &mut impl fmt::Write, c: char) -> fmt::Result {
-    let code = c as u32;
-    if code <= 0xFF {
-        write!(out, "\\x{code:02x}")
-    } else if code <= 0xFFFF {
-        write!(out, "\\u{code:04x}")
-    } else {
-        write!(out, "\\U{code:08x}")
-    }
 }
 
 /// Argument shape for `str.encode(encoding='utf-8', errors='strict')`.

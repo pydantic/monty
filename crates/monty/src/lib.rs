@@ -7,6 +7,7 @@ mod args;
 mod asyncio;
 mod builtins;
 mod bytecode;
+mod codecs;
 mod exception_private;
 mod exception_public;
 mod expressions;

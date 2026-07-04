@@ -290,6 +290,39 @@ fn rw_read_text() {
     );
 }
 
+/// Text-mode reads of invalid UTF-8 must raise `UnicodeDecodeError` with the
+/// same reason wording CPython uses for `bytes.decode('utf-8')` — including
+/// the distinction between an invalid continuation byte mid-file and a
+/// sequence truncated at end-of-file (previously both reported the sometimes
+/// wrong `invalid start byte`).
+#[test]
+fn rw_read_text_invalid_utf8() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("bad_start.txt"), b"a\xffb").unwrap();
+    fs::write(dir.path().join("bad_continuation.txt"), b"a\xe2(b").unwrap();
+    fs::write(dir.path().join("truncated.txt"), b"ab\xe2\x82").unwrap();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/bad_start.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte",
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/bad_continuation.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode byte 0xe2 in position 1: invalid continuation byte",
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/truncated.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode bytes in position 2-3: unexpected end of data",
+    );
+}
+
 #[test]
 fn rw_read_text_not_found() {
     let dir = create_test_dir();

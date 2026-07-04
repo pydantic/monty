@@ -7,7 +7,7 @@
 /// # Implemented Methods
 ///
 /// ## Encoding/Decoding
-/// - `decode([encoding[, errors]])` - Decode to string (UTF-8 or ASCII)
+/// - `decode([encoding[, errors]])` - Decode to string (UTF-8, ASCII, UTF-16/32)
 /// - `hex([sep[, bytes_per_sep]])` - Return hex string representation
 /// - `fromhex(string)` - Create bytes from hex string (classmethod)
 ///
@@ -80,6 +80,7 @@ use super::{MontyIter, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    codecs::Codec,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
@@ -501,10 +502,12 @@ pub fn bytes_repr(bytes: &[u8]) -> String {
 
 /// Implements Python's `bytes.decode([encoding[, errors]])` method.
 ///
-/// Converts bytes to a string. Supports UTF-8 (`errors` is accepted for
-/// parity but ignored on invalid bytes — see `limitations/encoding.md`) and
-/// ASCII (handling bytes >= 0x80 with CPython's built-in error handlers via
-/// [`decode_ascii`]).
+/// Converts bytes to a string. Encoding-name resolution and the codec
+/// implementations (UTF-8, ASCII, UTF-16/32 families) live in
+/// [`crate::codecs`]. Like CPython, the error handler name is only looked up
+/// (and validated) when a byte actually needs handling — see
+/// `limitations/encoding.md` for the handful of decode divergences (the
+/// surrogate-producing handlers raise `NotImplementedError`).
 fn bytes_decode<'h>(
     bytes: &HeapRead<'h, [u8]>,
     args: ArgValues,
@@ -516,63 +519,9 @@ fn bytes_decode<'h>(
     let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
     let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    if encoding.eq_ignore_ascii_case("utf-8")
-        || encoding.eq_ignore_ascii_case("utf8")
-        || encoding.eq_ignore_ascii_case("utf_8")
-    {
-        // `errors` is accepted for parity but ignored — UTF-8 decoding of
-        // valid bytes has nothing to handle.
-        match str::from_utf8(bytes.get(vm.heap)) {
-            Ok(s) => Ok(super::str::allocate_string(s, vm.heap)?),
-            Err(_) => Err(ExcType::unicode_decode_error_invalid_utf8()),
-        }
-    } else if encoding.eq_ignore_ascii_case("ascii")
-        || encoding.eq_ignore_ascii_case("us-ascii")
-        || encoding.eq_ignore_ascii_case("us_ascii")
-    {
-        let s = decode_ascii(bytes.get(vm.heap), errors)?;
-        Ok(super::str::allocate_string(s, vm.heap)?)
-    } else {
-        Err(ExcType::lookup_error_unknown_encoding(encoding))
-    }
-}
-
-/// Decodes `bytes` as ASCII text, applying `errors` to any byte >= 0x80. The
-/// error handler name is only validated on first use, matching CPython's
-/// lazy `codecs.lookup_error` — an unrecognized `errors` value is silently
-/// accepted if the bytes turn out to be all-ASCII.
-///
-/// CPython's built-in handlers behave as follows here: `ignore`, `replace`,
-/// and `backslashreplace` substitute; `strict` and `surrogatepass` raise
-/// `UnicodeDecodeError` (with the ASCII codec, `surrogatepass` only
-/// special-cases surrogate byte sequences in UTF codecs, so it re-raises like
-/// `strict`, matching CPython); the encode-only `xmlcharrefreplace` /
-/// `namereplace` raise CPython's callback `TypeError`. `surrogateescape`
-/// would produce lone surrogates, which Monty strings cannot represent, so
-/// it raises `NotImplementedError` — see `limitations/encoding.md`.
-///
-/// The output is bounded by a small constant multiple of `bytes.len()` (at
-/// most 4 bytes per input byte for `backslashreplace`'s `\xNN` form). This
-/// avoids unbounded amplification, though the temporary accumulator is still
-/// allocated outside the heap tracker until the final string is allocated.
-fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
-    let mut result = String::with_capacity(bytes.len());
-    for (idx, &byte) in bytes.iter().enumerate() {
-        if byte.is_ascii() {
-            result.push(byte as char);
-            continue;
-        }
-        match errors {
-            "ignore" => {}
-            "replace" => result.push('\u{FFFD}'),
-            "backslashreplace" => write!(result, "\\x{byte:02x}").expect("String writes are infallible"),
-            "strict" | "surrogatepass" => return Err(ExcType::unicode_decode_error_ascii(byte, idx)),
-            "xmlcharrefreplace" | "namereplace" => return Err(ExcType::type_error_decode_error_callback()),
-            "surrogateescape" => return Err(ExcType::not_implemented_surrogateescape_decode()),
-            _ => return Err(ExcType::lookup_error_unknown_error_handler(errors)),
-        }
-    }
-    Ok(result)
+    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+    let s = codec.decode(bytes.get(vm.heap), errors)?;
+    Ok(super::str::allocate_string(s, vm.heap)?)
 }
 
 /// Argument shape for `bytes.decode(encoding='utf-8', errors='strict')`.

@@ -1482,54 +1482,56 @@ impl ExcType {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
     }
 
-    /// Creates a UnicodeDecodeError for invalid UTF-8 bytes in decode().
-    ///
-    /// Matches CPython's format: `UnicodeDecodeError: 'utf-8' codec can't decode bytes...`
-    #[must_use]
-    pub(crate) fn unicode_decode_error_invalid_utf8() -> RunError {
-        SimpleException::new_msg(
-            Self::UnicodeDecodeError,
-            "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
-        )
-        .into()
-    }
-
-    /// Creates a UnicodeDecodeError for a byte >= 0x80 encountered while decoding
-    /// as ASCII (`bytes.decode('ascii')`).
-    ///
-    /// Matches CPython's format: `UnicodeDecodeError: 'ascii' codec can't decode
-    /// byte 0xNN in position N: ordinal not in range(128)`
-    #[must_use]
-    pub(crate) fn unicode_decode_error_ascii(byte: u8, position: usize) -> RunError {
-        SimpleException::new_msg(
-            Self::UnicodeDecodeError,
-            format!("'ascii' codec can't decode byte 0x{byte:02x} in position {position}: ordinal not in range(128)"),
-        )
-        .into()
-    }
-
     /// Creates a UnicodeEncodeError for a run of `start..end` consecutive
     /// characters (character indices, not byte offsets) that can't be
-    /// represented while encoding as ASCII (`str.encode('ascii')`).
-    /// `first_char` is the character at `start`, used for the single-character
-    /// message form.
+    /// represented in the target `codec`. `first_char` is the character at
+    /// `start`, used for the single-character message form.
     ///
     /// Matches CPython's format, which differs for a single character vs. a run:
     /// `UnicodeEncodeError: 'ascii' codec can't encode character '\xe9' in
     /// position 1: ordinal not in range(128)` or `... can't encode characters
     /// in position 1-2: ordinal not in range(128)`.
     #[must_use]
-    pub(crate) fn unicode_encode_error_ascii(first_char: char, start: usize, end: usize) -> RunError {
+    pub(crate) fn unicode_encode_error(
+        codec: &str,
+        first_char: char,
+        start: usize,
+        end: usize,
+        reason: &str,
+    ) -> RunError {
         let msg = if end - start == 1 {
             format!(
-                "'ascii' codec can't encode character '{}' in position {start}: ordinal not in range(128)",
+                "'{codec}' codec can't encode character '{}' in position {start}: {reason}",
                 ascii_escape(&first_char.to_string())
             )
         } else {
             let last = end - 1;
-            format!("'ascii' codec can't encode characters in position {start}-{last}: ordinal not in range(128)")
+            format!("'{codec}' codec can't encode characters in position {start}-{last}: {reason}")
         };
         SimpleException::new_msg(Self::UnicodeEncodeError, msg).into()
+    }
+
+    /// Creates a UnicodeDecodeError for the undecodable byte range `start..end`
+    /// (byte offsets into the full input being decoded). `first_byte` is the
+    /// byte at `start`, shown only in the single-byte message form.
+    ///
+    /// Matches CPython's format, which differs for a single byte vs. a run:
+    /// `UnicodeDecodeError: 'ascii' codec can't decode byte 0xe9 in position 6:
+    /// ordinal not in range(128)` or `'utf-8' codec can't decode bytes in
+    /// position 0-1: unexpected end of data`.
+    #[must_use]
+    pub(crate) fn unicode_decode_error(
+        codec: &str,
+        first_byte: u8,
+        start: usize,
+        end: usize,
+        reason: &str,
+    ) -> RunError {
+        SimpleException::new_msg(
+            Self::UnicodeDecodeError,
+            unicode_decode_error_msg(codec, first_byte, start, end, reason),
+        )
+        .into()
     }
 
     /// Creates a ValueError for subsequence not found in bytes/str.
@@ -1562,18 +1564,22 @@ impl ExcType {
         .into()
     }
 
-    /// Creates a NotImplementedError for `bytes.decode(..., errors='surrogateescape')`.
+    /// Creates a NotImplementedError for a decode error handler that would
+    /// produce lone surrogates (`surrogateescape` always; `surrogatepass` when
+    /// the input actually contains an encoded surrogate).
     ///
-    /// CPython's `surrogateescape` maps undecodable bytes to lone surrogates
-    /// (U+DC80–U+DCFF) in the resulting string. Monty strings are strict UTF-8
-    /// and cannot represent lone surrogates, so the handler cannot be
+    /// CPython's handlers put lone surrogates (e.g. U+DC80–U+DCFF for
+    /// `surrogateescape`) in the resulting string. Monty strings are strict
+    /// UTF-8 and cannot represent lone surrogates, so these cases cannot be
     /// supported — see `limitations/encoding.md`.
     #[must_use]
-    pub(crate) fn not_implemented_surrogateescape_decode() -> RunError {
+    pub(crate) fn not_implemented_surrogate_handler_decode(handler: &str) -> RunError {
         SimpleException::new_msg(
             Self::NotImplementedError,
-            "the 'surrogateescape' error handler is not supported by Monty for decoding: \
-             Monty strings cannot contain the lone surrogate characters it produces",
+            format!(
+                "the '{handler}' error handler is not supported by Monty for decoding: \
+                 Monty strings cannot contain the lone surrogate characters it produces"
+            ),
         )
         .into()
     }
@@ -1657,6 +1663,23 @@ impl ExcType {
             format!("Out of range float values are not JSON compliant: {value}"),
         )
         .into()
+    }
+}
+
+/// Formats the message for a `UnicodeDecodeError` covering the byte range
+/// `start..end`: CPython's single-byte form (`byte 0x{first_byte:02x} in
+/// position {start}`) when the range is one byte, otherwise the range form
+/// (`bytes in position {start}-{end - 1}`).
+///
+/// A free function (rather than folded into [`ExcType::unicode_decode_error`])
+/// so the fs layer can produce the identical wording when converting a
+/// `MountError::InvalidUtf8` from a text-mode file read into an exception.
+pub(crate) fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
+    if end - start == 1 {
+        format!("'{codec}' codec can't decode byte 0x{first_byte:02x} in position {start}: {reason}")
+    } else {
+        let last = end - 1;
+        format!("'{codec}' codec can't decode bytes in position {start}-{last}: {reason}")
     }
 }
 
