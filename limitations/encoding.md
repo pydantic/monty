@@ -23,7 +23,9 @@ For the `utf-8` codec:
   nothing for any handler to do.
 - `bytes.decode('utf-8', errors=...)` — **`errors` is accepted but ignored
   on invalid UTF-8 bytes; decoding always behaves as `strict`; raising
-  `UnicodeDecodeError` regardless of the requested handler.** CPython's
+  `UnicodeDecodeError` regardless of the requested handler.** The error
+  message is Monty's generic invalid-UTF-8 wording rather than CPython's
+  byte-and-position-specific message. CPython's
   `ignore`/`replace`/`backslashreplace` handlers for invalid UTF-8 are not
   implemented.
 
@@ -36,5 +38,6 @@ because there's nothing for the (invalid) handler to do.
 
 Both are message-only, like every other Monty exception — see
 [exceptions.md](exceptions.md#constructor-signature). CPython's
-`encoding`/`object`/`start`/`end`/`reason` attributes are not exposed; only
-`str(exc)` (the formatted message) matches CPython.
+`encoding`/`object`/`start`/`end`/`reason` attributes are not exposed.
+For ASCII encode/decode errors, `str(exc)` (the formatted message) matches
+CPython. Invalid UTF-8 decode errors use the generic message noted above.

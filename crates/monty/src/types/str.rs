@@ -1990,9 +1990,10 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
 /// single `write!` instead of two intermediate heap allocations.
 ///
 /// The output is bounded by a small constant multiple of `s.len()` (at most
-/// 10 bytes per input character for `backslashreplace`'s `\Uxxxxxxxx` form),
-/// so no `StringBuilder`-style resource tracking is needed beyond the
-/// already-tracked input string.
+/// 10 bytes per input character for `backslashreplace`'s `\Uxxxxxxxx` form).
+/// This avoids unbounded amplification, though the temporary accumulator is
+/// still allocated outside the heap tracker until the final bytes object is
+/// allocated.
 fn encode_ascii(s: &str, errors: &str) -> RunResult<Vec<u8>> {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().enumerate().peekable();

@@ -543,9 +543,9 @@ fn bytes_decode<'h>(
 /// accepted if the bytes turn out to be all-ASCII.
 ///
 /// The output is bounded by a small constant multiple of `bytes.len()` (at
-/// most 4 bytes per input byte for `backslashreplace`'s `\xNN` form), so no
-/// `StringBuilder`-style resource tracking is needed beyond the
-/// already-tracked input bytes.
+/// most 4 bytes per input byte for `backslashreplace`'s `\xNN` form). This
+/// avoids unbounded amplification, though the temporary accumulator is still
+/// allocated outside the heap tracker until the final string is allocated.
 fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
     let mut result = String::with_capacity(bytes.len());
     for (idx, &byte) in bytes.iter().enumerate() {
