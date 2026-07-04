@@ -311,6 +311,7 @@ fn os_call_error_resume_carries_exception() {
         exc_type: "FileNotFoundError".to_owned(),
         message: Some("No such file or directory: '/nope.txt'".to_owned()),
         traceback: vec![],
+        data: None,
     };
     let (_, event) = child.resume_call(call.call_id, pb::ext_function_result::Kind::Error(exc));
     let error = expect_error(event);

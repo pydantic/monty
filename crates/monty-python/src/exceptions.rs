@@ -16,15 +16,15 @@
 
 use std::sync::Arc;
 
-use ::monty::{ExcType, MontyException};
+use ::monty::{ExcData, ExcType, MontyException, UnicodeErrorObject};
 use ahash::AHashMap;
 use pyo3::{
-    PyClassInitializer, PyTypeCheck, PyTypeInfo,
+    PyClassInitializer, PyTypeCheck,
     exceptions::{self},
     prelude::*,
     py_format,
     sync::PyOnceLock,
-    types::{PyDict, PyList, PyString},
+    types::{PyBytes, PyDict, PyList, PyString},
 };
 
 use crate::dataclass::get_frozen_instance_error;
@@ -430,8 +430,9 @@ impl PyFrame {
 /// Traceback info is folded into the message, since PyO3 doesn't expose direct
 /// traceback manipulation.
 #[must_use]
-pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
+pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
     let exc_type = exc.exc_type();
+    let exc_data = exc.take_data();
     let msg = exc.into_message().unwrap_or_default();
 
     match exc_type {
@@ -467,8 +468,7 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
         ExcType::TimeoutError => exceptions::PyTimeoutError::new_err(msg),
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
-        ExcType::UnicodeDecodeError => unicode_error_or_value_error::<exceptions::PyUnicodeDecodeError>(py, msg),
-        ExcType::UnicodeEncodeError => unicode_error_or_value_error::<exceptions::PyUnicodeEncodeError>(py, msg),
+        ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
         ExcType::JsonDecodeError => {
             if let Ok(json_decode_error) = get_json_decode_error(py)
                 && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
@@ -508,24 +508,32 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
     }
 }
 
-/// Constructs a `UnicodeDecodeError`/`UnicodeEncodeError`-shaped exception `E`
-/// from Monty's single formatted message string, falling back to a plain
-/// `ValueError` carrying the same message if that fails.
+/// Builds a real `UnicodeDecodeError` / `UnicodeEncodeError` from the
+/// structured fields Monty attaches to codec errors, calling CPython's
+/// five-argument constructor (`encoding, object, start, end, reason`).
 ///
-/// CPython's real `UnicodeDecodeError`/`UnicodeEncodeError` constructors
-/// require five positional arguments (`encoding, object, start, end,
-/// reason`), which Monty doesn't track — only the already-formatted message.
-/// A bare `E::new_err(msg)` "succeeds" at the `PyErr` level but silently
-/// materializes (lazily, whenever the value is first accessed) into whatever
-/// `TypeError` that failed single-argument construction raised, losing both
-/// the class identity and the message. `except ValueError:` /
-/// `ExcType::is_subclass_of` still catch the `ValueError` fallback
-/// correctly; only `isinstance(exc, UnicodeDecodeError)` doesn't.
-fn unicode_error_or_value_error<E: PyTypeInfo>(py: Python<'_>, msg: String) -> PyErr {
-    match py.get_type::<E>().call1((PyString::new(py, &msg),)) {
-        Ok(exc_instance) => PyErr::from_value(exc_instance),
-        Err(_) => exceptions::PyValueError::new_err(msg),
+/// Falls back to a plain `ValueError` carrying the formatted message when the
+/// payload is absent — an exception raised manually inside the sandbox
+/// (`raise UnicodeDecodeError('msg')`), or a codec error on an object larger
+/// than `UnicodeErrorData::MAX_OBJECT_LEN` — or when construction fails
+/// (e.g. a decode payload carrying a `str` object). `except ValueError:`
+/// catches both forms; only `isinstance` and the attributes differ.
+fn unicode_error_to_py(py: Python<'_>, exc_type: ExcType, exc_data: ExcData, msg: String) -> PyErr {
+    if let ExcData::Unicode(data) = exc_data {
+        let exc_cls = if exc_type == ExcType::UnicodeDecodeError {
+            py.get_type::<exceptions::PyUnicodeDecodeError>()
+        } else {
+            py.get_type::<exceptions::PyUnicodeEncodeError>()
+        };
+        let object = match &data.object {
+            UnicodeErrorObject::Bytes(bytes) => PyBytes::new(py, bytes).into_any(),
+            UnicodeErrorObject::Str(s) => PyString::new(py, s).into_any(),
+        };
+        if let Ok(exc_instance) = exc_cls.call1((data.encoding, object, data.start, data.end, data.reason)) {
+            return PyErr::from_value(exc_instance);
+        }
     }
+    exceptions::PyValueError::new_err(msg)
 }
 
 /// Converts a python exception to monty.

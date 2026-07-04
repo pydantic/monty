@@ -381,11 +381,29 @@ fn hand_call_payloads_match_generated_encoding() {
         exc_type: "PermissionError".to_owned(),
         message: Some("denied".to_owned()),
         traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
+                encoding: "utf-8".to_owned(),
+                object: Some(pb::unicode_error_data::Object::ObjectBytes(vec![0x61, 0xFF])),
+                start: 1,
+                end: 2,
+                reason: "invalid start byte".to_owned(),
+            })),
+        }),
     };
     let generated_error = oracle::RaisedException {
         exc_type: "PermissionError".to_owned(),
         message: Some("denied".to_owned()),
         traceback: vec![],
+        data: Some(oracle::ExcData {
+            kind: Some(oracle::exc_data::Kind::Unicode(oracle::UnicodeErrorData {
+                encoding: "utf-8".to_owned(),
+                object: Some(oracle::unicode_error_data::Object::ObjectBytes(vec![0x61, 0xFF])),
+                start: 1,
+                end: 2,
+                reason: "invalid start byte".to_owned(),
+            })),
+        }),
     };
     let hand_os = WireOsCall {
         function_name: "Path.read_text".to_owned(),

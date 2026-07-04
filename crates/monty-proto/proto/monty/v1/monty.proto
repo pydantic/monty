@@ -201,6 +201,39 @@ message RaisedException {
   optional string message = 2;
   // Outermost frame first, matching Python traceback order.
   repeated StackFrame traceback = 3;
+  // Structured payload for exception types that carry more than a message;
+  // absent for most exceptions. Mirrors monty's `ExcData`.
+  ExcData data = 4;
+}
+
+// Structured exception payload, mirroring monty's `ExcData` enum. Future
+// exception types that carry more than a message (e.g. OSError's errno)
+// get new oneof arms with fresh tags. An absent/empty kind means "no
+// payload" (`ExcData::None`).
+message ExcData {
+  oneof kind {
+    UnicodeErrorData unicode = 1;
+  }
+}
+
+// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
+// (encoding, object, start, end, reason), letting hosts rebuild the real
+// exception instead of a message-only fallback. Mirrors monty's
+// `UnicodeErrorData`.
+message UnicodeErrorData {
+  // Codec name as CPython reports it, e.g. "utf-8".
+  string encoding = 1;
+  // The input that failed: bytes for decode errors, str for encode errors.
+  oneof object {
+    bytes object_bytes = 2;
+    string object_str = 3;
+  }
+  // Failing range: byte offsets for decode errors, character indices for
+  // encode errors. `end` is exclusive.
+  uint64 start = 4;
+  uint64 end = 5;
+  // CPython's reason wording, e.g. "ordinal not in range(128)".
+  string reason = 6;
 }
 
 // 1-based line/column source position (columns count characters, not bytes).

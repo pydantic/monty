@@ -3,15 +3,19 @@
 //! which therefore cannot live in `test_cases/` — that suite runs every file
 //! against CPython too.
 
-use monty::MontyRun;
+use monty::{MontyException, MontyRun, UnicodeErrorData, UnicodeErrorObject};
 
 /// Runs `code` and returns the resulting error's full traceback rendering.
 fn run_err(code: &str) -> String {
+    run_exc(code).to_string()
+}
+
+/// Runs `code` and returns the resulting `MontyException`.
+fn run_exc(code: &str) -> MontyException {
     MontyRun::new(code.to_owned(), "test.py", vec![])
         .unwrap()
         .run_no_limits(vec![])
         .unwrap_err()
-        .to_string()
 }
 
 /// Runs `code` and returns its resulting string value.
@@ -94,6 +98,65 @@ fn utf32_surrogatepass_reports_not_implemented() {
 fn bomless_bare_utf16_utf32_decode_defaults_to_little_endian() {
     assert_eq!(run_str("b'a\\x00'.decode('utf-16')"), "a");
     assert_eq!(run_str("b'a\\x00\\x00\\x00'.decode('utf-32')"), "a");
+}
+
+/// Codec errors carry CPython's structured constructor fields
+/// (`encoding`/`object`/`start`/`end`/`reason`) on the public
+/// `MontyException`, so host bindings can rebuild the real
+/// `UnicodeDecodeError`/`UnicodeEncodeError`. In-sandbox exceptions expose
+/// only `args`, so this can't be tested from `test_cases/`.
+#[test]
+fn unicode_decode_error_carries_structured_data() {
+    let exc = run_exc("b'a\\xffb'.decode()");
+    assert_eq!(
+        exc.unicode_data(),
+        Some(&UnicodeErrorData {
+            encoding: "utf-8".to_owned(),
+            object: UnicodeErrorObject::Bytes(b"a\xffb".to_vec()),
+            start: 1,
+            end: 2,
+            reason: "invalid start byte".to_owned(),
+        })
+    );
+}
+
+/// Encode errors carry the source string and character (not byte) positions.
+#[test]
+fn unicode_encode_error_carries_structured_data() {
+    let exc = run_exc("'caf\\xe9'.encode('ascii')");
+    assert_eq!(
+        exc.unicode_data(),
+        Some(&UnicodeErrorData {
+            encoding: "ascii".to_owned(),
+            object: UnicodeErrorObject::Str("café".to_owned()),
+            start: 3,
+            end: 4,
+            reason: "ordinal not in range(128)".to_owned(),
+        })
+    );
+}
+
+/// The payload survives an in-sandbox catch and re-raise.
+#[test]
+fn unicode_error_data_survives_reraise() {
+    let exc = run_exc("try:\n    b'\\xff'.decode()\nexcept ValueError as e:\n    raise e");
+    assert_eq!(exc.exc_type().to_string(), "UnicodeDecodeError");
+    assert!(exc.unicode_data().is_some());
+}
+
+/// Objects larger than `UnicodeErrorData::MAX_OBJECT_LEN` produce no payload
+/// (hosts fall back to the message-only form) so a huge input can't be pinned
+/// in memory, outside the sandbox's resource tracker, by its exception.
+#[test]
+fn unicode_error_data_omitted_for_huge_objects() {
+    let exc = run_exc("(b'a' * 100_000 + b'\\xff').decode()");
+    assert_eq!(exc.exc_type().to_string(), "UnicodeDecodeError");
+    assert_eq!(exc.unicode_data(), None);
+    // the formatted message is unaffected by the omitted payload
+    assert_eq!(
+        exc.message(),
+        Some("'utf-8' codec can't decode byte 0xff in position 100000: invalid start byte")
+    );
 }
 
 /// `latin-1` is a real CPython codec that Monty does not implement — pin the

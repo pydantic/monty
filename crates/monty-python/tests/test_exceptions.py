@@ -31,15 +31,17 @@ def test_value_error(monty_run: RunMonty):
 
 def test_unicode_encode_error(monty_run: RunMonty):
     # `str.encode('ascii')` on a non-ascii string raises `UnicodeEncodeError`
-    # inside the sandbox. `.exception()` falls back to a plain `ValueError`
-    # carrying the same message (see `unicode_error_or_value_error` in
-    # `exceptions.rs`) rather than a real `UnicodeEncodeError` instance,
-    # since CPython's constructor needs 5 positional args Monty doesn't track.
+    # inside the sandbox; the structured constructor fields travel with the
+    # exception so `.exception()` rebuilds the real `UnicodeEncodeError`.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("'café'.encode('ascii')")
     inner = exc_info.value.exception()
-    assert isinstance(inner, ValueError)
-    assert not isinstance(inner, UnicodeEncodeError)
+    assert isinstance(inner, UnicodeEncodeError)
+    assert inner.encoding == snapshot('ascii')
+    assert inner.object == snapshot('café')
+    assert inner.start == snapshot(3)
+    assert inner.end == snapshot(4)
+    assert inner.reason == snapshot('ordinal not in range(128)')
     assert str(inner) == snapshot(
         "'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)"
     )
@@ -47,14 +49,30 @@ def test_unicode_encode_error(monty_run: RunMonty):
 
 def test_unicode_decode_error(monty_run: RunMonty):
     # `bytes.decode('ascii')` on non-ascii bytes raises `UnicodeDecodeError`
-    # inside the sandbox; same fallback-to-`ValueError` behavior as
-    # `test_unicode_encode_error` applies to `.exception()`.
+    # inside the sandbox; as in `test_unicode_encode_error`, `.exception()`
+    # rebuilds the real `UnicodeDecodeError` from the structured fields.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("b'\\xe9'.decode('ascii')")
     inner = exc_info.value.exception()
+    assert isinstance(inner, UnicodeDecodeError)
+    assert inner.encoding == snapshot('ascii')
+    assert inner.object == snapshot(b'\xe9')
+    assert inner.start == snapshot(0)
+    assert inner.end == snapshot(1)
+    assert inner.reason == snapshot('ordinal not in range(128)')
+    assert str(inner) == snapshot("'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)")
+
+
+def test_unicode_error_message_only_fallback(monty_run: RunMonty):
+    # A `UnicodeDecodeError` raised manually inside the sandbox has no
+    # structured fields (Monty exception constructors are message-only), so
+    # `.exception()` falls back to a `ValueError` carrying the message.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise UnicodeDecodeError('nope')")
+    inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert not isinstance(inner, UnicodeDecodeError)
-    assert str(inner) == snapshot("'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)")
+    assert str(inner) == snapshot('nope')
 
 
 def test_type_error(monty_run: RunMonty):

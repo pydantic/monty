@@ -16,7 +16,7 @@ use std::{
 
 use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs,
+    RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
     fs::{Mount, MountError, MountMode, MountTable, OverlayState},
 };
 use tempfile::TempDir;
@@ -308,6 +308,18 @@ fn rw_read_text_invalid_utf8() {
         &err,
         ExcType::UnicodeDecodeError,
         "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte",
+    );
+    // file-read decode errors carry the structured constructor fields
+    // (including the file's bytes) just like `bytes.decode()`
+    assert_eq!(
+        err.unicode_data(),
+        Some(&UnicodeErrorData {
+            encoding: "utf-8".to_owned(),
+            object: UnicodeErrorObject::Bytes(b"a\xffb".to_vec()),
+            start: 1,
+            end: 2,
+            reason: "invalid start byte".to_owned(),
+        })
     );
     let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/bad_continuation.txt".into()));
     assert_exc(

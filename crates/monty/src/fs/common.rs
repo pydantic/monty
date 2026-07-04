@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::error::MountError;
-use crate::{MontyObject, codecs, dir_stat, file_stat};
+use crate::{MontyObject, UnicodeErrorData, codecs, dir_stat, file_stat};
 
 /// Per-call mount context shared by the filesystem backends.
 ///
@@ -234,11 +234,13 @@ pub(super) fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String, MountError> {
         let utf8_error = err.utf8_error();
         let start = utf8_error.valid_up_to();
         let end = utf8_error.error_len().map_or(err.as_bytes().len(), |len| start + len);
+        let reason = codecs::utf8_error_reason(err.as_bytes()[start], utf8_error.error_len());
         MountError::InvalidUtf8 {
             start,
             end,
             first_byte: err.as_bytes()[start],
-            reason: codecs::utf8_error_reason(err.as_bytes()[start], utf8_error.error_len()),
+            reason,
+            data: UnicodeErrorData::decode("utf-8", err.as_bytes(), start, end, reason),
         }
     })
 }

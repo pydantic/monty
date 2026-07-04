@@ -45,6 +45,23 @@ everywhere (the BOM's order wins).
 
 ## `UnicodeEncodeError` / `UnicodeDecodeError`
 
-Both are message-only, like every other Monty exception — see
-[exceptions.md](exceptions.md#constructor-signature). CPython's
-`encoding`/`object`/`start`/`end`/`reason` attributes are not exposed.
+**Inside the sandbox** both are message-only, like every other Monty
+exception — see [exceptions.md](exceptions.md#constructor-signature).
+CPython's `encoding`/`object`/`start`/`end`/`reason` attributes are not
+exposed to sandboxed code, and the in-sandbox constructor accepts only a
+single message argument.
+
+**On the host**, codec errors carry the structured constructor fields, so
+`pydantic_monty`'s `.exception()` rebuilds a real `UnicodeDecodeError` /
+`UnicodeEncodeError` with all five CPython attributes. The host falls back
+to a plain `ValueError` carrying the formatted message (both are caught by
+`except ValueError:`) in two cases:
+
+- the failing object is larger than 64 KiB — the payload is dropped so an
+  exception cannot pin a huge input in memory outside the sandbox's
+  resource limits (CPython's exception always references the full object);
+- the exception was raised manually inside the sandbox
+  (`raise UnicodeDecodeError('msg')`), where no structured fields exist.
+
+The JavaScript package does not reconstruct host-side exception instances,
+so this applies to `pydantic_monty` only.

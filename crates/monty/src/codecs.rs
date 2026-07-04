@@ -262,6 +262,12 @@ fn handle_decode_error(
 /// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
 /// far past the memory limit before the final allocation was checked.
 fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+    // Fast path for the overwhelmingly common all-ASCII case: `is_ascii` is
+    // SIMD-vectorized in std, and the output is byte-for-byte the (already
+    // tracked) input, so a bulk copy needs no StringBuilder.
+    if s.is_ascii() {
+        return Ok(s.as_bytes().to_vec());
+    }
     let mut handler = LazyHandler::new(errors);
     let mut out = StringBuilder::with_capacity(s.len(), tracker)?;
     let mut chars = s.chars().enumerate().peekable();
@@ -305,6 +311,7 @@ fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunRes
                 }
                 return Err(ExcType::unicode_encode_error(
                     "ascii",
+                    s,
                     c,
                     idx,
                     end,
@@ -335,6 +342,13 @@ fn write_backslash_escape(out: &mut impl fmt::Write, c: char) -> fmt::Result {
 /// `surrogatepass` re-raises like `strict` (with the ASCII codec it only
 /// special-cases surrogate sequences in the UTF codecs), matching CPython.
 fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
+    // Fast path for the overwhelmingly common all-clean case: `is_ascii` is
+    // SIMD-vectorized in std, and all-ASCII bytes are valid UTF-8 as-is.
+    if bytes.is_ascii() {
+        return Ok(str::from_utf8(bytes)
+            .expect("all-ASCII bytes are valid UTF-8")
+            .to_owned());
+    }
     let mut handler = LazyHandler::new(errors);
     let mut out = String::with_capacity(bytes.len());
     for (idx, &byte) in bytes.iter().enumerate() {
@@ -342,7 +356,7 @@ fn decode_ascii(bytes: &[u8], errors: &str) -> RunResult<String> {
             out.push(byte as char);
         } else {
             handle_decode_error(handler.get()?, &bytes[idx..=idx], &mut out, false, || {
-                ExcType::unicode_decode_error("ascii", byte, idx, idx + 1, "ordinal not in range(128)")
+                ExcType::unicode_decode_error("ascii", bytes, idx, idx + 1, "ordinal not in range(128)")
             })?;
         }
     }
@@ -384,7 +398,7 @@ fn decode_utf8(bytes: &[u8], errors: &str) -> RunResult<String> {
                     &bytes[bad_start..bad_end],
                     &mut out,
                     is_surrogate,
-                    || ExcType::unicode_decode_error("utf-8", bytes[bad_start], bad_start, bad_end, reason),
+                    || ExcType::unicode_decode_error("utf-8", bytes, bad_start, bad_end, reason),
                 )?;
                 pos = bad_end;
             }
@@ -476,7 +490,7 @@ fn decode_utf16(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
     while i < bytes.len() {
         if bytes.len() - i == 1 {
             handle_decode_error(handler.get()?, &bytes[i..], &mut out, false, || {
-                ExcType::unicode_decode_error(codec, bytes[i], i, i + 1, "truncated data")
+                ExcType::unicode_decode_error(codec, bytes, i, i + 1, "truncated data")
             })?;
             break;
         }
@@ -487,7 +501,7 @@ fn decode_utf16(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
         } else if unit >= 0xDC00 {
             // low surrogate with no preceding high surrogate
             handle_decode_error(handler.get()?, &bytes[i..i + 2], &mut out, true, || {
-                ExcType::unicode_decode_error(codec, bytes[i], i, i + 2, "illegal encoding")
+                ExcType::unicode_decode_error(codec, bytes, i, i + 2, "illegal encoding")
             })?;
             i += 2;
         } else if bytes.len() - i < 4 {
@@ -495,7 +509,7 @@ fn decode_utf16(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
             // 2-3 byte tail is a single error unit (one U+FFFD under replace)
             let end = bytes.len();
             handle_decode_error(handler.get()?, &bytes[i..end], &mut out, true, || {
-                ExcType::unicode_decode_error(codec, bytes[i], i, end, "unexpected end of data")
+                ExcType::unicode_decode_error(codec, bytes, i, end, "unexpected end of data")
             })?;
             break;
         } else {
@@ -506,7 +520,7 @@ fn decode_utf16(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
                 i += 4;
             } else {
                 handle_decode_error(handler.get()?, &bytes[i..i + 2], &mut out, true, || {
-                    ExcType::unicode_decode_error(codec, bytes[i], i, i + 2, "illegal UTF-16 surrogate")
+                    ExcType::unicode_decode_error(codec, bytes, i, i + 2, "illegal UTF-16 surrogate")
                 })?;
                 i += 2;
             }
@@ -530,7 +544,7 @@ fn decode_utf32(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
         if bytes.len() - i < 4 {
             let end = bytes.len();
             handle_decode_error(handler.get()?, &bytes[i..], &mut out, false, || {
-                ExcType::unicode_decode_error(codec, bytes[i], i, end, "truncated data")
+                ExcType::unicode_decode_error(codec, bytes, i, end, "truncated data")
             })?;
             break;
         }
@@ -544,7 +558,7 @@ fn decode_utf32(bytes: &[u8], start: usize, endian: Endian, errors: &str) -> Run
                 ("code point not in range(0x110000)", false)
             };
             handle_decode_error(handler.get()?, &bytes[i..i + 4], &mut out, is_surrogate, || {
-                ExcType::unicode_decode_error(codec, bytes[i], i, i + 4, reason)
+                ExcType::unicode_decode_error(codec, bytes, i, i + 4, reason)
             })?;
         }
         i += 4;

@@ -260,6 +260,60 @@ pub struct RaisedException {
     /// Outermost frame first, matching Python traceback order.
     #[prost(message, repeated, tag = "3")]
     pub traceback: ::prost::alloc::vec::Vec<StackFrame>,
+    /// Structured payload for exception types that carry more than a message;
+    /// absent for most exceptions. Mirrors monty's `ExcData`.
+    #[prost(message, optional, tag = "4")]
+    pub data: ::core::option::Option<ExcData>,
+}
+/// Structured exception payload, mirroring monty's `ExcData` enum. Future
+/// exception types that carry more than a message (e.g. OSError's errno)
+/// get new oneof arms with fresh tags. An absent/empty kind means "no
+/// payload" (`ExcData::None`).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ExcData {
+    #[prost(oneof = "exc_data::Kind", tags = "1")]
+    pub kind: ::core::option::Option<exc_data::Kind>,
+}
+/// Nested message and enum types in `ExcData`.
+pub mod exc_data {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(message, tag = "1")]
+        Unicode(super::UnicodeErrorData),
+    }
+}
+/// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
+/// (encoding, object, start, end, reason), letting hosts rebuild the real
+/// exception instead of a message-only fallback. Mirrors monty's
+/// `UnicodeErrorData`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnicodeErrorData {
+    /// Codec name as CPython reports it, e.g. "utf-8".
+    #[prost(string, tag = "1")]
+    pub encoding: ::prost::alloc::string::String,
+    /// Failing range: byte offsets for decode errors, character indices for
+    /// encode errors. `end` is exclusive.
+    #[prost(uint64, tag = "4")]
+    pub start: u64,
+    #[prost(uint64, tag = "5")]
+    pub end: u64,
+    /// CPython's reason wording, e.g. "ordinal not in range(128)".
+    #[prost(string, tag = "6")]
+    pub reason: ::prost::alloc::string::String,
+    /// The input that failed: bytes for decode errors, str for encode errors.
+    #[prost(oneof = "unicode_error_data::Object", tags = "2, 3")]
+    pub object: ::core::option::Option<unicode_error_data::Object>,
+}
+/// Nested message and enum types in `UnicodeErrorData`.
+pub mod unicode_error_data {
+    /// The input that failed: bytes for decode errors, str for encode errors.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Object {
+        #[prost(bytes, tag = "2")]
+        ObjectBytes(::prost::alloc::vec::Vec<u8>),
+        #[prost(string, tag = "3")]
+        ObjectStr(::prost::alloc::string::String),
+    }
 }
 /// 1-based line/column source position (columns count characters, not bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

@@ -6,7 +6,7 @@ use std::{
     io::{self, ErrorKind},
 };
 
-use crate::{ExcType, MontyException, exception_private::unicode_decode_error_msg, types::str::StringRepr};
+use crate::{ExcData, ExcType, MontyException, exception_private::unicode_decode_error_msg, types::str::StringRepr};
 
 /// Errors from mount configuration or filesystem operations.
 #[derive(Debug)]
@@ -48,6 +48,10 @@ pub enum MountError {
         first_byte: u8,
         /// CPython's reason wording, from `codecs::utf8_error_reason`.
         reason: &'static str,
+        /// Structured exception fields including the undecodable file bytes
+        /// (omitted for files above `UnicodeErrorData::MAX_OBJECT_LEN`), so
+        /// hosts can build a real `UnicodeDecodeError`.
+        data: ExcData,
     },
 
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
@@ -123,10 +127,12 @@ impl MountError {
                 end,
                 first_byte,
                 reason,
+                data,
             } => MontyException::new(
                 ExcType::UnicodeDecodeError,
                 Some(unicode_decode_error_msg("utf-8", first_byte, start, end, reason)),
-            ),
+            )
+            .with_data(data),
             Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
             Self::WriteLimitExceeded(limit) => MontyException::new(
                 ExcType::OSError,

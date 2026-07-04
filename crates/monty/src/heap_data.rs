@@ -362,7 +362,7 @@ impl HeapItem for FunctionDefaults {
 
 impl HeapItem for SimpleException {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.arg().map_or(0, String::len)
+        mem::size_of::<Self>() + self.arg().map_or(0, String::len) + self.data().estimate_size()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {

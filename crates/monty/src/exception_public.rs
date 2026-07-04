@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     error,
     fmt::{self, Write},
+    mem,
     sync::Arc,
 };
 
@@ -21,6 +22,139 @@ pub struct MontyException {
     message: Option<String>,
     /// Stack trace of the exception, first is the outermost frame shown first in the traceback
     traceback: Vec<StackFrame>,
+    /// Structured payload for exception types that carry more than a message.
+    /// No `skip_serializing_if`: exceptions round-trip through
+    /// non-self-describing snapshot formats where skipped fields break
+    /// deserialization.
+    #[serde(default)]
+    pub(crate) data: ExcData,
+}
+
+/// Structured payload attached to exception types whose CPython counterparts
+/// carry more than a message. Currently only unicode errors have one; the
+/// enum leaves room for future variants (e.g. `OSError`'s `errno`/`filename`
+/// or `json.JSONDecodeError`'s `lineno`/`colno`/`pos`) without another
+/// field on every exception.
+#[derive(Debug, Clone, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ExcData {
+    /// No structured payload — every exception type without a variant below.
+    #[default]
+    None,
+    /// `UnicodeDecodeError` / `UnicodeEncodeError` constructor fields.
+    /// Boxed to keep the common `None` case (and every exception embedding
+    /// this enum) small.
+    Unicode(Box<UnicodeErrorData>),
+}
+
+impl ExcData {
+    /// The unicode-error fields, if this is [`ExcData::Unicode`].
+    #[must_use]
+    pub fn unicode(&self) -> Option<&UnicodeErrorData> {
+        match self {
+            Self::Unicode(data) => Some(data),
+            Self::None => None,
+        }
+    }
+
+    /// Approximate byte footprint, used by the heap's memory accounting when
+    /// an exception carrying this payload is stored on the sandbox heap.
+    #[must_use]
+    pub(crate) fn estimate_size(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Unicode(data) => data.estimate_size(),
+        }
+    }
+}
+
+/// Structured fields of a `UnicodeDecodeError` / `UnicodeEncodeError`,
+/// mirroring CPython's `encoding` / `object` / `start` / `end` / `reason`
+/// exception attributes.
+///
+/// Monty exceptions are otherwise message-only; unicode errors additionally
+/// carry these fields so host bindings (e.g. `pydantic_monty`) can construct
+/// real `UnicodeDecodeError` / `UnicodeEncodeError` instances instead of
+/// falling back to a plain `ValueError`. The payload is omitted when the
+/// offending object is larger than [`UnicodeErrorData::MAX_OBJECT_LEN`] —
+/// exceptions can be stored and copied outside the sandbox's resource
+/// tracker, so an unbounded payload would let huge inputs evade memory
+/// limits. Sandboxed code never sees these fields (in-sandbox exceptions
+/// expose only `args`).
+#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct UnicodeErrorData {
+    /// The codec name as CPython reports it, e.g. `"utf-8"`, `"ascii"`.
+    pub encoding: String,
+    /// The full input that failed to encode/decode (`str` for encode errors,
+    /// `bytes` for decode errors), matching CPython's `exc.object`.
+    pub object: UnicodeErrorObject,
+    /// Start of the failing range: a character index for encode errors, a
+    /// byte offset for decode errors.
+    pub start: usize,
+    /// Exclusive end of the failing range, in the same units as `start`.
+    pub end: usize,
+    /// CPython's reason wording, e.g. `"ordinal not in range(128)"`.
+    pub reason: String,
+}
+
+/// The `object` attribute of a unicode error: the input being converted.
+#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum UnicodeErrorObject {
+    /// A decode error's input `bytes`.
+    Bytes(Vec<u8>),
+    /// An encode error's input `str`.
+    Str(String),
+}
+
+impl UnicodeErrorData {
+    /// Payload size cap: unicode errors on objects larger than this carry no
+    /// structured data (hosts fall back to the message-only `ValueError`).
+    /// Exception payloads live outside the sandbox's resource tracker once
+    /// the exception escapes, so the cap bounds how much untracked memory a
+    /// single raise can pin.
+    pub const MAX_OBJECT_LEN: usize = 64 * 1024;
+
+    /// Builds the payload for an encode error on `object`, or
+    /// [`ExcData::None`] when `object` exceeds [`Self::MAX_OBJECT_LEN`].
+    pub(crate) fn encode(encoding: &str, object: &str, start: usize, end: usize, reason: &str) -> ExcData {
+        if object.len() <= Self::MAX_OBJECT_LEN {
+            ExcData::Unicode(Box::new(Self {
+                encoding: encoding.to_owned(),
+                object: UnicodeErrorObject::Str(object.to_owned()),
+                start,
+                end,
+                reason: reason.to_owned(),
+            }))
+        } else {
+            ExcData::None
+        }
+    }
+
+    /// Builds the payload for a decode error on `object`, or
+    /// [`ExcData::None`] when `object` exceeds [`Self::MAX_OBJECT_LEN`].
+    pub(crate) fn decode(encoding: &str, object: &[u8], start: usize, end: usize, reason: &str) -> ExcData {
+        if object.len() <= Self::MAX_OBJECT_LEN {
+            ExcData::Unicode(Box::new(Self {
+                encoding: encoding.to_owned(),
+                object: UnicodeErrorObject::Bytes(object.to_vec()),
+                start,
+                end,
+                reason: reason.to_owned(),
+            }))
+        } else {
+            ExcData::None
+        }
+    }
+
+    /// Approximate byte footprint, used by the heap's memory accounting when
+    /// an exception carrying this payload is stored on the sandbox heap.
+    #[must_use]
+    pub(crate) fn estimate_size(&self) -> usize {
+        let object_len = match &self.object {
+            UnicodeErrorObject::Bytes(b) => b.len(),
+            UnicodeErrorObject::Str(s) => s.len(),
+        };
+        mem::size_of::<Self>() + self.encoding.len() + object_len + self.reason.len()
+    }
 }
 
 /// Number of identical consecutive frames to show before collapsing.
@@ -86,6 +220,7 @@ impl MontyException {
             exc_type,
             message,
             traceback: vec![],
+            data: ExcData::None,
         }
     }
 
@@ -94,6 +229,7 @@ impl MontyException {
             exc_type,
             message,
             traceback,
+            data: ExcData::None,
         }
     }
 
@@ -110,7 +246,40 @@ impl MontyException {
             exc_type,
             message,
             traceback,
+            data: ExcData::None,
         }
+    }
+
+    /// Attaches a structured payload — see [`ExcData`]. Public for
+    /// boundaries that reconstruct an exception raised elsewhere (like
+    /// [`MontyException::with_traceback`]); in-process raises attach the
+    /// payload at the raise site instead.
+    #[must_use]
+    pub fn with_data(mut self, data: ExcData) -> Self {
+        self.data = data;
+        self
+    }
+
+    /// The structured payload, [`ExcData::None`] for most exceptions.
+    #[must_use]
+    pub fn data(&self) -> &ExcData {
+        &self.data
+    }
+
+    /// Structured `UnicodeDecodeError`/`UnicodeEncodeError` fields, present
+    /// only for unicode errors raised by codec operations on objects no
+    /// larger than [`UnicodeErrorData::MAX_OBJECT_LEN`].
+    #[must_use]
+    pub fn unicode_data(&self) -> Option<&UnicodeErrorData> {
+        self.data.unicode()
+    }
+
+    /// Removes and returns the structured payload, for consumers (like the
+    /// Python bindings) that rebuild the native exception and want the
+    /// payload by value without cloning it.
+    #[must_use]
+    pub fn take_data(&mut self) -> ExcData {
+        mem::take(&mut self.data)
     }
 
     /// Appends frames to this exception's traceback.
@@ -123,6 +292,7 @@ impl MontyException {
             exc_type: ExcType::RuntimeError,
             message: Some(err.to_string()),
             traceback: vec![],
+            data: ExcData::None,
         }
     }
 
