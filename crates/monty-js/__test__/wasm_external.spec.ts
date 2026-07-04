@@ -401,6 +401,40 @@ test('calling a proxy whose entry is now non-callable raises TypeError', (t) => 
   t.is(error.message, "TypeError: 'int' object is not callable")
 })
 
+test('non-callable TypeError names tuple-marked and __monty_type__ values', (t) => {
+  // The in-process path converts the entry (js_to_monty) and names the type of
+  // the result, so it must agree with the pool path's `pyTypeName`. A valid
+  // datetime (all fields present) names `'datetime'`; a bare `{ __monty_type__:
+  // 'DateTime' }` would fail conversion and name `'object'` instead.
+  const datetime = {
+    __monty_type__: 'DateTime',
+    year: 2020,
+    month: 1,
+    day: 2,
+    hour: 3,
+    minute: 4,
+    second: 5,
+    microsecond: 6,
+  }
+  const tupleLookup: Record<string, unknown> = {
+    f: () => {
+      tupleLookup.f = Object.assign([1, 2], { __tuple__: true })
+      return 1
+    },
+  }
+  const tupleError = t.throws(() => new Monty('f()\nf()').run({ externalLookup: tupleLookup }), isRuntimeError)
+  t.is(tupleError.message, "TypeError: 'tuple' object is not callable")
+
+  const dateLookup: Record<string, unknown> = {
+    f: () => {
+      dateLookup.f = datetime
+      return 1
+    },
+  }
+  const dateError = t.throws(() => new Monty('f()\nf()').run({ externalLookup: dateLookup }), isRuntimeError)
+  t.is(dateError.message, "TypeError: 'datetime' object is not callable")
+})
+
 test('externalLookup mixes a function and a value', (t) => {
   const m = new Monty('double(n)')
   const double = (x: number) => x * 2

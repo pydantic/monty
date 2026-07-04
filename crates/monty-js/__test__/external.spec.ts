@@ -438,7 +438,20 @@ test('calling a stale proxy whose entry is now non-callable raises TypeError', a
 
 test('stale proxy TypeError names tuple-marked and __monty_type__ values', async (t) => {
   // The type in the message follows the js->monty conversion, honoring the
-  // `__tuple__` array marker and `__monty_type__` object markers.
+  // `__tuple__` array marker and `__monty_type__` object markers. The marked
+  // payload must be a *valid* value for that type (a bare `{ __monty_type__:
+  // 'DateTime' }` fails conversion and would name `'object'` instead), so the
+  // datetime carries all the fields `js_to_monty` requires.
+  const datetime = {
+    __monty_type__: 'DateTime',
+    year: 2020,
+    month: 1,
+    day: 2,
+    hour: 3,
+    minute: 4,
+    second: 5,
+    microsecond: 6,
+  }
   const session = await pool().checkout()
   try {
     await session.feedRun('f = fn', { externalLookup: { fn: () => 1 } })
@@ -447,11 +460,33 @@ test('stale proxy TypeError names tuple-marked and __monty_type__ values', async
       { instanceOf: MontyRuntimeError },
     )
     t.is(tupleError.message, "TypeError: 'tuple' object is not callable")
-    const markedError = await t.throwsAsync(
-      () => session.feedRun('f()', { externalLookup: { fn: { __monty_type__: 'DateTime' } } }),
-      { instanceOf: MontyRuntimeError },
-    )
+    const markedError = await t.throwsAsync(() => session.feedRun('f()', { externalLookup: { fn: datetime } }), {
+      instanceOf: MontyRuntimeError,
+    })
     t.is(markedError.message, "TypeError: 'datetime' object is not callable")
+  } finally {
+    await session.close()
+  }
+})
+
+test('stale proxy TypeError survives a throwing getter on the entry', async (t) => {
+  // Naming the type reads `__monty_type__`/`__tuple__` off the entry *while
+  // formatting the error*; a host value whose getter (or Proxy trap) throws must
+  // still yield a clean sandbox TypeError, not escalate into a broken session.
+  const hostile = Object.defineProperty({}, '__monty_type__', {
+    get() {
+      throw new Error('boom')
+    },
+  })
+  const session = await pool().checkout()
+  try {
+    await session.feedRun('f = fn', { externalLookup: { fn: () => 1 } })
+    const error = await t.throwsAsync(() => session.feedRun('f()', { externalLookup: { fn: hostile } }), {
+      instanceOf: MontyRuntimeError,
+    })
+    t.is(error.message, "TypeError: 'dict' object is not callable")
+    // The session is still usable — the throwing getter did not poison it.
+    t.is(await session.feedRun('1 + 1'), 2)
   } finally {
     await session.close()
   }

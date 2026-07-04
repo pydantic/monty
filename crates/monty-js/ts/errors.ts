@@ -290,13 +290,29 @@ function pyTypeName(value: unknown): string {
       if (value instanceof Map) return 'dict'
       if (value instanceof Set) return 'set'
       if (Array.isArray(value)) {
-        return (value as { __tuple__?: boolean }).__tuple__ ? 'tuple' : 'list'
+        return readMarker(value, '__tuple__') ? 'tuple' : 'list'
       }
-      const marker = (value as { __monty_type__?: unknown }).__monty_type__
+      const marker = readMarker(value, '__monty_type__')
       return typeof marker === 'string' ? (MARKED_TYPE_NAMES[marker] ?? 'dict') : 'dict'
     }
     default:
       // symbols and other exotic values have no Monty equivalent
       return 'object'
+  }
+}
+
+/**
+ * Reads a marker property off a host-provided value without letting a throwing
+ * getter or `Proxy` trap escape. `pyTypeName` runs *while formatting a
+ * TypeError message*, and the drive loop treats any throw from a call handler as
+ * fatal (it marks the session broken), so an exotic `externalLookup` entry must
+ * still degrade to a plain type rather than poison the turn — mirroring the Rust
+ * `js_to_monty`, which falls back to `object`/`dict` on any conversion failure.
+ */
+function readMarker(value: object, key: '__tuple__' | '__monty_type__'): unknown {
+  try {
+    return (value as Record<string, unknown>)[key]
+  } catch {
+    return undefined
   }
 }
