@@ -243,16 +243,22 @@ impl PyMontySession {
     /// resolution. The caller answers with `snapshot.resume(...)` and may
     /// `snapshot.dump()` to checkpoint the worker mid-execution.
     ///
-    /// Unlike [`feed_run`](Self::feed_run) there is no `external_lookup`
-    /// argument — surfacing those calls is the point. An `os=` handler still
-    /// auto-dispatches uncovered OS calls until the next non-OS event.
-    #[pyo3(signature = (code, *, inputs=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    /// Unlike [`feed_run`](Self::feed_run), external calls and name lookups are
+    /// surfaced as snapshots rather than auto-dispatched — that is the point of
+    /// `feed_start`. An `external_lookup` (and `os=`) may still be supplied: it
+    /// is *not* consulted during this drive but is captured on the snapshot so
+    /// `snapshot.resume_auto()` can answer subsequent suspensions from it,
+    /// letting a caller iterate to completion without resolving each call by
+    /// hand. An `os=` handler additionally auto-dispatches uncovered OS calls
+    /// until the next non-OS event, exactly as before.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
         &self,
         py: Python<'_>,
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
@@ -270,7 +276,8 @@ impl PyMontySession {
             os,
             skip_type_check,
         )?;
-        feed_start_sync(py, args, self.repl_config.script_name.clone())
+        let ext = external_lookup.map(|d| d.clone().unbind());
+        feed_start_sync(py, args, ext, self.repl_config.script_name.clone())
     }
 
     /// Restores a dumped **idle** session — bytes from `session.dump()` taken
@@ -303,19 +310,31 @@ impl PyMontySession {
     /// dump's recorded requirements. The dump restores its own config; the
     /// dataclass registry from `checkout()` is reused. Raises if the dump is
     /// actually an idle session.
-    #[pyo3(signature = (state, *, mount=None, print_callback=None))]
+    ///
+    /// `external_lookup` / `os` are captured on the restored snapshot so it
+    /// supports `resume_auto()`, just like `feed_start`. Two caveats apply to a
+    /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
+    /// gone (they lived in the previous process), so async `resume_auto()` on it
+    /// raises — resolve it manually with `resume({call_id: ...})`; and a
+    /// restored OS-call snapshot carries no args/kwargs, so prefer manual
+    /// `resume` / `resume_not_handled` there rather than `resume_auto`.
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot(
         &self,
         py: Python<'_>,
         state: Vec<u8>,
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
+        os: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         // extract args before committing the session, so a bad-args error
         // leaves it loadable (a failed load is not retryable — checkout a fresh
         // session — matching the async path)
+        check_os_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
+        let ext = external_lookup.map(|d| d.clone().unbind());
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
             py.detach(|| discard_checkout(&self.checkout));
@@ -330,6 +349,8 @@ impl PyMontySession {
             // the dump's own script name, falling back to the session config
             // only if the worker did not report one (e.g. an older child)
             script_name.unwrap_or_else(|| self.repl_config.script_name.clone()),
+            ext,
+            os,
         );
         build_snapshot(py, ctx, event, false)
     }
@@ -698,15 +719,18 @@ impl PyAsyncMontySession {
     }
 
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
-    /// coroutine resolves to a snapshot (whose `resume(...)` is awaitable) or a
-    /// `MontyComplete`. See that method for the snapshot-driven protocol.
-    #[pyo3(signature = (code, *, inputs=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    /// coroutine resolves to a snapshot (whose `resume(...)` / `resume_auto()`
+    /// is awaitable) or a `MontyComplete`. See that method for the
+    /// snapshot-driven protocol and the `external_lookup` / `os` capture that
+    /// backs `resume_auto()`.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start<'py>(
         &self,
         py: Python<'py>,
         code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
@@ -724,7 +748,8 @@ impl PyAsyncMontySession {
             os,
             skip_type_check,
         )?;
-        feed_start_async(py, args, self.repl_config.script_name.clone())
+        let ext = external_lookup.map(|d| d.clone().unbind());
+        feed_start_async(py, args, ext, self.repl_config.script_name.clone())
     }
 
     /// Async counterpart of [`PyMontySession::load`]: the coroutine restores a
@@ -758,20 +783,26 @@ impl PyAsyncMontySession {
 
     /// Async counterpart of [`PyMontySession::load_snapshot`]: the coroutine
     /// restores a dumped suspended snapshot and resolves to it (whose
-    /// `resume(...)` is awaitable). Valid only on a fresh session; raises if the
-    /// dump is actually an idle session.
-    #[pyo3(signature = (state, *, mount=None, print_callback=None))]
+    /// `resume(...)` / `resume_auto()` is awaitable). Valid only on a fresh
+    /// session; raises if the dump is actually an idle session. `external_lookup`
+    /// / `os` are captured for `resume_auto()` with the same caveats as the sync
+    /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d).
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
         state: Vec<u8>,
         mount: Option<&Bound<'_, PyAny>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        external_lookup: Option<&Bound<'_, PyDict>>,
+        os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves
         // it loadable), then claim it in the synchronous prologue
+        check_os_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
+        let ext = external_lookup.map(|d| d.clone().unbind());
         if self.used.swap(true, Ordering::Relaxed) {
             return Err(session_used_err());
         }
@@ -792,7 +823,7 @@ impl PyAsyncMontySession {
             // only if the worker did not report one (e.g. an older child)
             let script_name = restored_script_name.unwrap_or(config_script_name);
             Python::attach(|py| {
-                let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
+                let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, ext, os);
                 build_snapshot(py, ctx, event, true)
             })
         })
@@ -873,6 +904,19 @@ fn parse_pool_config(
     Ok(config)
 }
 
+/// Rejects a non-callable `os=` handler with the same `TypeError` for every
+/// entry point that accepts one (`feed_run` / `feed_start` via
+/// [`FeedArgs::extract`], and `load_snapshot`).
+fn check_os_callable(py: Python<'_>, os: Option<&Py<PyAny>>) -> PyResult<()> {
+    if let Some(os_cb) = os
+        && !os_cb.bind(py).is_callable()
+    {
+        let t = os_cb.bind(py).get_type().name()?;
+        return Err(PyTypeError::new_err(format!("'{t}' object is not callable")));
+    }
+    Ok(())
+}
+
 /// The error raised when `load` / `load_snapshot` is called on a session that
 /// has already been fed or restored (it would otherwise silently discard work).
 fn session_used_err() -> PyErr {
@@ -915,7 +959,7 @@ async fn restore_turn_async(
 /// load. Any subsequent feed then fails with [`PoolError::Finished`] — like a
 /// crashed session — enforcing that a failed load is not retryable (callers
 /// must check out a fresh session). Does no protocol I/O, so it never blocks.
-fn discard_checkout(checkout: &SharedCheckout) {
+pub(crate) fn discard_checkout(checkout: &SharedCheckout) {
     // take in its own statement so the lock is released before the worker is
     // dropped (its `Drop` kills the process)
     let taken = lock(checkout).take();
@@ -1009,12 +1053,7 @@ impl FeedArgs {
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Self> {
-        if let Some(ref os_cb) = os
-            && !os_cb.bind(py).is_callable()
-        {
-            let t = os_cb.bind(py).get_type().name()?;
-            return Err(PyTypeError::new_err(format!("'{t}' object is not callable")));
-        }
+        check_os_callable(py, os.as_ref())?;
         Ok(Self {
             code: extract_source_code(py, code)?,
             inputs: extract_repl_inputs(inputs, dc_registry)?,
@@ -1266,7 +1305,7 @@ fn async_turn_answer(
 /// Best-effort discard of a suspended checkout from an async drive-loop error
 /// path. The caller returns the original error, so a `spawn_blocking` join
 /// failure here is deliberately ignored.
-async fn discard_checkout_async(checkout: &SharedCheckout) {
+pub(crate) async fn discard_checkout_async(checkout: &SharedCheckout) {
     let checkout = Arc::clone(checkout);
     let _ = spawn_blocking(move || discard_checkout(&checkout)).await;
 }

@@ -212,7 +212,7 @@ OsHandler: TypeAlias = Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], A
 """OS-call handler shared by `feed_run` / `feed_start`."""
 
 SyncSnapshot: TypeAlias = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete
-"""What `MontySession.feed_start` (and each sync `resume`) yields."""
+"""What `MontySession.feed_start` (and each sync `resume` / `resume_auto`) yields."""
 
 AsyncSnapshot: TypeAlias = AsyncFunctionSnapshot | AsyncNameLookupSnapshot | AsyncFutureSnapshot | MontyComplete
-"""What `AsyncMontySession.feed_start` (and each async `resume`) yields."""
+"""What `AsyncMontySession.feed_start` (and each async `resume` / `resume_auto`) yields."""

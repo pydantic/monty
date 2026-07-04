@@ -112,6 +112,33 @@ with Monty() as pool:
         #> hello Ada!
 ```
 
+To iterate a snippet to completion without answering each suspension by hand,
+pass an `external_lookup` (and/or `os`) to `feed_start` and drive with
+`snapshot.resume_auto()`, which resolves each external call and name lookup from
+them automatically — the same resolution `feed_run` performs, but one step at a
+time so you can inspect or `dump()` each snapshot along the way:
+
+```python
+from pydantic_monty import Monty, MontyComplete
+
+with Monty() as pool:
+    with pool.checkout() as session:
+        snapshot = session.feed_start(
+            'greet(name) + "!"',
+            inputs={'name': 'Ada'},
+            external_lookup={'greet': lambda n: f'hello {n}'},
+        )
+        while not isinstance(snapshot, MontyComplete):
+            snapshot = snapshot.resume_auto()
+        print(snapshot.output)
+        #> hello Ada!
+```
+
+On `AsyncMonty`, `external_lookup` callables may be coroutine functions and
+`resume_auto` is awaitable (`snapshot = await snapshot.resume_auto()`); a
+coroutine external is awaited concurrently and settled via an
+`AsyncFutureSnapshot`.
+
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `load_snapshot` restores it and returns the snapshot to resume. This lets you
 checkpoint execution and continue it later, even in a different process:

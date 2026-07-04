@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Callable, Literal, final
+from typing import Any, Callable, Literal, NoReturn, final
 
 from typing_extensions import Self
 
@@ -401,6 +401,7 @@ class MontySession:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
@@ -411,8 +412,19 @@ class MontySession:
         name lookup, or future resolution instead of driving to completion.
 
         Answer the snapshot with `snapshot.resume(...)`, which returns the next
-        snapshot or a `MontyComplete`. Unlike `feed_run` there is no
-        `external_lookup` argument — surfacing those calls is the point.
+        snapshot or a `MontyComplete`. Alternatively, supply `external_lookup`
+        (and/or `os`) and drive the whole snippet with `snapshot.resume_auto()`,
+        which answers each suspension from them automatically:
+
+        ```python
+        snapshot = session.feed_start(code, external_lookup={'fetch': fetch})
+        while not isinstance(snapshot, MontyComplete):
+            snapshot = snapshot.resume_auto()
+        ```
+
+        Unlike `feed_run`, `external_lookup` is *not* consulted during this
+        initial drive — external calls and name lookups are still surfaced as
+        snapshots; it is only captured for later `resume_auto()` calls.
 
         Use `snapshot.dump()` to checkpoint the worker mid-execution and
         `load_snapshot` to restore it.
@@ -423,6 +435,10 @@ class MontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+            external_lookup: Host functions and values, by name, that
+                `resume_auto()` resolves external calls and undefined names
+                against (as in `feed_run`). Captured for `resume_auto()`; not
+                used by a plain `resume(...)`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -456,6 +472,8 @@ class MontySession:
         *,
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
         Restore a dumped **suspended** snapshot — bytes from `feed_start` +
@@ -472,8 +490,14 @@ class MontySession:
         the dump are not preserved (the restored overlay starts empty). Raises
         if the dump is actually an idle session.
 
-        A re-announced OS-call snapshot carries only its `not_handled_error`,
-        not the original `args`/`kwargs` (those were consumed before the dump).
+        `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
+        `feed_start`. Two caveats apply to a *restored* snapshot: a restored
+        `FutureSnapshot`'s pending coroutines are gone (they lived in the
+        previous process), so `resume_auto()` on it raises — resolve it manually
+        with `resume({call_id: ...})`; and a re-announced OS-call snapshot
+        carries only its `not_handled_error`, not the original `args`/`kwargs`
+        (those were consumed before the dump), so prefer a manual `resume` /
+        `resume_not_handled` there.
         """
 
     def dump(self) -> bytes:
@@ -692,6 +716,7 @@ class AsyncMontySession:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: PrintCallback | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
@@ -699,7 +724,14 @@ class AsyncMontySession:
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.feed_start`: resolves to a snapshot
-        (whose `resume(...)` is awaitable) or a `MontyComplete`.
+        (whose `resume(...)` / `resume_auto()` is awaitable) or a
+        `MontyComplete`.
+
+        As in the sync version, `external_lookup` (and `os`) are captured for
+        `await snapshot.resume_auto()` rather than consulted during this initial
+        drive. A coroutine external answered by `resume_auto()` is awaited
+        concurrently: it yields an `AsyncFutureSnapshot` whose `resume_auto()`
+        settles the pending coroutines.
 
         Arguments:
             code: The Python snippet to execute; its trailing expression value
@@ -707,6 +739,11 @@ class AsyncMontySession:
             inputs: Values eagerly bound as globals before the snippet runs —
                 every entry is converted and bound once, whether or not it is
                 referenced.
+            external_lookup: Host functions and values, by name, that
+                `resume_auto()` resolves external calls and undefined names
+                against (as in `feed_run`). Callables may be coroutine
+                functions. Captured for `resume_auto()`; not used by a plain
+                `resume(...)`.
             print_callback: Receives the sandbox's `print()` output as
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
@@ -716,7 +753,8 @@ class AsyncMontySession:
             os: Fallback handler for OS calls not covered by a mount, invoked as
                 `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
                 auto-dispatches uncovered OS calls until the next non-OS event;
-                omit it to surface OS calls as snapshots instead.
+                omit it to surface OS calls as snapshots instead. Also captured
+                for `resume_auto()`.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -734,12 +772,18 @@ class AsyncMontySession:
         *,
         mount: MountDir | list[MountDir] | None = None,
         print_callback: PrintCallback | None = None,
+        external_lookup: dict[str, Any] | None = None,
+        os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.load_snapshot`: restores a dumped
-        suspended snapshot and resolves to it (whose `resume(...)` is
-        awaitable). Valid only on a fresh session; raises if the dump is
-        actually an idle session.
+        suspended snapshot and resolves to it (whose `resume(...)` /
+        `resume_auto()` is awaitable). Valid only on a fresh session; raises if
+        the dump is actually an idle session.
+
+        `external_lookup` / `os` are captured for `resume_auto()`, with the same
+        restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
+        cannot be driven with `resume_auto()` — its pending coroutines are gone).
         """
 
     async def dump(self) -> bytes:
@@ -820,6 +864,15 @@ class FunctionSnapshot:
     def resume_not_handled(self, *, os: OsHandler | None = None) -> SyncSnapshot:
         """Resume an OS-call snapshot with monty's default unhandled behaviour."""
 
+    def resume_auto(self) -> SyncSnapshot:
+        """Answer this call automatically from the `external_lookup=` / `os=`
+        captured at `feed_start` / `load_snapshot`, then return the next snapshot
+        (or `MontyComplete`). Resumes at most once.
+
+        A function name absent from `external_lookup` makes the sandbox raise
+        `NameError` (as in `feed_run`). A coroutine external raises `RuntimeError`
+        — use `AsyncMonty` for async externals."""
+
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
 
@@ -842,6 +895,11 @@ class NameLookupSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined and raise `NameError`."""
 
+    def resume_auto(self) -> SyncSnapshot:
+        """Answer this name lookup automatically from the captured
+        `external_lookup=`, then return the next snapshot (or `MontyComplete`). A
+        name absent from the lookup makes the sandbox raise `NameError`."""
+
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
 
@@ -863,6 +921,11 @@ class FutureSnapshot:
     ) -> SyncSnapshot:
         """Resume with settled results for one or more pending futures (by
         `call_id`); a future cannot resolve to another `future`."""
+
+    def resume_auto(self) -> NoReturn:
+        """Always raises `RuntimeError`: a sync session cannot drive coroutine
+        externals. Resolve the pending futures manually with `resume({...})`, or
+        use `AsyncMonty`. Does not consume the snapshot."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -894,6 +957,11 @@ class AsyncFunctionSnapshot:
         os: OsHandler | None = None,
     ) -> AsyncSnapshot: ...
     async def resume_not_handled(self, *, os: OsHandler | None = None) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
+        is spawned and answered with a pending future, so other sandbox tasks
+        keep running; it is later settled by `AsyncFutureSnapshot.resume_auto`."""
+
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...
 
@@ -911,6 +979,9 @@ class AsyncNameLookupSnapshot:
         value: Any = ...,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Async sibling of `NameLookupSnapshot.resume_auto`."""
+
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...
 
@@ -928,5 +999,11 @@ class AsyncFutureSnapshot:
         *,
         os: OsHandler | None = None,
     ) -> AsyncSnapshot: ...
+    async def resume_auto(self) -> AsyncSnapshot:
+        """Wait for one or more coroutine externals spawned by earlier
+        `resume_auto` calls to settle, deliver them, and return the next
+        snapshot. Raises if there are no pending coroutines to await (e.g. a
+        snapshot restored via `load_snapshot`)."""
+
     def dump(self) -> bytes: ...
     def __repr__(self) -> str: ...
