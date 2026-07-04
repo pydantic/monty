@@ -356,8 +356,16 @@ pub struct CallFrame<'code> {
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site, resolved to a source
+    /// [`CodeRange`] only when a traceback is actually built (see
+    /// [`current_offset`](Self::current_offset)).
+    ///
+    /// Stored raw rather than pre-resolved because resolving requires a linear
+    /// scan of the caller's location table — pure waste on the (common) path
+    /// where the call never raises. `None` for the root/module frame, which has
+    /// no caller. On unwind the offset is resolved against the *caller* frame's
+    /// `code`, which is the current frame once this frame has been popped.
+    call_offset: Option<u32>,
 
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
     /// and return to the caller. Supports `evaluate_function`.
@@ -386,7 +394,7 @@ impl<'code> CallFrame<'code> {
             locals_count: 0,
             exception_stack_base,
             function_id: None,
-            call_position: None,
+            call_offset: None,
             should_return: false,
             is_initializer: false,
         }
@@ -406,7 +414,7 @@ impl<'code> CallFrame<'code> {
         locals_count: u16,
         exception_stack_base: usize,
         function_id: FunctionId,
-        call_position: Option<CodeRange>,
+        call_offset: Option<u32>,
     ) -> Self {
         Self {
             code,
@@ -415,7 +423,7 @@ impl<'code> CallFrame<'code> {
             locals_count,
             exception_stack_base,
             function_id: Some(function_id),
-            call_position,
+            call_offset,
             should_return: false,
             is_initializer: false,
         }
@@ -547,8 +555,9 @@ pub struct SerializedFrame {
     /// See `CallFrame.exception_stack_base`.
     exception_stack_base: usize,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). See
+    /// `CallFrame.call_offset`.
+    call_offset: Option<u32>,
 
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     ///
@@ -573,7 +582,7 @@ impl CallFrame<'_> {
             stack_base: self.stack_base,
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base,
-            call_position: self.call_position,
+            call_offset: self.call_offset,
             is_initializer: self.is_initializer,
         }
     }
@@ -723,6 +732,17 @@ pub struct VM<'h, T: ResourceTracker> {
     /// maintain it. Not serialized: it is reconstructed from the active frame
     /// count on `restore` and rebalanced per-task across async switches.
     recursion_depth: usize,
+
+    /// Reusable scratch buffer for building a sync call's locals region.
+    ///
+    /// `call_sync_function` binds arguments and installs cell/free-var slots
+    /// into this buffer, then drains it onto the operand stack. Reusing one
+    /// allocation across calls avoids a `malloc`/`free` per function call — a
+    /// major cost on call-heavy code (see the `fib` bench). The buffer is only
+    /// ever held transiently *within* `call_sync_function` (never across
+    /// user-code execution), so a single shared buffer is safe even under
+    /// recursion: it is always empty and back in place before the callee runs.
+    namespace_scratch: Vec<Value>,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -748,6 +768,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: None,
             recursion_depth: 0,
+            namespace_scratch: Vec::new(),
         }
     }
 
@@ -786,7 +807,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     locals_count: sf.locals_count,
                     exception_stack_base: sf.exception_stack_base,
                     function_id: sf.function_id,
-                    call_position: sf.call_position,
+                    call_offset: sf.call_offset,
                     should_return: false,
                     is_initializer: sf.is_initializer,
                 }
@@ -813,6 +834,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: snapshot.pending_file_effect,
             recursion_depth: current_frame_depth,
+            namespace_scratch: Vec::new(),
         }
     }
 
@@ -2026,6 +2048,33 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 .map(LocationEntry::range)
                 .unwrap_or_default(),
         )
+    }
+
+    /// Returns the caller's raw bytecode offset for a call site, or `None` when
+    /// no frame is on the stack (host-initiated calls).
+    ///
+    /// The cheap counterpart to [`current_position`](Self::current_position):
+    /// it captures `instruction_ip` without scanning the location table, so it
+    /// is called on every function call. The offset is resolved to a
+    /// [`CodeRange`] lazily, only when a traceback is built (see
+    /// [`resolve_offset`](Self::resolve_offset)). Offsets beyond `u32::MAX`
+    /// (an invariant violation) degrade to `None` rather than panicking.
+    pub(super) fn current_offset(&self) -> Option<u32> {
+        self.frames.last()?;
+        u32::try_from(self.instruction_ip).ok()
+    }
+
+    /// Resolves a raw caller offset (from `CallFrame::call_offset`) to a source
+    /// [`CodeRange`] against the *current* frame's code.
+    ///
+    /// Called during traceback unwinding after the failing frame has been
+    /// popped, so the current frame is the caller that owns `offset`.
+    pub(super) fn resolve_offset(&self, offset: u32) -> CodeRange {
+        self.frames
+            .last()
+            .and_then(|frame| frame.code.location_for_offset(offset as usize))
+            .map(LocationEntry::range)
+            .unwrap_or_default()
     }
 
     // ========================================================================

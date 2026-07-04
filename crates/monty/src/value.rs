@@ -327,7 +327,10 @@ impl PyTrait<'_> for Value {
             Self::None => Ok(f.write_str("None")?),
             Self::Bool(true) => Ok(f.write_str("True")?),
             Self::Bool(false) => Ok(f.write_str("False")?),
-            Self::Int(v) => Ok(write!(f, "{v}")?),
+            // `itoa` formats integers directly into a fixed stack buffer, avoiding the
+            // generic `fmt`/`pad_integral` path and its repeated `RawVec` reallocation
+            // (a hot cost when `str(int)` runs in a loop — see `list_append_str` bench).
+            Self::Int(v) => Ok(f.write_str(itoa::Buffer::new().format(*v))?),
             Self::InternLongInt(long_int_id) => {
                 let bi = interns.get_long_int(*long_int_id);
                 check_bits_str_digits_limit(bi.bits())?;

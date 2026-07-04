@@ -2001,6 +2001,7 @@ dependencies = [
  "indexmap",
  "insta",
  "itertools 0.14.0",
+ "itoa",
  "jiter",
  "libm",
  "monty-macros",
