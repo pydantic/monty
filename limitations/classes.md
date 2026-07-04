@@ -138,6 +138,27 @@ order and error wording, but with these divergences:
   captured variable of the same name from an enclosing scope") rather than
   miscompiling. Distinct names work fine.
 
+## Crossing the host boundary (`pydantic_monty` / `@pydantic/monty`)
+
+TODO: change dataclasses to `class` and use that.
+
+A user-defined **class object or instance has no faithful host representation**.
+When one is returned to a host caller as a run's result value, it is converted
+to its `repr()` **string**, not a proxy or a value that preserves attributes:
+
+```python
+result = session.feed_run('class A:\n    x = 1\nA()')
+# result is the str '<A object at 0x..>', NOT an object with `.x`
+```
+
+`A` (the class) and `A()` (an instance) both surface as their repr text (e.g.
+`"<class 'A'>"` and `"<A object at 0x..>"`), so the host cannot read
+attributes, call methods, or reconstruct the object. This is unlike the values
+Monty *does* round-trip structurally (numbers, str/bytes, list/tuple/dict/set,
+datetimes, and host-supplied dataclasses/namedtuples, which dispatch back to the
+host). To return class data to the host, convert it inside the sandbox first —
+e.g. return a `dict` of the fields.
+
 ## What does NOT exist for user code
 
 - `class Foo(Bar): ...` — no inheritance, no MRO, no `super()` (rejected at

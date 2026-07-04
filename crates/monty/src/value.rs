@@ -358,7 +358,8 @@ impl PyTrait<'_> for Value {
                     // level, so no `heap_ids` insertion happens. NOTE: recursion here
                     // re-enters the VM on the *Rust* stack and is currently NOT
                     // bounded before the native stack overflows — a pre-existing
-                    // `evaluate_function` issue (see recursion_error.md) that also
+                    // `evaluate_function` issue (see the "Recursive/deep `__repr__`/
+                    // `__str__`" divergence in limitations/classes.md) that also
                     // affects `sorted`/`map`/`filter` callbacks.
                     let s = instance_repr(*id, vm)?;
                     Ok(f.write_str(&s)?)
