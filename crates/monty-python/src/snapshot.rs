@@ -1088,11 +1088,10 @@ impl PyAsyncFutureSnapshot {
     /// the previous process (resolve those manually with `resume({...})`).
     fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
-        let pending = self.0.pending_call_ids.clone();
         future_into_py(py, async move {
             let resolved = {
                 let mut join_set = ctx.pending_futures.lock().await;
-                wait_for_futures(&mut join_set, &pending).await
+                wait_for_futures(&mut join_set).await
             }
             .and_then(|results| {
                 results

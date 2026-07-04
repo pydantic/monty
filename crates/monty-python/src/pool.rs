@@ -1198,15 +1198,13 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
             TurnEvent::Complete(value) => {
                 return Python::attach(|py| monty_to_py(py, &value, &dc_registry));
             }
-            TurnEvent::ResolveFutures { pending_call_ids } => {
-                let resolved = wait_for_futures(&mut join_set, &pending_call_ids)
-                    .await
-                    .and_then(|results| {
-                        results
-                            .into_iter()
-                            .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
-                            .collect::<PyResult<Vec<_>>>()
-                    });
+            TurnEvent::ResolveFutures { .. } => {
+                let resolved = wait_for_futures(&mut join_set).await.and_then(|results| {
+                    results
+                        .into_iter()
+                        .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
+                        .collect::<PyResult<Vec<_>>>()
+                });
                 let results = match resolved {
                     Ok(results) => results,
                     Err(err) => {

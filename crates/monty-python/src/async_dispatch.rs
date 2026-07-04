@@ -66,10 +66,11 @@ pub(crate) fn spawn_coroutine_task(
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other
-/// immediately-ready results to batch them into one worker resume.
+/// immediately-ready results to batch them into one worker resume. Delivering
+/// any completed task is sound: the sandbox resolves futures by `call_id` and
+/// re-emits `ResolveFutures` if it still needs a different one.
 pub(crate) async fn wait_for_futures(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
-    _pending_call_ids: &[u32],
 ) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
     let mut results = Vec::new();
 
