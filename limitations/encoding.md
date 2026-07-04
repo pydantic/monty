@@ -63,5 +63,12 @@ to a plain `ValueError` carrying the formatted message (both are caught by
 - the exception was raised manually inside the sandbox
   (`raise UnicodeDecodeError('msg')`), where no structured fields exist.
 
+The structured fields only travel with a *raised* exception that escapes the
+sandbox. A codec exception handled as a **value** — caught in the sandbox and
+then returned as the run result, or passed to an external function — crosses
+the boundary as a message-only exception object, so the host sees the
+`ValueError` fallback for it even though the same exception raised out of
+the sandbox would rebuild the real type.
+
 The JavaScript package does not reconstruct host-side exception instances,
 so this applies to `pydantic_monty` only.

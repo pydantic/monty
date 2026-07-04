@@ -50,6 +50,21 @@ impl Codec {
     /// (restricted to the codecs Monty supports). Returns `None` for unknown
     /// names — the caller raises `LookupError` with the *original* name.
     pub(crate) fn find(name: &str) -> Option<Self> {
+        // Fast path for the exact spellings virtually all callers use —
+        // including the `"utf-8"` default of `str.encode`/`bytes.decode` —
+        // so the hot path skips `normalize_encoding`'s String allocation.
+        match name {
+            "utf-8" | "utf8" => Some(Self::Utf8),
+            "ascii" => Some(Self::Ascii),
+            "utf-16" => Some(Self::Utf16(None)),
+            "utf-32" => Some(Self::Utf32(None)),
+            _ => Self::find_normalized(name),
+        }
+    }
+
+    /// Slow path of [`Codec::find`]: normalizes `name` (allocating) and
+    /// matches it against the normalized names and aliases.
+    fn find_normalized(name: &str) -> Option<Self> {
         match normalize_encoding(name).as_str() {
             "utf_8" | "utf8" | "utf" | "u8" | "cp65001" | "utf8_ucs2" | "utf8_ucs4" => Some(Self::Utf8),
             "ascii" | "646" | "us" | "us_ascii" | "cp367" | "ibm367" | "csascii" | "ansi_x3.4_1968"

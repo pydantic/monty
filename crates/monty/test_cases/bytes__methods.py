@@ -493,7 +493,7 @@ except TypeError as e:
 # surrogateescape passes unused (lazy lookup, like CPython); a bad byte raises
 # NotImplementedError in Monty — CPython would produce a lone surrogate, which
 # Monty strings cannot represent. The divergent-error path is covered by a
-# Rust-side regression test (`crates/monty/tests/main.rs`) since this suite
+# Rust-side regression test (`crates/monty/tests/encoding.rs`) since this suite
 # also runs under CPython.
 assert b'hello'.decode('ascii', 'surrogateescape') == 'hello', 'unused surrogateescape handler'
 
