@@ -1077,7 +1077,7 @@ jobs:
       - name: Test bindings
         run: npx ava "__test__/wasm_*.spec.ts"
         env:
-          NAPI_RS_FORCE_WASI: 1
+          NAPI_RS_FORCE_WASI: true
         working-directory: crates/monty-js
 
   release-js:
