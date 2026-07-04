@@ -75,19 +75,28 @@ export interface FeedOptions {
 }
 
 /**
- * Options for [`MontySession.feedStart`]. Like [`FeedOptions`] without
- * `externalLookup` — `feedStart` surfaces external calls as snapshots
- * instead of dispatching them.
+ * Options for [`MontySession.feedStart`]. Like [`FeedOptions`], but
+ * `externalLookup` (and `os`) are *not* dispatched during the initial drive —
+ * external calls and name lookups are surfaced as snapshots. They are captured
+ * so [`snapshot.resumeAuto()`](FunctionSnapshot#resumeAuto) can answer each
+ * suspension from them, letting a caller iterate to completion by hand.
  */
 export interface FeedStartOptions {
   /** Values bound as globals before the snippet runs. */
   inputs?: Record<string, unknown>
+  /**
+   * Host functions and values the sandbox may reference by name, as in
+   * [`FeedOptions.externalLookup`]. Captured for `resumeAuto()`; not consulted
+   * by a plain `snapshot.resume(...)`.
+   */
+  externalLookup?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
   printCallback?: PrintCallback
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /** Handler for OS calls not covered by mounts; auto-dispatched between
-   *  snapshots. Omit to surface OS calls as snapshots instead. */
+   *  snapshots (and used by `resumeAuto()`). Omit to surface OS calls as
+   *  snapshots instead. */
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
@@ -100,6 +109,13 @@ export interface LoadSnapshotOptions {
   /** The mounts the paused feed used (re-established by value; host paths are
    *  not stored in the dump). Validated against the dump's requirements. */
   mount?: MountDir | MountDir[]
+  /**
+   * Host functions and values captured for `resumeAuto()` on the restored
+   * snapshot, as in [`FeedStartOptions.externalLookup`]. A restored
+   * `FutureSnapshot` cannot be `resumeAuto()`'d — its pending promises lived in
+   * the previous process; resolve it manually with `resume([...])`.
+   */
+  externalLookup?: Record<string, unknown>
   /** Handler for OS calls, auto-dispatched as in `feedStart`. */
   os?: OsCallback
 }
@@ -133,8 +149,6 @@ export class MontySession {
   /** Set once the session has been fed or restored; `loadSnapshot` is valid
    *  only while unset (a fresh session). */
   private driven = false
-  /** Pending async external calls, by call id. */
-  private readonly futures = new Map<number, PendingFuture>()
 
   /** @internal — sessions are created by `Monty.checkout`. */
   constructor(native: NativeSession) {
@@ -151,36 +165,41 @@ export class MontySession {
     this.driven = true
     const printTarget = new PrintTarget(options.printCallback)
     const onPrint = printTarget.write.bind(printTarget)
-    try {
-      let turn = (await this.native.feed(
-        code,
-        options.inputs ?? null,
-        mountsToNative(options.mount),
-        options.skipTypeCheck ?? false,
-        onPrint,
-      )) as NativeTurn
-      for (;;) {
-        switch (turn.kind) {
-          case 'complete':
-            printTarget.throwIfFailed()
-            return turn.value
-          case 'error':
-            printTarget.throwIfFailed()
-            throw montyErrorFromNative(turn.exception)
-          case 'typingError':
-            printTarget.throwIfFailed()
-            throw new MontyTypingError(turn.diagnostics)
-          case 'crashed':
-            throw this.poison(new MontyCrashedError(turn.message, turn))
-          case 'protocol':
-            throw this.poison(new ProtocolError(turn.message))
-        }
-        turn = await this.answer(turn, options, onPrint)
+    // A fresh answerer (and its pending-future map) per feed, so promises the
+    // worker never asks about again cannot accumulate across feeds.
+    const answerer = new TurnAnswerer(this.native, options.externalLookup, options.os)
+    let turn = (await this.native.feed(
+      code,
+      options.inputs ?? null,
+      mountsToNative(options.mount),
+      options.skipTypeCheck ?? false,
+      onPrint,
+    )) as NativeTurn
+    for (;;) {
+      switch (turn.kind) {
+        case 'complete':
+          printTarget.throwIfFailed()
+          return turn.value
+        case 'error':
+          printTarget.throwIfFailed()
+          throw montyErrorFromNative(turn.exception)
+        case 'typingError':
+          printTarget.throwIfFailed()
+          throw new MontyTypingError(turn.diagnostics)
+        case 'crashed':
+          throw this.poison(new MontyCrashedError(turn.message, turn))
+        case 'protocol':
+          throw this.poison(new ProtocolError(turn.message))
       }
-    } finally {
-      // failed feeds abandon their futures too — without this, entries for
-      // promises the worker will never ask about again accumulate
-      this.futures.clear()
+      try {
+        turn = await answerer.answer(turn, onPrint)
+      } catch (err) {
+        // A handler that throws instead of answering leaves the worker
+        // suspended, awaiting a resume that will never come — the session
+        // cannot be trusted any more.
+        this.broken ??= err instanceof Error ? err : new Error(String(err))
+        throw err
+      }
     }
   }
 
@@ -188,11 +207,22 @@ export class MontySession {
    * Starts a snippet but, instead of driving it to completion, returns a
    * snapshot at each external call, OS call, name lookup, or future
    * resolution. Answer it with `snapshot.resume(...)`, which resolves to the
-   * next snapshot or a `MontyComplete`. Unlike `feedRun` there is no
-   * `externalLookup` option — surfacing those calls is the point — but an
-   * `os` handler still auto-dispatches uncovered OS calls until the next
-   * non-OS event. Use `snapshot.dump()` to checkpoint the worker and
-   * `loadSnapshot` to restore it.
+   * next snapshot or a `MontyComplete`.
+   *
+   * Alternatively, pass an `externalLookup` (and/or `os`) and drive the whole
+   * snippet with `snapshot.resumeAuto()`, which answers each suspension from
+   * them automatically:
+   *
+   * ```ts
+   * let snap = await session.feedStart(code, { externalLookup: { fetch } })
+   * while (!(snap instanceof MontyComplete)) snap = await snap.resumeAuto()
+   * ```
+   *
+   * Unlike `feedRun`, `externalLookup` is *not* consulted during this initial
+   * drive — external calls and name lookups are still surfaced as snapshots; it
+   * is only captured for later `resumeAuto()` calls. An `os` handler still
+   * auto-dispatches uncovered OS calls until the next non-OS event. Use
+   * `snapshot.dump()` to checkpoint the worker and `loadSnapshot` to restore it.
    */
   async feedStart(code: string, options: FeedStartOptions = {}): Promise<Snapshot> {
     this.ensureUsable()
@@ -291,10 +321,12 @@ export class MontySession {
     return err
   }
 
-  /** Builds the per-feed snapshot driver (print target, os handler, poison). */
+  /** Builds the per-feed snapshot driver (print target, answerer, poison). The
+   *  captured `externalLookup` / `os` back `snapshot.resumeAuto()`. */
   private newDriver(options: FeedStartOptions): SnapshotDriver {
     const printTarget = new PrintTarget(options.printCallback)
-    return new SnapshotDriver(this.native, printTarget, options.os, (err) => this.poison(err))
+    const answerer = new TurnAnswerer(this.native, options.externalLookup, options.os)
+    return new SnapshotDriver(this.native, printTarget, answerer, (err) => this.poison(err))
   }
 
   /**
@@ -365,62 +397,85 @@ export class MontySession {
     await this.close()
   }
 
-  /** Answers one suspension turn and runs the resume turn it produces. */
-  private async answer(
-    turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | { kind: 'nameLookup'; name: string },
-    options: FeedOptions,
+  /** Poisons the session over a worker death or protocol violation. */
+  private poison(err: Error): Error {
+    this.broken = err
+    return err
+  }
+
+  private ensureUsable(): void {
+    if (this.closed) {
+      throw new Error('the session is closed — check out a new one')
+    }
+    if (this.broken !== null) {
+      throw this.broken
+    }
+  }
+}
+
+/**
+ * Answers one suspension turn from a captured `externalLookup` / `os`, tracking
+ * promise-returning externals as pending futures. Shared by
+ * [`MontySession.feedRun`]'s drive loop and [`SnapshotDriver`]'s `resumeAuto`
+ * so both resolve suspensions identically. Built fresh per feed / per snapshot
+ * chain — its `futures` map is scoped to that run, never leaking across feeds.
+ *
+ * `answer` deliberately does **not** catch: a handler that throws leaves the
+ * worker suspended, so the caller poisons the session and rethrows.
+ */
+class TurnAnswerer {
+  /** Pending async external calls, by call id. */
+  readonly futures = new Map<number, PendingFuture>()
+
+  constructor(
+    private readonly native: NativeSession,
+    readonly externalLookup: Record<string, unknown> | undefined,
+    readonly os: OsCallback | undefined,
+  ) {}
+
+  /** Answers one suspension turn and returns the resume turn it produces. */
+  async answer(
+    turn: FunctionCallTurn | OsCallTurn | ResolveFuturesTurn | NameLookupTurn,
     onPrint: PrintCallback,
   ): Promise<NativeTurn> {
     let next: Promise<object>
-    try {
-      switch (turn.kind) {
-        case 'functionCall':
-          next = this.answerFunctionCall(turn, options.externalLookup, onPrint)
-          break
-        case 'osCall':
-          next = this.answerOsCall(turn, options.os, onPrint)
-          break
-        case 'nameLookup': {
-          // A callable entry resolves to a host function (by display name); any
-          // other value is converted and returned directly; an absent name is
-          // left undefined so the sandbox raises NameError. Only own keys count
-          // — an inherited member (`toString`, `constructor`, …) must never
-          // satisfy a lookup the host did not deliberately expose. The value is
-          // wrapped in `{ value }` so `null`/`undefined` entries resolve to
-          // `None` instead of reading as "no value" through napi.
-          const lookup = options.externalLookup
-          if (lookup === undefined || !Object.prototype.hasOwnProperty.call(lookup, turn.name)) {
-            next = this.native.resumeNameLookup(null, null, onPrint)
+    switch (turn.kind) {
+      case 'functionCall':
+        next = this.answerFunctionCall(turn, onPrint)
+        break
+      case 'osCall':
+        next = this.answerOsCall(turn, onPrint)
+        break
+      case 'nameLookup': {
+        // A callable entry resolves to a host function (by display name); any
+        // other value is converted and returned directly; an absent name is
+        // left undefined so the sandbox raises NameError. Only own keys count
+        // — an inherited member (`toString`, `constructor`, …) must never
+        // satisfy a lookup the host did not deliberately expose. The value is
+        // wrapped in `{ value }` so `null`/`undefined` entries resolve to
+        // `None` instead of reading as "no value" through napi.
+        const lookup = this.externalLookup
+        if (lookup === undefined || !Object.prototype.hasOwnProperty.call(lookup, turn.name)) {
+          next = this.native.resumeNameLookup(null, null, onPrint)
+        } else {
+          const v = lookup[turn.name]
+          if (typeof v === 'function') {
+            next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
           } else {
-            const v = lookup[turn.name]
-            if (typeof v === 'function') {
-              next = this.native.resumeNameLookup((v as ExternalFunction).name || '<anonymous>', null, onPrint)
-            } else {
-              next = this.native.resumeNameLookup(null, { value: v }, onPrint)
-            }
+            next = this.native.resumeNameLookup(null, { value: v }, onPrint)
           }
-          break
         }
-        case 'resolveFutures':
-          next = this.answerResolveFutures(turn, onPrint)
-          break
+        break
       }
-      return (await next) as NativeTurn
-    } catch (err) {
-      // A handler that throws instead of answering leaves the worker
-      // suspended, awaiting a resume that will never come — the session
-      // cannot be trusted any more.
-      this.broken ??= err instanceof Error ? err : new Error(String(err))
-      throw err
+      case 'resolveFutures':
+        next = this.answerResolveFutures(turn, onPrint)
+        break
     }
+    return (await next) as NativeTurn
   }
 
   /** Calls the matching external function and resumes with its result. */
-  private answerFunctionCall(
-    call: FunctionCallTurn,
-    externalLookup: Record<string, unknown> | undefined,
-    onPrint: PrintCallback,
-  ): Promise<object> {
+  private answerFunctionCall(call: FunctionCallTurn, onPrint: PrintCallback): Promise<object> {
     if (call.methodCall) {
       // Dataclass method dispatch needs host-side class objects, which this
       // package has no registry for (unlike pydantic_monty).
@@ -432,6 +487,7 @@ export class MontySession {
     }
     // Own keys only, as in the nameLookup branch: an inherited callable (e.g.
     // `Object.prototype.toString`) must never be dispatched as a host function.
+    const externalLookup = this.externalLookup
     if (externalLookup === undefined || !Object.prototype.hasOwnProperty.call(externalLookup, call.functionName)) {
       return this.native.resumeNotFound(onPrint)
     }
@@ -458,13 +514,13 @@ export class MontySession {
   }
 
   /** Dispatches an OS call to the `os` callback (or its default error). */
-  private async answerOsCall(call: OsCallTurn, os: OsCallback | undefined, onPrint: PrintCallback): Promise<object> {
-    if (os === undefined) {
+  async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    if (this.os === undefined) {
       return await this.native.resumeNotHandled(onPrint)
     }
     let returned: unknown
     try {
-      returned = os(call.functionName, call.args, kwargsToRecord(call.kwargs))
+      returned = this.os(call.functionName, call.args, kwargsToRecord(call.kwargs))
       if (isThenable(returned)) {
         returned = await returned
       }
@@ -528,21 +584,6 @@ export class MontySession {
       })
     return await this.native.resolveFutures(results, onPrint)
   }
-
-  /** Poisons the session over a worker death or protocol violation. */
-  private poison(err: Error): Error {
-    this.broken = err
-    return err
-  }
-
-  private ensureUsable(): void {
-    if (this.closed) {
-      throw new Error('the session is closed — check out a new one')
-    }
-    if (this.broken !== null) {
-      throw this.broken
-    }
-  }
 }
 
 /** A new `PrintTarget` per feed: routes prints, capturing callback failures. */
@@ -594,7 +635,7 @@ class SnapshotDriver {
   constructor(
     private readonly native: NativeSession,
     private readonly printTarget: PrintTarget,
-    private readonly os: OsCallback | undefined,
+    private readonly answerer: TurnAnswerer,
     private readonly poison: (err: Error) => Error,
   ) {
     this.onPrint = printTarget.write.bind(printTarget)
@@ -618,10 +659,12 @@ class SnapshotDriver {
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
         case 'osCall':
-          if (this.os === undefined) {
+          // With no os handler an OS call surfaces as a snapshot; otherwise it
+          // is auto-dispatched through the same path `resumeAuto` uses.
+          if (this.answerer.os === undefined) {
             return new FunctionSnapshot(this, turn, true)
           }
-          turn = await this.dispatchOs(turn)
+          turn = (await this.answerer.answerOsCall(turn, this.onPrint)) as NativeTurn
           continue
         case 'functionCall':
           return new FunctionSnapshot(this, turn, false)
@@ -635,22 +678,19 @@ class SnapshotDriver {
     }
   }
 
-  /** Handles one OS call via the `os` callback (defined here), then resumes. */
-  private async dispatchOs(call: OsCallTurn): Promise<NativeTurn> {
-    let returned: unknown
+  /**
+   * Auto-answers a suspension `turn` from the captured `externalLookup` / `os`
+   * (via the shared [`TurnAnswerer`], identically to `feedRun`), then advances
+   * to the next snapshot. A handler that throws poisons the session.
+   */
+  async resumeAuto(turn: FunctionCallTurn | OsCallTurn | NameLookupTurn | ResolveFuturesTurn): Promise<Snapshot> {
+    let next: NativeTurn
     try {
-      returned = this.os!(call.functionName, call.args, kwargsToRecord(call.kwargs))
-      if (isThenable(returned)) {
-        returned = await returned
-      }
+      next = await this.answerer.answer(turn, this.onPrint)
     } catch (err) {
-      const { excType, message } = jsErrorParts(err)
-      return (await this.native.resumeError(excType, message, this.onPrint)) as NativeTurn
+      throw this.poison(err instanceof Error ? err : new Error(String(err)))
     }
-    if (returned === NOT_HANDLED) {
-      return (await this.native.resumeNotHandled(this.onPrint)) as NativeTurn
-    }
-    return (await this.native.resumeReturn(returned, this.onPrint)) as NativeTurn
+    return this.advance(next)
   }
 
   // resume primitives — each runs one turn, then advances to the next snapshot
@@ -719,7 +759,7 @@ export class FunctionSnapshot extends SingleUse {
   /** @internal */
   constructor(
     private readonly driver: SnapshotDriver,
-    turn: FunctionCallTurn | OsCallTurn,
+    private readonly turn: FunctionCallTurn | OsCallTurn,
     isOsFunction: boolean,
   ) {
     super()
@@ -735,6 +775,18 @@ export class FunctionSnapshot extends SingleUse {
   resume(value: unknown): Promise<Snapshot> {
     this.claim()
     return this.driver.resumeReturn(value)
+  }
+
+  /**
+   * Answers this call automatically from the `externalLookup` / `os` captured
+   * at `feedStart` / `loadSnapshot`, then resolves to the next snapshot (or
+   * `MontyComplete`). A name absent from `externalLookup` makes the sandbox
+   * raise `NameError`; a promise-returning external is registered as a future
+   * (settled later by [`FutureSnapshot.resumeAuto`]). Resumes at most once.
+   */
+  resumeAuto(): Promise<Snapshot> {
+    this.claim()
+    return this.driver.resumeAuto(this.turn)
   }
 
   /** Resumes by raising the given error inside the sandbox. */
@@ -778,7 +830,7 @@ export class NameLookupSnapshot extends SingleUse {
   /** @internal */
   constructor(
     private readonly driver: SnapshotDriver,
-    turn: NameLookupTurn,
+    private readonly turn: NameLookupTurn,
   ) {
     super()
     this.variableName = turn.name
@@ -789,6 +841,17 @@ export class NameLookupSnapshot extends SingleUse {
   resume(functionName?: string): Promise<Snapshot> {
     this.claim()
     return this.driver.resumeNameLookup(functionName ?? null)
+  }
+
+  /**
+   * Answers this name lookup automatically from the captured `externalLookup`,
+   * then resolves to the next snapshot. Unlike `resume` (function-by-name only),
+   * this resolves to any captured value or function; an absent name makes the
+   * sandbox raise `NameError`. Resumes at most once.
+   */
+  resumeAuto(): Promise<Snapshot> {
+    this.claim()
+    return this.driver.resumeAuto(this.turn)
   }
 
   dump(): Promise<Buffer> {
@@ -803,7 +866,7 @@ export class FutureSnapshot extends SingleUse {
   /** @internal */
   constructor(
     private readonly driver: SnapshotDriver,
-    turn: ResolveFuturesTurn,
+    private readonly turn: ResolveFuturesTurn,
   ) {
     super()
     this.pendingCallIds = turn.pendingCallIds
@@ -820,6 +883,18 @@ export class FutureSnapshot extends SingleUse {
       return { callId: result.callId, ok: true, value: result.value }
     })
     return this.driver.resolveFutures(native)
+  }
+
+  /**
+   * Waits for one or more of the pending promises registered by earlier
+   * `resumeAuto` calls to settle, delivers them, and resolves to the next
+   * snapshot. Throws if there are no tracked promises for these ids — e.g. on a
+   * snapshot restored via `loadSnapshot`, whose promises lived in the previous
+   * process (resolve those manually with `resume([...])`). Resumes at most once.
+   */
+  resumeAuto(): Promise<Snapshot> {
+    this.claim()
+    return this.driver.resumeAuto(this.turn)
   }
 
   dump(): Promise<Buffer> {

@@ -108,6 +108,25 @@ if (snap instanceof FunctionSnapshot) {
 }
 ```
 
+To iterate a snippet to completion without answering each suspension by hand,
+pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
+`snapshot.resumeAuto()`, which resolves each external call and name lookup from
+them automatically — the same resolution `feedRun` performs, but one step at a
+time so you can inspect or `dump()` each snapshot along the way. A
+promise-returning external is awaited concurrently (surfacing as an intermediate
+`FutureSnapshot`), exactly as under `feedRun`:
+
+```ts
+let snap = await session.feedStart('greet(name) + "!"', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greet: (n: string) => `hello ${n}` },
+})
+while (!(snap instanceof MontyComplete)) {
+  snap = await snap.resumeAuto()
+}
+console.log(snap.output) // 'hello Ada!'
+```
+
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's
 `loadSnapshot` restores it and returns the snapshot to resume. Re-supply the
 same `mount`s the paused feed used — their host paths are not stored in the
