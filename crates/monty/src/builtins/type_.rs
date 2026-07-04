@@ -19,7 +19,8 @@ pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
     {
         let class_id = inst.class();
         vm.heap.inc_ref(class_id);
-        return Ok(Value::Ref(class_id));
+        Ok(Value::Ref(class_id))
+    } else {
+        Ok(Value::Builtin(Builtins::Type(value.py_type(vm))))
     }
-    Ok(Value::Builtin(Builtins::Type(value.py_type(vm))))
 }

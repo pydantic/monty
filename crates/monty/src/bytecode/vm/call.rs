@@ -443,7 +443,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Calling a class constructs an instance; calling a bound method prepends
         // its captured `self`. Both are dispatched before the closure/defaults
         // path because they don't fit the `(func_id, cells, defaults)` shape.
-        match self.heap.get(heap_id) {
+
+        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
             HeapData::BoundMethod(bm) => {
                 let instance = bm.instance.clone_with_heap(self);
@@ -452,10 +453,6 @@ impl<T: ResourceTracker> VM<'_, T> {
                 defer_drop!(func, this);
                 return this.call_function(func, args.prepend(instance));
             }
-            _ => {}
-        }
-
-        let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();
                 let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
