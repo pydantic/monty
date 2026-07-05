@@ -8,7 +8,7 @@
 //! All data is stored as owned values (no heap references), so reference counting
 //! is trivial — `py_dec_ref_ids` is a no-op.
 
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{cmp::Ordering, fmt::Write, mem, sync::Arc};
 
 use smallvec::smallvec;
 
@@ -39,9 +39,11 @@ use crate::{
 ///
 /// # Position semantics
 ///
-/// Positions are returned as Unicode character offsets (not byte offsets) to
-/// match CPython's behavior. The conversion from byte offsets (used internally
-/// by the Rust `regex` crate) happens at construction time in `from_captures`.
+/// Positions are reported as Unicode character offsets (not byte offsets) to
+/// match CPython's behavior. Offsets are *stored* as byte offsets (the units the
+/// `regex` crate produces) and converted to character offsets lazily — only when
+/// `.start()`/`.end()`/`.span()` or `repr` actually read them. ASCII inputs need
+/// no conversion at all (byte offset == character offset), tracked by `all_ascii`.
 ///
 /// # Group Indexing
 ///
@@ -52,44 +54,56 @@ use crate::{
 pub(crate) struct ReMatch {
     /// The full matched text (equivalent to `group(0)`).
     full_match: String,
-    /// Start character position of the full match in the input string.
+    /// Start byte position of the full match in the input string.
     start: usize,
-    /// End character position of the full match in the input string.
+    /// End byte position of the full match in the input string.
     end: usize,
     /// Captured group strings (index 0 = group 1). `None` for unmatched optional groups.
     groups: Vec<Option<String>>,
-    /// Span positions per captured group (index 0 = group 1). `None` for unmatched optional groups.
+    /// Span byte positions per captured group (index 0 = group 1). `None` for unmatched optional groups.
     group_spans: Vec<Option<(usize, usize)>>,
     /// Named groups: maps group name → 1-based group index.
     named_groups: Vec<(String, usize)>,
-    /// Owned copy of the input string (returned by `.string` attribute).
-    input_string: String,
-    /// The original pattern string (used in repr output).
-    pattern_string: String,
+    /// The input string that was searched (returned by the `.string` attribute).
+    ///
+    /// Shared (`Arc`) so that all matches from one `finditer`/`findall` call point
+    /// at a single copy of the subject rather than each cloning it — the subject is
+    /// often large and this used to dominate regex-extraction workloads.
+    input_string: Arc<str>,
+    /// Whether the input is pure ASCII, so byte offsets equal character offsets and
+    /// position conversion is a no-op. Computed once per match-producing call.
+    all_ascii: bool,
+    /// The original pattern string (used in repr output). Shared for the same
+    /// reason as `input_string`.
+    pattern_string: Arc<str>,
 }
 
 impl ReMatch {
     /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
     ///
-    /// Converts byte offsets from the regex crate into character offsets to match
-    /// CPython's behavior. The full match (group 0) is always present when captures
-    /// are successful.
+    /// Stores byte offsets directly (character-offset conversion is deferred to the
+    /// position accessors — see the type docs). The full match (group 0) is always
+    /// present when captures are successful. The subject and pattern are shared
+    /// (`Arc`) rather than copied, so producing many matches over one subject (e.g.
+    /// `finditer`) does not re-copy the whole subject per match.
     ///
     /// # Arguments
     /// * `caps` - The successful capture result from the regex engine
-    /// * `input` - The full input string that was searched
-    /// * `pattern` - The original pattern string (for repr)
+    /// * `input` - The full input string that was searched (shared)
+    /// * `all_ascii` - Whether `input` is pure ASCII (byte offset == char offset)
+    /// * `pattern` - The original pattern string, for repr (shared)
     /// * `regex` - The compiled regex, used to extract named group mappings
     pub fn from_captures(
         caps: &fancy_regex::Captures<'_>,
-        input: &str,
-        pattern: &str,
+        input: &Arc<str>,
+        all_ascii: bool,
+        pattern: &Arc<str>,
         regex: &fancy_regex::Regex,
     ) -> Self {
         let full = caps.get(0).expect("group 0 always exists on a successful match");
         let full_match = full.as_str().to_owned();
-        let start = byte_to_char_offset(input, full.start());
-        let end = byte_to_char_offset(input, full.end());
+        let start = full.start();
+        let end = full.end();
 
         let group_count = caps.len().saturating_sub(1);
         let mut groups = Vec::with_capacity(group_count);
@@ -98,10 +112,7 @@ impl ReMatch {
         for cap in caps.iter().skip(1) {
             if let Some(m) = cap {
                 groups.push(Some(m.as_str().to_owned()));
-                group_spans.push(Some((
-                    byte_to_char_offset(input, m.start()),
-                    byte_to_char_offset(input, m.end()),
-                )));
+                group_spans.push(Some((m.start(), m.end())));
             } else {
                 groups.push(None);
                 group_spans.push(None);
@@ -123,8 +134,19 @@ impl ReMatch {
             groups,
             group_spans,
             named_groups,
-            input_string: input.to_owned(),
-            pattern_string: pattern.to_owned(),
+            input_string: Arc::clone(input),
+            all_ascii,
+            pattern_string: Arc::clone(pattern),
+        }
+    }
+
+    /// Converts a stored byte offset into the subject to the Unicode character
+    /// offset CPython's position APIs report. ASCII subjects need no conversion.
+    fn char_offset(&self, byte_offset: usize) -> usize {
+        if self.all_ascii {
+            byte_offset
+        } else {
+            byte_to_char_offset(&self.input_string, byte_offset)
         }
     }
 
@@ -212,7 +234,7 @@ impl ReMatch {
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
     fn get_start(&self, n: i64) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.start as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start) as i64)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -220,7 +242,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((s, _)) => Ok(Value::Int(*s as i64)),
+                    Some((s, _)) => Ok(Value::Int(self.char_offset(*s) as i64)),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -233,7 +255,7 @@ impl ReMatch {
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
     fn get_end(&self, n: i64) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.end as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end) as i64)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -241,7 +263,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((_, e)) => Ok(Value::Int(*e as i64)),
+                    Some((_, e)) => Ok(Value::Int(self.char_offset(*e) as i64)),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -255,7 +277,10 @@ impl ReMatch {
     fn get_span(&self, n: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(allocate_tuple(
-                smallvec![Value::Int(self.start as i64), Value::Int(self.end as i64)],
+                smallvec![
+                    Value::Int(self.char_offset(self.start) as i64),
+                    Value::Int(self.char_offset(self.end) as i64)
+                ],
                 heap,
             )?),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
@@ -265,7 +290,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 let (s, e) = match &self.group_spans[idx] {
-                    Some((s, e)) => (*s as i64, *e as i64),
+                    Some((s, e)) => (self.char_offset(*s) as i64, self.char_offset(*e) as i64),
                     None => (-1, -1),
                 };
                 Ok(allocate_tuple(smallvec![Value::Int(s), Value::Int(e)], heap)?)
@@ -300,7 +325,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let m = self.get(vm.heap);
-        write!(f, "<re.Match object; span=({}, {}), match=", m.start, m.end)?;
+        write!(
+            f,
+            "<re.Match object; span=({}, {}), match=",
+            m.char_offset(m.start),
+            m.char_offset(m.end)
+        )?;
         string_repr_fmt(&m.full_match, f)?;
         Ok(f.write_char('>')?)
     }
@@ -308,7 +338,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
-                let v = allocate_string(self.get(vm.heap).input_string.as_str(), vm.heap)?;
+                let v = allocate_string(&*self.get(vm.heap).input_string, vm.heap)?;
                 Ok(Some(CallResult::Value(v)))
             }
             _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),

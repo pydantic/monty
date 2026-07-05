@@ -9,7 +9,7 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, iter, mem, str};
+use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str, sync::Arc};
 
 use fancy_regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -48,20 +48,23 @@ pub(crate) struct RePattern {
     flags: u16,
     /// The compiled Rust regex, unanchored.
     compiled: Regex,
-    /// The compiled regex anchored with `\A(?:...)` for `match()`.
+    /// The regex anchored with `\A(?:...)` for `match()`, compiled lazily on first
+    /// `match()` call (many patterns are only ever used for `search`/`split`/`sub`,
+    /// so compiling all three variants up front is wasted work).
     ///
     /// Uses `\A` (absolute start anchor) instead of `^` so the MULTILINE flag
     /// doesn't cause it to match at line boundaries. This correctly handles
     /// alternations — e.g. `match('b|ab', 'ab')` must match `ab`, not fail
     /// because the engine found only `b` starting at position 1.
-    compiled_match: Regex,
-    /// The compiled regex anchored with `\A(?:...)\z` for `fullmatch()`.
+    compiled_match: OnceCell<Regex>,
+    /// The regex anchored with `\A(?:...)\z` for `fullmatch()`, compiled lazily on
+    /// first `fullmatch()` call (see `compiled_match`).
     ///
     /// Uses `\A`/`\z` (absolute anchors) instead of `^`/`$` so the MULTILINE flag
     /// doesn't cause them to match at line boundaries. This correctly handles
     /// alternations — e.g. `fullmatch('a|ab', 'ab')` must match `ab`, not fail
     /// because the engine found `a` first.
-    compiled_fullmatch: Regex,
+    compiled_fullmatch: OnceCell<Regex>,
 }
 
 impl PartialEq for RePattern {
@@ -74,23 +77,63 @@ impl RePattern {
     /// Creates a compiled pattern from a Python regex string and flags.
     ///
     /// Translates Python flag constants into inline regex flag prefixes and compiles
-    /// the pattern. Also pre-compiles anchored variants for `match` (`\A(?:pattern)`)
-    /// and `fullmatch` (`\A(?:pattern)\z`) to correctly handle alternations.
+    /// the unanchored pattern. The anchored variants used by `match`/`fullmatch` are
+    /// compiled lazily on first use (see [`RePattern::match_regex`]).
     ///
     /// # Errors
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
     pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
         let compiled = compile_regex(&pattern, flags)?;
-        let compiled_match = compile_regex(&format!("\\A(?:{pattern})"), flags)?;
-        let compiled_fullmatch = compile_regex(&format!("\\A(?:{pattern})\\z"), flags)?;
         Ok(Self {
             pattern,
             flags,
             compiled,
-            compiled_match,
-            compiled_fullmatch,
+            compiled_match: OnceCell::new(),
+            compiled_fullmatch: OnceCell::new(),
         })
+    }
+
+    /// Returns the `\A(?:pattern)` regex for `match()`, compiling it on first use.
+    ///
+    /// A pattern that compiled unanchored virtually always compiles when wrapped in
+    /// `\A(?:…)`, so a compile error here is a pathological edge case surfaced (as
+    /// `re.PatternError`) at `match()` time rather than at `re.compile()` time.
+    fn match_regex(&self) -> RunResult<&Regex> {
+        if let Some(regex) = self.compiled_match.get() {
+            return Ok(regex);
+        }
+        let compiled = compile_regex(&format!("\\A(?:{})", self.pattern), self.flags)?;
+        // `set` only fails on a concurrent init, impossible on the single-threaded VM.
+        let _ = self.compiled_match.set(compiled);
+        Ok(self.compiled_match.get().expect("cell was just initialised"))
+    }
+
+    /// Returns the `\A(?:pattern)\z` regex for `fullmatch()`, compiling on first use.
+    /// See [`RePattern::match_regex`] for the lazy-compile-error caveat.
+    fn fullmatch_regex(&self) -> RunResult<&Regex> {
+        if let Some(regex) = self.compiled_fullmatch.get() {
+            return Ok(regex);
+        }
+        let compiled = compile_regex(&format!("\\A(?:{})\\z", self.pattern), self.flags)?;
+        let _ = self.compiled_fullmatch.set(compiled);
+        Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
+    }
+
+    /// Builds a single `ReMatch` heap value from a capture result.
+    ///
+    /// Wraps the subject and pattern in shared `Arc`s (one allocation each) so the
+    /// match holds a shared handle rather than its own copy of the subject.
+    fn build_match(
+        &self,
+        caps: &fancy_regex::Captures<'_>,
+        text: &str,
+        heap: &Heap<impl ResourceTracker>,
+    ) -> RunResult<Value> {
+        let input: Arc<str> = Arc::from(text);
+        let pattern: Arc<str> = Arc::from(self.pattern.as_str());
+        let m = ReMatch::from_captures(caps, &input, text.is_ascii(), &pattern, &self.compiled);
+        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -98,10 +141,7 @@ impl RePattern {
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn search(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Ok(Some(caps)) => {
-                let m = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
-                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
-            }
+            Ok(Some(caps)) => self.build_match(&caps, text, heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -115,11 +155,8 @@ impl RePattern {
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn match_start(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled_match.captures(text) {
-            Ok(Some(caps)) => {
-                let match_obj = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
-                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?))
-            }
+        match self.match_regex()?.captures(text) {
+            Ok(Some(caps)) => self.build_match(&caps, text, heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -133,11 +170,8 @@ impl RePattern {
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
     pub fn fullmatch(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        match self.compiled_fullmatch.captures(text) {
-            Ok(Some(caps)) => {
-                let match_obj = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
-                Ok(Value::Ref(heap.allocate(HeapData::ReMatch(match_obj))?))
-            }
+        match self.fullmatch_regex()?.captures(text) {
+            Ok(Some(caps)) => self.build_match(&caps, text, heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -260,10 +294,17 @@ impl RePattern {
     /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
     /// opcode handles iteration over the returned list.
     pub fn finditer(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        // Share one copy of the subject (and pattern) across every match rather than
+        // re-copying the whole subject per match — this was the dominant cost of
+        // regex-extraction workloads.
+        let input: Arc<str> = Arc::from(text);
+        let pattern: Arc<str> = Arc::from(self.pattern.as_str());
+        let all_ascii = text.is_ascii();
+
         let mut results = Vec::new();
         for caps in self.compiled.captures_iter(text) {
             let caps = caps.map_err(ExcType::re_pattern_error)?;
-            let m = ReMatch::from_captures(&caps, text, &self.pattern, &self.compiled);
+            let m = ReMatch::from_captures(&caps, &input, all_ascii, &pattern, &self.compiled);
             results.push(Value::Ref(heap.allocate(HeapData::ReMatch(m))?));
         }
 
@@ -343,34 +384,34 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
             Some(StaticStrings::Search) => {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?.to_owned();
-                self.get(vm.heap).search(&text, vm.heap)
+                let text = arg.to_str(vm)?;
+                self.get(vm.heap).search(text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?.to_owned();
-                self.get(vm.heap).match_start(&text, vm.heap)
+                let text = arg.to_str(vm)?;
+                self.get(vm.heap).match_start(text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?.to_owned();
-                self.get(vm.heap).fullmatch(&text, vm.heap)
+                let text = arg.to_str(vm)?;
+                self.get(vm.heap).fullmatch(text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?.to_owned();
-                self.get(vm.heap).findall(&text, vm.heap)
+                let text = arg.to_str(vm)?;
+                self.get(vm.heap).findall(text, vm.heap)
             }
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
             Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
             Some(StaticStrings::Finditer) => {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?.to_owned();
-                self.get(vm.heap).finditer(&text, vm.heap)
+                let text = arg.to_str(vm)?;
+                self.get(vm.heap).finditer(text, vm.heap)
             }
             _ => {
                 return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns)));
