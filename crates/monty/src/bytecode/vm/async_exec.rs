@@ -680,7 +680,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         coro.get_mut(self.heap).state = CoroutineState::Running;
 
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
-        // because that needs a current frame for call_position, but spawned tasks
+        // because that needs a current frame for call_offset, but spawned tasks
         // don't have a parent frame — the coroutine is the root)
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
