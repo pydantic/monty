@@ -378,6 +378,32 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// Overrides the default `py_repr` with allocation-light fast paths for the
+    /// values whose repr is cheap to produce:
+    /// - singletons (`None`/`True`/`False`/`Ellipsis`) resolve to a pre-interned
+    ///   `StringId`, so `repr`/`str`/`print`/f-strings allocate nothing at all;
+    /// - `int` formats via `itoa` straight into a right-sized `allocate_string`,
+    ///   skipping the grow-then-shrink intermediate `String`.
+    ///
+    /// Every other variant takes the generic `py_repr_fmt` buffered path. `str`
+    /// is also served allocation-free, but by [`py_str`](Self::py_str) — `repr`
+    /// of a `str` still needs a buffer for quoting/escaping.
+    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        match self {
+            Self::None => Ok(Self::InternString(StaticStrings::NoneRepr.into())),
+            Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
+            Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
+            Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
+            Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)?),
+            _ => {
+                let mut s = String::new();
+                let mut heap_ids = LazyHeapSet::default();
+                self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
+                Ok(allocate_string(s, vm.heap)?)
+            }
+        }
+    }
+
     fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             // Interned/heap strings are already what `str()` returns — hand the

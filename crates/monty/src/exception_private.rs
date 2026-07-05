@@ -397,7 +397,11 @@ impl ExcType {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
                 defer_drop!(key_value, vm);
-                key_value.to_str(vm).unwrap_or_default().to_owned()
+                if let Ok(s) = key_value.to_str(vm) {
+                    s.to_owned()
+                } else {
+                    format!("<{}>", key.py_type_name(vm))
+                }
             }
             Err(_) => format!("<{}>", key.py_type_name(vm)),
         };

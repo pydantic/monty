@@ -741,6 +741,21 @@ pub enum StaticStrings {
     /// insertion would shift every later id.
     #[strum(serialize = "__doc__")]
     DunderDoc,
+
+    // ==========================
+    // Singleton `repr()`/`str()` values. Interned so `str(None)`, `repr(True)`,
+    // `f"{...}"`, `print(False)` etc. resolve to an existing `StringId` instead
+    // of allocating a fresh heap string each time — see `Value::py_repr`.
+    // Appended at the enum end: discriminants are serialized `StringId`s, so
+    // mid-enum insertion would shift every later id.
+    #[strum(serialize = "None")]
+    NoneRepr,
+    #[strum(serialize = "True")]
+    TrueRepr,
+    #[strum(serialize = "False")]
+    FalseRepr,
+    #[strum(serialize = "Ellipsis")]
+    EllipsisRepr,
 }
 
 impl StaticStrings {

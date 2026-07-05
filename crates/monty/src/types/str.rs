@@ -68,13 +68,6 @@ impl Str {
         let StrInitArgs { object } = StrInitArgs::from_args(args, vm)?;
         match object {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
-            // Fast path: `str(int)` formats via itoa straight into a
-            // right-sized allocation, skipping the grow-then-shrink `String`
-            // that the generic `py_str`/`py_repr` path builds and then reboxes.
-            Some(Value::Int(i)) => Ok(allocate_string(itoa::Buffer::new().format(i), vm.heap)?),
-            // `py_str` already yields the `str` `Value` that `str(x)` should
-            // return (the same object when `x` is already a `str`), so hand it
-            // straight back rather than copying its bytes into a new allocation.
             Some(v) => {
                 defer_drop!(v, vm);
                 v.py_str(vm)
