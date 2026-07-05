@@ -742,11 +742,8 @@ pub struct VM<'h, T: ResourceTracker> {
     /// `debug_assert!`-checked in [`Self::snapshot`].
     run_reentry_depth: u8,
 
-    /// Per-run cache of compiled regex patterns for module-level `re.*` calls.
-    ///
-    /// Avoids recompiling the same pattern on every `re.search`/`re.split`/… call.
-    /// Not part of the snapshot (a pure performance cache), so it is default-
-    /// initialized on both `new` and `restore`.
+    /// Per-run cache of compiled patterns for module-level `re.*` calls. Not
+    /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 }
 

@@ -39,11 +39,9 @@ use crate::{
 ///
 /// # Position semantics
 ///
-/// Positions are reported as Unicode character offsets (not byte offsets) to
-/// match CPython's behavior. Offsets are *stored* as byte offsets (the units the
-/// `regex` crate produces) and converted to character offsets lazily — only when
-/// `.start()`/`.end()`/`.span()` or `repr` actually read them. ASCII inputs need
-/// no conversion at all (byte offset == character offset), tracked by `all_ascii`.
+/// Offsets are stored as byte offsets (what the `regex` crate produces) and
+/// converted to the character offsets CPython reports lazily, only when
+/// `.start()`/`.end()`/`.span()`/`repr` read them. ASCII input needs no conversion.
 ///
 /// # Group Indexing
 ///
@@ -64,35 +62,21 @@ pub(crate) struct ReMatch {
     group_spans: Vec<Option<(usize, usize)>>,
     /// Named groups: maps group name → 1-based group index.
     named_groups: Vec<(String, usize)>,
-    /// The input string that was searched (returned by the `.string` attribute).
-    ///
-    /// Shared (`Arc`) so that all matches from one `finditer`/`findall` call point
-    /// at a single copy of the subject rather than each cloning it — the subject is
-    /// often large and this used to dominate regex-extraction workloads.
+    /// The searched input (the `.string` attribute). Shared (`Arc`) so all matches
+    /// from one `finditer`/`findall` call point at one copy, not a copy each.
     input_string: Arc<str>,
-    /// Whether the input is pure ASCII, so byte offsets equal character offsets and
-    /// position conversion is a no-op. Computed once per match-producing call.
+    /// Whether the input is pure ASCII, so byte offset == character offset.
     all_ascii: bool,
-    /// The original pattern string (used in repr output). Shared for the same
-    /// reason as `input_string`.
+    /// The original pattern string (for repr), shared like `input_string`.
     pattern_string: Arc<str>,
 }
 
 impl ReMatch {
     /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
     ///
-    /// Stores byte offsets directly (character-offset conversion is deferred to the
-    /// position accessors — see the type docs). The full match (group 0) is always
-    /// present when captures are successful. The subject and pattern are shared
-    /// (`Arc`) rather than copied, so producing many matches over one subject (e.g.
-    /// `finditer`) does not re-copy the whole subject per match.
-    ///
-    /// # Arguments
-    /// * `caps` - The successful capture result from the regex engine
-    /// * `input` - The full input string that was searched (shared)
-    /// * `all_ascii` - Whether `input` is pure ASCII (byte offset == char offset)
-    /// * `pattern` - The original pattern string, for repr (shared)
-    /// * `regex` - The compiled regex, used to extract named group mappings
+    /// Stores byte offsets (converted to char offsets lazily — see the type docs)
+    /// and shares the `Arc` subject/pattern rather than copying them per match.
+    /// `regex` is used only to extract named-group mappings.
     pub fn from_captures(
         caps: &fancy_regex::Captures<'_>,
         input: &Arc<str>,

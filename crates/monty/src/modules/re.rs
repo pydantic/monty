@@ -221,9 +221,8 @@ pub(super) fn call(
 fn call_compile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let ReCompileArgs { pattern, flags } = ReCompileArgs::from_args(args, vm)?;
     match resolve_pattern(pattern, flags, vm)? {
-        // Clone the compiled pattern out of the shared cache entry into its own
-        // heap object — the returned `re.Pattern` is the user's to own and mutate
-        // (lazy anchored-variant compilation) independently of the cache.
+        // Clone out of the shared cache entry: the returned `re.Pattern` is the
+        // user's own object, independent of the cache.
         ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
             vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone())))?,
         )),
@@ -592,10 +591,8 @@ impl ReFlags {
     }
 }
 
-/// A pattern ready to run: a compiled pattern shared out of the per-run
-/// [`RePatternCache`], or borrowed from a still-live `re.Pattern` heap value. The
-/// `Heap` variant's value must stay alive for the whole match call — callers guard
-/// it with `defer_drop!`.
+/// A pattern ready to run: shared out of the [`RePatternCache`], or a still-live
+/// `re.Pattern` heap value (which callers keep alive with `defer_drop!`).
 enum ResolvedPattern {
     /// Compiled from a `str` pattern and shared (`Rc`) with the pattern cache.
     Cached(Rc<RePattern>),
@@ -631,41 +628,21 @@ impl DropWithHeap for ResolvedPattern {
     }
 }
 
-/// Per-run cache of compiled patterns for the module-level `re.*` convenience
-/// functions (`re.search`, `re.split`, …), mirroring CPython's `re._cache`.
-///
-/// Those functions take a raw pattern string and would otherwise recompile it on
-/// every call — `re.split(r'\s+', text)` inside a loop is the canonical case.
-/// Caching keyed on `(pattern, flags)` makes a pattern used in a loop compile
-/// once; compiled patterns are shared via `Rc`, so a cache hit is a refcount bump
-/// rather than a regex clone.
-///
-/// Lives on the VM but is **not** part of its snapshot — it is a pure performance
-/// cache, rebuilt on demand after restore (like [`JsonStringCache`]). It holds no
-/// Monty heap references, so it needs no `drop_with_heap` cleanup.
-///
-/// # Bounding
-///
-/// Compiled regexes live on the Rust heap, outside the [`ResourceTracker`]. To keep
-/// that retained memory bounded, the cache is cleared wholesale once it reaches
-/// [`RePatternCache::MAX_ENTRIES`] (as CPython clears `_cache` at `_MAXCACHE`),
-/// rather than growing without limit.
-///
-/// [`JsonStringCache`]: crate::modules::json::JsonStringCache
+/// Per-run cache of compiled patterns for module-level `re.*` calls, keyed on
+/// `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles once, not
+/// per call. Mirrors CPython's `re._cache`. Not snapshotted (rebuilt on demand).
 #[derive(Default)]
 pub(crate) struct RePatternCache {
     entries: AHashMap<(String, u16), Rc<RePattern>>,
 }
 
 impl RePatternCache {
-    /// Maximum number of cached patterns before the cache is cleared. Bounds the
-    /// untracked compiled-regex memory a program can accumulate via distinct
-    /// module-level patterns; smaller than CPython's 512 given the sandbox's
-    /// resource-limit focus (the size is not observable behaviour).
+    /// Cache size cap. Cleared wholesale on overflow to bound the compiled-regex
+    /// memory (untracked Rust heap) a program can retain via distinct patterns.
     const MAX_ENTRIES: usize = 128;
 
     /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
-    /// it on a miss. Compile errors propagate and nothing is cached.
+    /// on a miss. Compile errors propagate and nothing is cached.
     fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
         let key = (pattern.to_owned(), flags);
         if let Some(compiled) = self.entries.get(&key) {

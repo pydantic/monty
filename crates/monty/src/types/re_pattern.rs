@@ -49,8 +49,7 @@ pub(crate) struct RePattern {
     /// The compiled Rust regex, unanchored.
     compiled: Regex,
     /// The regex anchored with `\A(?:...)` for `match()`, compiled lazily on first
-    /// `match()` call (many patterns are only ever used for `search`/`split`/`sub`,
-    /// so compiling all three variants up front is wasted work).
+    /// use (most patterns are only ever `search`/`split`/`sub`ed).
     ///
     /// Uses `\A` (absolute start anchor) instead of `^` so the MULTILINE flag
     /// doesn't cause it to match at line boundaries. This correctly handles
@@ -58,7 +57,7 @@ pub(crate) struct RePattern {
     /// because the engine found only `b` starting at position 1.
     compiled_match: OnceCell<Regex>,
     /// The regex anchored with `\A(?:...)\z` for `fullmatch()`, compiled lazily on
-    /// first `fullmatch()` call (see `compiled_match`).
+    /// first use (see `compiled_match`).
     ///
     /// Uses `\A`/`\z` (absolute anchors) instead of `^`/`$` so the MULTILINE flag
     /// doesn't cause them to match at line boundaries. This correctly handles
@@ -96,9 +95,8 @@ impl RePattern {
 
     /// Returns the `\A(?:pattern)` regex for `match()`, compiling it on first use.
     ///
-    /// A pattern that compiled unanchored virtually always compiles when wrapped in
-    /// `\A(?:…)`, so a compile error here is a pathological edge case surfaced (as
-    /// `re.PatternError`) at `match()` time rather than at `re.compile()` time.
+    /// Wrapping a pattern that already compiled essentially never fails, so any
+    /// error surfaces (as `re.PatternError`) at `match()` rather than `re.compile()`.
     fn match_regex(&self) -> RunResult<&Regex> {
         if let Some(regex) = self.compiled_match.get() {
             return Ok(regex);
@@ -110,7 +108,6 @@ impl RePattern {
     }
 
     /// Returns the `\A(?:pattern)\z` regex for `fullmatch()`, compiling on first use.
-    /// See [`RePattern::match_regex`] for the lazy-compile-error caveat.
     fn fullmatch_regex(&self) -> RunResult<&Regex> {
         if let Some(regex) = self.compiled_fullmatch.get() {
             return Ok(regex);
@@ -120,10 +117,8 @@ impl RePattern {
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
 
-    /// Builds a single `ReMatch` heap value from a capture result.
-    ///
-    /// Wraps the subject and pattern in shared `Arc`s (one allocation each) so the
-    /// match holds a shared handle rather than its own copy of the subject.
+    /// Builds a single `ReMatch` heap value from a capture result, wrapping the
+    /// subject and pattern in shared `Arc`s rather than copying them.
     fn build_match(
         &self,
         caps: &fancy_regex::Captures<'_>,
@@ -294,9 +289,7 @@ impl RePattern {
     /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
     /// opcode handles iteration over the returned list.
     pub fn finditer(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        // Share one copy of the subject (and pattern) across every match rather than
-        // re-copying the whole subject per match — this was the dominant cost of
-        // regex-extraction workloads.
+        // Share one subject/pattern copy across every match, not one copy per match.
         let input: Arc<str> = Arc::from(text);
         let pattern: Arc<str> = Arc::from(self.pattern.as_str());
         let all_ascii = text.is_ascii();
