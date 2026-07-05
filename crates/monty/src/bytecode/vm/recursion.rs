@@ -102,7 +102,7 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
 }
 
 /// Hard cap on native Rust call-stack re-entry, enforced by
-/// [`VM::incr_run_reentry`] and released by [`RunReentryGuard`]. Much smaller
+/// [`VM::enter_run_reentry`] and released by [`RunReentryGuard`]. Much smaller
 /// than the 1000-frame Python recursion limit because each level costs a real
 /// nested call to [`VM::run`], not a push onto the heap-allocated `frames` vec.
 ///
@@ -115,12 +115,12 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
 /// A hard safety constant, not a Python-visible setting: unlike
 /// `recursion_depth` (configurable via `sys.setrecursionlimit`), it does not
 /// go through the tracker and cannot be changed by sandboxed code.
-pub(crate) const MAX_RUN_REENTRY_DEPTH: usize = 12;
+pub(crate) const MAX_RUN_REENTRY_DEPTH: u8 = 12;
 
 impl<T: ResourceTracker> VM<'_, T> {
-    /// Checks the native re-entry depth against [`MAX_RUN_REENTRY_DEPTH`] and
-    /// increments it. Pair with [`RunReentryGuard::new`] to release the level
-    /// on every exit path.
+    /// Charges one native re-entry level, counting the remaining budget down
+    /// from [`MAX_RUN_REENTRY_DEPTH`]; errors when it's exhausted. Pair with
+    /// [`RunReentryGuard::new`] to release the level on every exit path.
     ///
     /// Split into a plain `Result<(), _>` check (unlike
     /// [`recursion_guard`](Self::recursion_guard)'s combined check-and-wrap) so
@@ -129,29 +129,33 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// borrow across the match. Bypasses the tracker: a fixed safety constant,
     /// not a user-configurable limit.
     #[inline]
-    pub(crate) fn incr_run_reentry(&mut self) -> Result<(), ResourceError> {
-        if self.run_reentry_depth >= MAX_RUN_REENTRY_DEPTH {
-            return Err(ResourceError::Recursion {
-                limit: MAX_RUN_REENTRY_DEPTH,
-                depth: self.run_reentry_depth + 1,
-            });
+    pub(crate) fn enter_run_reentry(&mut self) -> Result<(), ResourceError> {
+        if let Some(new_value) = self.run_reentry_depth.checked_sub(1) {
+            self.run_reentry_depth = new_value;
+            Ok(())
+        } else {
+            Err(ResourceError::Recursion {
+                limit: MAX_RUN_REENTRY_DEPTH as usize,
+                depth: MAX_RUN_REENTRY_DEPTH as usize,
+            })
         }
-        self.run_reentry_depth += 1;
-        Ok(())
     }
 
     /// Releases one native re-entry level. Paired with
-    /// [`incr_run_reentry`](Self::incr_run_reentry); called only by
+    /// [`enter_run_reentry`](Self::enter_run_reentry); called only by
     /// [`RunReentryGuard`]'s `Drop` impl.
     #[inline]
-    pub(crate) fn decr_run_reentry(&mut self) {
-        debug_assert!(self.run_reentry_depth > 0, "decr_run_reentry called when depth is 0");
-        self.run_reentry_depth -= 1;
+    pub(crate) fn release_run_reentry(&mut self) {
+        debug_assert!(
+            self.run_reentry_depth < MAX_RUN_REENTRY_DEPTH,
+            "release_run_reentry called when depth is MAX_RUN_REENTRY_DEPTH"
+        );
+        self.run_reentry_depth += 1;
     }
 }
 
 /// RAII guard for one level of native `run()` re-entry, wrapping a level
-/// already reserved via [`VM::incr_run_reentry`].
+/// already reserved via [`VM::enter_run_reentry`].
 ///
 /// Derefs to the [`VM`] so the nested `call_function`/`run()` call runs
 /// through the guard; the reserved level is released when the guard is
@@ -162,7 +166,7 @@ pub(crate) struct RunReentryGuard<'a, 'h, T: ResourceTracker> {
 
 impl<'a, 'h, T: ResourceTracker> RunReentryGuard<'a, 'h, T> {
     /// Wraps a re-entry level already charged by a prior
-    /// [`VM::incr_run_reentry`] call.
+    /// [`VM::enter_run_reentry`] call.
     pub(crate) fn new(vm: &'a mut VM<'h, T>) -> Self {
         Self { vm }
     }
@@ -183,7 +187,7 @@ impl<T: ResourceTracker> DerefMut for RunReentryGuard<'_, '_, T> {
 
 impl<T: ResourceTracker> Drop for RunReentryGuard<'_, '_, T> {
     fn drop(&mut self) {
-        self.vm.decr_run_reentry();
+        self.vm.release_run_reentry();
     }
 }
 

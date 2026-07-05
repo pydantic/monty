@@ -372,7 +372,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// execute them and resume, which this synchronous context cannot support.
     ///
     /// The nested `self.run()` below recurses on the native Rust stack, so
-    /// re-entry is bounded via [`incr_run_reentry`](Self::incr_run_reentry)
+    /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
     /// at entry — before `call_function`, since a class-valued `__init__` can
     /// recurse back in without ever pushing a frame.
     pub(crate) fn evaluate_function(
@@ -381,7 +381,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         callable: &Value,
         args: ArgValues,
     ) -> Result<Value, RunError> {
-        if let Err(e) = self.incr_run_reentry() {
+        if let Err(e) = self.enter_run_reentry() {
             // Bailing before `call_function` takes ownership of `args`, so
             // reclaim its refcounts here.
             args.drop_with_heap(self);
