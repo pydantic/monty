@@ -249,7 +249,7 @@ pub trait PyTrait<'h> {
     /// per-type protections (`INT_MAX_STR_DIGITS`, `check_repeat_size`, etc.)
     /// blunt the worst amplifications but don't fully cover container
     /// `repr()`.
-    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
         let mut s = String::new();
         let mut heap_ids = AHashSet::new();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
@@ -266,7 +266,7 @@ pub trait PyTrait<'h> {
     /// writer, error messages) would resolve the `Value` to `&str` via the
     /// interns table / heap — equivalent to the existing `EitherStr`
     /// accessor pattern.
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
         self.py_repr(vm)
     }
 

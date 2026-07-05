@@ -804,7 +804,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
         match self {
             // Strings return their value directly without quotes
             Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),

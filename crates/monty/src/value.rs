@@ -123,7 +123,7 @@ impl From<bool> for Value {
     }
 }
 
-impl PyTrait<'_> for Value {
+impl<'h> PyTrait<'h> for Value {
     fn py_type(&self, vm: &VM<'_, impl ResourceTracker>) -> Type {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
@@ -377,9 +377,9 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
         match self {
-            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned().into()),
+            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).into()),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
