@@ -647,27 +647,24 @@ const CACHE_CAPACITY: usize = 512;
 /// LRU-on-collision (jiter's `py_string_cache` design), so retained
 /// compiled-regex memory is hard-bounded by `CACHE_CAPACITY`. Mirrors CPython's
 /// `re._cache`; not snapshotted (rebuilt on demand).
-pub(crate) struct RePatternCache {
-    /// `CACHE_CAPACITY` slots — a boxed slice rather than a boxed `[_; N]` array
-    /// to build straight on the heap (no oversized stack array).
-    entries: Box<[ReCacheEntry]>,
-    hash_builder: RandomState,
-}
-
-impl Default for RePatternCache {
-    fn default() -> Self {
-        Self {
-            entries: vec![None; CACHE_CAPACITY].into_boxed_slice(),
-            hash_builder: RandomState::default(),
-        }
-    }
-}
+///
+/// The `CACHE_CAPACITY`-slot backing store is allocated lazily on first use:
+/// every VM constructs a `RePatternCache`, but the vast majority never touch
+/// `re`, and eagerly zeroing ~`CACHE_CAPACITY × size_of::<ReCacheEntry>()` bytes
+/// per VM measurably regressed setup-bound benchmarks (`add_two`, `func_call_*`).
+#[derive(Default)]
+pub(crate) struct RePatternCache(Option<(Box<[ReCacheEntry]>, RandomState)>);
 
 impl RePatternCache {
     /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
-    /// on a miss. Compile errors propagate and nothing is cached.
+    /// on a miss. Compile errors propagate and nothing is cached. The backing
+    /// store is allocated here on the first call.
     fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
-        let hash = self.hash_builder.hash_one((pattern, flags));
+        let (entries, hash_builder) = self
+            .0
+            .get_or_insert_with(|| (vec![None; CACHE_CAPACITY].into_boxed_slice(), RandomState::default()));
+
+        let hash = hash_builder.hash_one((pattern, flags));
         // `hash % CACHE_CAPACITY` is < CACHE_CAPACITY, so it always fits usize.
         let hash_index = usize::try_from(hash % CACHE_CAPACITY as u64).expect("index < CACHE_CAPACITY");
 
@@ -675,7 +672,7 @@ impl RePatternCache {
         // empty slot to fill on a miss.
         let mut empty_slot = None;
         for index in hash_index..hash_index + 5 {
-            match self.entries.get(index) {
+            match entries.get(index) {
                 Some(Some((entry_hash, entry_pattern, entry_flags, compiled))) => {
                     if *entry_hash == hash && *entry_flags == flags && &**entry_pattern == pattern {
                         return Ok(Rc::clone(compiled));
@@ -695,7 +692,7 @@ impl RePatternCache {
         // (LRU-on-collision) when every probed slot was occupied.
         let compiled = Rc::new(RePattern::compile(pattern.to_owned(), flags)?);
         let slot = empty_slot.unwrap_or(hash_index);
-        self.entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
+        entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
         Ok(compiled)
     }
 }
@@ -823,9 +820,12 @@ fn should_escape(c: char) -> bool {
 mod tests {
     use super::*;
 
-    /// Counts the occupied slots in the cache.
+    /// Counts the occupied slots in the cache (0 while unallocated).
     fn occupied(cache: &RePatternCache) -> usize {
-        cache.entries.iter().filter(|e| e.is_some()).count()
+        cache
+            .0
+            .as_ref()
+            .map_or(0, |(entries, _)| entries.iter().filter(|e| e.is_some()).count())
     }
 
     #[test]
