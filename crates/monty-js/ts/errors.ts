@@ -229,6 +229,24 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'TimeoutError',
   'TypeError',
   're.PatternError',
+  // decimal module exception taxonomy — every `decimal.*` class monty's
+  // `ExcType` can parse. Without these, a host error named e.g.
+  // `decimal.Underflow` would fall back to `RuntimeError` and `except
+  // decimal.Underflow:` in the sandbox would not catch it.
+  'decimal.DecimalException',
+  'decimal.InvalidOperation',
+  'decimal.DivisionByZero',
+  'decimal.Overflow',
+  'decimal.Inexact',
+  'decimal.Rounded',
+  'decimal.Subnormal',
+  'decimal.Clamped',
+  'decimal.Underflow',
+  'decimal.FloatOperation',
+  'decimal.ConversionSyntax',
+  'decimal.DivisionImpossible',
+  'decimal.DivisionUndefined',
+  'decimal.InvalidContext',
 ])
 
 /**

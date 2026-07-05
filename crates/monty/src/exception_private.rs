@@ -146,6 +146,73 @@ pub enum ExcType {
     /// representations into the required attributes.
     #[strum(serialize = "re.PatternError")]
     RePatternError,
+
+    // --- decimal module ---
+    /// `decimal.DecimalException` — the base of the whole `decimal` exception
+    /// tree. In CPython it subclasses `ArithmeticError`; [`Self::is_subclass_of`]
+    /// models that plus its own subclasses.
+    #[strum(serialize = "decimal.DecimalException")]
+    DecimalException,
+    /// `decimal.InvalidOperation` — raised for an invalid operation such as
+    /// `Decimal('abc')` (bad syntax), `0/0`, or `inf - inf`. Subclass of
+    /// `DecimalException`. The *message* carries the CPython condition-class
+    /// list, e.g. `[<class 'decimal.ConversionSyntax'>]`.
+    #[strum(serialize = "decimal.InvalidOperation")]
+    DecimalInvalidOperation,
+    /// `decimal.DivisionByZero` — `x / 0`, `x // 0` for non-zero `x`. In CPython
+    /// it subclasses *both* `DecimalException` and `ZeroDivisionError`, so
+    /// `except ZeroDivisionError` catches it; [`Self::is_subclass_of`] models the
+    /// dual parentage.
+    #[strum(serialize = "decimal.DivisionByZero")]
+    DecimalDivisionByZero,
+    /// `decimal.Overflow` — a result whose adjusted exponent exceeds `Emax`
+    /// (999999, CPython's default). Subclass of `(Inexact, Rounded)` in CPython.
+    #[strum(serialize = "decimal.Overflow")]
+    DecimalOverflow,
+    /// `decimal.Inexact` — a result was rounded away non-zero digits.
+    #[strum(serialize = "decimal.Inexact")]
+    DecimalInexact,
+    /// `decimal.Rounded` — a result was rounded (even if exactly).
+    #[strum(serialize = "decimal.Rounded")]
+    DecimalRounded,
+    /// `decimal.Subnormal` — a result is subnormal (below `Emin`).
+    #[strum(serialize = "decimal.Subnormal")]
+    DecimalSubnormal,
+    /// `decimal.Clamped` — a result's exponent was clamped to fit.
+    #[strum(serialize = "decimal.Clamped")]
+    DecimalClamped,
+    /// `decimal.Underflow` — a subnormal result rounded toward zero. Subclass of
+    /// `(Inexact, Rounded, Subnormal)` in CPython.
+    #[strum(serialize = "decimal.Underflow")]
+    DecimalUnderflow,
+    /// `decimal.FloatOperation` — a `float` was mixed with a `Decimal` while the
+    /// (untrapped-by-default) signal is armed. Subclass of `(DecimalException,
+    /// TypeError)` in CPython.
+    #[strum(serialize = "decimal.FloatOperation")]
+    DecimalFloatOperation,
+    /// `decimal.ConversionSyntax` — the `InvalidOperation` condition for a string
+    /// that cannot be parsed into a `Decimal`. Monty never raises it as a
+    /// *distinct* type (it raises `InvalidOperation` with the condition in the
+    /// message, exactly as CPython does), but the class is importable and
+    /// catchable. Subclass of `InvalidOperation`.
+    #[strum(serialize = "decimal.ConversionSyntax")]
+    DecimalConversionSyntax,
+    /// `decimal.DivisionImpossible` — the `InvalidOperation` condition for an
+    /// integer-division result with too many digits. Importable/catchable but
+    /// never raised as a distinct type. Subclass of `InvalidOperation`.
+    #[strum(serialize = "decimal.DivisionImpossible")]
+    DecimalDivisionImpossible,
+    /// `decimal.DivisionUndefined` — the `0 / 0` condition. Importable/catchable
+    /// but never raised as a distinct type. Subclass of *both* `InvalidOperation`
+    /// and `ZeroDivisionError` in CPython, so `except ZeroDivisionError` catches
+    /// it.
+    #[strum(serialize = "decimal.DivisionUndefined")]
+    DecimalDivisionUndefined,
+    /// `decimal.InvalidContext` — the `InvalidOperation` condition for an invalid
+    /// context. Importable/catchable but never raised as a distinct type.
+    /// Subclass of `InvalidOperation`.
+    #[strum(serialize = "decimal.InvalidContext")]
+    DecimalInvalidContext,
 }
 
 impl ExcType {
@@ -170,8 +237,38 @@ impl ExcType {
             Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
             // LookupError catches KeyError and IndexError
             Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
-            // ArithmeticError catches ZeroDivisionError and OverflowError
-            Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
+            // ArithmeticError catches ZeroDivisionError, OverflowError, and the
+            // whole decimal exception tree (DecimalException ⊂ ArithmeticError).
+            Self::ArithmeticError => {
+                matches!(
+                    self,
+                    Self::ZeroDivisionError | Self::OverflowError | Self::DecimalException
+                ) || self.is_decimal_exception()
+            }
+            // DecimalException catches every decimal-specific exception.
+            Self::DecimalException => self.is_decimal_exception(),
+            // decimal.InvalidOperation ⊃ its finer condition subtypes
+            // (ConversionSyntax / DivisionImpossible / DivisionUndefined /
+            // InvalidContext), so `except InvalidOperation` catches them.
+            Self::DecimalInvalidOperation => matches!(
+                self,
+                Self::DecimalConversionSyntax
+                    | Self::DecimalDivisionImpossible
+                    | Self::DecimalDivisionUndefined
+                    | Self::DecimalInvalidContext
+            ),
+            // decimal.Inexact ⊃ Overflow, Underflow (CPython multi-parent).
+            Self::DecimalInexact => matches!(self, Self::DecimalOverflow | Self::DecimalUnderflow),
+            // decimal.Rounded ⊃ Overflow, Underflow.
+            Self::DecimalRounded => matches!(self, Self::DecimalOverflow | Self::DecimalUnderflow),
+            // decimal.Subnormal ⊃ Underflow.
+            Self::DecimalSubnormal => matches!(self, Self::DecimalUnderflow),
+            // decimal.FloatOperation also derives from TypeError in CPython.
+            Self::TypeError => matches!(self, Self::DecimalFloatOperation),
+            // decimal.DivisionByZero is also a ZeroDivisionError in CPython, so
+            // `except ZeroDivisionError` catches `Decimal(1) / Decimal(0)`;
+            // DivisionUndefined likewise derives from ZeroDivisionError.
+            Self::ZeroDivisionError => matches!(self, Self::DecimalDivisionByZero | Self::DecimalDivisionUndefined),
             // RuntimeError catches RecursionError and NotImplementedError
             Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
             // AttributeError catches FrozenInstanceError
@@ -323,6 +420,191 @@ impl ExcType {
             format!("'{operator}' not supported between instances of '{left_type}' and '{right_type}'"),
         )
         .into()
+    }
+
+    /// Whether this is one of the `decimal` signal/condition exceptions —
+    /// `DecimalException`'s complete subtree, excluding `DecimalException`
+    /// itself. One list so the `ArithmeticError` and `DecimalException` arms
+    /// of [`Self::is_subclass_of`] cannot drift apart.
+    fn is_decimal_exception(self) -> bool {
+        matches!(
+            self,
+            Self::DecimalInvalidOperation
+                | Self::DecimalDivisionByZero
+                | Self::DecimalOverflow
+                | Self::DecimalInexact
+                | Self::DecimalRounded
+                | Self::DecimalSubnormal
+                | Self::DecimalClamped
+                | Self::DecimalUnderflow
+                | Self::DecimalFloatOperation
+                | Self::DecimalConversionSyntax
+                | Self::DecimalDivisionImpossible
+                | Self::DecimalDivisionUndefined
+                | Self::DecimalInvalidContext
+        )
+    }
+
+    /// `decimal.InvalidOperation: [<class 'decimal.ConversionSyntax'>]` — raised
+    /// when a string (or stringified int) cannot be parsed into a `Decimal`,
+    /// matching CPython's `Decimal('abc')` / `Decimal('')` behaviour. The
+    /// message embeds the condition-class list CPython attaches to the
+    /// exception's args.
+    #[must_use]
+    pub(crate) fn decimal_conversion_syntax() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalInvalidOperation,
+            "[<class 'decimal.ConversionSyntax'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `decimal.InvalidOperation: [<class 'decimal.InvalidOperation'>]` — the
+    /// generic invalid-operation, e.g. an *ordering* comparison involving NaN
+    /// (`Decimal('NaN') < 1`), `inf - inf`, or `inf * 0`. Unlike `==`/`!=`
+    /// (which return `False`/`True` for NaN), CPython raises this for `<`, `<=`,
+    /// `>`, `>=`.
+    #[must_use]
+    pub(crate) fn decimal_invalid_operation() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalInvalidOperation,
+            "[<class 'decimal.InvalidOperation'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `decimal.DivisionByZero: [<class 'decimal.DivisionByZero'>]` — `x / 0` or
+    /// `x // 0` for a non-zero `x`. Catchable as `ZeroDivisionError`.
+    #[must_use]
+    pub(crate) fn decimal_division_by_zero() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalDivisionByZero,
+            "[<class 'decimal.DivisionByZero'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `decimal.InvalidOperation: [<class 'decimal.DivisionUndefined'>]` — `0 / 0`,
+    /// `0 // 0`, `0 % 0`, `divmod(0, 0)`: division of zero by zero. The condition
+    /// class `DivisionUndefined` appears only in the message (it is an
+    /// `InvalidOperation` subclass in CPython).
+    #[must_use]
+    pub(crate) fn decimal_division_undefined() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalInvalidOperation,
+            "[<class 'decimal.DivisionUndefined'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `decimal.InvalidOperation: [<class 'decimal.InvalidOperation'>, <class
+    /// 'decimal.DivisionByZero'>]` — `divmod(x, 0)` for a non-zero `x`. CPython
+    /// attaches *both* condition classes (the `//` part signals DivisionByZero,
+    /// the `%` part InvalidOperation).
+    #[must_use]
+    pub(crate) fn decimal_divmod_by_zero() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalInvalidOperation,
+            "[<class 'decimal.InvalidOperation'>, <class 'decimal.DivisionByZero'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `decimal.Overflow: [<class 'decimal.Overflow'>]` — a result whose
+    /// adjusted exponent exceeds `Emax`, matching CPython's default context.
+    #[must_use]
+    pub(crate) fn decimal_overflow() -> RunError {
+        SimpleException::new_msg(Self::DecimalOverflow, "[<class 'decimal.Overflow'>]".to_owned()).into()
+    }
+
+    /// `decimal.InvalidOperation: [<class 'decimal.DivisionImpossible'>]` — `//`,
+    /// `%` or `divmod` whose integer quotient would need more digits than the
+    /// working precision (`Decimal('1e40') // 3`). The condition class
+    /// `DivisionImpossible` is an `InvalidOperation` subclass in CPython and appears
+    /// only in the message.
+    #[must_use]
+    pub(crate) fn decimal_division_impossible() -> RunError {
+        SimpleException::new_msg(
+            Self::DecimalInvalidOperation,
+            "[<class 'decimal.DivisionImpossible'>]".to_owned(),
+        )
+        .into()
+    }
+
+    /// `ValueError: cannot convert NaN to integer` — `int()` / `round()` of a
+    /// `Decimal('NaN')`, matching CPython's exact message.
+    #[must_use]
+    pub(crate) fn decimal_nan_to_int() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "cannot convert NaN to integer".to_owned()).into()
+    }
+
+    /// `OverflowError: cannot convert Infinity to integer` — `int()` / `round()`
+    /// of a `Decimal('Infinity')`, matching CPython's exact message.
+    #[must_use]
+    pub(crate) fn decimal_infinity_to_int() -> RunError {
+        SimpleException::new_msg(Self::OverflowError, "cannot convert Infinity to integer".to_owned()).into()
+    }
+
+    /// `TypeError: conversion from {type} to Decimal is not supported` — raised
+    /// when `Decimal(x)` is given a type it cannot convert (e.g. `None`, a
+    /// list, a user-class instance). Takes the rendered type *name* (not a
+    /// [`Type`]) so `Type::Instance` operands resolve their class name first.
+    #[must_use]
+    pub(crate) fn decimal_unsupported_conversion(type_name: impl Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("conversion from {type_name} to Decimal is not supported"),
+        )
+        .into()
+    }
+
+    /// `ValueError: invalid format string` — the single message CPython's
+    /// `Decimal.__format__` raises for *every* unsupported format spec (an
+    /// integer/string presentation code like `d`/`x`/`s`, or a grouping option
+    /// combined with `n`), unlike the per-type "Unknown format code" wording the
+    /// `int`/`float` formatters use.
+    #[must_use]
+    pub(crate) fn decimal_invalid_format_string() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "invalid format string".to_owned()).into()
+    }
+
+    /// `ValueError` for a `Decimal` coefficient (or NaN payload) exceeding
+    /// Monty's sandbox digit cap. No CPython equivalent — CPython accepts
+    /// arbitrarily long literals (documented in `limitations/decimal.md`).
+    #[must_use]
+    pub(crate) fn decimal_digits_limit() -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            "Decimal value exceeds the limit of 4300 digits".to_owned(),
+        )
+        .into()
+    }
+
+    /// `OverflowError: Python int too large to convert to C ssize_t` — an
+    /// `int` argument beyond CPython's `ssize_t` where CPython converts one
+    /// (a huge `Decimal` tuple-form exponent, `round(Decimal, huge)`).
+    #[must_use]
+    pub(crate) fn int_too_large_for_ssize_t() -> RunError {
+        SimpleException::new_msg(
+            Self::OverflowError,
+            "Python int too large to convert to C ssize_t".to_owned(),
+        )
+        .into()
+    }
+
+    /// `TypeError: Cannot hash a signaling NaN value` — `hash(Decimal('sNaN'))`,
+    /// matching CPython's exact message.
+    #[must_use]
+    pub(crate) fn decimal_snan_hash() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "Cannot hash a signaling NaN value".to_owned()).into()
+    }
+
+    /// `ValueError: cannot convert signaling NaN to float` —
+    /// `float(Decimal('sNaN'))` (directly or via the `math` module), matching
+    /// CPython's exact message.
+    #[must_use]
+    pub(crate) fn decimal_snan_to_float() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "cannot convert signaling NaN to float".to_owned()).into()
     }
 
     /// Creates a TypeError for awaiting a non-awaitable object.
@@ -1426,6 +1708,30 @@ impl ExcType {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
         };
         SimpleException::new_msg(Self::TypeError, message).into()
+    }
+
+    /// `TypeError: unsupported operand type(s) for ** or pow(): '{a}', '{b}', '{c}'`
+    /// — CPython's message when three-argument `pow()` finds no handler
+    /// (e.g. `pow(2, Decimal(3), 'x')`).
+    #[must_use]
+    pub(crate) fn pow3_type_error(base: impl Display, exp: impl Display, modulus: impl Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("unsupported operand type(s) for ** or pow(): '{base}', '{exp}', '{modulus}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: can't multiply sequence by non-int of type '{type}'` —
+    /// CPython's message for repeating a sequence (`str`/`bytes`/`list`/
+    /// `tuple`) by a non-integer (`'a' * Decimal(2)`, either operand order).
+    #[must_use]
+    pub(crate) fn sequence_repeat_non_int(type_name: impl Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("can't multiply sequence by non-int of type '{type_name}'"),
+        )
+        .into()
     }
 
     /// Creates a TypeError for unsupported unary operations.

@@ -35,6 +35,12 @@ fn scalar_values_round_trip() {
     assert_value_round_trip(&MontyObject::Bytes(vec![]));
     assert_value_round_trip(&MontyObject::Bytes(vec![0, 255, 128]));
     assert_value_round_trip(&MontyObject::Path("/mnt/data/file.txt".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal("1.20".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal("1E+5".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal("-0".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal("NaN".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal("-Infinity".to_owned()));
+    assert_value_round_trip(&MontyObject::Decimal(String::new()));
 }
 
 #[test]

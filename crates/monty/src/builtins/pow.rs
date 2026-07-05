@@ -12,7 +12,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{Heap, HeapData},
     resource::{ResourceTracker, check_pow_size},
-    types::{LongInt, PyTrait},
+    types::{LongInt, PyTrait, decimal},
     value::Value,
 };
 
@@ -25,15 +25,22 @@ pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
     defer_drop!(modulus, vm);
-    let base = normalize_bool(base);
-    let exp = normalize_bool(exp);
-
     match modulus {
-        Value::None => two_arg_pow(base, exp, vm),
+        Value::None => two_arg_pow(normalize_bool(base), normalize_bool(exp), vm),
         m => {
-            let m = normalize_bool(m);
+            // Decimal 3-arg pow: if any operand is a `Decimal`, all three must
+            // promote (bool / int / LongInt / Decimal) — `pow(Decimal(2), 3, 5)`
+            // works in CPython. A non-promotable operand raises the
+            // three-operand TypeError inside `pow3`, except when a `float` is
+            // present, which falls through to the integers-only TypeError
+            // below (CPython's `float.__pow__` fires first) — both matching
+            // CPython. Probed with the raw values so the error names a `bool`
+            // operand as 'bool', not 'int'.
+            if let Some(result) = decimal::pow3(base, exp, m, vm)? {
+                return Ok(result);
+            }
             // Three-argument pow: modular exponentiation
-            match (base, exp, m) {
+            match (normalize_bool(base), normalize_bool(exp), normalize_bool(m)) {
                 (Value::Int(b), Value::Int(e), Value::Int(m_val)) => {
                     let Some(m_nz) = NonZero::new(*m_val) else {
                         return Err(
@@ -156,6 +163,13 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 ///
 /// On overflow, promotes to LongInt instead of returning an error.
 fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    // Decimal probe first — the same dispatch the `**` operator uses. `None`
+    // (no Decimal, or a non-promotable pairing like `Decimal ** float`) falls
+    // through: no arm below can capture a Decimal ref, so the `_` arm raises
+    // the identical "** or pow()" TypeError.
+    if let Some(result) = decimal::binary_op_value(base, exp, decimal::BinOp::Pow, vm)? {
+        return Ok(result);
+    }
     match (base, exp) {
         (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
         (Value::Int(b), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {

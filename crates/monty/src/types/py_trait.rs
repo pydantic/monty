@@ -262,16 +262,18 @@ pub(crate) trait PyTrait<'h> {
     /// Python addition (`__add__`).
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_add(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs
+    /// (allocation failure, or a `decimal` exception such as `inf - inf`).
+    fn py_add(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
     /// Python subtraction (`__sub__`).
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_sub(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs
+    /// (allocation failure, or a `decimal` exception such as `inf - inf`).
+    fn py_sub(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 

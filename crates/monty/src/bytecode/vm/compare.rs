@@ -21,7 +21,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_eq(rhs, this)?;
+        let result = lhs.py_eq_operator(rhs, this)?;
         this.push(Value::Bool(result));
         Ok(())
     }
@@ -35,7 +35,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = !lhs.py_eq(rhs, this)?;
+        let result = !lhs.py_eq_operator(rhs, this)?;
         this.push(Value::Bool(result));
         Ok(())
     }

@@ -28,7 +28,7 @@ use crate::{
     resource::ResourceTracker,
     run::Executor,
     run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
-    value::Value,
+    value::{Value, from_snapshot_bytes},
 };
 
 /// Stateful REPL session that executes snippets incrementally without replay.
@@ -394,7 +394,7 @@ impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
     /// # Errors
     /// Returns an error if deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        from_snapshot_bytes(bytes)
     }
 }
 
@@ -535,7 +535,7 @@ impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
     /// # Errors
     /// Returns an error if deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        from_snapshot_bytes(bytes)
     }
 }
 
@@ -778,8 +778,13 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// previously defined REPL bindings remain available.
     #[must_use]
     pub fn into_repl(self) -> MontyRepl<T> {
-        let Self { mut repl, vm_state, .. } = self;
-        repl.globals = vm_state.globals;
+        let Self {
+            mut repl, mut vm_state, ..
+        } = self;
+        // `mem::take` (not a field move) because `VMSnapshot`'s Drop (under
+        // `memory-model-checks`) forbids moving fields out; the emptied
+        // snapshot then drops harmlessly.
+        repl.globals = mem::take(&mut vm_state.globals);
         repl
     }
 
@@ -929,8 +934,13 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     /// This method creates an empty snapshot from just the globals so the REPL
     /// can be used for further snippets.
     fn into_repl(self) -> MontyRepl<T> {
-        let Self { mut repl, vm_state, .. } = self;
-        repl.globals = vm_state.globals;
+        let Self {
+            mut repl, mut vm_state, ..
+        } = self;
+        // `mem::take` (not a field move) because `VMSnapshot`'s Drop (under
+        // `memory-model-checks`) forbids moving fields out; the emptied
+        // snapshot then drops harmlessly.
+        repl.globals = mem::take(&mut vm_state.globals);
         repl
     }
 

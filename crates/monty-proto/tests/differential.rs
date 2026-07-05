@@ -53,6 +53,10 @@ fn corpus() -> Vec<MontyObject> {
         MontyObject::String("héllo \u{1F40D}".to_owned()),
         MontyObject::Bytes(vec![]),
         MontyObject::Bytes(vec![0, 255, 128]),
+        MontyObject::Decimal("1.20".to_owned()),
+        MontyObject::Decimal("1E+5".to_owned()),
+        MontyObject::Decimal("NaN".to_owned()),
+        MontyObject::Decimal(String::new()), // default payload still encodes the arm
         MontyObject::List(vec![]),
         MontyObject::List(vec![
             MontyObject::Int(1),
@@ -268,6 +272,7 @@ fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
             docstring: docstring.clone(),
         }),
         MontyObject::Repr(r) => Kind::Repr(r.clone()),
+        MontyObject::Decimal(s) => Kind::Decimal(s.clone()),
         MontyObject::Cycle(identity, placeholder) => Kind::Cycle(oracle::Cycle {
             identity: *identity as u64,
             placeholder: placeholder.clone(),

@@ -224,3 +224,18 @@ try:
     assert False, 'expected str to fail'
 except TypeError as exc:
     assert str(exc) == '__str__ returned non-string (type int)', '__str__ returning non-string'
+
+
+# === Decimal constructor reports the class name ===
+from decimal import Decimal
+
+
+class Widget:
+    pass
+
+
+try:
+    Decimal(Widget())
+    assert False, 'expected TypeError from Decimal(instance)'
+except TypeError as exc:
+    assert str(exc) == 'conversion from Widget to Decimal is not supported', 'Decimal(instance) message'

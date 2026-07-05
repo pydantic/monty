@@ -18,6 +18,7 @@ use crate::{
 
 pub(crate) mod asyncio;
 pub(crate) mod datetime;
+pub(crate) mod decimal;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
 pub(crate) mod json;
@@ -53,6 +54,8 @@ pub(crate) enum StandardLib {
     Datetime,
     /// The `unicodedata` module providing Unicode Character Database access.
     Unicodedata,
+    /// The `decimal` module providing the `Decimal` type.
+    Decimal,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -78,6 +81,7 @@ impl StandardLib {
             StaticStrings::Re => Some(Self::Re),
             StaticStrings::Datetime => Some(Self::Datetime),
             StaticStrings::Unicodedata => Some(Self::Unicodedata),
+            StaticStrings::Decimal => Some(Self::Decimal),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -103,6 +107,7 @@ impl StandardLib {
             Self::Re => re::create_module(vm),
             Self::Datetime => datetime::create_module(vm),
             Self::Unicodedata => unicodedata::create_module(vm),
+            Self::Decimal => decimal::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }

@@ -10,6 +10,7 @@ pub mod class;
 pub mod dataclass;
 pub mod date;
 pub mod datetime;
+pub mod decimal;
 pub mod dict;
 pub mod dict_view;
 pub mod file;

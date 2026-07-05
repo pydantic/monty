@@ -173,6 +173,102 @@ fn run_progress_dump_load_multiple_calls() {
 }
 
 #[test]
+fn run_progress_dump_load_decimal_in_heap() {
+    // A `Decimal` held in a local survives a heap snapshot taken at an external
+    // call: its hand-written serde re-parses the canonical string on load, so
+    // post-restore arithmetic — including a raising op (`1/0`) — works and
+    // raises correctly.
+    let code = r"
+from decimal import Decimal
+saved = Decimal('1.50')
+ext_fn(0)
+out = str(saved + Decimal('2.5'))
+try:
+    Decimal(1) / Decimal(0)
+    out += ' NORAISE'
+except ZeroDivisionError:
+    out += ' caught'
+out
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+
+    // Dump while paused at `ext_fn(0)` — the heap (with `saved`) is serialized.
+    let bytes = progress.dump().unwrap();
+    let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
+
+    let call = loaded.into_function_call().expect("paused at ext_fn");
+    assert_eq!(call.function_name, "ext_fn");
+    let result = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        result.into_complete().unwrap(),
+        MontyObject::String("4.00 caught".to_owned())
+    );
+}
+
+#[test]
+fn run_progress_load_rejects_corrupt_decimal() {
+    // A snapshot is untrusted input. A hand-tampered snapshot carrying a
+    // `Decimal` whose canonical string no longer parses must be *rejected* on
+    // load — `Decimal`'s `Deserialize` re-validates through the same parser as
+    // `Decimal(str)`. The valid `1e16000` (serialized canonically as
+    // `1E+16000`, which the lowercase source spelling never collides with)
+    // loads fine; patching only its heap bytes to the same-length malformed
+    // `+E+16000` (postcard framing intact) must make load fail.
+    let code = r"
+from decimal import Decimal
+saved = Decimal('1e16000')
+ext_fn(0)
+saved
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let bytes = progress.dump().unwrap();
+
+    // The untampered snapshot loads AND resumes to completion (resuming, not
+    // just loading, both proves the restored heap value is usable and tears
+    // the loaded refs down properly — under `memory-model-checks` a loaded
+    // snapshot that is merely dropped trips the bare-`Ref` drop guard).
+    let loaded = RunProgress::<NoLimitTracker>::load(&bytes).expect("untampered snapshot loads");
+    let call = loaded.into_function_call().expect("paused at ext_fn");
+    let result = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(
+        result.into_complete().unwrap(),
+        MontyObject::Decimal("1E+16000".to_owned())
+    );
+
+    // Patch the heap value's canonical string to a malformed literal.
+    let tampered = replace_all(&bytes, b"1E+16000", b"+E+16000");
+    assert_ne!(tampered, bytes, "expected the canonical decimal string in the snapshot");
+    assert!(
+        RunProgress::<NoLimitTracker>::load(&tampered).is_err(),
+        "corrupt decimal string must be rejected on load"
+    );
+}
+
+/// Replaces every non-overlapping occurrence of `from` with the equal-length
+/// `to` in `haystack`. Equal length keeps postcard's length-prefixed framing
+/// valid, so the only change is the bytes themselves.
+fn replace_all(haystack: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    assert_eq!(from.len(), to.len(), "replacement must preserve framing");
+    let mut out = haystack.to_vec();
+    let mut i = 0;
+    while i + from.len() <= out.len() {
+        if &out[i..i + from.len()] == from {
+            out[i..i + from.len()].copy_from_slice(to);
+            i += from.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+#[test]
 fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();

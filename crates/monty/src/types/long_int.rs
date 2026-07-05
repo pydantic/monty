@@ -268,16 +268,22 @@ pub fn check_bigint_str_digits_limit(value: &BigInt) -> RunResult<()> {
     Ok(())
 }
 
+/// A strict upper bound on the decimal digit count of an integer with the
+/// given bit count: `bits · log10(2)` rounded up via the `30_103/100_000`
+/// over-approximation of `log10(2) ≈ 0.301029995…`, plus one. Shared by the
+/// `int` → `str` preflight below and the `Decimal` constructor's digit cap.
+#[must_use]
+pub(crate) fn estimate_decimal_digits(bits: u64) -> u64 {
+    bits.saturating_mul(30_103) / 100_000 + 1
+}
+
 /// Checks whether an integer with the given bit count might exceed the decimal
 /// digit limit when converted to a string.
 ///
 /// This remains as a cheap preflight helper for code that only needs a fast
 /// upper-bound check and does not require the exact boundary behavior.
 pub fn check_bits_str_digits_limit(bits: u64) -> RunResult<()> {
-    // log10(2) ≈ 0.30103 = 30_103/100_000
-    // estimated_digits is an upper bound on the actual decimal digit count.
-    let estimated_digits = bits.saturating_mul(30_103) / 100_000 + 1;
-    if estimated_digits > INT_MAX_STR_DIGITS as u64 {
+    if estimate_decimal_digits(bits) > INT_MAX_STR_DIGITS as u64 {
         return Err(ExcType::value_error_int_too_large_for_str());
     }
     Ok(())

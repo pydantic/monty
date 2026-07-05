@@ -151,6 +151,9 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         Ok(MontyObject::TimeDelta(py_timedelta_to_monty(delta)))
     } else if obj.is_instance(get_datetime_timezone_type(obj.py())?)? {
         py_timezone_to_monty(obj).map(MontyObject::TimeZone)
+    } else if obj.is_instance(get_decimal(obj.py())?)? {
+        // Carry the host `Decimal` as its canonical `str()` (lossless).
+        Ok(MontyObject::Decimal(obj.str()?.to_string()))
     } else if let Ok(exc) = obj.cast::<PyBaseException>() {
         Ok(exc_to_monty_object(exc))
     } else if is_dataclass(obj) {
@@ -236,6 +239,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::DateTime,
             MontyType::TimeDelta,
             MontyType::TimeZone,
+            MontyType::Decimal,
             MontyType::RePattern,
             MontyType::ReMatch,
             MontyType::TextIOWrapper,
@@ -368,6 +372,7 @@ pub(crate) fn monty_to_py_inner(
             let exc = exc_monty_to_py(py, MontyException::new(*exc_type, arg.clone()));
             Ok(exc.into_value(py).into_any())
         }
+        MontyObject::Decimal(s) => get_decimal(py)?.call1((s,)).map(Bound::unbind),
         MontyObject::Date(date) => PyDate::new(py, date.year, date.month, date.day)
             .map(Bound::into_any)
             .map(Bound::unbind),
@@ -435,6 +440,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::DateTime => cached!("datetime", "datetime"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::Decimal => cached!("decimal", "Decimal"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
@@ -636,6 +642,13 @@ fn get_datetime_timezone_utc(py: Python<'_>) -> PyResult<&Py<PyAny>> {
             .getattr(intern!(py, "utc"))
             .map(Bound::unbind)
     })
+}
+
+/// Cached import of the host `decimal.Decimal` class.
+fn get_decimal(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+
+    DECIMAL.import(py, "decimal", "Decimal")
 }
 
 /// Cached import of `collections.namedtuple` function.

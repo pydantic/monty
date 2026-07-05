@@ -12,7 +12,7 @@ use crate::{
     resource::ResourceTracker,
     types::{
         AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, instance::class_name,
+        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, decimal, dict::dict_fromkeys, instance::class_name,
         long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
     },
     value::Value,
@@ -129,6 +129,11 @@ pub enum Type {
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     #[strum(serialize = "re.Match")]
     ReMatch,
+    /// A `decimal.Decimal` value. Appended at the enum end: `Type` is embedded
+    /// in postcard snapshots, which encode variants by index, so a mid-enum
+    /// insertion would shift every later variant.
+    #[strum(serialize = "decimal.Decimal")]
+    Decimal,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -386,6 +391,7 @@ impl Type {
             Self::DateTime => datetime::init(vm, args),
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
+            Self::Decimal => decimal::init(vm, args),
             Self::Iterator => MontyIter::init(vm, args),
             Self::Path => Path::init(vm, args),
 
@@ -404,6 +410,7 @@ impl Type {
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
                         HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
+                        HeapData::Decimal(d) => decimal::to_int(&d.clone(), vm),
                         _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
                     },
                     _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
@@ -424,6 +431,7 @@ impl Type {
                     }
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
+                        HeapData::Decimal(d) => decimal::to_float(d).map(Value::Float),
                         _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     },
                     _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),

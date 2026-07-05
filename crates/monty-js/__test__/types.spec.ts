@@ -191,6 +191,45 @@ test('ellipsis output', async (t) => {
 })
 
 // =============================================================================
+// Decimal tests (JS has no decimal type — carried as a tagged string)
+// =============================================================================
+
+test('decimal output', async (t) => {
+  t.deepEqual(await run("from decimal import Decimal\nDecimal('1.23') + Decimal('4.56')"), {
+    __monty_type__: 'Decimal',
+    value: '5.79',
+  })
+})
+
+test('decimal division rounds to prec', async (t) => {
+  t.deepEqual(await run('from decimal import Decimal\nDecimal(1) / Decimal(3)'), {
+    __monty_type__: 'Decimal',
+    value: '0.3333333333333333333333333333',
+  })
+})
+
+test('decimal input roundtrip', async (t) => {
+  t.deepEqual(await run('x', { inputs: { x: { __monty_type__: 'Decimal', value: '1.20' } } }), {
+    __monty_type__: 'Decimal',
+    value: '1.20',
+  })
+})
+
+test('decimal input arithmetic', async (t) => {
+  t.deepEqual(await run('x * 2', { inputs: { x: { __monty_type__: 'Decimal', value: '1.5' } } }), {
+    __monty_type__: 'Decimal',
+    value: '3.0',
+  })
+})
+
+test('decimal snan payload roundtrip', async (t) => {
+  t.deepEqual(await run('x', { inputs: { x: { __monty_type__: 'Decimal', value: '-sNaN123' } } }), {
+    __monty_type__: 'Decimal',
+    value: '-sNaN123',
+  })
+})
+
+// =============================================================================
 // Nested collection tests
 // =============================================================================
 

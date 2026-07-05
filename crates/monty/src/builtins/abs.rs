@@ -10,7 +10,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
     resource::ResourceTracker,
-    types::{LongInt, timedelta},
+    types::{LongInt, decimal, timedelta},
     value::Value,
 };
 
@@ -37,6 +37,7 @@ pub fn builtin_abs(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
         Value::Ref(id) => match vm.heap.get(*id) {
             HeapData::LongInt(li) => Ok(li.abs().into_value(vm.heap)?),
+            HeapData::Decimal(d) => decimal::abs(d.clone(), vm),
             HeapData::TimeDelta(td) => {
                 let total = timedelta::total_microseconds(td);
                 let abs_total = total.checked_abs().unwrap_or(total);

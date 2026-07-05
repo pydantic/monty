@@ -1,3 +1,5 @@
+#[cfg(feature = "memory-model-checks")]
+use std::cell::Cell;
 use std::{
     borrow::Cow,
     cmp::Ordering,
@@ -11,6 +13,7 @@ use std::{
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
+use serde::de::DeserializeOwned;
 use smallvec::SmallVec;
 
 use crate::{
@@ -30,6 +33,7 @@ use crate::{
     types::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
+        decimal,
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
         path,
@@ -105,13 +109,77 @@ pub(crate) enum Value {
 /// Must match the per-element unit used by `py_estimate_size` implementations.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
+/// Deserializes a snapshot (`postcard`) with the `Value::Ref` drop-panic
+/// suppressed for the duration of the load — and only for that duration.
+///
+/// Snapshot bytes are untrusted and may be *rejected partway* — e.g. a
+/// `Decimal` whose canonical string is corrupt or over the digit cap fails to
+/// deserialize (see `decimal::Decimal`'s `Deserialize`). When that happens, the
+/// partially-built `Value::Ref`s already deserialized into `globals` / `stack` /
+/// heap entries unwind and drop with no heap to route through. That is **not** a
+/// reference-counting bug — the whole partial state is discarded — so it must
+/// not trip the `memory-model-checks` guard in [`Value`]'s `Drop`. Every
+/// snapshot `load` entry point goes through here so the suppression is uniform.
+///
+/// The suppression cannot be narrowed below the whole deserialization pass:
+/// refs materialize *during* the pass and the rejection unwinds through
+/// `postcard`, so there is no per-entry boundary to scope the guard to. The
+/// cost is that a refcount bug inside a `Deserialize` impl would go undetected
+/// during loads specifically; everything after `load` returns is fully
+/// guarded (an unresumed snapshot's teardown is handled by `VMSnapshot`'s own
+/// scoped `Drop`, not by this window).
+pub(crate) fn from_snapshot_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, postcard::Error> {
+    #[cfg(feature = "memory-model-checks")]
+    let _suppress = RefDropPanicSuppressor::new();
+    postcard::from_bytes(bytes)
+}
+
+// When set, `Value`'s `Drop` does not panic on a bare `Ref`. Toggled by
+// `RefDropPanicSuppressor` around snapshot deserialization
+// (`from_snapshot_bytes`) and around self-contained-snapshot teardown
+// (`VMSnapshot`'s `memory-model-checks` `Drop`).
+#[cfg(feature = "memory-model-checks")]
+thread_local! {
+    static SUPPRESS_REF_DROP_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII guard that suppresses the `Value::Ref` drop-panic for its lifetime.
+/// Saves and restores the previous flag on drop so nested scopes compose. Only
+/// present under `memory-model-checks`, with exactly two construction sites:
+/// [`from_snapshot_bytes`] (a rejected load unwinds bare refs) and
+/// `VMSnapshot`'s `Drop` (an unresumed snapshot's refs die with the heap
+/// serialized alongside them) — see each site for why the suppression is
+/// sound there.
+#[cfg(feature = "memory-model-checks")]
+pub(crate) struct RefDropPanicSuppressor(bool);
+
+#[cfg(feature = "memory-model-checks")]
+impl RefDropPanicSuppressor {
+    pub(crate) fn new() -> Self {
+        Self(SUPPRESS_REF_DROP_PANIC.with(|c| c.replace(true)))
+    }
+}
+
+#[cfg(feature = "memory-model-checks")]
+impl Drop for RefDropPanicSuppressor {
+    fn drop(&mut self) {
+        SUPPRESS_REF_DROP_PANIC.with(|c| c.set(self.0));
+    }
+}
+
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
 /// This helps catch reference counting bugs during development/testing.
 /// Only enabled when the `memory-model-checks` feature is active.
+///
+/// The panic is suppressed during snapshot deserialization (see
+/// [`from_snapshot_bytes`]), where a rejected load legitimately unwinds bare
+/// `Ref`s that were never assembled into a heap.
 #[cfg(feature = "memory-model-checks")]
 impl Drop for Value {
     fn drop(&mut self) {
-        if let Self::Ref(id) = self {
+        if let Self::Ref(id) = self
+            && !SUPPRESS_REF_DROP_PANIC.with(Cell::get)
+        {
             panic!("Value::Ref({id:?}) dropped without calling drop_with_heap() - this is a reference counting bug");
         }
     }
@@ -254,6 +322,17 @@ impl<'h> PyTrait<'h> for Value {
             // LongInt vs Float comparison (exact, no precision loss)
             (Self::Ref(id), Self::Float(o)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 Ok(CmpOrder::from_numeric(li.partial_cmp_f64(*o)))
+            }
+            // Decimal vs any number, exact ordering. Ordering against a NaN
+            // raises `InvalidOperation` (handled inside `cmp_value`, so a
+            // `None` from it can only mean a non-number operand →
+            // `Incomparable` → the ordering TypeError); the right-operand arm
+            // reverses since the helper compares from the Decimal's side.
+            (Self::Ref(id), other) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+                Ok(CmpOrder::from_total(decimal::cmp_value(d, other, vm.heap, false)?))
+            }
+            (other, Self::Ref(id)) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+                Ok(CmpOrder::from_total(decimal::cmp_value(d, other, vm.heap, true)?))
             }
             // Ref vs Ref comparison: handles LongInt, Str, Tuple, and List
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
@@ -416,7 +495,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Add, vm)? {
+            return Ok(Some(result));
+        }
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
@@ -426,7 +512,7 @@ impl<'h> PyTrait<'h> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*a) + LongInt::from(*b);
-                    li.into_value(vm.heap).map(Some)
+                    Ok(Some(li.into_value(vm.heap)?))
                 }
             }
             // Int + LongInt
@@ -434,7 +520,7 @@ impl<'h> PyTrait<'h> for Value {
                 if let HeapData::LongInt(li) = vm.heap.get(*id) =>
             {
                 let result = LongInt::new(li.inner() + i);
-                result.into_value(vm.heap).map(Some)
+                Ok(Some(result.into_value(vm.heap)?))
             }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
             // Int + Float and Float + Int
@@ -443,7 +529,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                left.py_add(&right, vm)
+                Ok(left.py_add(&right, vm)?)
             }
             (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
                 interns.get_str(*s1),
@@ -484,7 +570,14 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_sub(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Option<Self>, ResourceError> {
+    fn py_sub(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Sub, vm)? {
+            return Ok(Some(result));
+        }
         match (self, other) {
             // Int - Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -493,24 +586,24 @@ impl<'h> PyTrait<'h> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*a) - LongInt::from(*b);
-                    li.into_value(vm.heap).map(Some)
+                    Ok(Some(li.into_value(vm.heap)?))
                 }
             }
             // Int - LongInt
             (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 let result = LongInt::from(*a) - LongInt::new(li.inner().clone());
-                result.into_value(vm.heap).map(Some)
+                Ok(Some(result.into_value(vm.heap)?))
             }
             // LongInt - Int
             (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
                 let result = LongInt::new(li.inner().clone()) - LongInt::from(*b);
-                result.into_value(vm.heap).map(Some)
+                Ok(Some(result.into_value(vm.heap)?))
             }
             // LongInt - LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
                 let left = vm.heap.read(*id1);
                 let right = vm.heap.read(*id2);
-                left.py_sub(&right, vm)
+                Ok(left.py_sub(&right, vm)?)
             }
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
@@ -522,6 +615,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_mod(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Mod, vm)? {
+            return Ok(Some(result));
+        }
         match (self, other) {
             (Self::Int(a), Self::Int(b)) => {
                 if *b == 0 {
@@ -667,6 +767,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_mult(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Mul, vm)? {
+            return Ok(Some(result));
+        }
         let interns = vm.interns;
         match (self, other) {
             // Numeric multiplication with overflow promotion to LongInt
@@ -873,6 +980,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_div(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Div, vm)? {
+            return Ok(Some(result));
+        }
         let interns = vm.interns;
         match (self, other) {
             // True division always returns float
@@ -1031,6 +1145,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_floordiv(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::FloorDiv, vm)? {
+            return Ok(Some(result));
+        }
         match (self, other) {
             // Floor division: int // int returns int
             (Self::Int(a), Self::Int(b)) => {
@@ -1160,6 +1281,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     fn py_pow(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Decimal probe first: captures any Decimal operand before the
+        // generic `Ref`-inspecting arms below could; yields `None` for
+        // non-Decimal pairs and for operands Decimal rejects (e.g. float),
+        // which fall through to the usual dispatch / TypeError.
+        if let Some(result) = decimal::binary_op_value(self, other, decimal::BinOp::Pow, vm)? {
+            return Ok(Some(result));
+        }
         match (self, other) {
             (Self::Int(base), Self::Int(exp)) => {
                 if *base == 0 && *exp < 0 {
@@ -1580,14 +1708,18 @@ impl Value {
         self.id(vm) == other.id(vm)
     }
 
-    /// Python `==`, resolved to a definite boolean.
+    /// Python `==`, resolved to a definite boolean — the *identity-or-equality*
+    /// form (CPython's `PyObject_RichCompareBool`).
     ///
     /// Implements CPython's reflected comparison protocol on top of the
     /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
     /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
     /// operand's type recognises the other, the values are unequal. This is the
-    /// entry point the VM `==`/`!=`/`in` operators and all container element
-    /// comparisons use; per-type `py_eq_impl` impls never drive reflection themselves.
+    /// entry point the VM `in` operator and all container element comparisons
+    /// (dict/set key lookup, `list.index`, nested equality) use — those paths
+    /// keep the same-object shortcut inside `py_eq_impl`, exactly as CPython's
+    /// containers do. The bare `==`/`!=` operators use [`Self::py_eq_operator`]
+    /// instead; per-type `py_eq_impl` impls never drive reflection themselves.
     pub fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         if let Some(result) = self.py_eq_impl(other, vm)? {
             Ok(result)
@@ -1595,6 +1727,29 @@ impl Value {
             Ok(result)
         } else {
             Ok(false)
+        }
+    }
+
+    /// Python's `==` *operator* (CPython's `do_richcompare`), which — unlike
+    /// [`Self::py_eq`] — has no same-object shortcut: identity is only the
+    /// default `object.__eq__`, consulted after the type's own equality.
+    ///
+    /// The distinction matters for the first type with non-reflexive equality:
+    /// `x = Decimal('NaN'); x == x` must be `False` (and `Decimal('sNaN')`
+    /// must raise `InvalidOperation`) even though `{x: 1}[x]` still succeeds
+    /// via the container shortcut. For every type whose `py_eq_impl` returns
+    /// `NotImplemented` on itself (class instances, files, …), the identity
+    /// fallback keeps `obj == obj` true.
+    pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
+        if let (Self::Ref(id), Self::Ref(other_id)) = (self, other)
+            && id == other_id
+        {
+            match vm.heap.read(*id).py_eq_impl(other, vm)? {
+                Some(result) => Ok(result),
+                None => Ok(true), // default object identity
+            }
+        } else {
+            self.py_eq(other, vm)
         }
     }
 
@@ -1643,7 +1798,12 @@ impl Value {
                 } else {
                     // Integral float outside i64 range hashes as the equivalent
                     // big int, so an exactly-equal `float`/`int` pair (e.g.
-                    // `2.0**100 == 2**100`) preserves `hash(a) == hash(b)`.
+                    // `2.0**100 == 2**100`) preserves `hash(a) == hash(b)`. This
+                    // also keeps `hash(float) == hash(Decimal(float))` for every
+                    // float whose exact value `Decimal(f)` can represent (`Decimal`
+                    // hashes integral values through the same `hash_python_long_int`
+                    // path); a float so large that `Decimal(f)` rounds is no longer
+                    // equal to that `Decimal`, so no hash agreement is owed.
                     Ok(Some(hash_python_long_int(
                         &BigInt::from_f64(*f).expect("finite f64 converts to BigInt"),
                     )))

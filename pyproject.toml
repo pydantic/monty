@@ -90,6 +90,10 @@ known-first-party = ["pydantic_monty"]
     "F403", # unable to detect undefined names
     "F821", # Undefined name
 ]
+"crates/monty-typeshed/custom/**/*.pyi" = [
+    "F403", # unable to detect undefined names
+    "F821", # Undefined name (stubs forward-reference their own classes)
+]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
@@ -185,7 +189,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,ans'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

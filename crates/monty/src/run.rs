@@ -18,7 +18,7 @@ use crate::{
     resource::{NoLimitTracker, ResourceTracker},
     run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
     types::str::StringRepr,
-    value::Value,
+    value::{Value, from_snapshot_bytes},
 };
 
 /// Primary interface for running Monty code.
@@ -123,7 +123,7 @@ impl MontyRun {
     /// # Errors
     /// Returns an error if deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        from_snapshot_bytes(bytes)
     }
 
     /// Starts execution with the given inputs and resource tracker, consuming self.

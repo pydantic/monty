@@ -25,7 +25,7 @@ use crate::{
     types::{
         Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
-        date as date_type, datetime as datetime_type,
+        date as date_type, datetime as datetime_type, decimal,
         dict::Dict,
         file::FileMode,
         instance::class_name,
@@ -328,6 +328,14 @@ pub enum MontyObject {
     ///
     /// This is output-only and cannot be used as an input to `Executor::run()`.
     Cycle(usize, String),
+    /// Python `decimal.Decimal`, carried losslessly as its canonical string
+    /// (e.g. `"1.20"`, `"1E+5"`, `"NaN"`). Equality/hash at the boundary are
+    /// string-based, so `"1.2"` and `"1.20"` differ here even though they are
+    /// equal in-sandbox (documented in `limitations/decimal.md`). Appended at
+    /// the enum end: `MontyObject` is embedded in postcard snapshots, which
+    /// encode variants by index, so a mid-enum insertion would shift every
+    /// later variant.
+    Decimal(String),
 }
 
 /// The Python type of a value at the host boundary — the public mirror of the
@@ -390,6 +398,10 @@ pub enum MontyType {
     Property,
     RePattern,
     ReMatch,
+    /// A `decimal.Decimal` value. Appended at the enum end: `MontyType` is
+    /// embedded in postcard snapshots/wire frames, which encode variants by
+    /// index, so a mid-enum insertion would shift every later variant.
+    Decimal,
 }
 
 impl fmt::Display for MontyType {
@@ -444,6 +456,7 @@ impl MontyType {
             Self::DateTime => Some(Type::DateTime),
             Self::TimeDelta => Some(Type::TimeDelta),
             Self::TimeZone => Some(Type::TimeZone),
+            Self::Decimal => Some(Type::Decimal),
             Self::Str => Some(Type::Str),
             Self::Bytes => Some(Type::Bytes),
             Self::List => Some(Type::List),
@@ -497,6 +510,7 @@ impl MontyType {
             Type::DateTime => Self::DateTime,
             Type::TimeDelta => Self::TimeDelta,
             Type::TimeZone => Self::TimeZone,
+            Type::Decimal => Self::Decimal,
             Type::Str => Self::Str,
             Type::Bytes => Self::Bytes,
             Type::List => Self::List,
@@ -660,6 +674,9 @@ impl MontyObject {
                     .map_err(|_| InvalidInputError::invalid_type("date"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Date(value))?))
             }
+            Self::Decimal(s) => {
+                decimal::value_from_canonical_string(&s, vm).ok_or_else(|| InvalidInputError::invalid_type("Decimal"))
+            }
             Self::DateTime(datetime) => {
                 let MontyDateTime {
                     year,
@@ -778,7 +795,7 @@ impl MontyObject {
         let names_len = |names: &[String]| -> usize { names.iter().map(|s| STR_OVERHEAD + s.len()).sum() };
 
         let payload = match self {
-            Self::String(s) | Self::Path(s) | Self::Repr(s) => s.len(),
+            Self::String(s) | Self::Path(s) | Self::Repr(s) | Self::Decimal(s) => s.len(),
             Self::Cycle(_, placeholder) => placeholder.len(),
             Self::Bytes(b) => b.len(),
             // Saturate rather than truncate on a 32-bit `usize`: an over-large
@@ -961,6 +978,7 @@ impl MontyObject {
                             day: u8::try_from(day).expect("day is always 1..=31"),
                         })
                     }
+                    HeapReadOutput::Decimal(d) => Self::Decimal(decimal::canonical_string(d.get(vm.heap))),
                     HeapReadOutput::DateTime(dt) => {
                         if let Some((year, month, day, hour, minute, second, microsecond)) =
                             datetime_type::to_components(dt.get(vm.heap))
@@ -1233,6 +1251,7 @@ impl MontyObject {
                 }
                 f.write_char(')')
             }
+            Self::Decimal(s) => write!(f, "Decimal('{s}')"),
             Self::Date(date) => write!(f, "datetime.date({}, {}, {})", date.year, date.month, date.day),
             Self::DateTime(datetime) => {
                 write!(
@@ -1369,6 +1388,7 @@ impl MontyObject {
             Self::Dict(d) => !d.is_empty(),
             Self::Set(s) => !s.is_empty(),
             Self::FrozenSet(fs) => !fs.is_empty(),
+            Self::Decimal(s) => decimal::string_is_truthy(s),
             Self::Date(_) => true,
             Self::DateTime(_) => true,
             Self::TimeDelta(delta) => delta.days != 0 || delta.seconds != 0 || delta.microseconds != 0,
@@ -1402,6 +1422,7 @@ impl MontyObject {
             Self::Dict(_) => "dict",
             Self::Set(_) => "set",
             Self::FrozenSet(_) => "frozenset",
+            Self::Decimal(_) => "Decimal",
             Self::Date(_) => "date",
             Self::DateTime(_) => "datetime",
             Self::TimeDelta(_) => "timedelta",
@@ -1446,6 +1467,7 @@ impl Hash for MontyObject {
             Self::Float(f) => f.to_bits().hash(state),
             Self::String(string) => string.hash(state),
             Self::Bytes(bytes) => bytes.hash(state),
+            Self::Decimal(s) => s.hash(state),
             Self::Date(date) => date.hash(state),
             Self::DateTime(datetime) => datetime.hash(state),
             Self::TimeDelta(delta) => delta.hash(state),
@@ -1479,6 +1501,7 @@ impl PartialEq for MontyObject {
             (Self::Bytes(a), Self::Bytes(b)) => a == b,
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Tuple(a), Self::Tuple(b)) => a == b,
+            (Self::Decimal(a), Self::Decimal(b)) => a == b,
             (Self::Date(a), Self::Date(b)) => a == b,
             (Self::DateTime(a), Self::DateTime(b)) => a == b,
             (Self::TimeDelta(a), Self::TimeDelta(b)) => a == b,

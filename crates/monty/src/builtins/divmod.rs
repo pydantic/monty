@@ -8,10 +8,10 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult},
     heap::HeapData,
     resource::{ResourceTracker, check_div_size},
-    types::{LongInt, allocate_tuple},
+    types::{LongInt, PyTrait, allocate_tuple, decimal},
     value::{Value, floor_divmod},
 };
 
@@ -114,16 +114,28 @@ pub fn builtin_divmod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
                 )?)
             }
         }
-        _ => {
-            let a_type = a.py_type_name(vm);
-            let b_type = b.py_type_name(vm);
-            Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("unsupported operand type(s) for divmod(): '{a_type}' and '{b_type}'"),
-            )
-            .into())
+        (Value::Ref(id), other) if let HeapData::Decimal(dec) = vm.heap.get(*id) => {
+            match decimal::divmod(dec.clone(), other, false, vm)? {
+                Some(result) => Ok(result),
+                None => Err(divmod_unsupported(a, b, vm)),
+            }
         }
+        (other, Value::Ref(id)) if let HeapData::Decimal(dec) = vm.heap.get(*id) => {
+            match decimal::divmod(dec.clone(), other, true, vm)? {
+                Some(result) => Ok(result),
+                None => Err(divmod_unsupported(a, b, vm)),
+            }
+        }
+        _ => Err(divmod_unsupported(a, b, vm)),
     }
+}
+
+/// `TypeError: unsupported operand type(s) for divmod(): '{a}' and '{b}'` via
+/// the shared [`ExcType::binary_type_error`] formatter (`py_type_name` so a
+/// user-defined class operand reports its class name; the `divmod()` op never
+/// triggers the `+` concatenation special case).
+fn divmod_unsupported(a: &Value, b: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunError {
+    ExcType::binary_type_error("divmod()", a.py_type(vm), a.py_type_name(vm), b.py_type_name(vm))
 }
 
 /// Computes Python-style floor division and modulo for BigInts.

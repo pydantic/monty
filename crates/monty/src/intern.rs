@@ -756,6 +756,115 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+    // decimal module strings (appended at the end so existing `StringId`s are
+    // not shifted). Names double as values for the rounding-mode constants
+    // (`decimal.ROUND_HALF_EVEN == 'ROUND_HALF_EVEN'`).
+    /// Module name for `import decimal`.
+    Decimal,
+    /// `decimal.Decimal` class attribute name.
+    #[strum(serialize = "Decimal")]
+    DecimalClass,
+    /// `decimal.DecimalException` exception attribute name.
+    #[strum(serialize = "DecimalException")]
+    DecimalExceptionName,
+    /// `decimal.InvalidOperation` exception attribute name.
+    #[strum(serialize = "InvalidOperation")]
+    InvalidOperation,
+    /// `decimal.DivisionByZero` exception attribute name.
+    #[strum(serialize = "DivisionByZero")]
+    DivisionByZero,
+    /// `decimal.Overflow` exception attribute name.
+    #[strum(serialize = "Overflow")]
+    DecimalOverflowName,
+    /// `decimal.Inexact` exception attribute name.
+    #[strum(serialize = "Inexact")]
+    DecimalInexactName,
+    /// `decimal.Rounded` exception attribute name.
+    #[strum(serialize = "Rounded")]
+    DecimalRoundedName,
+    /// `decimal.Subnormal` exception attribute name.
+    #[strum(serialize = "Subnormal")]
+    DecimalSubnormalName,
+    /// `decimal.Clamped` exception attribute name.
+    #[strum(serialize = "Clamped")]
+    DecimalClampedName,
+    /// `decimal.Underflow` exception attribute name.
+    #[strum(serialize = "Underflow")]
+    DecimalUnderflowName,
+    /// `decimal.FloatOperation` exception attribute name.
+    #[strum(serialize = "FloatOperation")]
+    DecimalFloatOperationName,
+    /// `decimal.ROUND_CEILING` rounding-mode constant.
+    #[strum(serialize = "ROUND_CEILING")]
+    RoundCeiling,
+    /// `decimal.ROUND_FLOOR` rounding-mode constant.
+    #[strum(serialize = "ROUND_FLOOR")]
+    RoundFloor,
+    /// `decimal.ROUND_UP` rounding-mode constant.
+    #[strum(serialize = "ROUND_UP")]
+    RoundUp,
+    /// `decimal.ROUND_DOWN` rounding-mode constant.
+    #[strum(serialize = "ROUND_DOWN")]
+    RoundDown,
+    /// `decimal.ROUND_HALF_UP` rounding-mode constant.
+    #[strum(serialize = "ROUND_HALF_UP")]
+    RoundHalfUp,
+    /// `decimal.ROUND_HALF_DOWN` rounding-mode constant.
+    #[strum(serialize = "ROUND_HALF_DOWN")]
+    RoundHalfDown,
+    /// `decimal.ROUND_HALF_EVEN` rounding-mode constant (CPython default).
+    #[strum(serialize = "ROUND_HALF_EVEN")]
+    RoundHalfEven,
+    /// `decimal.ROUND_05UP` rounding-mode constant.
+    #[strum(serialize = "ROUND_05UP")]
+    Round05Up,
+    // Decimal method names (Sqrt/Exp/Log10 are reused from the math module
+    // block; Normalize from the unicodedata block).
+    Ln,
+    Quantize,
+    ToIntegralValue,
+    CopyAbs,
+    CopyNegate,
+    CopySign,
+    Adjusted,
+    AsTuple,
+    IsNan,
+    IsInfinite,
+    IsFinite,
+    IsZero,
+    IsSigned,
+    IsQnan,
+    IsSnan,
+    // `DecimalTuple` named-tuple type + field names returned by `as_tuple`.
+    // Explicit serialize: the enum's `snake_case` default would render the type
+    // name as `decimal_tuple`, but CPython's `repr` is `DecimalTuple(...)`.
+    #[strum(serialize = "DecimalTuple")]
+    DecimalTuple,
+    #[strum(serialize = "sign")]
+    DecimalSign,
+    #[strum(serialize = "digits")]
+    DecimalDigits,
+    #[strum(serialize = "exponent")]
+    DecimalExponent,
+    /// The `rounding` keyword argument accepted by `Decimal.quantize` /
+    /// `Decimal.to_integral_value`.
+    Rounding,
+    /// The `value` keyword argument of the `Decimal(...)` constructor.
+    Value,
+    /// The `other` argument of `Decimal.copy_sign(other)`.
+    Other,
+    /// `decimal.ConversionSyntax` exception attribute name.
+    #[strum(serialize = "ConversionSyntax")]
+    ConversionSyntax,
+    /// `decimal.DivisionImpossible` exception attribute name.
+    #[strum(serialize = "DivisionImpossible")]
+    DivisionImpossible,
+    /// `decimal.DivisionUndefined` exception attribute name.
+    #[strum(serialize = "DivisionUndefined")]
+    DivisionUndefined,
+    /// `decimal.InvalidContext` exception attribute name.
+    #[strum(serialize = "InvalidContext")]
+    InvalidContext,
 }
 
 impl StaticStrings {
