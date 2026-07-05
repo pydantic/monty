@@ -10,9 +10,12 @@ def assert_recursion_message(exc, context):
     if sys.platform == 'monty':
         assert msg == 'maximum recursion depth exceeded', f'unexpected {context} recursion message: {msg}'
     else:
-        # CPython may hit its recursion counter or the datatest worker's smaller C stack.
+        # CPython may hit its recursion counter, or (on smaller C stacks like the
+        # datatest worker / macOS / Windows CI) a native stack-overflow guard. That
+        # guard's message reports the kB used and appends a context-specific suffix
+        # (`) while calling a Python object`, ... or nothing), all containing ` kB)`.
         assert msg == 'maximum recursion depth exceeded' or (
-            msg.startswith('Stack overflow (used ') and msg.endswith(' kB)')
+            msg.startswith('Stack overflow (used ') and ' kB)' in msg
         ), f'unexpected {context} recursion message: {msg}'
 
 

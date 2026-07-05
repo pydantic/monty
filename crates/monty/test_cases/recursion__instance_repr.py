@@ -4,14 +4,17 @@
 import sys
 
 
-def assert_recursion_message(exc, context, *, while_calling=False):
+def assert_recursion_message(exc, context):
     msg = str(exc)
     if sys.platform == 'monty':
         assert msg == 'maximum recursion depth exceeded', f'unexpected {context} recursion message: {msg}'
     else:
-        stack_msg = msg.startswith('Stack overflow (used ') and msg.endswith(
-            ' kB) while calling a Python object' if while_calling else ' kB'
-        )
+        # CPython may hit its recursion counter, or (on smaller C stacks like the
+        # datatest worker / macOS / Windows CI) a native stack-overflow guard. That
+        # guard's message reports the kB used and appends a context-specific suffix
+        # (`) while calling a Python object`, `) while getting the repr of an
+        # object`, ... or nothing), all of which contain ` kB)`.
+        stack_msg = msg.startswith('Stack overflow (used ') and ' kB)' in msg
         assert msg == 'maximum recursion depth exceeded' or stack_msg, f'unexpected {context} recursion message: {msg}'
 
 
@@ -71,4 +74,4 @@ try:
     A()
     raise AssertionError('expected RecursionError from class-valued __init__ cycle')
 except RecursionError as exc:
-    assert_recursion_message(exc, '__init__', while_calling=True)
+    assert_recursion_message(exc, '__init__')
