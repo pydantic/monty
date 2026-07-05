@@ -64,6 +64,12 @@ pub(crate) struct RePattern {
     /// alternations — e.g. `fullmatch('a|ab', 'ab')` must match `ab`, not fail
     /// because the engine found `a` first.
     compiled_fullmatch: OnceCell<Regex>,
+    /// The `delegate_size_limit` the plain regex was compiled with, forwarded to
+    /// the anchored variants above so a *cached* entry's total retained compiled
+    /// size stays bounded (the anchors add only O(1) bytes, so a pattern that fit
+    /// unanchored still fits anchored). `None` = the engine's default limit. Not
+    /// serialized — restored patterns recompile at the default limit.
+    delegate_size_limit: Option<usize>,
 }
 
 impl PartialEq for RePattern {
@@ -88,9 +94,9 @@ impl RePattern {
 
     /// As [`RePattern::compile`], but caps the compiled size of the delegated regex
     /// (`RegexBuilder::delegate_size_limit`) so the `re` module's pattern cache can
-    /// retain entries with a hard per-entry memory ceiling. The lazily-compiled
-    /// anchored variants keep default limits: they are the same size class as the
-    /// already-bounded plain regex, so retention stays bounded either way.
+    /// retain entries with a hard per-entry memory ceiling. The limit is retained
+    /// and applied to the lazily-compiled anchored `match`/`fullmatch` variants
+    /// too, so a cached entry cannot pin large regexes via `.match()`/`.fullmatch()`.
     pub(crate) fn compile_bounded(pattern: String, flags: u16, delegate_size_limit: usize) -> RunResult<Self> {
         Self::compile_inner(pattern, flags, Some(delegate_size_limit))
     }
@@ -104,6 +110,7 @@ impl RePattern {
             compiled,
             compiled_match: OnceCell::new(),
             compiled_fullmatch: OnceCell::new(),
+            delegate_size_limit,
         })
     }
 
@@ -115,7 +122,11 @@ impl RePattern {
         if let Some(regex) = self.compiled_match.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex(&format!("\\A(?:{})", self.pattern), self.flags)?;
+        let compiled = compile_regex_limited(
+            &format!("\\A(?:{})", self.pattern),
+            self.flags,
+            self.delegate_size_limit,
+        )?;
         // `set` only fails on a concurrent init, impossible on the single-threaded VM.
         let _ = self.compiled_match.set(compiled);
         Ok(self.compiled_match.get().expect("cell was just initialised"))
@@ -126,7 +137,11 @@ impl RePattern {
         if let Some(regex) = self.compiled_fullmatch.get() {
             return Ok(regex);
         }
-        let compiled = compile_regex(&format!("\\A(?:{})\\z", self.pattern), self.flags)?;
+        let compiled = compile_regex_limited(
+            &format!("\\A(?:{})\\z", self.pattern),
+            self.flags,
+            self.delegate_size_limit,
+        )?;
         let _ = self.compiled_fullmatch.set(compiled);
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
@@ -580,15 +595,13 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTra
 /// - `re.MULTILINE` (8) → `(?m)` prefix
 /// - `re.DOTALL` (16) → `(?s)` prefix
 ///
+/// `delegate_size_limit` optionally caps the compiled size of the delegated
+/// regex (`RegexBuilder::delegate_size_limit`) — used to bound cached patterns;
+/// `None` uses the engine's default limit.
+///
 /// # Errors
 ///
 /// Returns `re.PatternError(...)` if the pattern is invalid.
-pub(crate) fn compile_regex(pattern: &str, flags: u16) -> RunResult<Regex> {
-    compile_regex_limited(pattern, flags, None)
-}
-
-/// As [`compile_regex`], optionally capping the compiled size of the delegated
-/// regex (`RegexBuilder::delegate_size_limit`) — used to bound cached patterns.
 fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<usize>) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
