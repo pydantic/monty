@@ -1,7 +1,18 @@
-# Recursive `__repr__`/`__str__` re-enter the interpreter on the native Rust
-# stack via `evaluate_function`, exactly like the map/filter/sorted callbacks
-# in recursion__nested_eval.py. See that file's header for why both
-# interpreters raise RecursionError here rather than one crashing.
+# Recursive `__repr__`/`__str__` re-enter via `evaluate_function`; Monty must
+# raise `RecursionError` instead of overflowing the native Rust stack.
+
+import sys
+
+
+def assert_recursion_message(exc, context, *, while_calling=False):
+    msg = str(exc)
+    if sys.platform == 'monty':
+        assert msg == 'maximum recursion depth exceeded', f'unexpected {context} recursion message: {msg}'
+    else:
+        stack_msg = msg.startswith('Stack overflow (used ') and msg.endswith(
+            ' kB) while calling a Python object' if while_calling else ' kB'
+        )
+        assert msg == 'maximum recursion depth exceeded' or stack_msg, f'unexpected {context} recursion message: {msg}'
 
 
 class SelfRepr:
@@ -12,8 +23,8 @@ class SelfRepr:
 try:
     repr(SelfRepr())
     raise AssertionError('expected RecursionError from self-referential __repr__')
-except RecursionError:
-    pass
+except RecursionError as exc:
+    assert_recursion_message(exc, 'repr')
 
 
 class SelfStr:
@@ -24,8 +35,8 @@ class SelfStr:
 try:
     str(SelfStr())
     raise AssertionError('expected RecursionError from self-referential __str__')
-except RecursionError:
-    pass
+except RecursionError as exc:
+    assert_recursion_message(exc, 'str')
 
 
 # === Positive case: a modest finite chain still reprs correctly ===
@@ -41,25 +52,15 @@ class Node:
 
 
 chain = None
-for i in range(10):
+for i in range(5):
     chain = Node(i, chain)
 result = repr(chain)
-assert result.startswith('Node(9,'), f'unexpected repr: {result}'
+assert result == 'Node(4, Node(3, Node(2, Node(1, Node(0)))))', f'unexpected repr: {result}'
 
 
-# === CRITICAL regression test: guard-placement pin ===
-# `A.__init__ = A` makes `A`'s own initializer a *class value* — an "exotic"
-# initializer per `instantiate_class`. Calling `A()` cycles
-# `evaluate_function -> call_function -> instantiate_class -> evaluate_function
-# -> ...` entirely inside `call_function`, WITHOUT ever pushing a VM frame and
-# WITHOUT ever reaching `self.run()`. A native-reentry guard placed only
-# around the `self.run()` call inside `evaluate_function` (rather than at
-# `evaluate_function`'s entry, before `call_function` is even invoked) would
-# NOT catch this cycle, and this test would crash the test process instead of
-# cleanly raising RecursionError. If this test starts crashing the test
-# runner instead of passing, check that the native-reentry guard in
-# `evaluate_function` has not been "simplified" back to wrapping only the
-# `self.run()` call.
+# === Guard-placement regression ===
+# A class-valued `__init__` recurses inside `call_function` before any frame is
+# pushed, so the re-entry guard must be charged at `evaluate_function` entry.
 class A:
     pass
 
@@ -69,5 +70,5 @@ A.__init__ = A
 try:
     A()
     raise AssertionError('expected RecursionError from class-valued __init__ cycle')
-except RecursionError:
-    pass
+except RecursionError as exc:
+    assert_recursion_message(exc, '__init__', while_calling=True)

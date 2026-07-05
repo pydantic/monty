@@ -106,15 +106,15 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
 /// than the 1000-frame Python recursion limit because each level costs a real
 /// nested call to [`VM::run`], not a push onto the heap-allocated `frames` vec.
 ///
-/// Tuned empirically by bisecting the SIGABRT depth of a self-recursive
-/// `map`/`filter`/`sorted`/`__repr__` chain. The tightest case: a debug build
-/// on monty-datatest's ~2 MiB default worker-thread stack crashes at depth 19,
-/// so 12 leaves ~1.5x margin (measured on macOS/arm64; release builds have
-/// far more headroom).
+/// Tuned conservatively from the smallest native stack observed while fixing
+/// recursive callback crashes. A debug monty-datatest worker with an ~2 MiB
+/// stack crashed at depth 19 on macOS/arm64; keep this much lower and
+/// revalidate on all supported host targets before raising it.
 ///
-/// A hard safety constant, not a Python-visible setting: unlike
-/// `recursion_depth` (configurable via `sys.setrecursionlimit`), it does not
-/// go through the tracker and cannot be changed by sandboxed code.
+/// A hard safety constant, not a Python-visible setting: unlike ordinary
+/// recursion depth, it does not go through the tracker and cannot be changed
+/// by sandboxed code or test hooks.
+// TODO set this value to custom values per-OS/arch
 pub(crate) const MAX_RUN_REENTRY_DEPTH: u8 = 12;
 
 impl<T: ResourceTracker> VM<'_, T> {

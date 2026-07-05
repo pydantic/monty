@@ -39,19 +39,21 @@ inside the sandbox).
 
 - Python-level call depth is hardcoded at **1000 frames**. The 1001st
   nested call raises `RecursionError`.
-- There is no `sys.getrecursionlimit()` / `setrecursionlimit()` — the
-  limit cannot be changed by sandboxed code.
+- Production sandbox code cannot change the recursion limit. Test builds may
+  expose `sys.setrecursionlimit()` as a lowering-only fixture hook; it cannot
+  raise the host-configured ceiling.
 - Async stacks count toward the limit but each `await` boundary is treated
   as one frame, so `await`-chains do not amplify depth.
-- Callbacks evaluated synchronously by the interpreter itself — a `map()`,
-  `filter()`, or `sorted(key=...)` function argument that recursively calls
-  back into the same construct, and (once classes are involved) recursive
-  `__repr__`/`__str__` — re-enter the interpreter on the native Rust call
-  stack rather than the heap-allocated frame stack used by ordinary function
-  calls. This native re-entry is capped independently, at a lower fixed depth
-  than the 1000-frame Python limit, to guarantee it can never overflow the
-  native stack and abort the process. See `limitations/classes.md`'s
-  `__repr__`/`__str__` entry for the user-visible divergence this causes.
+- Callbacks evaluated synchronously by the interpreter itself re-enter on the
+  native Rust call stack rather than the heap-allocated frame stack used by
+  ordinary function calls. This includes `map()`, `filter()`,
+  `sorted()`/`list.sort(key=...)`, `min()`/`max(key=...)`, recursive
+  `__repr__`/`__str__`, and non-plain-function `__init__` values that recurse
+  during construction. Native re-entry is capped independently at a lower
+  fixed depth than the 1000-frame Python limit, so Monty raises
+  `RecursionError` before a native stack overflow would abort the process. See
+  `limitations/classes.md`'s `__repr__`/`__str__` entry for the main
+  user-visible divergence this causes.
 
 ## Time
 

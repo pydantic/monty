@@ -128,9 +128,10 @@ order and error wording, but with these divergences:
   recursion now raises `RecursionError` (matching CPython's outcome, though
   not its exact depth), but a deep-but-finite chain that CPython's default
   1000-frame limit would still successfully render may raise `RecursionError`
-  in Monty where CPython succeeds — a deliberate divergence traded for never
-  crashing the host process. The same cap also applies to recursive
-  `sorted(key=...)`/`map`/`filter` callbacks (see
+  in Monty where CPython succeeds — a deliberate divergence traded for avoiding
+  native stack overflow. The same cap also applies to synchronous callback
+  evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
+  `min()`/`max(key=...)`, and exotic `__init__` recursion (see
   `limitations/resource_limits.md`'s "Recursion" section).
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
