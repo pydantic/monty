@@ -13,7 +13,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
 
 use crate::{
@@ -24,7 +23,7 @@ use crate::{
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{CmpOrder, PyTrait, Type},
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -342,7 +341,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str(&format_repr(self.get(vm.heap)))?;
         Ok(())

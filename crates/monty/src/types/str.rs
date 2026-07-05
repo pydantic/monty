@@ -4,7 +4,6 @@
 /// operations like length and equality comparison.
 use std::{borrow::Cow, cell::Cell, fmt, fmt::Write, mem, ops};
 
-use ahash::AHashSet;
 use smallvec::smallvec;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
@@ -21,7 +20,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker, check_replace_size},
     string_builder::StringBuilder,
     types::{
-        Type,
+        LazyHeapSet, Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
@@ -246,7 +245,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         Ok(string_repr_fmt(&self.get(vm.heap).0, f)?)
     }

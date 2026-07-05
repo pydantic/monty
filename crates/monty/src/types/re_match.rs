@@ -10,7 +10,6 @@
 
 use std::{cmp::Ordering, fmt::Write, mem};
 
-use ahash::AHashSet;
 use smallvec::smallvec;
 
 use crate::{
@@ -22,7 +21,7 @@ use crate::{
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{
-        Dict, PyTrait, Type, allocate_tuple,
+        Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -298,7 +297,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let m = self.get(vm.heap);
         write!(f, "<re.Match object; span=({}, {}), match=", m.start, m.end)?;

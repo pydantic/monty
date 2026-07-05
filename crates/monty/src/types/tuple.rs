@@ -23,7 +23,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use smallvec::SmallVec;
 
 use super::{CmpOrder, MontyIter, PyTrait};
@@ -37,7 +36,7 @@ use crate::{
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     types::{
-        Type,
+        LazyHeapSet, Type,
         list::repr_sequence_fmt,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
@@ -446,7 +445,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let len = self.get(vm.heap).as_slice().len();
 

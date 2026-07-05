@@ -138,7 +138,7 @@ impl CmpOrder {
 /// The lifetime `'h` is the heap borrow lifetime. For concrete types (e.g. `Dict`,
 /// `List`) this is unused and should be `'_`. For `HeapRead<'h, T>` implementers
 /// the lifetime connects the read handle to the VM's heap reference.
-pub trait PyTrait<'h> {
+pub(crate) trait PyTrait<'h> {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -231,7 +231,7 @@ pub trait PyTrait<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()>;
 
     /// Returns the Python `repr()` string for this value.
@@ -251,7 +251,7 @@ pub trait PyTrait<'h> {
     /// `repr()`.
     fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
         let mut s = String::new();
-        let mut heap_ids = AHashSet::new();
+        let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
         Ok(Cow::Owned(s))
     }
@@ -519,5 +519,33 @@ pub trait PyTrait<'h> {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         Ok(None)
+    }
+}
+
+/// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct LazyHeapSet(Option<AHashSet<HeapId>>);
+
+impl LazyHeapSet {
+    pub fn insert(&mut self, heap_id: HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.insert(heap_id);
+        } else {
+            let mut s = AHashSet::default();
+            s.insert(heap_id);
+            self.0 = Some(s);
+        }
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn contains(&self, heap_id: &HeapId) -> bool {
+        self.0.as_ref().is_some_and(|s| s.contains(heap_id))
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn remove(&mut self, heap_id: &HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.remove(heap_id);
+        }
     }
 }

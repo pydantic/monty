@@ -11,7 +11,6 @@
 
 use std::{borrow::Cow, cmp::Ordering, fmt::Write, iter, mem, str};
 
-use ahash::AHashSet;
 use fancy_regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
@@ -26,7 +25,7 @@ use crate::{
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceTracker, check_estimated_size},
     types::{
-        List, PyTrait, ReMatch, Type, allocate_tuple,
+        LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
     },
     value::{EitherStr, Value},
@@ -298,7 +297,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let this = self.get(vm.heap);
         write!(f, "re.compile(")?;

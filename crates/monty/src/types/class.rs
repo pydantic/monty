@@ -1,8 +1,6 @@
 use std::{fmt::Write, mem};
 
-use ahash::AHashSet;
-
-use super::{Dict, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -102,7 +100,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         Ok(write!(f, "<class '{}'>", self.get(vm.heap).name.as_str(vm.interns))?)
     }

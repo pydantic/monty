@@ -1,6 +1,5 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
-use ahash::AHashSet;
 use smallvec::SmallVec;
 
 use super::{CmpOrder, MontyIter, PyTrait};
@@ -14,7 +13,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
     types::{
-        Type,
+        LazyHeapSet, Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -479,7 +478,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let len = self.get(vm.heap).len();
         repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
@@ -893,7 +892,7 @@ pub(crate) fn repr_sequence_fmt<'h, T: ResourceTracker>(
     get_item: impl for<'r> Fn(&'r HeapReader<'h, T>, usize) -> &'r Value,
     f: &mut impl Write,
     vm: &mut VM<'h, T>,
-    heap_ids: &mut AHashSet<HeapId>,
+    heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     // Check depth limit before recursing
     let Ok(mut guard) = vm.recursion_guard() else {

@@ -1,6 +1,5 @@
 use std::{fmt::Write, mem};
 
-use ahash::AHashSet;
 use smallvec::smallvec;
 
 use crate::{
@@ -11,7 +10,7 @@ use crate::{
     heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
+    types::{Dict, FrozenSet, LazyHeapSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
     value::{EitherStr, Value},
 };
 
@@ -162,7 +161,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str("dict_keys([")?;
         write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
@@ -318,7 +317,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
@@ -410,7 +409,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str("dict_values([")?;
         write_dict_values_contents(f, &self.dict(vm), vm, heap_ids)?;
@@ -484,7 +483,7 @@ fn write_dict_keys_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
     vm: &mut VM<'h, impl ResourceTracker>,
-    heap_ids: &mut AHashSet<HeapId>,
+    heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
     defer_drop_vm_mut!(iter, vm);
@@ -504,7 +503,7 @@ fn write_dict_items_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
     vm: &mut VM<'h, impl ResourceTracker>,
-    heap_ids: &mut AHashSet<HeapId>,
+    heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
     defer_drop_vm_mut!(iter, vm);
@@ -528,7 +527,7 @@ fn write_dict_values_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
     vm: &mut VM<'h, impl ResourceTracker>,
-    heap_ids: &mut AHashSet<HeapId>,
+    heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
     defer_drop_vm_mut!(iter, vm);

@@ -1,8 +1,6 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use ahash::AHashSet;
-
-use super::{Dict, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::{ArgValues, KwargsValues},
     builtins::Builtins,
@@ -113,7 +111,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let class_id = self.get(vm.heap).class;
         Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
@@ -279,7 +277,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         &self,
         f: &mut impl Write,
         _vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         Ok(write!(f, "<bound method>")?)
     }

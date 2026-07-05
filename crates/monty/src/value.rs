@@ -8,7 +8,6 @@ use std::{
     str::FromStr,
 };
 
-use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
@@ -28,7 +27,7 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, CmpOrder, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
@@ -318,7 +317,7 @@ impl<'h> PyTrait<'h> for Value {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let interns = vm.interns;
         match self {

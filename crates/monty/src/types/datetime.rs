@@ -11,7 +11,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
@@ -28,7 +27,7 @@ use crate::{
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, CmpOrder, PyTrait, TimeDelta, TimeZone, Type,
+        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
@@ -941,7 +940,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {

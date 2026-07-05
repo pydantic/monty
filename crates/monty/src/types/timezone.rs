@@ -10,8 +10,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -22,7 +20,7 @@ use crate::{
     intern::Interns,
     resource::ResourceTracker,
     types::{
-        PyTrait, Type,
+        LazyHeapSet, PyTrait, Type,
         str::StringRepr,
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
@@ -257,7 +255,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let tz = self.get(vm.heap);
         if tz.offset_seconds == 0 && tz.name.is_none() {

@@ -23,8 +23,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
-
 use super::PyTrait;
 use crate::{
     bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
@@ -34,7 +32,7 @@ use crate::{
     heap::{HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
     resource::ResourceTracker,
-    types::Type,
+    types::{Type, py_trait::LazyHeapSet},
     value::{EitherStr, Value},
 };
 
@@ -351,7 +349,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         // Check depth limit before recursing
         let Ok(mut guard) = vm.recursion_guard() else {

@@ -10,7 +10,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use num_integer::div_ceil;
 
 use crate::{
@@ -21,7 +20,7 @@ use crate::{
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
 
@@ -285,7 +284,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let this = self.get(vm.heap);
         if this.step == 1 {

@@ -4,10 +4,9 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use serde::ser::SerializeStruct;
 
-use super::{Dict, PyTrait};
+use super::{Dict, LazyHeapSet, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -215,7 +214,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         // Check depth limit before recursing
         let Ok(mut guard) = vm.recursion_guard() else {

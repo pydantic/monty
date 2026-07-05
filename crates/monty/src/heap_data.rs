@@ -7,7 +7,6 @@ use std::{
     ops::Deref,
 };
 
-use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
@@ -21,8 +20,8 @@ use crate::{
     intern::FunctionId,
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice,
-        Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
+        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
+        Set, Slice, Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -744,7 +743,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         match self {
             Self::Str(s) => s.py_repr_fmt(f, vm, heap_ids),
