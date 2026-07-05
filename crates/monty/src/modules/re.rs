@@ -30,7 +30,9 @@
 //! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
 //! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
+
+use ahash::AHashMap;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -652,7 +654,7 @@ impl DropWithHeap for ResolvedPattern {
 /// [`JsonStringCache`]: crate::modules::json::JsonStringCache
 #[derive(Default)]
 pub(crate) struct RePatternCache {
-    entries: HashMap<(String, u16), Rc<RePattern>>,
+    entries: AHashMap<(String, u16), Rc<RePattern>>,
 }
 
 impl RePatternCache {
