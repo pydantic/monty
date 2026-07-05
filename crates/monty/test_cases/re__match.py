@@ -3,9 +3,11 @@
 import re
 
 # === Match .string attribute ===
-m = re.search('hello', 'say hello')
+subject = 'say ' + 'hello'  # concatenate so it isn't interned
+m = re.search('hello', subject)
 assert m is not None, 'search finds match for .string test'
 assert m.string == 'say hello', '.string returns the input string'
+assert m.string is subject, '.string is the original subject object, not a copy'
 
 # === Match truthiness ===
 m = re.search(r'\d+', '123')

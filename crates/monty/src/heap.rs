@@ -1635,6 +1635,13 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(buffer_id);
             }
         }
+        HeapData::ReMatch(m) => {
+            // Mirror `py_dec_ref_ids_for_data`: a match holds one ref on its
+            // shared subject string (`None` for an interned subject).
+            if let Value::Ref(id) = m.subject_ref() {
+                on_child(*id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1725,6 +1732,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // never `close()`d).
             f.py_dec_ref_ids(stack);
         }
+        // Release the shared subject reference (mirrors `for_each_child_id`).
+        HeapData::ReMatch(m) => m.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }

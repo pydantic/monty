@@ -5,10 +5,11 @@
 //! Python-compatible access via `.group()`, `.groups()`, `.start()`, `.end()`,
 //! and `.span()` methods.
 //!
-//! All data is stored as owned values (no heap references), so reference counting
-//! is trivial — `py_dec_ref_ids` is a no-op.
+//! The matched substrings are owned copies, but the subject string (`.string`)
+//! is held as a single refcounted heap reference shared across every match from
+//! one `finditer`/`findall` call, so `py_dec_ref_ids` releases that reference.
 
-use std::{cmp::Ordering, fmt::Write, mem, sync::Arc};
+use std::{cmp::Ordering, fmt::Write, mem};
 
 use smallvec::smallvec;
 
@@ -18,7 +19,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::StaticStrings,
+    intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
@@ -30,9 +31,10 @@ use crate::{
 /// A regex match result, storing captured groups and positions.
 ///
 /// Created by `re.match()`, `re.search()`, `re.fullmatch()`, and their
-/// `Pattern` method equivalents. Stores all data as owned values (no heap
-/// references), which simplifies reference counting — `py_dec_ref_ids` is
-/// a no-op.
+/// `Pattern` method equivalents. The captured substrings are owned copies, but
+/// the subject (`.string`) is a refcounted heap reference (`subject`) shared
+/// across every match from one call rather than copied per match — so
+/// `py_dec_ref_ids` must release it, and its memory is tracked once.
 ///
 /// The `.re` attribute (reference back to the pattern) is intentionally omitted
 /// to avoid circular references between Match and Pattern objects.
@@ -48,7 +50,7 @@ use crate::{
 /// Group 0 is the full match, groups 1..N are capture groups.
 /// Both integer and named group access are supported — named groups are looked
 /// up via the `named_groups` mapping.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReMatch {
     /// The full matched text (equivalent to `group(0)`).
     full_match: String,
@@ -62,26 +64,24 @@ pub(crate) struct ReMatch {
     group_spans: Vec<Option<(usize, usize)>>,
     /// Named groups: maps group name → 1-based group index.
     named_groups: Vec<(String, usize)>,
-    /// The searched input (the `.string` attribute). Shared (`Arc`) so all matches
-    /// from one `finditer`/`findall` call point at one copy, not a copy each.
-    input_string: Arc<str>,
-    /// Whether the input is pure ASCII, so byte offset == character offset.
+    /// The searched subject (the `.string` attribute), held as a refcounted heap
+    /// reference so every match from one `finditer` shares one copy — tracked
+    /// once, not per match. Always a `str` `Value` (heap `Str` or interned).
+    subject: Value,
+    /// Whether the subject is pure ASCII, so byte offset == character offset.
     all_ascii: bool,
-    /// The original pattern string (for repr), shared like `input_string`.
-    pattern_string: Arc<str>,
 }
 
 impl ReMatch {
     /// Creates a `ReMatch` from a `fancy_regex::Captures` result.
     ///
-    /// Stores byte offsets (converted to char offsets lazily — see the type docs)
-    /// and shares the `Arc` subject/pattern rather than copying them per match.
-    /// `regex` is used only to extract named-group mappings.
+    /// Stores byte offsets (converted to char offsets lazily — see the type docs).
+    /// `subject` is the already-refcounted subject `Value` this match keeps alive
+    /// (the caller clones it per match); `regex` supplies named-group mappings.
     pub fn from_captures(
         caps: &fancy_regex::Captures<'_>,
-        input: &Arc<str>,
+        subject: Value,
         all_ascii: bool,
-        pattern: &Arc<str>,
         regex: &fancy_regex::Regex,
     ) -> Self {
         let full = caps.get(0).expect("group 0 always exists on a successful match");
@@ -118,19 +118,29 @@ impl ReMatch {
             groups,
             group_spans,
             named_groups,
-            input_string: Arc::clone(input),
+            subject,
             all_ascii,
-            pattern_string: Arc::clone(pattern),
         }
     }
 
+    /// The subject `Value` this match keeps alive (its `.string`). Lets the heap
+    /// walkers in `heap.rs` follow and release the shared subject reference.
+    pub(crate) fn subject_ref(&self) -> &Value {
+        &self.subject
+    }
+
     /// Converts a stored byte offset into the subject to the Unicode character
-    /// offset CPython's position APIs report. ASCII subjects need no conversion.
-    fn char_offset(&self, byte_offset: usize) -> usize {
+    /// offset CPython's position APIs report. ASCII subjects need no conversion;
+    /// otherwise the subject text is read back from the heap for a forward scan.
+    fn char_offset(&self, byte_offset: usize, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> usize {
         if self.all_ascii {
             byte_offset
         } else {
-            byte_to_char_offset(&self.input_string, byte_offset)
+            let text = self
+                .subject
+                .to_str_heap(heap, interns)
+                .expect("subject is always a str");
+            byte_to_char_offset(text, byte_offset)
         }
     }
 
@@ -216,9 +226,9 @@ impl ReMatch {
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_start(&self, n: i64) -> RunResult<Value> {
+    fn get_start(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start) as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start, heap, interns) as i64)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -226,7 +236,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((s, _)) => Ok(Value::Int(self.char_offset(*s) as i64)),
+                    Some((s, _)) => Ok(Value::Int(self.char_offset(*s, heap, interns) as i64)),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -237,9 +247,9 @@ impl ReMatch {
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_end(&self, n: i64) -> RunResult<Value> {
+    fn get_end(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end) as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end, heap, interns) as i64)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -247,7 +257,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((_, e)) => Ok(Value::Int(self.char_offset(*e) as i64)),
+                    Some((_, e)) => Ok(Value::Int(self.char_offset(*e, heap, interns) as i64)),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -258,12 +268,12 @@ impl ReMatch {
     ///
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
     #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_span(&self, n: i64, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn get_span(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(allocate_tuple(
                 smallvec![
-                    Value::Int(self.char_offset(self.start) as i64),
-                    Value::Int(self.char_offset(self.end) as i64)
+                    Value::Int(self.char_offset(self.start, heap, interns) as i64),
+                    Value::Int(self.char_offset(self.end, heap, interns) as i64)
                 ],
                 heap,
             )?),
@@ -274,7 +284,10 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 let (s, e) = match &self.group_spans[idx] {
-                    Some((s, e)) => (self.char_offset(*s) as i64, self.char_offset(*e) as i64),
+                    Some((s, e)) => (
+                        self.char_offset(*s, heap, interns) as i64,
+                        self.char_offset(*e, heap, interns) as i64,
+                    ),
                     None => (-1, -1),
                 };
                 Ok(allocate_tuple(smallvec![Value::Int(s), Value::Int(e)], heap)?)
@@ -312,8 +325,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         write!(
             f,
             "<re.Match object; span=({}, {}), match=",
-            m.char_offset(m.start),
-            m.char_offset(m.end)
+            m.char_offset(m.start, vm.heap, vm.interns),
+            m.char_offset(m.end, vm.heap, vm.interns)
         )?;
         string_repr_fmt(&m.full_match, f)?;
         Ok(f.write_char('>')?)
@@ -322,7 +335,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::StringAttr) => {
-                let v = allocate_string(&*self.get(vm.heap).input_string, vm.heap)?;
+                // Hand back the same subject object (CPython's `m.string is s`),
+                // bumping its refcount rather than allocating a fresh copy.
+                let v = self.get(vm.heap).subject.clone_with_heap(vm);
                 Ok(Some(CallResult::Value(v)))
             }
             _ => Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
@@ -351,15 +366,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
             }
             Some(StaticStrings::Start) => {
                 let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get(vm.heap).get_start(n)?
+                self.get(vm.heap).get_start(n, vm.heap, vm.interns)?
             }
             Some(StaticStrings::End) => {
                 let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get(vm.heap).get_end(n)?
+                self.get(vm.heap).get_end(n, vm.heap, vm.interns)?
             }
             Some(StaticStrings::Span) => {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get(vm.heap).get_span(n, vm.heap)?
+                self.get(vm.heap).get_span(n, vm.heap, vm.interns)?
             }
             _ => {
                 return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns)));
@@ -390,10 +405,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
 
 impl HeapItem for ReMatch {
     fn py_estimate_size(&self) -> usize {
+        // The subject is NOT counted here: it is a shared refcounted heap `Str`
+        // charged once as its own entry, so counting it per match would inflate
+        // a `finditer` of N matches to N× the subject size (see `subject`).
         mem::size_of::<Self>()
             + self.full_match.len()
-            + self.input_string.len()
-            + self.pattern_string.len()
             + self
                 .groups
                 .iter()
@@ -406,8 +422,15 @@ impl HeapItem for ReMatch {
                 .sum::<usize>()
     }
 
-    fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
-        // No heap references — all data is owned strings and integers.
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Release the shared subject reference (no-op for an interned subject).
+        // `dec_ref_forget` neutralises the `Ref` so the struct's own `Drop`
+        // does not trip the `memory-model-checks` leak assertion.
+        if let Value::Ref(id) = &mut self.subject {
+            stack.push(*id);
+            #[cfg(feature = "memory-model-checks")]
+            self.subject.dec_ref_forget();
+        }
     }
 }
 

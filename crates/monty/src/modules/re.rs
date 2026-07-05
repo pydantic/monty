@@ -241,7 +241,7 @@ fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).search(subject_str(string, vm)?, vm.heap)
+    resolved.get(vm.heap).search(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.match(pattern, string, flags=0)` — match at the beginning of the string.
@@ -253,7 +253,9 @@ fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).match_start(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .match_start(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
@@ -265,7 +267,9 @@ fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).fullmatch(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .fullmatch(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.findall(pattern, string, flags=0)` — find all non-overlapping matches.
@@ -748,7 +752,9 @@ fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).finditer(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .finditer(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.escape(pattern)` — escape special regex characters in a string.

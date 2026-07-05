@@ -9,7 +9,7 @@
 //! Custom serde serializes only the pattern string and flags, recompiling the regex
 //! on deserialization. This supports Monty's snapshot/restore feature.
 
-use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str, sync::Arc};
+use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -117,26 +117,27 @@ impl RePattern {
         Ok(self.compiled_fullmatch.get().expect("cell was just initialised"))
     }
 
-    /// Builds a single `ReMatch` heap value from a capture result, wrapping the
-    /// subject and pattern in shared `Arc`s rather than copying them.
+    /// Builds a single `ReMatch` heap value from a capture result, keeping the
+    /// subject alive by refcount (`subject.clone_with_heap`) rather than copying
+    /// its text. `all_ascii` is precomputed by the caller (once per `finditer`).
     fn build_match(
         &self,
         caps: &fancy_regex::Captures<'_>,
-        text: &str,
+        subject: &Value,
+        all_ascii: bool,
         heap: &Heap<impl ResourceTracker>,
     ) -> RunResult<Value> {
-        let input: Arc<str> = Arc::from(text);
-        let pattern: Arc<str> = Arc::from(self.pattern.as_str());
-        let m = ReMatch::from_captures(caps, &input, text.is_ascii(), &pattern, &self.compiled);
+        let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
         Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
     ///
-    /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn search(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    /// `subject` is the subject `Value` (stored by the match); `text` is its
+    /// borrowed contents. Returns a `ReMatch` heap object, or `Value::None`.
+    pub fn search(&self, subject: &Value, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.compiled.captures(text) {
-            Ok(Some(caps)) => self.build_match(&caps, text, heap),
+            Ok(Some(caps)) => self.build_match(&caps, subject, text.is_ascii(), heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -149,9 +150,9 @@ impl RePattern {
     /// anchor forces the engine to try all alternatives at position 0.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn match_start(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn match_start(&self, subject: &Value, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.match_regex()?.captures(text) {
-            Ok(Some(caps)) => self.build_match(&caps, text, heap),
+            Ok(Some(caps)) => self.build_match(&caps, subject, text.is_ascii(), heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -164,9 +165,9 @@ impl RePattern {
     /// anchors force the engine to try all alternatives for a full-string match.
     ///
     /// Returns a `ReMatch` heap object on success, or `Value::None` if no match.
-    pub fn fullmatch(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn fullmatch(&self, subject: &Value, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         match self.fullmatch_regex()?.captures(text) {
-            Ok(Some(caps)) => self.build_match(&caps, text, heap),
+            Ok(Some(caps)) => self.build_match(&caps, subject, text.is_ascii(), heap),
             Ok(None) => Ok(Value::None),
             Err(err) => Err(ExcType::re_pattern_error(err)),
         }
@@ -288,17 +289,14 @@ impl RePattern {
     /// Eagerly collects all match objects into a list. This differs from CPython's
     /// lazy iterator but produces the same results when iterated. The VM's `GetIter`
     /// opcode handles iteration over the returned list.
-    pub fn finditer(&self, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-        // Share one subject/pattern copy across every match, not one copy per match.
-        let input: Arc<str> = Arc::from(text);
-        let pattern: Arc<str> = Arc::from(self.pattern.as_str());
+    pub fn finditer(&self, subject: &Value, text: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+        // Every match shares one refcounted subject reference, not a copy each.
         let all_ascii = text.is_ascii();
 
         let mut results = Vec::new();
         for caps in self.compiled.captures_iter(text) {
             let caps = caps.map_err(ExcType::re_pattern_error)?;
-            let m = ReMatch::from_captures(&caps, &input, all_ascii, &pattern, &self.compiled);
-            results.push(Value::Ref(heap.allocate(HeapData::ReMatch(m))?));
+            results.push(self.build_match(&caps, subject, all_ascii, heap)?);
         }
 
         let list = List::new(results);
@@ -378,19 +376,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 let arg = args.get_one_arg("Pattern.search", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.to_str(vm)?;
-                self.get(vm.heap).search(text, vm.heap)
+                self.get(vm.heap).search(arg, text, vm.heap)
             }
             Some(StaticStrings::Match) => {
                 let arg = args.get_one_arg("Pattern.match", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.to_str(vm)?;
-                self.get(vm.heap).match_start(text, vm.heap)
+                self.get(vm.heap).match_start(arg, text, vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
                 let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.to_str(vm)?;
-                self.get(vm.heap).fullmatch(text, vm.heap)
+                self.get(vm.heap).fullmatch(arg, text, vm.heap)
             }
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
@@ -404,7 +402,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
                 let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = arg.to_str(vm)?;
-                self.get(vm.heap).finditer(text, vm.heap)
+                self.get(vm.heap).finditer(arg, text, vm.heap)
             }
             _ => {
                 return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns)));
