@@ -102,34 +102,19 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
 }
 
 /// Hard cap on native Rust call-stack re-entry, enforced by
-/// [`VM::incr_run_reentry`] and released by [`RunReentryGuard`].
+/// [`VM::incr_run_reentry`] and released by [`RunReentryGuard`]. Much smaller
+/// than the 1000-frame Python recursion limit because each level costs a real
+/// nested call to [`VM::run`], not a push onto the heap-allocated `frames` vec.
 ///
-/// Deliberately much smaller than the 1000-frame Python recursion limit:
-/// every level here costs a real nested call to [`VM::run`] (interpreter loop
-/// + dispatch chain), not a cheap push onto the heap-allocated `frames` vec.
+/// Tuned empirically by bisecting the SIGABRT depth of a self-recursive
+/// `map`/`filter`/`sorted`/`__repr__` chain. The tightest case: a debug build
+/// on monty-datatest's ~2 MiB default worker-thread stack crashes at depth 19,
+/// so 12 leaves ~1.5x margin (measured on macOS/arm64; release builds have
+/// far more headroom).
 ///
-/// Tuned empirically (bisecting the real SIGABRT depth of a self-recursive
-/// `map`/`filter`/`sorted`/`__repr__` re-entry chain) rather than guessed.
-/// The tightest *confirmed* constraint found: `crates/monty-datatest`'s test
-/// runner (`libtest-mimic`) spawns each test on a worker thread via
-/// `thread::scope`/`scope.spawn` with no explicit stack size, i.e. Rust's
-/// unconfigured default (~2 MiB) — not the larger main-thread stack a naive
-/// assumption might reach for. A debug build (with or without
-/// `memory-model-checks`) crashes such a thread at a re-entry depth of 19;
-/// this constant leaves roughly 1.5x margin under that, to absorb per-frame
-/// cost variance across platforms/toolchains (only measured on macOS/arm64
-/// here). Release builds — what the subprocess workers and the wasm/
-/// in-process API actually ship — are far cheaper per level (a 1 MiB stack
-/// only overflows around depth 65-75), so this constant has wide margin
-/// there too. The wasm host's actual thread stack size could not be
-/// independently verified from this repo (no `-z stack-size` linker config
-/// was found for the `wasm32-wasip1-threads` build) — if it's smaller than
-/// assumed, this constant may need lowering further.
-///
-/// This is a hard safety constant, not a Python-visible setting: unlike
-/// `recursion_depth` (bounded via the user-configurable `sys.setrecursionlimit`
-/// apparatus through [`ResourceTracker::check_recursion_depth`]), this cap does
-/// not go through the tracker and cannot be changed by sandboxed code.
+/// A hard safety constant, not a Python-visible setting: unlike
+/// `recursion_depth` (configurable via `sys.setrecursionlimit`), it does not
+/// go through the tracker and cannot be changed by sandboxed code.
 pub(crate) const MAX_RUN_REENTRY_DEPTH: usize = 12;
 
 impl<T: ResourceTracker> VM<'_, T> {
@@ -137,19 +122,12 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// increments it. Pair with [`RunReentryGuard::new`] to release the level
     /// on every exit path.
     ///
-    /// Used exclusively by `evaluate_function`, which must be able to run
-    /// custom cleanup (dropping owned arguments) on the failure path — unlike
-    /// [`recursion_guard`](Self::recursion_guard)'s combined
-    /// check-and-wrap, this is split into a plain `Result<(), _>` check (no
-    /// `Drop` type involved) so the caller can `if let Err(e) = ...` it
-    /// without the borrow-checker extending `self`'s borrow across the whole
-    /// match (which it would if a `Drop`-holding guard were part of the
-    /// matched temporary).
-    ///
-    /// Deliberately does not go through [`ResourceTracker::check_recursion_depth`]
-    /// (unlike [`incr_recursion`](Self::incr_recursion)) — this cap is a fixed
-    /// safety constant protecting the native stack, not a Python-visible,
-    /// user-configurable limit.
+    /// Split into a plain `Result<(), _>` check (unlike
+    /// [`recursion_guard`](Self::recursion_guard)'s combined check-and-wrap) so
+    /// `evaluate_function` can `if let Err(e) = ...` it and run its own cleanup
+    /// (dropping owned arguments) without a `Drop` guard extending `self`'s
+    /// borrow across the match. Bypasses the tracker: a fixed safety constant,
+    /// not a user-configurable limit.
     #[inline]
     pub(crate) fn incr_run_reentry(&mut self) -> Result<(), ResourceError> {
         if self.run_reentry_depth >= MAX_RUN_REENTRY_DEPTH {

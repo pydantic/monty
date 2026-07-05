@@ -371,13 +371,10 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Returns an error for external/OS functions since those require the host to
     /// execute them and resume, which this synchronous context cannot support.
     ///
-    /// This is the one chokepoint where the interpreter recurses on the
-    /// native Rust stack (via the nested `self.run()` below) rather than the
-    /// heap-allocated `frames` vec, so native re-entry is bounded via
-    /// [`incr_run_reentry`](Self::incr_run_reentry) at entry — before
-    /// `call_function` runs, not merely around `self.run()` — since some
-    /// cycles (a class-valued `__init__`) recurse back into this function
-    /// entirely inside `call_function`, without ever pushing a frame.
+    /// The nested `self.run()` below recurses on the native Rust stack, so
+    /// re-entry is bounded via [`incr_run_reentry`](Self::incr_run_reentry)
+    /// at entry — before `call_function`, since a class-valued `__init__` can
+    /// recurse back in without ever pushing a frame.
     pub(crate) fn evaluate_function(
         &mut self,
         ctx: &'static str,
@@ -385,9 +382,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         args: ArgValues,
     ) -> Result<Value, RunError> {
         if let Err(e) = self.incr_run_reentry() {
-            // `call_function` normally takes ownership of `args`; since
-            // we're bailing before that handoff, reclaim its refcounts here
-            // instead.
+            // Bailing before `call_function` takes ownership of `args`, so
+            // reclaim its refcounts here.
             args.drop_with_heap(self);
             return Err(e.into());
         }

@@ -358,12 +358,9 @@ impl<'h> PyTrait<'h> for Value {
                     // Instances dispatch to a user `__repr__` (or the default), which
                     // needs the heap id to pass `self` — handled here, not at the heap
                     // level, so no `heap_ids` insertion happens. Recursion here
-                    // re-enters the VM on the *Rust* stack via `evaluate_function`'s
-                    // native re-entry guard (see the "Recursive/deep `__repr__`/
-                    // `__str__`" divergence in limitations/classes.md), bounded well
-                    // below the native stack limit but also below CPython's effective
-                    // recursion depth for deep-but-finite chains — the same guard
-                    // also covers `sorted`/`map`/`filter` callbacks.
+                    // re-enters the VM on the *Rust* stack, bounded by
+                    // `evaluate_function`'s re-entry guard (see the "Recursive/deep
+                    // `__repr__`/`__str__`" divergence in limitations/classes.md).
                     let str_value = instance_repr(*id, vm)?;
                     defer_drop!(str_value, vm);
                     Ok(f.write_str(str_value.to_str(vm)?)?)
