@@ -163,7 +163,10 @@ fn make_rows() -> MontyObject {
                         MontyObject::String("region".to_owned()),
                         MontyObject::String("north".to_owned()),
                     ),
-                    (MontyObject::String("amount".to_owned()), MontyObject::Int((i * 37) % 500 + 1)),
+                    (
+                        MontyObject::String("amount".to_owned()),
+                        MontyObject::Int((i * 37) % 500 + 1),
+                    ),
                     (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
                 ])
             })
@@ -185,7 +188,9 @@ fn ext_call_rows(bench: &mut Bencher) {
     let pool = Pool::new(PoolConfig::subprocess(monty_binary())).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     bench.iter(|| {
-        let mut event = session.feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print).unwrap();
+        let mut event = session
+            .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
+            .unwrap();
         let value = loop {
             match event {
                 TurnEvent::Complete(value) => break value,
