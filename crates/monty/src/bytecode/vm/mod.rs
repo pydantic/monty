@@ -731,6 +731,30 @@ pub struct VM<'h, T: ResourceTracker> {
     /// `malloc`/`free` per call. Only held transiently within
     /// `call_sync_function`, so one shared buffer is safe under recursion.
     namespace_scratch: Vec<Value>,
+    /// Native Rust call-stack re-entry depth, charged only around
+    /// `evaluate_function`'s nested call into [`Self::run`].
+    ///
+    /// `evaluate_function` (`bytecode/vm/call.rs`) is the one place the
+    /// interpreter recurses on its own native stack instead of the
+    /// heap-allocated `frames` vec: it re-enters `self.run()` to drive a
+    /// synchronous callback (`map`/`filter`/`sorted(key=...)`, a user
+    /// `__repr__`/`__str__`, an "exotic" class-valued `__init__`) to
+    /// completion. Each level costs a real Rust stack frame (interpreter loop
+    /// and dispatch chain), so unlike `recursion_depth` (cheap per level,
+    /// capped at a depth of one thousand) this must be capped far lower — see
+    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] — or a deep/cyclic callback
+    /// overflows the native stack and aborts the process (SIGABRT). That is
+    /// merely disruptive for a subprocess worker (the pool replaces it) but
+    /// fatal for the in-process/wasm API, which shares the host's stack.
+    ///
+    /// Not serialized: nested `run()` cannot itself reach a snapshot
+    /// boundary — any non-`Return` exit produced *inside* a nested `run()` is
+    /// intercepted and converted into `NotImplementedError` by
+    /// `evaluate_function` itself, never propagated up as a real suspend — so
+    /// this is always back to 0 by the time a snapshot is possible.
+    /// `debug_assert!`-checked in [`Self::snapshot`] rather than taken purely
+    /// on faith.
+    run_reentry_depth: usize,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -757,6 +781,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             pending_file_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
+            run_reentry_depth: 0,
         }
     }
 
@@ -823,6 +848,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             pending_file_effect: snapshot.pending_file_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
+            // Always 0 at a restore boundary — see the field doc on
+            // `run_reentry_depth` for why nested `run()` re-entry can never
+            // itself reach a snapshot/restore point.
+            run_reentry_depth: 0,
         }
     }
 
@@ -835,6 +864,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
     pub fn snapshot(mut self) -> VMSnapshot {
+        // Must always be 0 here — see the field doc on `run_reentry_depth`.
+        // This assert exists to catch a future change that breaks the
+        // invariant (e.g. a new call site of `run()` that can suspend
+        // mid-re-entry) rather than relying on it silently.
+        debug_assert_eq!(
+            self.run_reentry_depth, 0,
+            "VM snapshotted while inside a nested evaluate_function re-entry"
+        );
+
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
         self.json_string_cache.drop_all(self.heap);

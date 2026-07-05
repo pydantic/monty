@@ -43,6 +43,15 @@ inside the sandbox).
   limit cannot be changed by sandboxed code.
 - Async stacks count toward the limit but each `await` boundary is treated
   as one frame, so `await`-chains do not amplify depth.
+- Callbacks evaluated synchronously by the interpreter itself — a `map()`,
+  `filter()`, or `sorted(key=...)` function argument that recursively calls
+  back into the same construct, and (once classes are involved) recursive
+  `__repr__`/`__str__` — re-enter the interpreter on the native Rust call
+  stack rather than the heap-allocated frame stack used by ordinary function
+  calls. This native re-entry is capped independently, at a lower fixed depth
+  than the 1000-frame Python limit, to guarantee it can never overflow the
+  native stack and abort the process. See `limitations/classes.md`'s
+  `__repr__`/`__str__` entry for the user-visible divergence this causes.
 
 ## Time
 
