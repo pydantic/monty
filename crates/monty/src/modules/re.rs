@@ -598,7 +598,8 @@ impl ReFlags {
 /// A pattern ready to run: shared out of the [`RePatternCache`], or a still-live
 /// `re.Pattern` heap value (which callers keep alive with `defer_drop!`).
 enum ResolvedPattern {
-    /// Compiled from a `str` pattern and shared (`Rc`) with the pattern cache.
+    /// Compiled from a `str` pattern and shared (`Rc`) with the pattern cache
+    /// (or uncached when its compiled form exceeds [`CACHED_SIZE_LIMIT`]).
     Cached(Rc<RePattern>),
     /// A live `re.Pattern` heap value (always a `Value::Ref` to
     /// `HeapData::RePattern`, guaranteed by [`PatternArg::extract`]).
@@ -637,16 +638,24 @@ impl DropWithHeap for ResolvedPattern {
 /// compiled pattern shared with callers.
 type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
 
-/// Slot count of [`RePatternCache`] — power of two so the index modulo is a
-/// mask, sized like CPython's `re._MAXCACHE`.
-const CACHE_CAPACITY: usize = 512;
+/// Slot count of [`RePatternCache`] — power of two so the index modulo is a mask;
+/// 256 (vs CPython's 512 `re._MAXCACHE`) to halve the untracked worst-case retained
+/// memory of `CACHE_CAPACITY × CACHED_SIZE_LIMIT`.
+const CACHE_CAPACITY: usize = 256;
+
+/// `delegate_size_limit` for compiles that will be retained in the cache. The cache
+/// is invisible to the `ResourceTracker`, so this caps its worst-case footprint at
+/// ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`; patterns whose compiled form is bigger
+/// still work — they are recompiled per call at default limits and never retained.
+const CACHED_SIZE_LIMIT: usize = 64 * 1024;
 
 /// Fixed-size, per-run cache of compiled patterns for module-level `re.*` calls,
 /// keyed on `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles
 /// once, not per call. Direct-mapped with 5-slot linear probing and
 /// LRU-on-collision (jiter's `py_string_cache` design), so retained
-/// compiled-regex memory is hard-bounded by `CACHE_CAPACITY`. Mirrors CPython's
-/// `re._cache`; not snapshotted (rebuilt on demand).
+/// compiled-regex memory is hard-bounded by `CACHE_CAPACITY` entries of at most
+/// [`CACHED_SIZE_LIMIT`] each. Mirrors CPython's `re._cache`; not snapshotted
+/// (rebuilt on demand).
 ///
 /// The `CACHE_CAPACITY`-slot backing store is allocated lazily on first use:
 /// every VM constructs a `RePatternCache`, but the vast majority never touch
@@ -657,8 +666,9 @@ pub(crate) struct RePatternCache(Option<(Box<[ReCacheEntry]>, RandomState)>);
 
 impl RePatternCache {
     /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
-    /// on a miss. Compile errors propagate and nothing is cached. The backing
-    /// store is allocated here on the first call.
+    /// on a miss. Compile errors propagate and nothing is cached; patterns whose
+    /// compiled form exceeds [`CACHED_SIZE_LIMIT`] are returned uncached. The
+    /// backing store is allocated here on the first call.
     fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
         let (entries, hash_builder) = self
             .0
@@ -688,9 +698,18 @@ impl RePatternCache {
             }
         }
 
-        // Miss: compile, then fill the empty slot, else evict `hash_index`
-        // (LRU-on-collision) when every probed slot was occupied.
-        let compiled = Rc::new(RePattern::compile(pattern.to_owned(), flags)?);
+        // Miss: compile size-bounded so a retained entry can never pin a huge
+        // compiled regex. If that fails — oversize, or a genuine syntax error —
+        // recompile at default limits and return the result uncached: oversize
+        // patterns still work (just recompiled per call), and syntax errors
+        // surface the same `re.PatternError` an unbounded compile raises.
+        let Ok(compiled) = RePattern::compile_bounded(pattern.to_owned(), flags, CACHED_SIZE_LIMIT) else {
+            return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+        };
+
+        // Fill the empty slot, else evict `hash_index` (LRU-on-collision) when
+        // every probed slot was occupied.
+        let compiled = Rc::new(compiled);
         let slot = empty_slot.unwrap_or(hash_index);
         entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
         Ok(compiled)
@@ -854,6 +873,31 @@ mod tests {
         // Unbalanced parenthesis fails to compile.
         assert!(cache.get_or_compile("(", 0).is_err());
         assert_eq!(occupied(&cache), 0);
+    }
+
+    /// A counted repeat that expands far past [`CACHED_SIZE_LIMIT`] in the
+    /// delegated regex compiler while still compiling fine at default limits.
+    const OVERSIZE_PATTERN: &str = "a{5000}";
+
+    #[test]
+    fn oversize_pattern_compiles_but_is_not_retained() {
+        let mut cache = RePatternCache::default();
+        let first = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        let second = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        // Both calls succeed but nothing is retained: each call recompiles.
+        assert!(!Rc::ptr_eq(&first, &second));
+        assert_eq!(occupied(&cache), 0);
+    }
+
+    #[test]
+    fn oversize_pattern_does_not_disturb_cached_entries() {
+        let mut cache = RePatternCache::default();
+        let small = cache.get_or_compile("abc", 0).unwrap();
+        cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        let again = cache.get_or_compile("abc", 0).unwrap();
+        // The small pattern's entry survives the uncached oversize compile.
+        assert!(Rc::ptr_eq(&small, &again));
+        assert_eq!(occupied(&cache), 1);
     }
 
     #[test]

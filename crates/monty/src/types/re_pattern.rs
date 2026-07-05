@@ -11,7 +11,7 @@
 
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
-use fancy_regex::Regex;
+use fancy_regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
@@ -83,7 +83,21 @@ impl RePattern {
     ///
     /// Returns `re.PatternError` if the pattern is invalid.
     pub fn compile(pattern: String, flags: u16) -> RunResult<Self> {
-        let compiled = compile_regex(&pattern, flags)?;
+        Self::compile_inner(pattern, flags, None)
+    }
+
+    /// As [`RePattern::compile`], but caps the compiled size of the delegated regex
+    /// (`RegexBuilder::delegate_size_limit`) so the `re` module's pattern cache can
+    /// retain entries with a hard per-entry memory ceiling. The lazily-compiled
+    /// anchored variants keep default limits: they are the same size class as the
+    /// already-bounded plain regex, so retention stays bounded either way.
+    pub(crate) fn compile_bounded(pattern: String, flags: u16, delegate_size_limit: usize) -> RunResult<Self> {
+        Self::compile_inner(pattern, flags, Some(delegate_size_limit))
+    }
+
+    /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
+    fn compile_inner(pattern: String, flags: u16, delegate_size_limit: Option<usize>) -> RunResult<Self> {
+        let compiled = compile_regex_limited(&pattern, flags, delegate_size_limit)?;
         Ok(Self {
             pattern,
             flags,
@@ -570,6 +584,12 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTra
 ///
 /// Returns `re.PatternError(...)` if the pattern is invalid.
 pub(crate) fn compile_regex(pattern: &str, flags: u16) -> RunResult<Regex> {
+    compile_regex_limited(pattern, flags, None)
+}
+
+/// As [`compile_regex`], optionally capping the compiled size of the delegated
+/// regex (`RegexBuilder::delegate_size_limit`) — used to bound cached patterns.
+fn compile_regex_limited(pattern: &str, flags: u16, delegate_size_limit: Option<usize>) -> RunResult<Regex> {
     let mut prefix = String::new();
     if flags & IGNORECASE != 0 {
         prefix.push('i');
@@ -591,7 +611,11 @@ pub(crate) fn compile_regex(pattern: &str, flags: u16) -> RunResult<Regex> {
         format!("(?{prefix}){pattern}")
     };
 
-    Regex::new(&full_pattern).map_err(ExcType::re_pattern_error)
+    let mut builder = RegexBuilder::new(&full_pattern);
+    if let Some(limit) = delegate_size_limit {
+        builder.delegate_size_limit(limit);
+    }
+    builder.build().map_err(ExcType::re_pattern_error)
 }
 
 /// Translates Python-style replacement backreferences to `fancy_regex` syntax.
