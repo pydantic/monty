@@ -3,7 +3,6 @@
 //! Phase 1 intentionally supports only fixed offsets (no DST or IANA database).
 
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -21,7 +20,7 @@ use crate::{
     resource::ResourceTracker,
     types::{
         LazyHeapSet, PyTrait, Type,
-        str::StringRepr,
+        str::{StringRepr, allocate_string},
         timedelta,
         timedelta::{MICROSECONDS_PER_SECOND, SECONDS_PER_HOUR, SECONDS_PER_MINUTE},
     },
@@ -272,14 +271,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let tz = self.get(vm.heap);
-        if let Some(name) = &tz.name {
-            return Ok(Cow::Owned(name.clone()));
-        }
-        if tz.offset_seconds == 0 {
-            return Ok(Cow::Borrowed("UTC"));
-        }
-        Ok(Cow::Owned(format!("UTC{}", tz.format_utc_offset())))
+        let s = if let Some(name) = &tz.name {
+            name.clone()
+        } else if tz.offset_seconds == 0 {
+            "UTC".to_owned()
+        } else {
+            format!("UTC{}", tz.format_utc_offset())
+        };
+        Ok(allocate_string(s, vm.heap)?)
     }
 }

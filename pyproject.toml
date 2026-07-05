@@ -160,6 +160,8 @@ reportDeprecated = false
 reportWildcardImportFromLibrary = false
 # some test cases intentionally exercise invalid index assignment/runtime error paths
 reportIndexIssue = false
+# dunder tests intentionally return the wrong type (e.g. `__repr__` returning int)
+reportIncompatibleMethodOverride = false
 # `break`/`return`/`continue` inside `with` tests bind through Optional outer
 # variables that pyright can't narrow.
 reportOptionalMemberAccess = false

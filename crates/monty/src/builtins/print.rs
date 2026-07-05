@@ -52,7 +52,11 @@ pub fn builtin_print(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
             vm.print_writer.stdout_push(' ')?;
         }
         let s = value.py_str(vm)?;
-        vm.print_writer.stdout_write(s)?;
+        defer_drop!(s, vm);
+        // Resolve the `str` `Value` against the heap/interns tables directly so
+        // the `&str` borrow stays disjoint from the `&mut vm.print_writer` write.
+        vm.print_writer
+            .stdout_write(s.to_str_heap(vm.heap, vm.interns)?.into())?;
     }
 
     if let Some(end) = end_str {

@@ -16,6 +16,7 @@ use smallvec::SmallVec;
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_python_long_int, hash_python_str},
@@ -362,8 +363,9 @@ impl<'h> PyTrait<'h> for Value {
                     // `evaluate_function` issue (see the "Recursive/deep `__repr__`/
                     // `__str__`" divergence in limitations/classes.md) that also
                     // affects `sorted`/`map`/`filter` callbacks.
-                    let s = instance_repr(*id, vm)?;
-                    Ok(f.write_str(&s)?)
+                    let str_value = instance_repr(*id, vm)?;
+                    defer_drop!(str_value, vm);
+                    Ok(f.write_str(str_value.to_str(vm)?)?)
                 } else {
                     heap_ids.insert(*id);
                     let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
@@ -376,9 +378,13 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'h, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
-            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).into()),
+            // Interned/heap strings are already what `str()` returns — hand the
+            // same value back (inc-ref'd for the heap case) instead of cloning
+            // the bytes into a fresh allocation.
+            Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
+            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
@@ -2135,20 +2141,31 @@ impl Value {
     /// argument it does not need to own; the borrow keeps `self` and the heap
     /// pinned, so drop/allocate only once it ends.
     pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+        self.to_str_heap(vm.heap, vm.interns)
+    }
+
+    /// [`to_str`](Self::to_str) for contexts without a `&VM` — takes `heap` and
+    /// `interns` separately so callers can keep a disjoint `&mut` borrow of
+    /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
+    /// `py_str` while writing it to `vm.print_writer`).
+    pub(crate) fn to_str_heap<'a>(
+        &'a self,
+        heap: &'a Heap<impl ResourceTracker>,
+        interns: &'a Interns,
+    ) -> RunResult<&'a str> {
         match self {
-            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
-            Self::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Str(s) => Ok(s.as_str()),
-                _ => Err(ExcType::type_error(format!(
-                    "expected string, not {}",
-                    self.py_type_name(vm)
-                ))),
-            },
-            _ => Err(ExcType::type_error(format!(
-                "expected string, not {}",
-                self.py_type_name(vm)
-            ))),
+            Self::InternString(string_id) => return Ok(interns.get_str(*string_id)),
+            Self::Ref(heap_id) => {
+                if let HeapData::Str(s) = heap.get(*heap_id) {
+                    return Ok(s.as_str());
+                }
+            }
+            _ => {}
         }
+        Err(ExcType::type_error(format!(
+            "expected string, not {}",
+            self.py_type_name_heap(heap, interns)
+        )))
     }
 
     /// check if the value is a string.

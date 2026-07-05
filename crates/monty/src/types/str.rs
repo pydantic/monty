@@ -2,7 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cell::Cell, fmt, fmt::Write, mem, ops};
+use std::{cell::Cell, fmt, fmt::Write, mem, ops};
 
 use smallvec::smallvec;
 use unicode_general_category::{GeneralCategory, get_general_category};
@@ -72,10 +72,12 @@ impl Str {
             // right-sized allocation, skipping the grow-then-shrink `String`
             // that the generic `py_str`/`py_repr` path builds and then reboxes.
             Some(Value::Int(i)) => Ok(allocate_string(itoa::Buffer::new().format(i), vm.heap)?),
+            // `py_str` already yields the `str` `Value` that `str(x)` should
+            // return (the same object when `x` is already a `str`), so hand it
+            // straight back rather than copying its bytes into a new allocation.
             Some(v) => {
                 defer_drop!(v, vm);
-                let s = v.py_str(vm)?.into_owned();
-                Ok(allocate_string(s, vm.heap)?)
+                v.py_str(vm)
             }
         }
     }
@@ -250,8 +252,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(string_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        Ok(self.get(vm.heap).0.clone().into_string().into())
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {

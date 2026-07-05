@@ -4,7 +4,6 @@
 //! constructor validation and arithmetic behavior.
 
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
@@ -241,9 +240,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
+        Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap)?)
     }
 
     fn py_call_attr(

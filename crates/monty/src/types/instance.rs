@@ -14,6 +14,7 @@ use crate::{
     },
     intern::Interns,
     resource::ResourceTracker,
+    types::allocate_string,
     value::{EitherStr, Value},
 };
 
@@ -350,16 +351,16 @@ pub(crate) fn instance_getattr(
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
-pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     match instance_call_str_dunder(self_id, "__repr__", vm)? {
         Some(s) => Ok(s),
-        None => Ok(Cow::Owned(default_repr(self_id, vm))),
+        None => Ok(allocate_string(default_repr(self_id, vm), vm.heap)?),
     }
 }
 
 /// Produces `str(instance)`, dispatching to a user `__str__` if defined, else
 /// falling back to `repr` (which itself falls back to the default).
-pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
     match instance_call_str_dunder(self_id, "__str__", vm)? {
         Some(s) => Ok(s),
         None => instance_repr(self_id, vm),
@@ -380,7 +381,7 @@ fn instance_call_str_dunder(
     self_id: HeapId,
     dunder: &'static str,
     vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Option<Cow<'static, str>>> {
+) -> RunResult<Option<Value>> {
     let class_id = instance_class(self_id, vm);
     let Some(func) = class_member(class_id, dunder, vm) else {
         return Ok(None);
@@ -396,31 +397,17 @@ fn instance_call_str_dunder(
         ArgValues::Empty
     };
     let result = vm.evaluate_function(dunder, func, args)?;
-    value_into_string(result, dunder, vm).map(Some)
-}
-
-/// Converts a string-dunder return value into an owned string, raising `TypeError`
-/// if it is not a `str`. Consumes (drops) `value`.
-fn value_into_string(
-    value: Value,
-    dunder: &str,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Cow<'static, str>> {
-    let extracted = match &value {
-        Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str().to_owned()),
-            _ => None,
-        },
-        _ => None,
-    };
-    let type_name = value.py_type_name(vm);
-    value.drop_with_heap(vm);
-    match extracted {
-        Some(s) => Ok(Cow::Owned(s)),
-        None => Err(ExcType::type_error(format!(
-            "{dunder} returned non-string (type {type_name})"
-        ))),
+    // CPython requires `__repr__`/`__str__` to return a `str`; reject any other
+    // type with the same TypeError, dropping the offending return value.
+    if result.is_str(vm.heap) {
+        Ok(Some(result))
+    } else {
+        let exc = ExcType::type_error(format!(
+            "{dunder} returned non-string (type {})",
+            result.py_type_name(vm)
+        ));
+        result.drop_with_heap(vm);
+        Err(exc)
     }
 }
 

@@ -199,3 +199,28 @@ try:
     assert False, 'expected mixed-class + to fail'
 except TypeError as exc:
     assert str(exc) == "unsupported operand type(s) for +: 'Foo' and 'Bar'", 'both class names resolved'
+
+
+# === __repr__ / __str__ must return a str ===
+class BadRepr:
+    def __repr__(self):
+        return 42
+
+
+try:
+    repr(BadRepr())
+    assert False, 'expected repr to fail'
+except TypeError as exc:
+    assert str(exc) == '__repr__ returned non-string (type int)', '__repr__ returning non-string'
+
+
+class BadStr:
+    def __str__(self):
+        return 42
+
+
+try:
+    str(BadStr())
+    assert False, 'expected str to fail'
+except TypeError as exc:
+    assert str(exc) == '__str__ returned non-string (type int)', '__str__ returning non-string'

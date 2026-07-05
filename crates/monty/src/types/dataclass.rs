@@ -132,10 +132,13 @@ impl<'h> HeapRead<'h, Dataclass> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
-            // Get attribute name for error message
+            // Build the error message from the field name's repr (a heap `str`
+            // `Value`), dropping that temporary before dropping our own args.
+            let name_repr = name.py_repr(vm)?;
+            defer_drop!(name_repr, vm);
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
-                format!("cannot assign to field {}", name.py_repr(vm)?),
+                format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
             // Drop the values we were given ownership of
             name.drop_with_heap(vm);

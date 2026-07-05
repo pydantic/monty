@@ -394,7 +394,11 @@ impl ExcType {
     /// `KeyError` is always raised rather than a spurious `ValueError`.
     pub(crate) fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
         let key_str = match key.py_str(vm) {
-            Ok(s) => s.into_owned(),
+            Ok(key_value) => {
+                // `key_value` is a heap `str` `Value`; extract its text and drop it.
+                defer_drop!(key_value, vm);
+                key_value.to_str(vm).unwrap_or_default().to_owned()
+            }
             Err(_) => format!("<{}>", key.py_type_name(vm)),
         };
         SimpleException::new_msg(Self::KeyError, key_str).into()
