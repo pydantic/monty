@@ -32,7 +32,7 @@
 
 use std::rc::Rc;
 
-use ahash::AHashMap;
+use ahash::RandomState;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -628,31 +628,70 @@ impl DropWithHeap for ResolvedPattern {
     }
 }
 
-/// Per-run cache of compiled patterns for module-level `re.*` calls, keyed on
-/// `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles once, not
-/// per call. Mirrors CPython's `re._cache`. Not snapshotted (rebuilt on demand).
-#[derive(Default)]
+/// One slot of [`RePatternCache`]: the key hash, the `(pattern, flags)` it was
+/// compiled from (rechecked on a hash hit to rule out collisions), and the
+/// compiled pattern shared with callers.
+type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
+
+/// Slot count of [`RePatternCache`] — power of two so the index modulo is a
+/// mask, sized like CPython's `re._MAXCACHE`.
+const CACHE_CAPACITY: usize = 512;
+
+/// Fixed-size, per-run cache of compiled patterns for module-level `re.*` calls,
+/// keyed on `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles
+/// once, not per call. Direct-mapped with 5-slot linear probing and
+/// LRU-on-collision (jiter's `py_string_cache` design), so retained
+/// compiled-regex memory is hard-bounded by `CACHE_CAPACITY`. Mirrors CPython's
+/// `re._cache`; not snapshotted (rebuilt on demand).
 pub(crate) struct RePatternCache {
-    entries: AHashMap<(String, u16), Rc<RePattern>>,
+    /// `CACHE_CAPACITY` slots — a boxed slice rather than a boxed `[_; N]` array
+    /// to build straight on the heap (no oversized stack array).
+    entries: Box<[ReCacheEntry]>,
+    hash_builder: RandomState,
+}
+
+impl Default for RePatternCache {
+    fn default() -> Self {
+        Self {
+            entries: vec![None; CACHE_CAPACITY].into_boxed_slice(),
+            hash_builder: RandomState::default(),
+        }
+    }
 }
 
 impl RePatternCache {
-    /// Cache size cap. Cleared wholesale on overflow to bound the compiled-regex
-    /// memory (untracked Rust heap) a program can retain via distinct patterns.
-    const MAX_ENTRIES: usize = 128;
-
     /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
     /// on a miss. Compile errors propagate and nothing is cached.
     fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
-        let key = (pattern.to_owned(), flags);
-        if let Some(compiled) = self.entries.get(&key) {
-            return Ok(Rc::clone(compiled));
+        let hash = self.hash_builder.hash_one((pattern, flags));
+        // `hash % CACHE_CAPACITY` is < CACHE_CAPACITY, so it always fits usize.
+        let hash_index = usize::try_from(hash % CACHE_CAPACITY as u64).expect("index < CACHE_CAPACITY");
+
+        // Probe up to 5 contiguous slots for a match, remembering the first
+        // empty slot to fill on a miss.
+        let mut empty_slot = None;
+        for index in hash_index..hash_index + 5 {
+            match self.entries.get(index) {
+                Some(Some((entry_hash, entry_pattern, entry_flags, compiled))) => {
+                    if *entry_hash == hash && *entry_flags == flags && &**entry_pattern == pattern {
+                        return Ok(Rc::clone(compiled));
+                    }
+                }
+                // First empty slot — a miss lands here.
+                Some(None) => {
+                    empty_slot = Some(index);
+                    break;
+                }
+                // Ran past the end of the array.
+                None => break,
+            }
         }
+
+        // Miss: compile, then fill the empty slot, else evict `hash_index`
+        // (LRU-on-collision) when every probed slot was occupied.
         let compiled = Rc::new(RePattern::compile(pattern.to_owned(), flags)?);
-        if self.entries.len() >= Self::MAX_ENTRIES {
-            self.entries.clear();
-        }
-        self.entries.insert(key, Rc::clone(&compiled));
+        let slot = empty_slot.unwrap_or(hash_index);
+        self.entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
         Ok(compiled)
     }
 }
@@ -772,4 +811,53 @@ fn should_escape(c: char) -> bool {
             | '}'
             | '~'
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Counts the occupied slots in the cache.
+    fn occupied(cache: &RePatternCache) -> usize {
+        cache.entries.iter().filter(|e| e.is_some()).count()
+    }
+
+    #[test]
+    fn hit_shares_one_entry() {
+        let mut cache = RePatternCache::default();
+        let first = cache.get_or_compile(r"\s+", 0).unwrap();
+        let second = cache.get_or_compile(r"\s+", 0).unwrap();
+        // A hit returns the *same* compiled pattern, not a recompile.
+        assert!(Rc::ptr_eq(&first, &second));
+        assert_eq!(occupied(&cache), 1);
+    }
+
+    #[test]
+    fn flags_key_the_entry() {
+        let mut cache = RePatternCache::default();
+        let plain = cache.get_or_compile("abc", 0).unwrap();
+        let ignorecase = cache.get_or_compile("abc", IGNORECASE).unwrap();
+        // Same pattern text but different flags are distinct entries.
+        assert!(!Rc::ptr_eq(&plain, &ignorecase));
+        assert_eq!(occupied(&cache), 2);
+    }
+
+    #[test]
+    fn compile_error_caches_nothing() {
+        let mut cache = RePatternCache::default();
+        // Unbalanced parenthesis fails to compile.
+        assert!(cache.get_or_compile("(", 0).is_err());
+        assert_eq!(occupied(&cache), 0);
+    }
+
+    #[test]
+    fn occupancy_is_bounded_by_capacity() {
+        let mut cache = RePatternCache::default();
+        // Far more distinct patterns than slots: LRU-on-collision must keep
+        // the occupied count hard-bounded rather than growing unboundedly.
+        for i in 0..CACHE_CAPACITY * 4 {
+            cache.get_or_compile(&format!("pat{i}"), 0).unwrap();
+        }
+        assert!(occupied(&cache) <= CACHE_CAPACITY);
+    }
 }
