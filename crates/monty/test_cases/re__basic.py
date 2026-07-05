@@ -1,6 +1,9 @@
 # Tests for the re (regular expression) module - basic functionality
 
 import re
+import sys
+
+_monty = 'Monty' in sys.version
 
 # === Constant ===
 assert re.NOFLAG == 0, 're.NOFLAG == 0'
@@ -235,39 +238,103 @@ match1 = p1.search('123')
 match2 = p2.search('123')
 assert match1 != match2, 'matches from different pattern objects are distinct'
 
-# === re.sub() error: missing pattern ===
+# === re.sub() error: missing args are aggregated like a Python def ===
 try:
     re.sub()
     assert False, 're.sub() with no args should raise TypeError'
 except TypeError as e:
-    assert 'pattern' in str(e).lower(), 're.sub missing pattern error mentions pattern'
+    assert str(e) == "sub() missing 3 required positional arguments: 'pattern', 'repl', and 'string'", (
+        f're.sub missing all: {e}'
+    )
 
-# === re.sub() error: missing repl ===
 try:
     re.sub(r'\d+')
     assert False, 're.sub(pattern) should raise TypeError'
 except TypeError as e:
-    assert 'repl' in str(e).lower(), 're.sub missing repl error mentions repl'
+    assert str(e) == "sub() missing 2 required positional arguments: 'repl' and 'string'", f're.sub missing two: {e}'
 
-# === re.sub() error: missing string ===
 try:
     re.sub(r'\d+', 'X')
     assert False, 're.sub(pattern, repl) should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 're.sub missing string error mentions string'
+    assert str(e) == "sub() missing 1 required positional argument: 'string'", f're.sub missing string: {e}'
+
+# === re.sub() error: too many positional args (range wording) ===
+try:
+    re.sub(r'\d+', 'X', 'a1', 0, 0, 'extra')
+    assert False, 're.sub with 6 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'sub() takes from 3 to 5 positional arguments but 6 were given', f're.sub too many: {e}'
 
 # === re.sub() error: count is not an integer ===
 try:
     re.sub(r'\d+', 'X', 'a1b2', 1.5)
     assert False, 're.sub with float count should raise TypeError'
 except TypeError as e:
-    assert "'float' object cannot be interpreted as an integer" in str(e), 're.sub float count error'
+    assert str(e) == "'float' object cannot be interpreted as an integer", f're.sub float count error: {e}'
 
 try:
     re.sub(r'\d+', 'X', 'a1b2', 'one')
     assert False, 're.sub with string count should raise TypeError'
 except TypeError as e:
-    assert "'str' object cannot be interpreted as an integer" in str(e), 're.sub string count error'
+    assert str(e) == "'str' object cannot be interpreted as an integer", f're.sub string count error: {e}'
+
+# === re.sub() count wider than 32 bits still caps (never truncates to 0) ===
+assert re.sub(r'\d', 'X', '1a2', 2**32) == 'XaX', 're.sub huge count replaces all matches'
+
+# === re.sub() negative count returns the subject unchanged ===
+assert re.sub(r'\d', 'X', '1a2', -1) == '1a2', 're.sub negative count returns input unchanged'
+# ... but the pattern still compiles and the subject is still type-checked
+try:
+    re.sub('(unclosed', 'X', '1a2', -1)
+    assert False, 're.sub with bad pattern and negative count should raise'
+except re.PatternError:
+    pass
+try:
+    re.sub(r'\d', 'X', 123, -1)
+    assert False, 're.sub with int subject and negative count should raise TypeError'
+except TypeError as e:
+    assert str(e) == "expected string or bytes-like object, got 'int'", f're.sub negative count subject: {e}'
+# ... and a non-str repl is rejected too — CPython processes the replacement
+# template before its match loop, even when zero substitutions will run
+# (messages differ: callable replacement is a Monty feature gap, see
+# limitations/re.md)
+try:
+    re.sub(r'\d', 123, '1a2', -1)
+    assert False, 're.sub with int repl and negative count should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub neg-count repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, int found', f're.sub neg-count repl: {e}'
+# ... with the repl error winning over a bad subject
+try:
+    re.sub(r'\d', None, 456, -1)
+    assert False, 're.sub with bad repl and bad subject should raise for the repl'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub repl-first: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, NoneType found', f're.sub repl-first: {e}'
+# Pattern.sub applies the same order
+try:
+    re.compile(r'\d').sub(123, '1a2', -1)
+    assert False, 'Pattern.sub with int repl and negative count should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f'Pattern.sub neg-count repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, int found', f'Pattern.sub neg-count repl: {e}'
+
+# === re.sub() non-str repl (positive-count path) ===
+try:
+    re.sub(r'\d', None, '1a2')
+    assert False, 're.sub with None repl should raise TypeError'
+except TypeError as e:
+    if _monty:
+        assert str(e) == 'callable replacement is not yet supported in re.sub()', f're.sub None repl: {e}'
+    else:
+        assert str(e) == 'decoding to str: need a bytes-like object, NoneType found', f're.sub None repl: {e}'
 
 # === Pattern.sub() error: missing repl ===
 pattern = re.compile(r'\d+')
@@ -310,28 +377,128 @@ try:
     re.search(123, 'hello')
     assert False, 're.search with int pattern should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 're.search non-string pattern error'
+    assert str(e) == 'first argument must be string or compiled pattern', f're.search int pattern: {e}'
 
 # === re.search() error: string is not a string ===
 try:
     re.search(r'\d+', 123)
     assert False, 're.search with int string should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 're.search non-string string error'
+    assert str(e) == "expected string or bytes-like object, got 'int'", f're.search int string: {e}'
 
 # === re.match() error: pattern is not a string ===
 try:
     re.match(None, 'hello')
     assert False, 're.match with None pattern should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 're.match None pattern error'
+    assert str(e) == 'first argument must be string or compiled pattern', f're.match None pattern: {e}'
 
 # === re.fullmatch() error: string is not a string ===
 try:
     re.fullmatch(r'\d+', None)
     assert False, 're.fullmatch with None string should raise TypeError'
 except TypeError as e:
-    assert 'string' in str(e).lower(), 're.fullmatch None string error'
+    assert str(e) == "expected string or bytes-like object, got 'NoneType'", f're.fullmatch None string: {e}'
+
+# === re.search() error: flags is not an integer ===
+try:
+    re.search(r'\d+', 'a1', 'bad')
+    assert False, 're.search with str flags should raise TypeError'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for &: 'str' and 'int'", f're.search str flags: {e}'
+
+# === re.escape() error: pattern is not a string ===
+try:
+    re.escape(123)
+    assert False, 're.escape with int should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding to str: need a bytes-like object, int found', f're.escape int: {e}'
+
+# === re.search() error: arity checked before pattern type ===
+# a lone non-string pattern must report the missing 'string' argument,
+# not the pattern type error — signature binding never type-checks
+try:
+    re.search(123)
+    assert False, 're.search with a single non-string arg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "search() missing 1 required positional argument: 'string'", f're.search(123): {e}'
+
+try:
+    re.findall(123)
+    assert False, 're.findall with a single non-string arg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "findall() missing 1 required positional argument: 'string'", f're.findall(123): {e}'
+
+# === re.search() error: too many args checked before pattern type ===
+try:
+    re.search(123, 'x', 0, 'extra')
+    assert False, 're.search with 4 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'search() takes from 2 to 3 positional arguments but 4 were given', f're.search 4 args: {e}'
+
+# === re.escape() arity (single fixed positional) ===
+try:
+    re.escape('a', 'b')
+    assert False, 're.escape with 2 args should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'escape() takes 1 positional argument but 2 were given', f're.escape 2 args: {e}'
+
+# === keyword arguments are accepted like CPython's pure-Python functions ===
+assert re.search(pattern='h', string='hello') is not None, 're.search accepts kwargs'
+assert re.search(string='hello', pattern='h') is not None, 're.search kwargs order-independent'
+assert re.match(pattern='h', string='hi') is not None, 're.match accepts kwargs'
+assert re.fullmatch(pattern='hi', string='hi') is not None, 're.fullmatch accepts kwargs'
+assert re.findall(string='a b', pattern=r'\w+') == ['a', 'b'], 're.findall accepts kwargs'
+assert len(list(re.finditer(pattern='a', string='aa'))) == 2, 're.finditer accepts kwargs'
+assert re.sub(pattern='a', repl='b', string='aaa', count=1, flags=0) == 'baa', 're.sub accepts kwargs'
+assert re.split(pattern=' ', string='a b c', maxsplit=1) == ['a', 'b c'], 're.split accepts kwargs'
+assert re.compile(pattern='h', flags=re.I).search('H') is not None, 're.compile accepts kwargs'
+assert re.escape(pattern='a.b') == 'a\\.b', 're.escape accepts kwargs'
+assert re.search('h', 'hello', flags=re.I) is not None, 're.search flags kwarg with positional args'
+
+try:
+    re.search('h', 'hello', bogus=1)
+    assert False, 're.search with unknown kwarg should raise TypeError'
+except TypeError as e:
+    assert str(e) == "search() got an unexpected keyword argument 'bogus'", f're.search unknown kwarg: {e}'
+
+try:
+    re.search('h', string='hello', pattern='x')
+    assert False, 're.search with duplicate pattern should raise TypeError'
+except TypeError as e:
+    assert str(e) == "search() got multiple values for argument 'pattern'", f're.search duplicate: {e}'
+
+# === compiled patterns are accepted by the module-level functions ===
+p = re.compile(r'(\w+)')
+assert re.compile(p) is p, 're.compile passes a compiled pattern through unchanged'
+assert re.search(p, 'hi world').group(0) == 'hi', 're.search accepts a compiled pattern'
+assert re.match(p, 'hi') is not None, 're.match accepts a compiled pattern'
+assert re.fullmatch(p, 'hi') is not None, 're.fullmatch accepts a compiled pattern'
+assert re.findall(p, 'a b') == ['a', 'b'], 're.findall accepts a compiled pattern'
+assert len(list(re.finditer(p, 'a b'))) == 2, 're.finditer accepts a compiled pattern'
+assert re.sub(p, 'X', 'a b') == 'X X', 're.sub accepts a compiled pattern'
+assert re.split(re.compile(' '), 'a b') == ['a', 'b'], 're.split accepts a compiled pattern'
+
+# ... but combining a compiled pattern with flags raises ValueError
+try:
+    re.compile(p, re.I)
+    assert False, 're.compile with compiled pattern and flags should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'cannot process flags argument with a compiled pattern', f're.compile flags+compiled: {e}'
+
+try:
+    re.search(p, 'x', re.I)
+    assert False, 're.search with compiled pattern and flags should raise ValueError'
+except ValueError as e:
+    assert str(e) == 'cannot process flags argument with a compiled pattern', f're.search flags+compiled: {e}'
+
+# === re.split() maxsplit semantics and type errors ===
+assert re.split(' ', 'a b c', -1) == ['a b c'], 're.split negative maxsplit does not split'
+try:
+    re.split(' ', 'a b c', 'x')
+    assert False, 're.split with str maxsplit should raise TypeError'
+except TypeError as e:
+    assert str(e) == "'str' object cannot be interpreted as an integer", f're.split str maxsplit: {e}'
 
 # === Object basic ===
 assert bool(re.compile(r'\d+'))

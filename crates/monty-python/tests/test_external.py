@@ -9,6 +9,7 @@ from conftest import RunMonty
 from inline_snapshot import snapshot
 
 import pydantic_monty
+from pydantic_monty import MontySession
 
 
 def test_external_function_no_args(monty_run: RunMonty):
@@ -17,7 +18,7 @@ def test_external_function_no_args(monty_run: RunMonty):
         assert kwargs == snapshot({})
         return 'called'
 
-    assert monty_run('noop()', external_functions={'noop': noop}) == snapshot('called')
+    assert monty_run('noop()', external_lookup={'noop': noop}) == snapshot('called')
 
 
 def test_external_function_positional_args(monty_run: RunMonty):
@@ -26,7 +27,7 @@ def test_external_function_positional_args(monty_run: RunMonty):
         assert kwargs == snapshot({})
         return 'ok'
 
-    assert monty_run('func(1, 2, 3)', external_functions={'func': func}) == snapshot('ok')
+    assert monty_run('func(1, 2, 3)', external_lookup={'func': func}) == snapshot('ok')
 
 
 def test_external_function_kwargs_only(monty_run: RunMonty):
@@ -35,7 +36,7 @@ def test_external_function_kwargs_only(monty_run: RunMonty):
         assert kwargs == snapshot({'a': 1, 'b': 'two'})
         return 'ok'
 
-    assert monty_run('func(a=1, b="two")', external_functions={'func': func}) == snapshot('ok')
+    assert monty_run('func(a=1, b="two")', external_lookup={'func': func}) == snapshot('ok')
 
 
 def test_external_function_mixed_args_kwargs(monty_run: RunMonty):
@@ -44,7 +45,7 @@ def test_external_function_mixed_args_kwargs(monty_run: RunMonty):
         assert kwargs == snapshot({'x': 'hello', 'y': True})
         return 'ok'
 
-    assert monty_run('func(1, 2, x="hello", y=True)', external_functions={'func': func}) == snapshot('ok')
+    assert monty_run('func(1, 2, x="hello", y=True)', external_lookup={'func': func}) == snapshot('ok')
 
 
 def test_external_function_complex_types(monty_run: RunMonty):
@@ -53,7 +54,7 @@ def test_external_function_complex_types(monty_run: RunMonty):
         assert kwargs == snapshot({})
         return 'ok'
 
-    assert monty_run('func([1, 2], {"key": "value"})', external_functions={'func': func}) == snapshot('ok')
+    assert monty_run('func([1, 2], {"key": "value"})', external_lookup={'func': func}) == snapshot('ok')
 
 
 def test_external_function_type_objects(monty_run: RunMonty):
@@ -93,7 +94,7 @@ func(
         assert kwargs == {}
         return 'ok'
 
-    assert monty_run(code, external_functions={'func': func}) == snapshot('ok')
+    assert monty_run(code, external_lookup={'func': func}) == snapshot('ok')
 
 
 def test_external_function_returns_instances(monty_run: RunMonty):
@@ -113,7 +114,7 @@ results
         'get_tz': lambda: datetime.timezone(datetime.timedelta(hours=5)),
         'get_path': lambda: pathlib.PurePosixPath('/a/b'),
     }
-    assert monty_run(code, external_functions=fns) == snapshot(
+    assert monty_run(code, external_lookup=fns) == snapshot(
         [
             ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5)'),
             ('datetime.datetime', 'datetime.datetime(2021, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)'),
@@ -145,7 +146,7 @@ except TypeError as e:
     result = str(e)
 result
 """
-    assert monty_run(code, external_functions={'get_thing': factory}) == message
+    assert monty_run(code, external_lookup={'get_thing': factory}) == message
 
 
 def test_external_function_returns_none(monty_run: RunMonty):
@@ -153,18 +154,18 @@ def test_external_function_returns_none(monty_run: RunMonty):
         assert args == snapshot(())
         assert kwargs == snapshot({})
 
-    assert monty_run('do_nothing()', external_functions={'do_nothing': do_nothing}) is None
+    assert monty_run('do_nothing()', external_lookup={'do_nothing': do_nothing}) is None
 
 
 def test_external_function_returns_complex_type(monty_run: RunMonty):
     def get_data(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {'a': [1, 2, 3], 'b': {'nested': True}}
 
-    result = monty_run('get_data()', external_functions={'get_data': get_data})
+    result = monty_run('get_data()', external_lookup={'get_data': get_data})
     assert result == snapshot({'a': [1, 2, 3], 'b': {'nested': True}})
 
 
-def test_multiple_external_functions(monty_run: RunMonty):
+def test_multiple_external_lookup(monty_run: RunMonty):
     def add(*args: Any, **kwargs: Any) -> int:
         assert args == snapshot((1, 2))
         assert kwargs == snapshot({})
@@ -175,7 +176,7 @@ def test_multiple_external_functions(monty_run: RunMonty):
         assert kwargs == snapshot({})
         return args[0] * args[1]
 
-    result = monty_run('add(1, 2) + mul(3, 4)', external_functions={'add': add, 'mul': mul})
+    result = monty_run('add(1, 2) + mul(3, 4)', external_lookup={'add': add, 'mul': mul})
     assert result == snapshot(15)  # 3 + 12
 
 
@@ -189,7 +190,7 @@ def test_external_function_called_multiple_times(monty_run: RunMonty):
         call_count += 1
         return call_count
 
-    result = monty_run('counter() + counter() + counter()', external_functions={'counter': counter})
+    result = monty_run('counter() + counter() + counter()', external_lookup={'counter': counter})
     assert result == snapshot(6)  # 1 + 2 + 3
     assert call_count == snapshot(3)
 
@@ -200,11 +201,11 @@ def test_external_function_with_input(monty_run: RunMonty):
         assert kwargs == snapshot({})
         return args[0] * 10
 
-    assert monty_run('process(x)', inputs={'x': 5}, external_functions={'process': process}) == snapshot(50)
+    assert monty_run('process(x)', inputs={'x': 5}, external_lookup={'process': process}) == snapshot(50)
 
 
 def test_external_function_not_provided_raises_name_error(monty_run: RunMonty):
-    """Calling an unknown function without external_functions raises NameError."""
+    """Calling an unknown function without external_lookup raises NameError."""
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run('missing()')
     inner = exc_info.value.exception()
@@ -227,20 +228,20 @@ def test_external_function_raises_exception(monty_run: RunMonty):
         raise ValueError('intentional error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('fail()', external_functions={'fail': fail})
+        monty_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('intentional error')
 
 
 def test_external_function_wrong_name_raises(monty_run: RunMonty):
-    """Test that calling a function not in external_functions raises NameError."""
+    """Test that calling a function not in external_lookup raises NameError."""
 
     def bar(*args: Any, **kwargs: Any) -> int:
         return 1
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('foo()', external_functions={'bar': bar})
+        monty_run('foo()', external_lookup={'bar': bar})
     inner = exc_info.value.exception()
     assert type(inner) is NameError
     assert str(inner) == snapshot("name 'foo' is not defined")
@@ -259,7 +260,7 @@ caught
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('caught error')
 
-    result = monty_run(code, external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == snapshot(True)
 
 
@@ -270,7 +271,7 @@ def test_external_function_exception_type_preserved(monty_run: RunMonty):
         raise TypeError('type error message')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('fail()', external_functions={'fail': fail_type_error})
+        monty_run('fail()', external_lookup={'fail': fail_type_error})
     inner = exc_info.value.exception()
     assert isinstance(inner, TypeError)
     assert inner.args[0] == snapshot('type error message')
@@ -288,7 +289,7 @@ def test_external_function_unsupported_operation_preserves_type(monty_run: RunMo
         raise io.UnsupportedOperation('not readable')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('fail()', external_functions={'fail': fail})
+        monty_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert type(inner) is io.UnsupportedOperation
     assert isinstance(inner, io.UnsupportedOperation)
@@ -313,7 +314,7 @@ caught
     def fail(*args: Any, **kwargs: Any) -> None:
         raise io.UnsupportedOperation('boom')
 
-    assert monty_run(code, external_functions={'fail': fail}) == parent
+    assert monty_run(code, external_lookup={'fail': fail}) == parent
 
 
 @pytest.mark.parametrize(
@@ -348,7 +349,7 @@ def test_external_function_exception_hierarchy(
         raise exception_class('test message')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('fail()', external_functions={'fail': fail})
+        monty_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, exception_class)
 
@@ -388,7 +389,7 @@ caught
         raise exception_class('test')
 
     # Child exception should be caught by parent handler (which comes first)
-    result = monty_run(code, external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == 'parent'
 
 
@@ -418,7 +419,7 @@ caught
     def fail(*args: Any, **kwargs: Any) -> None:
         raise exception_class('test')
 
-    result = monty_run(code, external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == expected_result
 
 
@@ -429,7 +430,7 @@ def test_external_function_exception_in_expression(monty_run: RunMonty):
         raise RuntimeError('mid-expression error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('1 + fail() + 2', external_functions={'fail': fail})
+        monty_run('1 + fail() + 2', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, RuntimeError)
     assert inner.args[0] == snapshot('mid-expression error')
@@ -450,7 +451,7 @@ a + b
         raise ValueError('second call fails')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run(code, external_functions={'success': success, 'fail': fail})
+        monty_run(code, external_lookup={'success': success, 'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert inner.args[0] == snapshot('second call fails')
@@ -472,7 +473,7 @@ finally_ran
     def fail(*args: Any, **kwargs: Any) -> None:
         raise ValueError('error')
 
-    result = monty_run(code, external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == snapshot(True)
 
 
@@ -488,7 +489,7 @@ except ValueError:
     result = 'caught'
 result
 """
-    assert monty_run(code, external_functions={'get_str': lambda: '\ud83d'}) == snapshot('caught')
+    assert monty_run(code, external_lookup={'get_str': lambda: '\ud83d'}) == snapshot('caught')
 
 
 def test_external_function_return_unconvertible_catchable_inside_monty(monty_run: RunMonty):
@@ -502,4 +503,110 @@ except TypeError:
     result = 'caught'
 result
 """
-    assert monty_run(code, external_functions={'get_thing': lambda: object()}) == snapshot('caught')
+    assert monty_run(code, external_lookup={'get_thing': lambda: object()}) == snapshot('caught')
+
+
+# =============================================================================
+# external_lookup value resolution (non-callable entries)
+# =============================================================================
+
+
+def test_external_lookup_value(monty_run: RunMonty):
+    """A non-callable entry resolves the bare name to that converted value."""
+    assert monty_run('x + 1', external_lookup={'x': 41}) == snapshot(42)
+
+
+def test_external_lookup_value_none(monty_run: RunMonty):
+    """A `None` entry is a present name resolving to `None`, not a `NameError`
+    (pins consistency with the JS bindings' `null`/`undefined` entries)."""
+    assert monty_run('x is None', external_lookup={'x': None}) == snapshot(True)
+
+
+def test_external_lookup_value_container(monty_run: RunMonty):
+    """Container values convert and round-trip through a name lookup."""
+    assert monty_run('data["a"] + data["b"]', external_lookup={'data': {'a': 1, 'b': 2}}) == snapshot(3)
+
+
+def test_external_lookup_mixed_function_and_value(monty_run: RunMonty):
+    """One dict can carry both a callable (function proxy) and a plain value."""
+
+    def double(x: int) -> int:
+        return x * 2
+
+    assert monty_run('double(n)', external_lookup={'double': double, 'n': 21}) == snapshot(42)
+
+
+def test_external_lookup_value_repeated_reference(monty_run: RunMonty):
+    """Referencing the same lazily-resolved name twice in one feed works. The
+    worker caches the resolved value, but dict reads are not observable
+    host-side (`get_item` bypasses subclass hooks), so this only pins the
+    result; the JS test observes the single read via a getter."""
+    assert monty_run('x + x', external_lookup={'x': 21}) == snapshot(42)
+
+
+def test_external_lookup_absent_name_raises(monty_run: RunMonty):
+    """A name absent from external_lookup raises NameError (not the value path)."""
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('missing', external_lookup={'present': 1})
+    inner = exc_info.value.exception()
+    assert type(inner) is NameError
+    assert str(inner) == snapshot("name 'missing' is not defined")
+
+
+@pytest.mark.parametrize(
+    'value, message',
+    [
+        (object(), snapshot('Cannot convert builtins.object to Monty value')),
+        (re.compile('a'), snapshot('Cannot convert re.Pattern to Monty value')),
+        (io.StringIO('x'), snapshot('Cannot convert _io.StringIO to Monty value')),
+    ],
+)
+def test_external_lookup_value_unconvertible_surfaces_error(monty_run: RunMonty, value: Any, message: str):
+    """A non-callable external_lookup *value* of a type Monty cannot represent
+    rejects the turn host-side. Because external_lookup may hold untrusted
+    values, the conversion failure surfaces as a MontyConversionError (a
+    MontyError), never a misleading NameError."""
+    with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
+        monty_run('x', external_lookup={'x': value})
+    assert isinstance(exc_info.value, pydantic_monty.MontyError)
+    assert str(exc_info.value) == message
+    assert isinstance(exc_info.value.exception(), TypeError)
+
+
+def test_external_lookup_type_object_round_trips(monty_run: RunMonty):
+    """A modeled type object resolves a bare name to the Monty type (so
+    `isinstance` works), rather than degrading to a host-function proxy just
+    because a type is callable."""
+    assert monty_run('isinstance(5, IntType)', external_lookup={'IntType': int}) == snapshot(True)
+    assert monty_run('isinstance(5, StrType)', external_lookup={'StrType': str}) == snapshot(False)
+
+
+def test_external_lookup_stale_proxy_not_callable(session: MontySession):
+    """A function proxy cached in one feed dispatches by name against the
+    *current* dict on each call: with the entry replaced by a plain value,
+    calling it raises the TypeError CPython would for calling that value (the
+    JS bindings synthesize the same error)."""
+
+    def double(x: int) -> int:
+        return x * 2
+
+    session.feed_run('f = double', external_lookup={'double': double})
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        session.feed_run('f(2)', external_lookup={'double': 5})
+    inner = exc_info.value.exception()
+    assert type(inner) is TypeError
+    assert str(inner) == snapshot("'int' object is not callable")
+
+
+def test_external_lookup_name_conversion_error_discards_session(session: MontySession):
+    """A conversion failure while resolving a bare name discards the suspended
+    worker rather than wedging it: the feed raises, and a follow-up feed on the
+    same session fails fast instead of hanging on a dangling name-lookup
+    suspension the aborted feed never answered."""
+    with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
+        session.feed_run('x', external_lookup={'x': object()})
+    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
+    # the worker was discarded, so the session can no longer be fed
+    with pytest.raises(RuntimeError) as exc_info2:
+        session.feed_run('1 + 1')
+    assert str(exc_info2.value) == snapshot('this checkout has already been finished')

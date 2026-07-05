@@ -7,7 +7,7 @@ use crate::{
     heap::{HeapData, HeapGuard, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
-    types::{Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
+    types::{Dict, List, Set, Slice, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
     value::{VALUE_SIZE, Value},
 };
 
@@ -39,7 +39,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Use into_iter to consume items by value, avoiding clone and proper ownership transfer
         let mut iter = items.into_iter();
         while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
-            dict.set(key, value, self)?;
+            // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
+            // value, which must be dropped or its refcount leaks.
+            if let Some(old_value) = dict.set(key, value, self)? {
+                old_value.drop_with_heap(self);
+            }
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
         self.push(Value::Ref(heap_id));
@@ -117,8 +121,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                     items
                 }
                 _ => {
-                    let type_ = iterable.py_type(this);
-                    return Err(ExcType::type_error_value_after_star(type_));
+                    let type_ = iterable.py_type_name(this);
+                    return Err(ExcType::type_error_value_after_star(&type_));
                 }
             },
             Value::InternString(id) => {
@@ -131,8 +135,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 items
             }
             _ => {
-                let type_ = iterable.py_type(this);
-                return Err(ExcType::type_error_value_after_star(type_));
+                let type_ = iterable.py_type_name(this);
+                return Err(ExcType::type_error_value_after_star(&type_));
             }
         };
 
@@ -207,7 +211,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             "<unknown>".to_string()
         } else {
             let method = self.interns.get_str(StringId::from_index(func_name_id)).to_string();
-            let recv_type = self.stack[self.stack.len() - 4].py_type(self);
+            let recv_type = self.stack[self.stack.len() - 4].py_type_name(self);
             format!("{recv_type}.{method}")
         };
         self.dict_merge_inner(&func_name)
@@ -231,11 +235,11 @@ impl<T: ResourceTracker> VM<'_, T> {
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                     .collect()
             } else {
-                let type_name = mapping.py_type(this).to_string();
+                let type_name = mapping.py_type_name(this).to_string();
                 return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
             }
         } else {
-            let type_name = mapping.py_type(this).to_string();
+            let type_name = mapping.py_type_name(this).to_string();
             return Err(ExcType::type_error_kwargs_not_mapping(func_name, &type_name));
         };
 
@@ -316,12 +320,12 @@ impl<T: ResourceTracker> VM<'_, T> {
                     .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
                     .collect()
             } else {
-                let type_ = mapping.py_type(this);
-                return Err(ExcType::type_error_not_mapping(type_));
+                let type_ = mapping.py_type_name(this);
+                return Err(ExcType::type_error_not_mapping(&type_));
             }
         } else {
-            let type_ = mapping.py_type(this);
-            return Err(ExcType::type_error_not_mapping(type_));
+            let type_ = mapping.py_type_name(this);
+            return Err(ExcType::type_error_not_mapping(&type_));
         };
 
         // The target dict sits at `depth` positions below TOS (which is now gone after pop)
@@ -380,8 +384,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                     items
                 }
                 _ => {
-                    let type_ = iterable.py_type(this);
-                    return Err(ExcType::type_error_not_iterable(type_));
+                    let type_ = iterable.py_type_name(this);
+                    return Err(ExcType::type_error_not_iterable(&type_));
                 }
             },
             Value::InternString(id) => {
@@ -394,8 +398,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 items
             }
             _ => {
-                let type_ = iterable.py_type(this);
-                return Err(ExcType::type_error_not_iterable(type_));
+                let type_ = iterable.py_type_name(this);
+                return Err(ExcType::type_error_not_iterable(&type_));
             }
         };
 
@@ -574,15 +578,15 @@ impl<T: ResourceTracker> VM<'_, T> {
                         return Ok(());
                     }
                     _ => {
-                        let type_name = value.py_type(this);
-                        return Err(unpack_type_error(type_name));
+                        let type_name = value.py_type_name(this);
+                        return Err(unpack_type_error(&type_name));
                     }
                 }
             }
             // Non-iterable types
             _ => {
-                let type_name = value.py_type(this);
-                return Err(unpack_type_error(type_name));
+                let type_name = value.py_type_name(this);
+                return Err(unpack_type_error(&type_name));
             }
         };
 
@@ -653,14 +657,14 @@ impl<T: ResourceTracker> VM<'_, T> {
                         items
                     }
                     _ => {
-                        let type_name = value.py_type(this);
-                        return Err(unpack_type_error(type_name));
+                        let type_name = value.py_type_name(this);
+                        return Err(unpack_type_error(&type_name));
                     }
                 }
             }
             _ => {
-                let type_name = value.py_type(this);
-                return Err(unpack_type_error(type_name));
+                let type_name = value.py_type_name(this);
+                return Err(unpack_type_error(&type_name));
             }
         };
 
@@ -726,7 +730,7 @@ fn unpack_size_error(expected: usize, actual: usize) -> RunError {
 }
 
 /// Creates a TypeError for attempting to unpack a non-iterable type.
-fn unpack_type_error(type_name: Type) -> RunError {
+fn unpack_type_error(type_name: &str) -> RunError {
     SimpleException::new_msg(
         ExcType::TypeError,
         format!("cannot unpack non-iterable {type_name} object"),

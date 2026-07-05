@@ -117,7 +117,7 @@ x
 
         def run() -> Any:
             with pool.checkout() as session:
-                return session.feed_run(code, external_functions={'double': double})
+                return session.feed_run(code, external_lookup={'double': double})
 
         start = time.perf_counter()
         assert run() == 300_000

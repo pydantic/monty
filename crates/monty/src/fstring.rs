@@ -720,8 +720,9 @@ pub fn format_with_spec(
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!(
-                "Unknown format code '{}' for object of type '{value_type}'",
-                c.as_char()
+                "Unknown format code '{}' for object of type '{}'",
+                c.as_char(),
+                value_type.name(vm.heap, vm.interns)
             ),
         )
         .into());
@@ -773,7 +774,7 @@ pub fn format_with_spec(
     if let Value::Ref(id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
-        return format_long_int(li, value_type, spec, vm.heap.tracker());
+        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, vm.heap.tracker());
     }
 
     match (value, spec.type_char) {
@@ -816,8 +817,9 @@ pub fn format_with_spec(
         (_, Some(c)) => Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!(
-                "Unknown format code '{}' for object of type '{value_type}'",
-                c.as_char()
+                "Unknown format code '{}' for object of type '{}'",
+                c.as_char(),
+                value_type.name(vm.heap, vm.interns)
             ),
         )
         .into()),
@@ -1310,7 +1312,7 @@ pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSp
 /// up front against `tracker`.
 fn format_long_int(
     li: &LongInt,
-    value_type: Type,
+    value_type: &str,
     spec: &ParsedFormatSpec,
     tracker: &impl ResourceTracker,
 ) -> Result<String, RunError> {

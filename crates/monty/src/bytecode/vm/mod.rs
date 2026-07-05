@@ -362,6 +362,15 @@ pub struct CallFrame<'code> {
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
     /// and return to the caller. Supports `evaluate_function`.
     should_return: bool,
+
+    /// Whether this frame is a class `__init__` running for `Foo(...)`.
+    ///
+    /// When `true`, the `ReturnValue` handler discards the frame's return value
+    /// (`__init__` returns `None`) and leaves the instance — pushed onto the
+    /// caller's operand stack before this frame was created — as the result of the
+    /// construction. Threaded through serialization (`SerializedFrame`) so a
+    /// suspended initializer resumes correctly.
+    is_initializer: bool,
 }
 
 impl<'code> CallFrame<'code> {
@@ -379,6 +388,7 @@ impl<'code> CallFrame<'code> {
             function_id: None,
             call_position: None,
             should_return: false,
+            is_initializer: false,
         }
     }
 
@@ -407,6 +417,7 @@ impl<'code> CallFrame<'code> {
             function_id: Some(function_id),
             call_position,
             should_return: false,
+            is_initializer: false,
         }
     }
 }
@@ -538,6 +549,15 @@ pub struct SerializedFrame {
 
     /// Call site position (for tracebacks).
     call_position: Option<CodeRange>,
+
+    /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
+    ///
+    /// Unlike `should_return`, an initializer frame can legitimately be live
+    /// across a suspend (an `__init__` that calls an external/OS function), so it
+    /// must round-trip — otherwise the resumed frame would push `__init__`'s
+    /// `None` instead of leaving the instance on the stack.
+    #[serde(default)]
+    is_initializer: bool,
 }
 
 impl CallFrame<'_> {
@@ -554,6 +574,7 @@ impl CallFrame<'_> {
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base,
             call_position: self.call_position,
+            is_initializer: self.is_initializer,
         }
     }
 }
@@ -767,6 +788,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     function_id: sf.function_id,
                     call_position: sf.call_position,
                     should_return: false,
+                    is_initializer: sf.is_initializer,
                 }
             })
             .collect();
@@ -1067,10 +1089,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Comparison Operations
                 Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
                 Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
-                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_lt)),
-                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_le)),
-                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_gt)),
-                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(Ordering::is_ge)),
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord("<", Ordering::is_lt)),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord("<=", Ordering::is_le)),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(">", Ordering::is_gt)),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(">=", Ordering::is_ge)),
                 Opcode::CompareIs => self.compare_is(false),
                 Opcode::CompareIsNot => self.compare_is(true),
                 Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
@@ -1127,15 +1149,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 }
                             }
                             _ => {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                             }
                         },
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                         }
                     }
                 }
@@ -1150,15 +1172,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 // LongInt - return as-is (value already has correct refcount)
                                 self.push(value);
                             } else {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                         }
                     }
                 }
@@ -1178,15 +1200,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
-                                let value_type = value.py_type(self);
+                                let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
-                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                                catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                             }
                         }
                         _ => {
-                            let value_type = value.py_type(self);
+                            let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);
-                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", value_type));
+                            catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                         }
                     }
                 }
@@ -1639,13 +1661,48 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         }
                         continue;
                     }
-                    // Pop current frame and push return value
-                    if self.pop_frame() {
+                    // Read the initializer flag before popping the frame.
+                    let is_init = self.current_frame().is_initializer;
+                    // Pop current frame; `stop` requests returning to the host
+                    // (e.g. `evaluate_function`).
+                    let stop = self.pop_frame();
+                    if is_init {
+                        if !matches!(value, Value::None) {
+                            // CPython raises at the `Foo(...)` call site: the
+                            // initializer frame is already popped, so the traceback
+                            // matches (no `__init__` frame).
+                            let type_name = value.py_type_name(self);
+                            value.drop_with_heap(self);
+                            let err = ExcType::type_error_init_return(type_name);
+                            if stop {
+                                // The initializer was driven by `evaluate_function`
+                                // and its frame boundary is already popped —
+                                // propagate directly rather than unwinding into
+                                // frames that must not observe this error. The
+                                // pending instance left on the operand stack is
+                                // reclaimed by the eventual `handle_exception`
+                                // stack drain (or final teardown).
+                                return Err(err);
+                            }
+                            catch_sync!(self, cached_frame, err);
+                            continue;
+                        }
+                        // `__init__` returned None — discard it. The instance was
+                        // pushed onto the caller's stack before this frame ran and
+                        // is the real result of `Foo(...)`.
+                        value.drop_with_heap(self);
+                        if stop {
+                            let instance = self.pop();
+                            return Ok(FrameExit::Return(instance));
+                        }
+                        // Instance already on the caller's stack — push nothing.
+                    } else if stop {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
                         return Ok(FrameExit::Return(value));
+                    } else {
+                        self.push(value);
                     }
-                    self.push(value);
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
                 }
@@ -2113,7 +2170,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         // Check for undefined value — raise appropriate error or yield to host
         if matches!(value, Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            let name = self.global_name(slot);
 
             let Some(name_id) = name else {
                 // No name available — raise NameError directly
@@ -2138,6 +2195,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
     }
 
+    /// Returns the interned name of a module-level global at `slot`, if known.
+    ///
+    /// Returns `None` if no module code is attached (test harness use of
+    /// `VM::new` without `run_module`) or if the slot is past the recorded
+    /// name table.
+    fn global_name(&self, slot: u16) -> Option<StringId> {
+        self.module_code.and_then(|c| c.local_name(slot))
+    }
+
     /// Pops the top of stack and stores it in a global variable.
     ///
     /// Reassigning a reserved module dunder (see [`RESERVED_MODULE_DUNDERS`]) is
@@ -2156,7 +2222,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // TODO: the `Undefined` branch is currently unreachable from Python source,
         // needs support for the `del` statement.
         if matches!(self.globals[slot as usize], Value::Undefined) {
-            let name = self.current_frame().code.local_name(slot);
+            let name = self.global_name(slot);
             return Err(self.name_error(slot, name));
         }
         let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);

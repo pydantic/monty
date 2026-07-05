@@ -211,6 +211,7 @@ export const PYTHON_EXC_NAMES: ReadonlySet<string> = new Set([
   'UnboundLocalError',
   'ValueError',
   'UnicodeDecodeError',
+  'UnicodeEncodeError',
   'json.JSONDecodeError',
   'ImportError',
   'ModuleNotFoundError',
@@ -239,4 +240,79 @@ export function montyErrorFromNative(exc: NativeException): MontySyntaxError | M
     return new MontySyntaxError(exc.message, exc.traceback)
   }
   return new MontyRuntimeError(exc.excType, exc.message, exc.frames, exc.traceback)
+}
+
+/**
+ * CPython-style `TypeError` message for calling a non-callable
+ * `externalLookup` entry — reachable when a cached function proxy's entry is
+ * later replaced by a plain value. Mirrors what CPython raises when calling
+ * that value, matching the Python binding (which really calls the entry).
+ */
+export function notCallableMessage(value: unknown): string {
+  return `'${pyTypeName(value)}' object is not callable`
+}
+
+/**
+ * `__monty_type__` marker → the Python type its conversion produces. `Type`
+ * and `BuiltinFunction` cannot round-trip and convert to reprs; an unknown
+ * marker converts as a plain dict.
+ */
+const MARKED_TYPE_NAMES: Readonly<Record<string, string>> = {
+  Ellipsis: 'ellipsis',
+  Exception: 'Exception',
+  Date: 'date',
+  DateTime: 'datetime',
+  TimeDelta: 'timedelta',
+  TimeZone: 'timezone',
+  Type: 'repr',
+  BuiltinFunction: 'repr',
+  Dataclass: 'dataclass',
+}
+
+/** Python type name the JS value converts to (mirrors the Rust `js_to_monty`). */
+function pyTypeName(value: unknown): string {
+  if (value === null || value === undefined) {
+    return 'NoneType'
+  }
+  switch (typeof value) {
+    case 'boolean':
+      return 'bool'
+    case 'number':
+      return Number.isInteger(value) ? 'int' : 'float'
+    case 'bigint':
+      return 'int'
+    case 'string':
+      return 'str'
+    case 'function':
+      return 'function'
+    case 'object': {
+      if (value instanceof Uint8Array) return 'bytes'
+      if (value instanceof Map) return 'dict'
+      if (value instanceof Set) return 'set'
+      if (Array.isArray(value)) {
+        return readMarker(value, '__tuple__') ? 'tuple' : 'list'
+      }
+      const marker = readMarker(value, '__monty_type__')
+      return typeof marker === 'string' ? (MARKED_TYPE_NAMES[marker] ?? 'dict') : 'dict'
+    }
+    default:
+      // symbols and other exotic values have no Monty equivalent
+      return 'object'
+  }
+}
+
+/**
+ * Reads a marker property off a host-provided value without letting a throwing
+ * getter or `Proxy` trap escape. `pyTypeName` runs *while formatting a
+ * TypeError message*, and the drive loop treats any throw from a call handler as
+ * fatal (it marks the session broken), so an exotic `externalLookup` entry must
+ * still degrade to a plain type rather than poison the turn — mirroring the Rust
+ * `js_to_monty`, which falls back to `object`/`dict` on any conversion failure.
+ */
+function readMarker(value: object, key: '__tuple__' | '__monty_type__'): unknown {
+  try {
+    return (value as Record<string, unknown>)[key]
+  } catch {
+    return undefined
+  }
 }

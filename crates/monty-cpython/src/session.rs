@@ -51,11 +51,12 @@ enum State {
     /// host). `sys.stdout`/`sys.stderr` are separate `Stdio` sinks kept alive by
     /// the interpreter, so they need no Rust-side handle here. `install` holds the
     /// session's `uv` install dir, created lazily on the first `InstallDependencies`.
-    /// `script_name` is the `Configure.script_name` snippets compile under, so
-    /// CPython tracebacks report the parent's filename.
+    /// `script_name` is the parent-visible filename used for tracebacks and syntax
+    /// errors.
     Ready {
         namespace: Py<SandboxGlobals>,
         install: Option<InstallEnv>,
+        /// Parent-visible filename reported in tracebacks and syntax errors.
         script_name: String,
     },
 }
@@ -310,12 +311,12 @@ impl Session {
                 Err(exc) => error_from_exception(&exc),
             },
             Err(err) => {
-                // The sandbox raised: convert the type/message, then walk the
-                // CPython traceback to attach the user frames (those compiled
-                // under `script_name`) so the parent gets a real stack rather
-                // than a bare `Type: message`.
+                // The sandbox raised: convert the type/message, then rebuild the
+                // CPython traceback into structured frames (reported under
+                // `script_name`) so the parent gets a real stack with source
+                // previews and carets rather than a bare `Type: message`.
                 let mut exc = exc_py_to_monty(py, &err);
-                exc.add_traceback(py_traceback_frames(py, &err, &script_name));
+                exc.add_traceback(py_traceback_frames(py, &self.runner, &err, &script_name));
                 error_from_exception(&exc)
             }
         }

@@ -294,9 +294,124 @@ assert 'aaa'.replace('a', 'b', count=2) == 'bba', 'replace count kwarg'
 assert 'hello'.encode() == b'hello', 'encode default'
 assert 'hello'.encode('utf-8') == b'hello', 'encode utf-8'
 assert 'hello'.encode('utf8') == b'hello', 'encode utf8 alias'
+assert 'hello'.encode('utf_8') == b'hello', 'encode utf_8 alias'
 assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
 assert ''.encode() == b'', 'encode empty'
 assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
+
+# === encode() with the 'ascii' codec ===
+assert 'hello'.encode('ascii') == b'hello', 'encode plain ascii'
+assert 'hello'.encode('us-ascii') == b'hello', 'encode us-ascii alias'
+assert 'hello'.encode('us_ascii') == b'hello', 'encode us_ascii (underscore) alias'
+assert 'hello'.encode('US_ASCII') == b'hello', 'encode US_ASCII case insensitive underscore alias'
+assert 'hello'.encode('ASCII') == b'hello', 'encode ASCII case insensitive'
+assert 'héllo wörld ⚡'.encode('ascii', 'ignore') == b'hllo wrld ', 'encode ascii ignore drops non-ascii chars'
+assert 'héllo wörld ⚡'.encode('ascii', 'replace') == b'h?llo w?rld ?', 'encode ascii replace uses ?'
+assert 'héllo wörld ⚡'.encode('ascii', 'backslashreplace') == b'h\\xe9llo w\\xf6rld \\u26a1', (
+    'encode ascii backslashreplace escapes non-ascii chars'
+)
+# Non-BMP characters (> U+FFFF) escape via the \Uxxxxxxxx form, not \uxxxx.
+assert 'a\U0001f600b'.encode('ascii', 'backslashreplace') == b'a\\U0001f600b', (
+    'encode ascii backslashreplace escapes non-BMP chars with \\U'
+)
+# The 'ignore' handler round-trips through decode('ascii') since only ASCII bytes remain.
+assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
+    'encode ignore then decode ascii strips non-ascii characters'
+)
+
+# strict (the default) raises UnicodeEncodeError, a ValueError subclass, with CPython's exact wording.
+try:
+    'héllo'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except ValueError as e:
+    assert isinstance(e, UnicodeEncodeError), 'UnicodeEncodeError should be a ValueError subclass'
+    assert type(e).__name__ == 'UnicodeEncodeError', f'exception type name: {type(e).__name__}'
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii strict single-char message: {e}'
+    )
+try:
+    'aéöbé'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode characters in position 1-2: ordinal not in range(128)", (
+        f'encode ascii strict multi-char range message: {e}'
+    )
+
+# Boundary: the bad character at the very start (position 0) of the string.
+try:
+    'éxyz'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 0: ordinal not in range(128)", (
+        f'encode ascii strict bad char at position 0: {e}'
+    )
+# Boundary: the bad character at the very end of the string.
+try:
+    'xyzé'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)", (
+        f'encode ascii strict bad char at last position: {e}'
+    )
+# Boundary: a single-character string that is itself non-ascii.
+try:
+    'é'.encode('ascii')
+    assert False, 'encode ascii of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 0: ordinal not in range(128)", (
+        f'encode ascii strict single-char string: {e}'
+    )
+
+# xmlcharrefreplace substitutes decimal XML character references.
+assert 'héllo ⚡'.encode('ascii', 'xmlcharrefreplace') == b'h&#233;llo &#9889;', (
+    'encode ascii xmlcharrefreplace uses decimal character references'
+)
+assert 'a\U0001f600b'.encode('ascii', 'xmlcharrefreplace') == b'a&#128512;b', (
+    'encode ascii xmlcharrefreplace handles non-BMP chars'
+)
+# namereplace substitutes \N{...} escapes, falling back to backslash escapes
+# for characters with no Unicode name (e.g. C1 controls).
+assert (
+    'héllo ⚡'.encode('ascii', 'namereplace') == b'h\\N{LATIN SMALL LETTER E WITH ACUTE}llo \\N{HIGH VOLTAGE SIGN}'
+), 'encode ascii namereplace uses unicode name escapes'
+assert '一'.encode('ascii', 'namereplace') == b'\\N{CJK UNIFIED IDEOGRAPH-4E00}', (
+    'encode ascii namereplace handles algorithmic CJK names'
+)
+assert 'a\x80\x9fb'.encode('ascii', 'namereplace') == b'a\\x80\\x9fb', (
+    'encode ascii namereplace falls back to backslash escapes for unnamed chars'
+)
+# surrogateescape/surrogatepass only special-case lone surrogates, which a
+# valid str can never contain here, so they re-raise exactly like strict.
+assert 'hello'.encode('ascii', 'surrogateescape') == b'hello', 'unused surrogateescape handler'
+assert 'hello'.encode('ascii', 'surrogatepass') == b'hello', 'unused surrogatepass handler'
+try:
+    'héllo'.encode('ascii', 'surrogateescape')
+    assert False, 'encode ascii surrogateescape of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii surrogateescape behaves like strict: {e}'
+    )
+try:
+    'héllo'.encode('ascii', 'surrogatepass')
+    assert False, 'encode ascii surrogatepass of non-ascii string should error'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
+        f'encode ascii surrogatepass behaves like strict: {e}'
+    )
+
+# Like CPython, an unknown error handler name is only looked up if it's actually needed.
+assert 'hello'.encode('ascii', 'bogus') == b'hello', 'unused error handler name is never validated'
+try:
+    'héllo'.encode('ascii', 'bogus')
+    assert False, 'encode ascii with unknown error handler should error'
+except LookupError as e:
+    assert str(e) == "unknown error handler name 'bogus'", f'encode ascii unknown error handler: {e}'
+
+try:
+    'hello'.encode('not-a-real-codec')
+    assert False, 'encode with unsupported codec should error'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: not-a-real-codec', f'encode unknown encoding: {e}'
 
 # Wrong-type encoding/errors → CPython's `_PyArg_BadArgument` named wording.
 # Routed through `bad_arg_named` on `EncodeArgs`; matches CPython exactly,

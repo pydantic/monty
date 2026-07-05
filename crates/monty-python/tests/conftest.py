@@ -25,7 +25,7 @@ class RunMonty(Protocol):
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -61,7 +61,7 @@ def monty_run(pool: Monty) -> RunMonty:
         code: str,
         *,
         inputs: dict[str, Any] | None = None,
-        external_functions: dict[str, Callable[..., Any]] | None = None,
+        external_lookup: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout', 'stderr'], str], None]
         | CollectStreams
         | CollectString
@@ -76,7 +76,7 @@ def monty_run(pool: Monty) -> RunMonty:
             return s.feed_run(
                 code,
                 inputs=inputs,
-                external_functions=external_functions,
+                external_lookup=external_lookup,
                 print_callback=print_callback,
                 mount=mount,
                 os=os,

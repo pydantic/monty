@@ -165,7 +165,8 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// Argument shape for `json.dumps(obj, *, indent=None, sort_keys=False,
 /// ensure_ascii=True, allow_nan=True, separators=None, skipkeys=False)`.
 ///
-/// Arity and missing-arg errors use the `dumps()` descriptor, but the
+/// Arity and missing-arg errors use the `dumps()` descriptor with `style =
+/// def` wording (CPython's `json.dumps` is a pure-Python `def`), but the
 /// unknown-kwarg error uses `JSONEncoder.__init__()` — CPython's `json.dumps`
 /// forwards unknown kwargs straight to the encoder constructor, which is what
 /// surfaces in the error. `kwarg_error_name` overrides the function name used
@@ -174,7 +175,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 /// (`py_bool`) or shape coercion (`parse_indent_value` /
 /// `parse_separators_value`) on the way through.
 #[derive(FromArgs)]
-#[from_args(name = "dumps", kwarg_error_name = "JSONEncoder.__init__")]
+#[from_args(name = "dumps", style = def, kwarg_error_name = "JSONEncoder.__init__")]
 struct JsonDumpsArgs {
     obj: Value,
     #[from_args(kw_only, default = Value::None)]
@@ -274,14 +275,14 @@ fn parse_separators_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -
             _ => {
                 return Err(ExcType::type_error(format!(
                     "cannot unpack non-iterable {} object",
-                    value.py_type(vm)
+                    value.py_type_name(vm)
                 )));
             }
         },
         _ => {
             return Err(ExcType::type_error(format!(
                 "cannot unpack non-iterable {} object",
-                value.py_type(vm)
+                value.py_type_name(vm)
             )));
         }
     };
@@ -319,12 +320,12 @@ fn json_separator_to_string(value: &Value, role: &str, vm: &VM<'_, impl Resource
             HeapData::Str(string) => Ok(string.as_str().to_owned()),
             _ => Err(ExcType::type_error(format!(
                 "make_encoder() argument {arg_num} must be str, not {}",
-                value.py_type(vm)
+                value.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "make_encoder() argument {arg_num} must be str, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -460,9 +461,9 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     defer_drop_vm!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }
-                _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
+                _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
             },
-            _ => Err(ExcType::json_not_serializable_error(value.py_type(self.vm))),
+            _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
         }
     }
 
@@ -541,7 +542,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
         if self.config.skipkeys() {
             skip_disallowed_dict_keys(entries, self.vm);
         } else if let Some((key, _)) = entries.iter().find(|(key, _)| !is_json_key_allowed(key, self.vm)) {
-            return Err(ExcType::json_invalid_key_error(key.py_type(self.vm)));
+            return Err(ExcType::json_invalid_key_error(&key.py_type_name(self.vm)));
         }
 
         if self.config.sort_keys() {
@@ -668,9 +669,9 @@ fn write_json_key(
                 long_int.check_str_digits_limit()?;
                 write_json_display_key(long_int.inner(), out);
             }
-            _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
+            _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
         },
-        _ => return Err(ExcType::json_invalid_key_error(key.py_type(vm))),
+        _ => return Err(ExcType::json_invalid_key_error(&key.py_type_name(vm))),
     }
     Ok(())
 }

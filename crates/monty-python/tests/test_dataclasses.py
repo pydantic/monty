@@ -402,7 +402,7 @@ caught
         raise FrozenInstanceError('cannot assign to field')
 
     # Monty should catch it as FrozenInstanceError specifically
-    result = monty_run(code, external_functions={'fail': fail})
+    result = monty_run(code, external_lookup={'fail': fail})
     assert result == snapshot('frozen')
 
 
@@ -413,7 +413,7 @@ def test_frozen_instance_error_from_external_function_propagates(monty_run: RunM
         raise FrozenInstanceError('test frozen error')
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
-        monty_run('fail()', external_functions={'fail': fail})
+        monty_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, FrozenInstanceError)
     assert inner.args[0] == snapshot('test frozen error')

@@ -14,13 +14,18 @@ is_windows = sys.platform == 'win32'
 # ============================================================================
 
 # === TypeError on mkdir with too many positional arguments ===
+# Both engines use pure-Python `def` range wording; the counts differ because
+# CPython counts the bound `self` argument (`from 1 to 4 ... 5 were given`)
+# while Monty binds only the visible parameters.
 too_many_path = root / 'mkdir_too_many_args'
 try:
     too_many_path.mkdir(0o777, False, False, 'extra')
     assert False, 'expected TypeError on mkdir too many positional args'
 except TypeError as exc:
     if is_monty:
-        assert str(exc) == 'Path.mkdir() takes at most 3 arguments (4 given)', f'unexpected message: {exc}'
+        assert str(exc) == 'Path.mkdir() takes from 0 to 3 positional arguments but 4 were given', (
+            f'unexpected message: {exc}'
+        )
     else:
         assert str(exc) == 'Path.mkdir() takes from 1 to 4 positional arguments but 5 were given', (
             f'unexpected message: {exc}'

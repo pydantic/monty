@@ -291,8 +291,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 
             // If the attribute exists in attrs, it's a data value (not callable)
             if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
-                let type_name = value.py_type(vm);
-                Err(ExcType::type_error_not_callable_object(type_name))
+                let type_name = value.py_type_name(vm);
+                Err(ExcType::type_error_not_callable_object(&type_name))
             } else {
                 // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
                 Err(ExcType::attribute_error(

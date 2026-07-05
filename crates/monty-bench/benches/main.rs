@@ -157,6 +157,20 @@ def add(a, b=2):
 add(a=1)
 ";
 
+/// Builtin-method argument binding benchmark: a tight loop of cheap calls whose
+/// cost is dominated by `#[derive(FromArgs)]` dispatch (positional fill, kwarg
+/// matching, defaults) rather than the operations themselves. Guards the
+/// FromArgs binding path against regressions.
+const BUILTIN_ARGS: &str = "
+r = 0
+for i in range(10_000):
+    s = 'ab'.replace('a', 'b')
+    t = 'x'.encode('utf-8', 'strict')
+    u = sorted([3, 1, 2], reverse=False)
+    r += len(s) + len(t) + len(u)
+r
+";
+
 const LIST_APPEND_STR: &str = "
 a = []
 for i in range(100_000):
@@ -306,6 +320,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("func_call_kwargs__monty", |b| run_monty(b, FUNC_CALL_KWARGS, 3));
     #[cfg(not(codspeed))]
     c.bench_function("func_call_kwargs__cpython", |b| run_cpython(b, FUNC_CALL_KWARGS, 3));
+
+    c.bench_function("builtin_args__monty", |b| run_monty(b, BUILTIN_ARGS, 60_000));
+    #[cfg(not(codspeed))]
+    c.bench_function("builtin_args__cpython", |b| run_cpython(b, BUILTIN_ARGS, 60_000));
 
     c.bench_function("list_append_str__monty", |b| run_monty(b, LIST_APPEND_STR, 100_000));
     #[cfg(not(codspeed))]

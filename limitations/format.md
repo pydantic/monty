@@ -18,9 +18,11 @@ The other CPython formatting mechanisms are not implemented:
 f-strings dispatch to a type's `__format__` only for `date`/`datetime`, which
 interpret the spec as a `strftime` string (`f'{dt:%Y-%m-%d}'`) — see
 [datetime.md](datetime.md). There is no general `__format__` protocol: user
-classes can't customise formatting (Monty has no `class` statement anyway —
-see [classes.md](classes.md)), and all other types use the builtin
-mini-language formatter.
+classes can't customise formatting (see [classes.md](classes.md)), and all
+other types use the builtin mini-language formatter. A format spec on a
+user-class instance is silently applied to `str(obj)` (`f'{obj:>10}'` pads),
+where CPython raises `TypeError: unsupported format string passed to
+Foo.__format__`.
 
 ## The `n` type uses the C locale only
 

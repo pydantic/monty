@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::error::MountError;
-use crate::{MontyObject, dir_stat, file_stat};
+use crate::{MontyObject, UnicodeErrorData, codecs, dir_stat, file_stat};
 
 /// Per-call mount context shared by the filesystem backends.
 ///
@@ -226,12 +226,22 @@ pub(super) fn list_visible_real_dir_entry_names(
     Ok(names)
 }
 
-/// Converts raw bytes to UTF-8 or returns the exact decode failure details.
+/// Converts raw bytes to UTF-8 or returns the exact decode failure details
+/// (byte range, first bad byte, and CPython's reason wording) so the
+/// resulting `UnicodeDecodeError` matches `bytes.decode('utf-8')`.
 pub(super) fn bytes_to_utf8(bytes: Vec<u8>) -> Result<String, MountError> {
     String::from_utf8(bytes).map_err(|err| {
-        let position = err.utf8_error().valid_up_to();
-        let invalid_byte = err.into_bytes()[position];
-        MountError::InvalidUtf8 { position, invalid_byte }
+        let utf8_error = err.utf8_error();
+        let start = utf8_error.valid_up_to();
+        let end = utf8_error.error_len().map_or(err.as_bytes().len(), |len| start + len);
+        let reason = codecs::utf8_error_reason(err.as_bytes()[start], utf8_error.error_len());
+        MountError::InvalidUtf8 {
+            start,
+            end,
+            first_byte: err.as_bytes()[start],
+            reason,
+            data: UnicodeErrorData::decode("utf-8", err.as_bytes(), start, end, reason),
+        }
     })
 }
 

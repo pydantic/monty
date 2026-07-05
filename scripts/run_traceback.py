@@ -68,13 +68,12 @@ def run_file_and_get_traceback(
         if recursion_limit is not None:
             sys.setrecursionlimit(recursion_limit + 5)
 
-        # Inject the shared CPython-side fixtures for every test. The
-        # single `exported_globals` dict in `test_fixtures.py`
-        # carries both the iter helpers and the `_test_cm` synthetic
-        # context manager; non-iter tests don't reference the iter names
-        # so installing them unconditionally has no behavioral cost.
-        # `iter_mode` is still consulted by the frame-skipping logic
-        # further down so we keep the parameter rather than deleting it.
+        # Inject the shared CPython-side fixtures for every test via the
+        # single `exported_globals` dict in `test_fixtures.py`; non-iter
+        # tests don't reference the iter names so installing them
+        # unconditionally has no behavioral cost. `iter_mode` is still
+        # consulted by the frame-skipping logic further down so we keep
+        # the parameter rather than deleting it.
 
         # Use delete=False so the file can be opened by runpy on Windows,
         # where NamedTemporaryFile holds an exclusive lock while open.
@@ -109,12 +108,11 @@ def run_file_and_get_traceback(
                     elif 'test_fixtures.py", ' in frame:
                         # The CPython shim file (`scripts/test_fixtures.py`)
                         # appears in tracebacks whenever an exception passes
-                        # through one of its helpers — `_test_cm.__enter__`
-                        # / `__exit__`, the iter-mode dataclass methods,
-                        # the virtual-path overrides, etc. Monty has no
-                        # equivalent intermediate frame, so filtering these
-                        # everywhere (not just in iter mode) keeps
-                        # CPython/Monty traceback parity.
+                        # through one of its helpers — the iter-mode
+                        # dataclass methods, the virtual-path overrides,
+                        # etc. Monty has no equivalent intermediate frame,
+                        # so filtering these everywhere (not just in iter
+                        # mode) keeps CPython/Monty traceback parity.
                         continue
                     elif iter_mode and frame.startswith('  File "<string>"'):
                         # python's doing something weird and show the file as <string> for dataclass exceptions
@@ -173,6 +171,11 @@ def format_full_traceback(e: Exception):
 
 def normalize_debug_range(line: str) -> str:
     line = line.replace('dataclasses.FrozenInstanceError:', 'FrozenInstanceError:')
+    # Strip CPython's "Did you mean: '...'?" suggestion. Monty does not implement
+    # name/attribute spelling suggestions (it only emits "Did you forget to import
+    # '...'", which both interpreters produce), so dropping this CPython-only
+    # suffix keeps tracebacks byte-for-byte comparable for all such cases.
+    line = re.sub(r"\. Did you mean: '[^']*'\?", '', line)
     if re.fullmatch(r' +[\~\^]+', line):
         return line.replace('^', '~')
     else:

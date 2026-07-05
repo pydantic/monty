@@ -163,7 +163,7 @@ result
         raise AssertionError('the call must never reach the host')
 
     with pool.checkout() as session:
-        result = session.feed_run(code, external_functions={'f': f})
+        result = session.feed_run(code, external_lookup={'f': f})
     assert result == snapshot('Max argument depth exceeded')
 
 

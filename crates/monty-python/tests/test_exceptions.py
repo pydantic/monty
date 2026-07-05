@@ -29,6 +29,52 @@ def test_value_error(monty_run: RunMonty):
     assert str(inner) == snapshot('bad value')
 
 
+def test_unicode_encode_error(monty_run: RunMonty):
+    # `str.encode('ascii')` on a non-ascii string raises `UnicodeEncodeError`
+    # inside the sandbox; the structured constructor fields travel with the
+    # exception so `.exception()` rebuilds the real `UnicodeEncodeError`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("'café'.encode('ascii')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, UnicodeEncodeError)
+    assert inner.encoding == snapshot('ascii')
+    assert inner.object == snapshot('café')
+    assert inner.start == snapshot(3)
+    assert inner.end == snapshot(4)
+    assert inner.reason == snapshot('ordinal not in range(128)')
+    assert str(inner) == snapshot(
+        "'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)"
+    )
+
+
+def test_unicode_decode_error(monty_run: RunMonty):
+    # `bytes.decode('ascii')` on non-ascii bytes raises `UnicodeDecodeError`
+    # inside the sandbox; as in `test_unicode_encode_error`, `.exception()`
+    # rebuilds the real `UnicodeDecodeError` from the structured fields.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("b'\\xe9'.decode('ascii')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, UnicodeDecodeError)
+    assert inner.encoding == snapshot('ascii')
+    assert inner.object == snapshot(b'\xe9')
+    assert inner.start == snapshot(0)
+    assert inner.end == snapshot(1)
+    assert inner.reason == snapshot('ordinal not in range(128)')
+    assert str(inner) == snapshot("'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)")
+
+
+def test_unicode_error_message_only_fallback(monty_run: RunMonty):
+    # A `UnicodeDecodeError` raised manually inside the sandbox has no
+    # structured fields (Monty exception constructors are message-only), so
+    # `.exception()` falls back to a `ValueError` carrying the message.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("raise UnicodeDecodeError('nope')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert not isinstance(inner, UnicodeDecodeError)
+    assert str(inner) == snapshot('nope')
+
+
 def test_type_error(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("'string' + 1")
@@ -130,13 +176,16 @@ def test_syntax_error_lone_surrogate(monty_run: RunMonty):
 
 def test_runtime_error_input_value_lone_surrogate(monty_run: RunMonty):
     # An input string containing a lone surrogate fails UTF-8 conversion during
-    # `py_to_monty`. We wrap the resulting `UnicodeEncodeError` as a
-    # `MontyRuntimeError(ValueError)` so input-value failures surface the same
-    # way as failures when an external function returns such a string.
+    # `py_to_monty`, raising a real `UnicodeEncodeError` (a `ValueError`
+    # subclass). `.exception()` falls back to a plain `ValueError` carrying
+    # the same message rather than `UnicodeEncodeError`, since Monty only
+    # stores the formatted message and CPython's real `UnicodeEncodeError`
+    # constructor requires 5 positional args (`encoding, object, start, end,
+    # reason`) that a single string can't satisfy.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('x', inputs={'x': '\ud83d'})
     assert str(exc_info.value) == snapshot(
-        "ValueError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
+        "UnicodeEncodeError: 'utf-8' codec can't encode character '\\ud83d' in position 0: surrogates not allowed"
     )
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)

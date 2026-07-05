@@ -299,3 +299,56 @@ mod function_parameter_limits {
         assert_syntax_error(result, "more than 255 positional arguments");
     }
 }
+
+/// Generates a class with `count` simple `a{i} = {i}` class variables, plus an
+/// assert reading the last one back through the class object.
+///
+/// Namespace assembly pushes two operand-stack entries (name const + value) per
+/// member before `BuildDict` pops them all into the `type()` call's namespace
+/// argument, so counts above 16383 overflow an `i16` stack-effect accumulator —
+/// a regression guard for the i16→i32 widening.
+fn generate_many_class_members(count: usize) -> String {
+    let mut code = String::from("class C:\n");
+    for i in 0..count {
+        writeln!(code, "    a{i} = {i}").unwrap();
+    }
+    writeln!(code, "assert C.a{} == {}", count - 1, count - 1).unwrap();
+    code
+}
+
+/// Generates `x = {0: 0, 1: 1, ...}` with `count` entries plus a read-back
+/// assert — the dict-literal analogue of the class-member stack-effect case.
+fn generate_large_dict_literal(count: usize) -> String {
+    let mut code = String::from("x = {");
+    for i in 0..count {
+        if i > 0 {
+            code.push_str(", ");
+        }
+        write!(code, "{i}: {i}").unwrap();
+    }
+    code.push('}');
+    writeln!(code, "\nassert x[{}] == {}", count - 1, count - 1).unwrap();
+    code
+}
+
+mod stack_effect_limits {
+    use super::*;
+
+    #[test]
+    fn class_members_above_i16_stack_effect() {
+        // 16384 members -> 32768+ pushed operands, past i16::MAX (32767)
+        let code = generate_many_class_members(16384);
+        let run = MontyRun::new(code, "test.py", vec![]).expect("16384 class members should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "16384 class members should run: {result:?}");
+    }
+
+    #[test]
+    fn dict_literal_above_i16_stack_effect() {
+        // 20000 entries -> 40000 pushed operands, past i16::MAX
+        let code = generate_large_dict_literal(20000);
+        let run = MontyRun::new(code, "test.py", vec![]).expect("20000-entry dict literal should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "20000-entry dict literal should run: {result:?}");
+    }
+}

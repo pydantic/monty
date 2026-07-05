@@ -348,7 +348,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
                 self.get(vm.heap).get_span(n, vm.heap)?
             }
-            _ => return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns))),
+            _ => {
+                return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns)));
+            }
         };
         Ok(CallResult::Value(result))
     }

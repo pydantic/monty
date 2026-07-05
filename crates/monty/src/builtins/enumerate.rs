@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{HeapData, HeapGuard},
     resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait, allocate_tuple},
+    types::{List, MontyIter, allocate_tuple},
     value::Value,
 };
 
@@ -28,7 +28,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
         Some(Value::Int(n)) => *n,
         Some(Value::Bool(b)) => i64::from(*b),
         Some(v) => {
-            let type_name = v.py_type(vm);
+            let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("'{type_name}' object cannot be interpreted as an integer"),

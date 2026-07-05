@@ -1444,6 +1444,6 @@ impl<'de> serde::Deserialize<'de> for FrozenSet {
 fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
     match value.py_hash(vm)? {
         Some(h) => Ok(h.raw()),
-        None => Err(ExcType::type_error_unhashable_set_element(value.py_type(vm))),
+        None => Err(ExcType::type_error_unhashable_set_element(&value.py_type_name(vm))),
     }
 }

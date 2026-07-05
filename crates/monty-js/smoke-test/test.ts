@@ -77,19 +77,19 @@ if (err !== null) {
 console.log('\n=== External Functions ===')
 
 assert(
-  (await session.feedRun('add(2, 3)', { externalFunctions: { add: (a: number, b: number) => a + b } })) === 5,
+  (await session.feedRun('add(2, 3)', { externalLookup: { add: (a: number, b: number) => a + b } })) === 5,
   'sync external function',
 )
 assert(
   (await session.feedRun('await get_data()', {
-    externalFunctions: { get_data: async () => 'async result' },
+    externalLookup: { get_data: async () => 'async result' },
   })) === 'async result',
   'async external function',
 )
 
 const callArgs: unknown[] = []
 await session.feedRun('bar(1, 2, x=3, y=4)', {
-  externalFunctions: {
+  externalLookup: {
     bar: (...args: unknown[]) => {
       callArgs.push(...args)
       return null

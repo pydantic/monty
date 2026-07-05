@@ -100,7 +100,7 @@ test('type check stubs with external function', async (t) => {
     await run('result = fetch("https://example.com")\nresult', {
       typeCheck: true,
       typeCheckStubs: 'def fetch(url: str) -> str: ...',
-      externalFunctions: { fetch: () => 'response data' },
+      externalLookup: { fetch: () => 'response data' },
     }),
     'response data',
   )

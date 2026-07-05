@@ -15,7 +15,7 @@ use crate::{
     heap::{ContainsHeap, HeapData, HeapGuard, HeapReader},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Dict, List, LongInt, PyTrait,
+        Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
         str::allocate_string,
     },
@@ -78,13 +78,14 @@ pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
 
 /// Argument shape for `json.loads(s)`.
 ///
-/// CPython exposes a handful of additional kwargs (`cls`, `object_hook`, …)
-/// that Monty intentionally does not implement; leaving them off this struct
-/// means the macro emits the standard "unexpected keyword" error for them.
+/// CPython's `loads` is a pure-Python `def loads(s, *, cls=None, …)`, so `s`
+/// is positional-or-keyword (`json.loads(s='1')` works) and signature errors
+/// use `style = def` wording. The additional CPython kwargs (`cls`, `object_hook`,
+/// …) are intentionally not implemented; leaving them off this struct means
+/// the macro emits the standard "unexpected keyword" error for them.
 #[derive(FromArgs)]
-#[from_args(name = "loads")]
+#[from_args(name = "loads", style = def)]
 struct JsonLoadsArgs {
-    #[from_args(pos_only)]
     s: Value,
 }
 
@@ -100,9 +101,9 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Run
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
             HeapData::Str(s) => Cow::Owned(s.as_str().as_bytes().to_vec()),
             HeapData::Bytes(b) => Cow::Owned(b.as_slice().to_vec()),
-            _ => return Err(ExcType::json_loads_type_error(value.py_type(vm))),
+            _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
         },
-        _ => return Err(ExcType::json_loads_type_error(value.py_type(vm))),
+        _ => return Err(ExcType::json_loads_type_error(&value.py_type_name(vm))),
     };
     parse_json_bytes(bytes.as_ref(), vm)
 }

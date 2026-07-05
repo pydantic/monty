@@ -3,7 +3,7 @@
 
 //! Node.js bindings for the Monty sandboxed Python interpreter: the subprocess
 //! pool ([`NativePool`]/[`NativeSession`]), which runs crash-isolated execution
-//! in `monty --subprocess` workers via the `monty-pool` crate. `ts/` wraps it
+//! in `monty subprocess` workers via the `monty-pool` crate. `ts/` wraps it
 //! into the public `Monty`/`MontySession` classes.
 //!
 //! This crate is native-only. Browsers (where subprocesses do not exist) run

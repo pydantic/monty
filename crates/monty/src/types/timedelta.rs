@@ -17,14 +17,14 @@ use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{CmpOrder, PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -196,7 +196,7 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         + checked_component(minutes, MINUTE_MICROSECONDS)?
         + checked_component(seconds, MICROSECONDS_PER_SECOND)?
         + checked_component(milliseconds, MILLISECONDS_PER_SECOND)?
-        + microseconds;
+        + microseconds.0;
 
     let delta = from_total_microseconds(total_microseconds)?;
     Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
@@ -209,24 +209,54 @@ pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 #[derive(FromArgs)]
 #[from_args(name = "timedelta")]
 struct TimedeltaArgs {
-    #[from_args(default = 0)]
-    days: i128,
-    #[from_args(default = 0)]
-    seconds: i128,
-    #[from_args(default = 0)]
-    microseconds: i128,
-    #[from_args(kw_only, default = 0)]
-    milliseconds: i128,
-    #[from_args(kw_only, default = 0)]
-    minutes: i128,
-    #[from_args(kw_only, default = 0)]
-    hours: i128,
-    #[from_args(kw_only, default = 0)]
-    weeks: i128,
+    #[from_args(default)]
+    days: DeltaComponent,
+    #[from_args(default)]
+    seconds: DeltaComponent,
+    #[from_args(default)]
+    microseconds: DeltaComponent,
+    #[from_args(kw_only, default)]
+    milliseconds: DeltaComponent,
+    #[from_args(kw_only, default)]
+    minutes: DeltaComponent,
+    #[from_args(kw_only, default)]
+    hours: DeltaComponent,
+    #[from_args(kw_only, default)]
+    weeks: DeltaComponent,
 }
 
-fn checked_component(value: i128, unit_microseconds: i128) -> RunResult<i128> {
-    value.checked_mul(unit_microseconds).ok_or_else(|| {
+/// One `timedelta(...)` constructor component, held as `i128` so the
+/// microsecond-normalisation arithmetic in [`init`] cannot wrap.
+///
+/// Carries its own `FromValue` impl (rather than a generic `i128` one)
+/// because the overflow semantics are timedelta-specific: CPython's
+/// accumulator converts each component through C int, so ints wider than
+/// i64 raise `OverflowError: Python int too large to convert to C int`
+/// even though they would fit in i128.
+#[derive(Clone, Copy, Default)]
+struct DeltaComponent(i128);
+
+impl FromValue for DeltaComponent {
+    const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
+
+    fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
+        let result = match value {
+            Value::Bool(b) => Ok(Self(i128::from(b))),
+            Value::Int(i) => Ok(Self(i128::from(i))),
+            _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
+            _ => Err(FromValueFail::WrongType),
+        };
+        value.drop_with_heap(vm);
+        result
+    }
+
+    fn type_error(got: &str) -> RunError {
+        ExcType::type_error_not_integer(got)
+    }
+}
+
+fn checked_component(value: DeltaComponent, unit_microseconds: i128) -> RunResult<i128> {
+    value.0.checked_mul(unit_microseconds).ok_or_else(|| {
         SimpleException::new_msg(ExcType::OverflowError, "timedelta argument overflow while normalizing").into()
     })
 }
@@ -298,8 +328,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(total_microseconds(self.get(vm.heap)).partial_cmp(&total_microseconds(other.get(vm.heap))))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(
+            total_microseconds(self.get(vm.heap)).cmp(&total_microseconds(other.get(vm.heap))),
+        ))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {

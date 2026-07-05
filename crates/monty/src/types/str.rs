@@ -2,16 +2,17 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
+use std::{borrow::Cow, cell::Cell, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
 use unicode_general_category::{GeneralCategory, get_general_category};
 
-use super::{Bytes, MontyIter, PyTrait};
+use super::{Bytes, CmpOrder, MontyIter, PyTrait};
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
+    codecs::Codec,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::{HashValue, hash_python_str},
@@ -88,7 +89,7 @@ impl Str {
 /// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
 /// `object` arg whose absence is the documented "return empty string" path.
 #[derive(FromArgs)]
-#[from_args(name = "str", c_error_named)]
+#[from_args(name = "str", style = c_named)]
 struct StrInitArgs {
     #[from_args(default)]
     object: Option<Value>,
@@ -233,8 +234,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         !self.get(vm.heap).0.is_empty()
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_repr_fmt(
@@ -483,13 +484,13 @@ fn str_join<'h>(
                 if let HeapData::Str(s) = vm.heap.get(*heap_id) {
                     result.push_str(s.as_str());
                 } else {
-                    let t = item.py_type(vm);
-                    return Err(ExcType::type_error_join_item(index, t));
+                    let t = item.py_type_name(vm);
+                    return Err(ExcType::type_error_join_item(index, &t));
                 }
             }
             _ => {
-                let t = item.py_type(vm);
-                return Err(ExcType::type_error_join_item(index, t));
+                let t = item.py_type_name(vm);
+                return Err(ExcType::type_error_join_item(index, &t));
             }
         }
         index += 1;
@@ -1944,26 +1945,21 @@ struct ExpandtabsArgs {
 
 /// Implements Python's `str.encode(encoding='utf-8', errors='strict')` method.
 ///
-/// Returns an encoded version of the string as a bytes object. Only supports
-/// UTF-8 encoding (the native encoding for Rust strings).
+/// Returns an encoded version of the string as a bytes object. Encoding-name
+/// resolution and the codec implementations (UTF-8, ASCII, UTF-16/32
+/// families) live in [`crate::codecs`]. Like CPython, the error handler name
+/// is only looked up (and validated) when an actual encoding error occurs —
+/// `'hello'.encode('ascii', 'bogus')` succeeds because there's nothing for
+/// the handler to do.
 fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let EncodeArgs { encoding, errors } = EncodeArgs::from_args(args, vm)?;
-    let encoding = encoding.unwrap_or_else(|| "utf-8".to_owned());
-    let errors = errors.unwrap_or_else(|| "strict".to_owned());
+    defer_drop!(encoding, vm);
+    defer_drop!(errors, vm);
+    let encoding = encoding.as_ref().map_or("utf-8", |e| e.as_str(vm));
+    let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
 
-    // Only UTF-8 is supported - Rust strings are always valid UTF-8
-    let encoding_lower = encoding.to_ascii_lowercase();
-    if encoding_lower != "utf-8" && encoding_lower != "utf8" {
-        return Err(ExcType::lookup_error_unknown_encoding(&encoding));
-    }
-
-    // For UTF-8 encoding of a valid UTF-8 string, errors mode doesn't matter
-    // since there's nothing to handle - the string is already valid UTF-8
-    if errors != "strict" && errors != "ignore" && errors != "replace" && errors != "backslashreplace" {
-        return Err(ExcType::lookup_error_unknown_error_handler(&errors));
-    }
-
-    let bytes = s.get(vm.heap).as_bytes().to_vec();
+    let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+    let bytes = codec.encode(s.get(vm.heap), errors, vm.heap.tracker())?;
     let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1975,15 +1971,15 @@ fn str_encode<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl R
 /// errors match the C implementation. Both fields default to `None` (absent)
 /// and the implementation supplies `"utf-8"` / `"strict"` after extraction;
 /// CPython rejects explicit `None` here with the bad-arg error, which falls
-/// out naturally because `Option<String>::from_value` delegates to
-/// `String::from_value` and rejects `Value::None`.
+/// out naturally because `Option<StrArg>::from_value` delegates to
+/// `StrArg::from_value` and rejects `Value::None`.
 #[derive(FromArgs)]
-#[from_args(name = "encode", bad_arg_named)]
+#[from_args(name = "encode", at_most_total, bad_arg_named)]
 struct EncodeArgs {
     #[from_args(default)]
-    encoding: Option<String>,
+    encoding: Option<StrArg>,
     #[from_args(default)]
-    errors: Option<String>,
+    errors: Option<StrArg>,
 }
 
 /// Implements Python's `str.isidentifier()` predicate.

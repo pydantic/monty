@@ -37,15 +37,23 @@ mechanism beyond dataclass field inheritance.
 
 ## Behavioural divergences
 
+- **Arity-error wording for some str/bytes methods** — a handful of
+  keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
+  equivalents) report too-many-arguments as `split expected at most 2
+  arguments, got 3`, where CPython 3.14's Argument Clinic pre-counts
+  positionals *plus* kwargs and says `split() takes at most 2 arguments (3
+  given)`. Methods audited against CPython (`encode`, `decode`,
+  `expandtabs`, `splitlines`, `replace`, …) already match; the remainder
+  need a per-function `at_most_total` audit.
 - **`getattr(obj, name)`** — if the resolved attribute would be an async
   coroutine, external function, or OS call, raises `TypeError:
   "getattr(): attribute is not a simple value"` rather than returning a
   bound method object. Use direct attribute access (`obj.name(...)`) for
   these.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
-  `list`, ...), a built-in exception class, or a tuple of those. Passing a
-  user-defined dataclass / namedtuple as the second argument raises
-  `TypeError`.
+  `list`, ...), a built-in exception class, a sandbox-defined class (see
+  [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
+  dataclass / namedtuple as the second argument raises `TypeError`.
 - **`pow(base, exp, mod)`** — three-argument form requires all integers and
   rejects negative exponents with `ValueError`. Exponents greater than
   `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).

@@ -22,7 +22,7 @@ use crate::{
     heap_data::HeapData,
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
-    namespace::NamespaceId,
+    name_map::NameMap,
     object::MontyObject,
     os::OsFunctionCall,
     resource::ResourceTracker,
@@ -47,7 +47,7 @@ pub struct MontyRepl<T: ResourceTracker> {
     /// Counter for generated `<python-input-N>` snippet filenames.
     next_input_id: u64,
     /// Stable mapping of global variable names to namespace slot IDs.
-    global_name_map: AHashMap<String, NamespaceId>,
+    global_names: NameMap,
     /// Persistent intern table across snippets so intern/function IDs remain valid.
     interns: Interns,
     /// Source text of every snippet that has been fed, keyed by its
@@ -64,7 +64,7 @@ pub struct MontyRepl<T: ResourceTracker> {
     heap: Heap<T>,
     /// Persistent global variable values across snippets.
     ///
-    /// Indexed by `NamespaceId` slots from `global_name_map`. Between snippet
+    /// Indexed by `NamespaceId` slots from `global_names`. Between snippet
     /// executions these are the only VM values that persist — stack and frames
     /// are transient.
     globals: Vec<Value>,
@@ -82,7 +82,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         Self {
             script_name: script_name.to_owned(),
             next_input_id: 0,
-            global_name_map: AHashMap::new(),
+            global_names: NameMap::new(),
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
             sources: AHashMap::new(),
             heap,
@@ -145,15 +145,15 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = match Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            this.global_name_map.clone(),
+            this.global_names.clone(),
             &this.interns,
-            input_names,
+            &input_names,
         ) {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
         };
 
-        this.ensure_globals_size(executor.namespace_size);
+        this.ensure_globals_size(executor.namespace_size());
 
         match HeapReader::with(&mut this.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
@@ -217,12 +217,12 @@ impl<T: ResourceTracker> MontyRepl<T> {
         let executor = Executor::new_repl_snippet(
             code.to_owned(),
             &input_script_name,
-            self.global_name_map.clone(),
+            self.global_names.clone(),
             &self.interns,
-            input_names,
+            &input_names,
         )?;
 
-        self.ensure_globals_size(executor.namespace_size);
+        self.ensure_globals_size(executor.namespace_size());
 
         let result = HeapReader::with(&mut self.heap, &mut (&executor, print), |reader, (executor, print)| {
             let mut vm = VM::new(
@@ -247,8 +247,12 @@ impl<T: ResourceTracker> MontyRepl<T> {
         // Commit compiler metadata even on runtime errors.
         // Snippets can mutate globals before raising, and those values may contain
         // FunctionId/StringId values that must be interpreted with the updated tables.
-        let Executor { name_map, interns, .. } = executor;
-        self.global_name_map = name_map;
+        let Executor {
+            globals: snippet_globals,
+            interns,
+            ..
+        } = executor;
+        self.global_names = snippet_globals;
         self.interns = interns;
 
         // Resolve every traceback frame against the source of the snippet that
@@ -270,7 +274,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
         args: Vec<MontyObject>,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
-        let Some(slot_idx) = self.global_name_map.get(name) else {
+        let slot_idx = self
+            .interns
+            .get_string_id_by_name(name)
+            .and_then(|name_id| self.global_names.get(name_id));
+        let Some(slot_idx) = slot_idx else {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
@@ -320,12 +328,12 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// Does not include builtins or external functions.
     #[must_use]
     pub fn function_names(&self) -> Vec<&str> {
-        self.global_name_map
+        self.global_names
             .iter()
-            .filter_map(|(name, ns_id)| {
+            .filter_map(|(ns_id, name_id)| {
                 let idx = ns_id.index();
                 if idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap) {
-                    Some(name.as_str())
+                    Some(self.interns.get_str(name_id))
                 } else {
                     None
                 }
@@ -336,7 +344,10 @@ impl<T: ResourceTracker> MontyRepl<T> {
     /// Returns whether a function with the given name exists in the session.
     #[must_use]
     pub fn has_function(&self, name: &str) -> bool {
-        self.global_name_map.get(name).is_some_and(|ns_id| {
+        let Some(name_id) = self.interns.get_string_id_by_name(name) else {
+            return false;
+        };
+        self.global_names.get(name_id).is_some_and(|ns_id| {
             let idx = ns_id.index();
             idx < self.globals.len() && is_callable(&self.globals[idx], &self.heap)
         })
@@ -982,23 +993,21 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 
 /// Injects input values into the VM's global namespace slots.
 ///
-/// Converts each `MontyObject` to a `Value` while the VM is alive, then stores
-/// it in the global slot that the compiler assigned for the corresponding input name.
+/// Converts each `MontyObject` to a `Value` while the VM is alive, then
+/// stores it at the namespace slot that `Executor::new_repl_snippet`
+/// pre-resolved for the corresponding input name. Each store is O(1) — the
+/// per-input name → slot lookup happens once at snippet construction, not
+/// here on the call path.
 fn inject_inputs_into_vm(
     executor: &Executor,
     input_values: Vec<MontyObject>,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
-    for (name, obj) in executor.input_names.iter().zip(input_values) {
-        let slot = executor
-            .name_map
-            .get(name)
-            .expect("input name should have a namespace slot")
-            .index();
+    for (&slot, obj) in executor.input_slots.iter().zip(input_values) {
         let value = obj
             .to_value(vm)
             .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
-        let old = mem::replace(&mut vm.globals[slot], value);
+        let old = mem::replace(&mut vm.globals[slot.index()], value);
         old.drop_with_heap(vm);
     }
     Ok(())
@@ -1027,8 +1036,12 @@ fn build_repl_progress<T: ResourceTracker>(
 
     match converted {
         ConvertedExit::Complete(obj) => {
-            let Executor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
+            let Executor {
+                globals: snippet_globals,
+                interns,
+                ..
+            } = executor;
+            repl.global_names = snippet_globals;
             repl.interns = interns;
             Ok(ReplProgress::Complete { repl, value: obj })
         }
@@ -1078,8 +1091,12 @@ fn build_repl_progress<T: ResourceTracker>(
             // Commit compiler metadata even on runtime errors, matching feed() behavior.
             // Snippets can create new variables or functions before raising, and those
             // values may reference FunctionId/StringId values from the new tables.
-            let Executor { name_map, interns, .. } = executor;
-            repl.global_name_map = name_map;
+            let Executor {
+                globals: snippet_globals,
+                interns,
+                ..
+            } = executor;
+            repl.global_names = snippet_globals;
             repl.interns = interns;
             Err(Box::new(ReplStartError { repl, error }))
         }

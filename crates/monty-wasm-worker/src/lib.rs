@@ -1,6 +1,6 @@
 //! The lean wasip1 Monty worker.
 //!
-//! This is the browser/wasm analog of `monty --subprocess`: a [`Child`] state
+//! This is the browser/wasm analog of `monty subprocess`: a [`Child`] state
 //! machine ([`monty_worker`]) driven one protocol turn per call. Where the
 //! native subprocess loops forever reading framed requests from a pipe, the
 //! wasm worker is event-driven — the host (a Web Worker drive loop) hands it one

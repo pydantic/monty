@@ -185,7 +185,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // others (`Format specifier missing precision`, the `Cannot
                 // specify …` grouping conflicts), which are self-contained.
                 let message = if err.needs_type_suffix() {
-                    let value_type = value_for_error.py_type(self);
+                    let value_type = value_for_error.py_type_name(self);
                     format!("{err} for object of type '{value_type}'")
                 } else {
                     err.to_string()

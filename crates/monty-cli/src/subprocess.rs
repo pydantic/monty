@@ -1,4 +1,4 @@
-//! `monty --subprocess`: protocol child mode.
+//! `monty subprocess`: protocol child mode.
 //!
 //! A thin stdio shell around [`monty_worker::Child`] (the transport-agnostic
 //! state machine). Reads framed [`pb::ParentRequest`]s from stdin and writes
@@ -86,7 +86,7 @@ impl EventSink for StdoutSink {
 /// unrecoverable conditions detected by the shell — the child exits right
 /// after.
 fn fatal(child: &Child, sink: &mut impl EventSink, message: &str) {
-    eprintln!("monty --subprocess fatal error: {message}");
+    eprintln!("monty subprocess fatal error: {message}");
     let _ = sink.send(&child.fatal_event(message));
 }
 

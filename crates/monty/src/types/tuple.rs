@@ -26,7 +26,7 @@ use std::{
 use ahash::AHashSet;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{CmpOrder, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
@@ -374,8 +374,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     /// tuple is considered less than the longer one — matching Python semantics:
     /// `(1, 2) < (1, 2, 3)` is `True`.
     ///
-    /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
+    /// The result of the first differing pair propagates directly: a `NaN`
+    /// element yields [`CmpOrder::Unordered`] (`(nan,) < (1,)` is `False`, not a
+    /// `TypeError`), while a type-mismatched element yields
+    /// [`CmpOrder::Incomparable`] (`(1,) < ('a',)` raises) — this element-level
+    /// distinction is exactly why [`CmpOrder`] exists.
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
         let a_len = self.get(vm.heap).items.len();
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
@@ -390,20 +394,25 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             let bv = other.clone_item(i, vm);
             defer_drop!(bv, vm);
             match av.py_cmp(bv, vm)? {
-                Some(Ordering::Equal) => {}
-                Some(ord) => return Ok(Some(ord)),
-                None => {
-                    // py_cmp returned None — the elements don't support ordering.
-                    // CPython checks __eq__ first and only calls __lt__ for non-equal
-                    // pairs, so equal-but-unorderable elements (e.g. None == None)
-                    // should be treated as equal and not block comparison.
+                CmpOrder::Ordered(Ordering::Equal) => {}
+                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
+                // A `NaN` element: elements are never `==`-equal to a `NaN`, so
+                // this is the first differing pair and the tuple is unordered.
+                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
+                CmpOrder::Incomparable => {
+                    // The elements don't support ordering. CPython checks
+                    // `__eq__` first and only calls `__lt__` for non-equal
+                    // pairs, so equal-but-unorderable elements (e.g.
+                    // `None == None`) are treated as equal and don't block the
+                    // comparison; a genuinely differing pair makes the tuple
+                    // incomparable.
                     if !av.py_eq(bv, vm)? {
-                        return Ok(None);
+                        return Ok(CmpOrder::Incomparable);
                     }
                 }
             }
         }
-        Ok(Some(a_len.cmp(&b_len)))
+        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {

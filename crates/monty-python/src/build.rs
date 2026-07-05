@@ -15,7 +15,7 @@ use pyo3::{
 use crate::{
     convert::py_to_monty_value,
     dataclass::DcRegistry,
-    exceptions::{MontyError, exc_py_to_monty},
+    exceptions::{MontyConversionError, MontyError, exc_py_to_monty},
 };
 
 /// Extracts source code, converting invalid UTF-8 (lone surrogates) into a
@@ -64,11 +64,14 @@ pub(crate) fn extract_repl_inputs(
     let Some(inputs) = inputs else {
         return Ok(vec![]);
     };
-    // Keys and values are untrusted host input, so every conversion failure
-    // surfaces uniformly as a `MontyRuntimeError`: a non-string key as
-    // `TypeError`, and a string key that fails UTF-8 conversion (lone
-    // surrogate) as the `ValueError` its `extract` produces — matching how
-    // input values are handled.
+    // Keys and values are untrusted host input. A key problem is a
+    // `MontyRuntimeError` — a non-string key (`TypeError`) or a string key that
+    // fails UTF-8 conversion (the lone-surrogate `ValueError` its `extract`
+    // produces). A value that fails to convert goes through
+    // `MontyConversionError::value_conversion_err`: an unrepresentable *type*
+    // surfaces as `MontyConversionError` (a `MontyError`), exactly as an
+    // `external_lookup` value does, while a depth-limit `RuntimeError` keeps its
+    // type.
     inputs
         .iter()
         .map(|(key, value)| {
@@ -80,7 +83,8 @@ pub(crate) fn extract_repl_inputs(
             let name = key_str
                 .extract::<String>()
                 .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
-            let obj = py_to_monty_value(&value, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
+            let obj = py_to_monty_value(&value, dc_registry)
+                .map_err(|e| MontyConversionError::value_conversion_err(py, e))?;
             Ok((name, obj))
         })
         .collect::<PyResult<_>>()

@@ -36,14 +36,6 @@ Rejected with `TypeError` if passed:
   values raise `TypeError` instead of routing through a callback.
 - `check_circular` — circular reference detection is always on.
 
-Error wording divergence: passing too many positional args raises
-`TypeError: dumps expected at most 1 argument, got N` in Monty, but
-`TypeError: dumps() takes 1 positional argument but N were given` in
-CPython. CPython's `dumps` is implemented in Python, so it gets the
-pure-Python function arity wording; Monty uses the `PyArg_UnpackTuple`
-("expected at most …, got …") form for every Python-style `FromArgs`
-callsite. The arity check itself is equivalent.
-
 ## `JSONDecodeError`
 
 Inherits from `ValueError` (catchable as `except ValueError:`). The class

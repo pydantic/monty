@@ -1,84 +1,78 @@
-//! Rebuilding a Monty traceback from an embedded-CPython `PyErr`.
+//! Rebuilding a Monty traceback from an embedded-CPython exception.
 //!
 //! The wire protocol carries a full `RaisedException.traceback`, and
 //! `error_from_exception` serializes whatever frames a `MontyException` holds —
 //! but a `MontyException` converted from a `PyErr` via `exc_py_to_monty` arrives
-//! with none. This module walks the CPython traceback object and rebuilds the
-//! sandbox frames so the parent sees a real stack, not just `Type: message`.
+//! with none. This module fills them in.
 //!
-//! Only frames whose filename is the session's `script_name` (the name fed code
-//! compiles under — see `runner.py`'s `run`) are kept; the driver frames inside
-//! `runner.py` (`run`, `drive_async`, the `eval` calls) are dropped so the
-//! traceback shows only the user's code.
-//!
-//! This is "tier 1" fidelity: filename, line, and function name only. CPython
-//! column ranges and source-line previews are not reconstructed, so frames
-//! carry no caret markers (`hide_caret: true`).
+//! The heavy lifting lives in `runner.py`'s `extract_traceback`, which walks the
+//! CPython traceback using CPython's own machinery: it keeps only user frames,
+//! recovers each frame's source line from `linecache`, and takes the anchored
+//! column span and caret-visibility decision straight from CPython's renderer
+//! (so `raise` and whole-line cases match exactly). This Rust side just hands it
+//! the traceback object and maps the returned tuples onto [`StackFrame`].
+
+use std::{collections::HashMap, sync::Arc};
 
 use monty::{CodeLoc, StackFrame};
 use pyo3::prelude::*;
 
-/// CPython's `co_name` for module-level code, which Monty renders as `<module>`
-/// from a `None` frame name.
-const MODULE_FRAME_NAME: &str = "<module>";
+use crate::pyexec::Runner;
 
-/// Walks `err`'s CPython traceback into Monty stack frames, outermost first.
+/// One frame as returned by `runner.py`'s `extract_traceback`, in declaration
+/// order: `(filename, start_line, start_col, end_line, end_col, frame_name,
+/// preview_line, hide_caret, hide_frame_name)`. Lines/columns are 1-based and
+/// columns count characters.
+type FrameTuple = (String, u32, u32, u32, u32, Option<String>, Option<String>, bool, bool);
+
+/// Rebuilds `err`'s traceback into Monty stack frames, outermost first, with
+/// `script_name` as every frame's reported filename.
 ///
-/// `script_name` is the filename fed code was compiled under; only frames from
-/// that file are kept (driver frames live in `runner.py`).
-///
-/// Best-effort: any failure to read a traceback attribute stops the walk and
-/// returns the frames gathered so far, so a malformed traceback degrades to a
-/// shorter (or empty) one rather than masking the original exception.
-pub fn py_traceback_frames(py: Python<'_>, err: &PyErr, script_name: &str) -> Vec<StackFrame> {
-    let mut frames = Vec::new();
-    let Some(tb) = err.traceback(py) else {
-        return frames;
-    };
-    let mut current = tb.into_any();
-    loop {
-        match frame_from_tb(&current, script_name) {
-            Ok(Some(frame)) => frames.push(frame),
-            Ok(None) => {}   // a runner/internal frame, skipped
-            Err(_) => break, // malformed traceback: keep what we have
-        }
-        current = match current.getattr("tb_next") {
-            Ok(next) if !next.is_none() => next,
-            _ => break,
-        };
-    }
-    frames
+/// Best-effort: a failure talking to the Python extractor yields an empty
+/// traceback rather than masking the original exception. This is only a true
+/// last resort — `extract_traceback` itself already falls back to a stdlib-free
+/// walk when the rich path fails (e.g. the sandbox monkey-patched
+/// `traceback`/`linecache`), so it still returns frames rather than erasing
+/// them.
+pub fn py_traceback_frames(py: Python<'_>, runner: &Runner, err: &PyErr, script_name: &str) -> Vec<StackFrame> {
+    extract(py, runner, err, script_name).unwrap_or_default()
 }
 
-/// Builds a `StackFrame` for one CPython traceback node, or `None` if the node
-/// belongs to another file (a `runner.py` driver frame to be dropped).
-fn frame_from_tb(tb: &Bound<'_, PyAny>, script_name: &str) -> PyResult<Option<StackFrame>> {
-    let frame = tb.getattr("tb_frame")?;
-    let code = frame.getattr("f_code")?;
-    let filename: String = code.getattr("co_filename")?.extract()?;
-    if filename != script_name {
-        return Ok(None);
-    }
-    let lineno: u32 = tb.getattr("tb_lineno")?.extract()?;
-    let name: String = code.getattr("co_name")?.extract()?;
-    // CPython names module-level code `<module>`; Monty renders that from a
-    // `None` frame name, so map it back rather than carrying the literal.
-    let frame_name = (name != MODULE_FRAME_NAME).then_some(name);
-    // Tier 1: line only. No column range or source preview is reconstructed, so
-    // the start/end positions are a bare line and carets are suppressed. The
-    // wire decoder only validates columns when a preview line is present, so a
-    // zero column here roundtrips cleanly.
-    let position = CodeLoc {
-        line: lineno,
-        column: 0,
+/// The fallible core: invokes `extract_traceback` and converts its result.
+fn extract(py: Python<'_>, runner: &Runner, err: &PyErr, script_name: &str) -> PyResult<Vec<StackFrame>> {
+    let Some(traceback) = err.traceback(py) else {
+        return Ok(Vec::new());
     };
-    Ok(Some(StackFrame {
-        filename,
-        start: position,
-        end: position,
-        frame_name,
-        preview_line: None,
-        hide_caret: true,
-        hide_frame_name: false,
-    }))
+    let result = runner.extract_traceback(py, &traceback, script_name)?;
+    let mut frames = Vec::new();
+    // Share one `Arc` per distinct preview line, the same sharing `StackFrame`
+    // relies on: a deep recursion on a long line would otherwise clone the whole
+    // line into every frame and amplify memory by the call depth.
+    let mut previews: HashMap<String, Arc<str>> = HashMap::new();
+    for item in result.try_iter()? {
+        let (filename, start_line, start_col, end_line, end_col, frame_name, preview_line, hide_caret, hide_frame_name): FrameTuple =
+            item?.extract()?;
+        let preview_line = preview_line.map(|line| {
+            previews
+                .entry(line)
+                .or_insert_with_key(|line| Arc::from(line.as_str()))
+                .clone()
+        });
+        frames.push(StackFrame {
+            filename,
+            start: CodeLoc {
+                line: start_line,
+                column: start_col,
+            },
+            end: CodeLoc {
+                line: end_line,
+                column: end_col,
+            },
+            frame_name,
+            preview_line,
+            hide_caret,
+            hide_frame_name,
+        });
+    }
+    Ok(frames)
 }

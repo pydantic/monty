@@ -78,6 +78,26 @@ test('bytes result', async (t) => {
 })
 
 // =============================================================================
+// str.encode('ascii') / bytes.decode('ascii') tests
+// =============================================================================
+
+test('str encode ascii ignore then bytes decode ascii round-trips', async (t) => {
+  const result = await run('"café — 日本語 test".encode("ascii", "ignore").decode("ascii")')
+  t.is(result, 'caf   test')
+})
+
+test('str encode ascii replace', async (t) => {
+  const result = await run('"héllo".encode("ascii", "replace")')
+  t.true(Buffer.isBuffer(result))
+  t.deepEqual([...(result as Buffer)], [...Buffer.from('h?llo')])
+})
+
+test('bytes decode ascii backslashreplace', async (t) => {
+  const result = await run('b"h\\xe9llo".decode("ascii", "backslashreplace")')
+  t.is(result, 'h\\xe9llo')
+})
+
+// =============================================================================
 // List tests
 // =============================================================================
 

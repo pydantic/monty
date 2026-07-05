@@ -1,7 +1,6 @@
 //! Public interface for running Monty code.
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ahash::AHashMap;
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -11,9 +10,10 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
+    name_map::NameMap,
     namespace::NamespaceId,
     object::MontyObject,
-    parse::{CodeRange, ParseError, parse, parse_with_interner},
+    parse::{CodeRange, parse, parse_with_interner},
     prepare::{prepare, prepare_with_existing_names},
     resource::{NoLimitTracker, ResourceTracker},
     run_progress::{RunProgress, build_run_progress, check_snapshot_from_converted, convert_frame_exit},
@@ -160,7 +160,7 @@ impl MontyRun {
         let executor = self.executor;
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
-        let mut heap = Heap::new(executor.namespace_size, resource_tracker);
+        let mut heap = Heap::new(executor.namespace_size(), resource_tracker);
         let globals = executor.empty_globals();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
@@ -185,26 +185,22 @@ impl MontyRun {
 /// for error reporting. Also used by `run_progress` and `repl` modules.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Executor {
-    /// Number of slots needed in the global namespace.
-    pub(crate) namespace_size: usize,
-    /// Maps variable names to their indices in the namespace.
-    ///
-    /// Used by:
-    /// - ref-count tests for looking up variables by name
-    /// - REPL incremental compilation to preserve stable global slot IDs across snippets
-    /// - [`MontyRepl::call_function`](crate::MontyRepl) to look up functions by name
-    pub(crate) name_map: AHashMap<String, NamespaceId>,
+    /// Module-level global names.
+    pub(crate) globals: NameMap,
     /// Compiled bytecode for the module.
     pub(crate) module_code: Code,
     /// Interned strings used for looking up names and filenames during execution.
     pub(crate) interns: Interns,
     /// Source code for error reporting (extracting preview lines for tracebacks).
     pub(crate) code: String,
-    /// Input variable names that were injected for this snippet.
+    /// Namespace slots that the REPL input-injection path writes into.
     ///
-    /// Used by the REPL path to look up namespace slots for injected inputs.
+    /// Pre-resolved at snippet-construction time so the per-call hot path
+    /// (`inject_inputs_into_vm`) is an O(1) slot index instead of an
+    /// O(N-interns) `Interns::get_string_id_by_name` lookup per input.
+    /// One entry per input value, in the order the embedder passed them.
     /// Empty for the standard (non-REPL) execution path.
-    pub(crate) input_names: Vec<String>,
+    pub(crate) input_slots: Vec<NamespaceId>,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -213,12 +209,11 @@ pub(crate) struct Executor {
 impl Clone for Executor {
     fn clone(&self) -> Self {
         Self {
-            namespace_size: self.namespace_size,
-            name_map: self.name_map.clone(),
+            globals: self.globals.clone(),
             module_code: self.module_code.clone(),
             interns: self.interns.clone(),
             code: self.code.clone(),
-            input_names: self.input_names.clone(),
+            input_slots: self.input_slots.clone(),
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -237,21 +232,27 @@ impl Executor {
         // Compile the module to bytecode, which also compiles all nested functions.
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, prepared.namespace_size)
+        let namespace_size = prepared.globals.len();
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Set the compiled functions in the interns
         interns.set_functions(compile_result.functions);
 
         Ok(Self {
-            namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
+            globals: prepared.globals,
             module_code: compile_result.code,
             interns,
             code,
-            input_names: Vec::new(),
-            heap_capacity: AtomicUsize::new(prepared.namespace_size),
+            input_slots: Vec::new(),
+            heap_capacity: AtomicUsize::new(namespace_size),
         })
+    }
+
+    /// Returns the size of the module's global namespace (number of slots).
+    #[inline]
+    pub(crate) fn namespace_size(&self) -> usize {
+        self.globals.len()
     }
 
     /// Compiles one REPL snippet against existing session metadata.
@@ -260,61 +261,56 @@ impl Executor {
     /// no-replay REPL execution:
     /// - Seeds parsing from `existing_interns` so old `StringId` values stay stable.
     /// - Seeds compilation with existing functions so old `FunctionId` values remain valid.
-    /// - Reuses `existing_name_map` and appends new global names only.
+    /// - Reuses `existing_globals` and appends new global names only.
     ///
-    /// `input_names` are pre-registered in the name map before preparation so they
-    /// receive stable namespace slots that the REPL input-injection logic can use.
+    /// `input_names` are pre-registered in the globals map before preparation so
+    /// they receive stable namespace slots that the REPL input-injection logic
+    /// can use.
     pub(crate) fn new_repl_snippet(
         code: String,
         script_name: &str,
-        mut existing_name_map: AHashMap<String, NamespaceId>,
+        mut existing_globals: NameMap,
         existing_interns: &Interns,
-        input_names: Vec<String>,
+        input_names: &[String],
     ) -> Result<Self, MontyException> {
-        check_identifier(&input_names)?;
-        // Pre-register input names so they get stable slots before preparation.
-        // Surfaced via the standard parse/prepare error path; if the embedder
-        // hands over more than `u16::MAX + 1` names the bytecode encoding
-        // can't represent them all.
-        for name in &input_names {
-            if existing_name_map.contains_key(name) {
-                continue;
-            }
-            let next_slot = existing_name_map.len();
-            let slot = NamespaceId::new(next_slot).ok_or_else(|| {
-                ParseError::syntax(
-                    format!("too many distinct names in scope; maximum is {} per scope", u16::MAX),
-                    CodeRange::default(),
-                )
-                .into_python_exc(script_name, &code)
-            })?;
-            existing_name_map.insert(name.clone(), slot);
+        check_identifier(input_names)?;
+
+        let mut seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
+        // Pre-register input names so they get stable slots before
+        // preparation, and capture each input's slot index so injection
+        // doesn't have to perform an O(N-interns) name→StringId scan at
+        // call time (one slot per input value, in order).
+        //
+        // Surfaced via the standard parse/prepare error path; if the
+        // embedder hands over more than `u16::MAX + 1` names the bytecode
+        // encoding can't represent them all.
+        let mut input_slots = Vec::with_capacity(input_names.len());
+        for name in input_names {
+            let name_id = seeded_interner.intern(name);
+            let slot = existing_globals
+                .ensure_slot(name_id, CodeRange::default())
+                .map_err(|e| e.into_python_exc(script_name, &code))?;
+            input_slots.push(slot);
         }
 
-        let seeded_interner = InternerBuilder::from_interns(existing_interns, &code);
         let parse_result = parse_with_interner(&code, script_name, seeded_interner)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
-        let prepared = prepare_with_existing_names(parse_result, existing_name_map)
+        let prepared = prepare_with_existing_names(parse_result, existing_globals)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        let compile_result = Compiler::compile_module_with_functions(
-            &prepared.nodes,
-            &interns,
-            prepared.namespace_size,
-            existing_functions,
-        )
-        .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let compile_result =
+            Compiler::compile_module_with_functions(&prepared.nodes, &interns, &prepared.globals, existing_functions)
+                .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);
 
         Ok(Self {
-            namespace_size: prepared.namespace_size,
-            name_map: prepared.name_map,
+            globals: prepared.globals,
             module_code: compile_result.code,
             interns,
             code,
-            input_names,
+            input_slots,
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -427,7 +423,7 @@ impl Executor {
     ) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
-        let mut heap = Heap::new(self.namespace_size, resource_tracker);
+        let mut heap = Heap::new(self.namespace_size(), resource_tracker);
         let globals = self.empty_globals();
 
         HeapReader::with(&mut heap, &mut &*self, |reader, executor| {
@@ -447,12 +443,12 @@ impl Executor {
             let mut counts = ahash::AHashMap::new();
             let mut unique_ids = HashSet::new();
 
-            for (name, &namespace_id) in &executor.name_map {
+            for (namespace_id, name_id) in executor.globals.iter() {
                 let idx = namespace_id.index();
                 if idx < globals.len()
                     && let Value::Ref(id) = &globals[idx]
                 {
-                    counts.insert(name.clone(), vm.heap.get_refcount(*id));
+                    counts.insert(executor.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
                     unique_ids.insert(*id);
                 }
             }
@@ -487,7 +483,7 @@ impl Executor {
     /// with these empty globals, then [`populate_inputs`](Self::populate_inputs) fills
     /// the input slots while the VM is alive.
     pub(crate) fn empty_globals(&self) -> Vec<Value> {
-        (0..self.namespace_size).map(|_| Value::Undefined).collect()
+        (0..self.namespace_size()).map(|_| Value::Undefined).collect()
     }
 
     /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
@@ -500,7 +496,7 @@ impl Executor {
         inputs: Vec<MontyObject>,
         vm: &mut VM<'_, impl ResourceTracker>,
     ) -> Result<(), MontyException> {
-        if inputs.len() > self.namespace_size {
+        if inputs.len() > self.namespace_size() {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         }
         for (i, input) in inputs.into_iter().enumerate() {

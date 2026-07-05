@@ -20,7 +20,7 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     os::OsFunctionCall,
     resource::ResourceTracker,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
+    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -356,7 +356,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 // Non-heap values without method support
-                let type_name = obj.py_type(this);
+                let type_name = obj.py_type_name(this);
                 args.drop_with_heap(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
@@ -431,15 +431,28 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                let ty = callable.py_type(self);
+                let ty = callable.py_type_name(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
         }
     }
 
-    /// Handles calling a heap-allocated callable (closure, function with defaults, or external function).
+    /// Handles calling a heap-allocated callable (closure, function with defaults,
+    /// external function, class constructor, or bound method).
     fn call_heap_callable(&mut self, heap_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        // Calling a class constructs an instance; calling a bound method prepends
+        // its captured `self`. Both are dispatched before the closure/defaults
+        // path because they don't fit the `(func_id, cells, defaults)` shape.
+
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
+            HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            HeapData::BoundMethod(bm) => {
+                let instance = bm.instance.clone_with_heap(self);
+                let func = bm.func.clone_with_heap(self);
+                let this = self;
+                defer_drop!(func, this);
+                return this.call_function(func, args.prepend(instance));
+            }
             HeapData::Closure(closure) => {
                 let cloned_cells = closure.cells.clone();
                 let cloned_defaults: Vec<Value> = closure.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
@@ -456,7 +469,8 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             _ => {
                 args.drop_with_heap(self);
-                return Err(ExcType::type_error("object is not callable"));
+                let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
+                return Err(ExcType::type_error_not_callable_object(&type_name));
             }
         };
 
@@ -825,6 +839,151 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         Ok(CallResult::FramePushed)
     }
+
+    /// Constructs an instance of a user-defined class — the `Foo(...)` path.
+    ///
+    /// Allocates the instance with an empty `__dict__`, then:
+    /// - **No `__init__`:** rejects any arguments (like `object()`), returns the
+    ///   instance directly.
+    /// - **`__init__` is a plain sync function** (the normal case): pushes the
+    ///   instance onto the operand stack as the pending result, runs
+    ///   `__init__(self, *args)` as a real (suspendable) frame, and marks that
+    ///   frame `is_initializer`. When the initializer frame returns, the
+    ///   [`ReturnValue`](crate::bytecode::Opcode::ReturnValue) handler enforces the
+    ///   `None` return and leaves the already-pushed instance as the result — so
+    ///   `Foo(a)` evaluates to the new instance, not `__init__`'s return.
+    /// - **Any other `__init__`** (builtin, class, `async def`, non-callable, ...):
+    ///   runs it to completion synchronously via
+    ///   [`evaluate_function`](Self::evaluate_function) and enforces CPython's
+    ///   contract that it returns `None`. This path cannot suspend, and must NOT
+    ///   go through the frame-marking path: a class-valued `__init__` recurses
+    ///   into `instantiate_class`, which pushes its own pending instance —
+    ///   blindly marking the resulting frame would corrupt the operand stack.
+    ///
+    /// Because a plain-function `__init__` runs as a normal frame, it may suspend
+    /// on external/OS calls; the `is_initializer` flag is threaded through frame
+    /// serialization so a suspended initializer resumes correctly.
+    fn instantiate_class(&mut self, class_id: HeapId, args: ArgValues) -> Result<CallResult, RunError> {
+        // Allocate the instance. On allocation failure drop the args we own.
+        let instance_id = match self
+            .heap
+            .allocate(HeapData::Instance(Instance::new(class_id, Dict::new())))
+        {
+            Ok(id) => id,
+            Err(e) => {
+                args.drop_with_heap(self);
+                return Err(e.into());
+            }
+        };
+        // The instance now owns a reference to its class object.
+        self.heap.inc_ref(class_id);
+
+        // Look up `__init__` in the class namespace (cloned out to release the borrow).
+        let init = match self.heap.get(class_id) {
+            HeapData::Class(class) => class
+                .namespace()
+                .get_by_str("__init__", self.heap, self.interns)
+                .map(|v| v.clone_with_heap(self)),
+            _ => None,
+        };
+
+        match init {
+            None => {
+                if matches!(args, ArgValues::Empty) {
+                    Ok(CallResult::Value(Value::Ref(instance_id)))
+                } else {
+                    args.drop_with_heap(self);
+                    let name = class_name(class_id, self.heap, self.interns);
+                    Value::Ref(instance_id).drop_with_heap(self);
+                    Err(ExcType::type_error(format!("{name}() takes no arguments")))
+                }
+            }
+            Some(init_func) => {
+                let this = self;
+                defer_drop!(init_func, this);
+                // CPython's `type.__call__` looks up `__init__` with descriptor
+                // binding: only plain functions bind the new instance as `self`.
+                // Bound methods already carry their own receiver, and builtins,
+                // classes and other values are called with the constructor
+                // arguments unchanged.
+                let init_args = if this.is_function_value(init_func) {
+                    this.heap.inc_ref(instance_id);
+                    args.prepend(Value::Ref(instance_id))
+                } else {
+                    args
+                };
+                if this.is_plain_sync_function(init_func) {
+                    // Push the instance as the pending result (transferring the
+                    // allocation's reference), then run __init__ as a real
+                    // (suspendable) frame.
+                    this.push(Value::Ref(instance_id));
+                    match this.call_function(init_func, init_args)? {
+                        CallResult::FramePushed => {
+                            // Mark the just-pushed frame so its return value is
+                            // discarded (after the `None` check in the ReturnValue
+                            // handler) and the pending instance becomes the result.
+                            this.current_frame_mut().is_initializer = true;
+                            Ok(CallResult::FramePushed)
+                        }
+                        other => {
+                            // Defensive: `is_plain_sync_function` guarantees a frame push.
+                            other.drop_with_heap(this);
+                            this.pop().drop_with_heap(this);
+                            Err(ExcType::type_error("__init__() must be a regular function"))
+                        }
+                    }
+                } else {
+                    // Exotic `__init__` (builtin, class, `async def`, non-callable,
+                    // ...): run to completion synchronously — no pending instance is
+                    // pushed — and enforce CPython's `None`-return contract.
+                    match this.evaluate_function("__init__", init_func, init_args) {
+                        Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
+                        Ok(result) => {
+                            let type_name = result.py_type_name(this);
+                            result.drop_with_heap(this);
+                            Value::Ref(instance_id).drop_with_heap(this);
+                            Err(ExcType::type_error_init_return(type_name))
+                        }
+                        Err(e) => {
+                            Value::Ref(instance_id).drop_with_heap(this);
+                            Err(e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether `value` is a plain Python function object (`def`, closure, or
+    /// function-with-defaults — sync or async): the kinds that act as descriptors
+    /// in CPython and therefore bind an instance when looked up as a class member.
+    fn is_function_value(&self, value: &Value) -> bool {
+        match value {
+            Value::DefFunction(_) => true,
+            Value::Ref(id) => matches!(self.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),
+            _ => false,
+        }
+    }
+
+    /// Whether calling `value` would push a regular synchronous frame
+    /// (`CallResult::FramePushed`): a plain `def`, closure, function-with-defaults,
+    /// or a bound method wrapping one — but not an `async def`, whose call creates
+    /// a coroutine instead. Used by [`instantiate_class`](Self::instantiate_class)
+    /// to decide whether `__init__` can run as a suspendable initializer frame.
+    fn is_plain_sync_function(&self, value: &Value) -> bool {
+        match value {
+            Value::DefFunction(func_id) => !self.interns.get_function(*func_id).is_async,
+            Value::Ref(id) => match self.heap.get(*id) {
+                HeapData::Closure(closure) => !self.interns.get_function(closure.func_id).is_async,
+                HeapData::FunctionDefaults(fd) => !self.interns.get_function(fd.func_id).is_async,
+                // Bound methods never wrap another bound method, so this
+                // recursion is at most one level deep.
+                HeapData::BoundMethod(bm) => self.is_plain_sync_function(&bm.func),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// Centralised dunder dispatch for `__enter__` / `__exit__` (and, when added,
@@ -850,6 +1009,17 @@ fn dispatch_dunder<T: ResourceTracker>(
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = StaticStrings::from_string_id(name_id)?;
+    // User-defined instances are never intercepted: an explicit
+    // `obj.__enter__()` / `obj.__exit__(a, b, c)` on an instance is an
+    // ordinary method call in CPython — the instance `__dict__` can shadow
+    // the class method and the arguments must reach the user function
+    // verbatim (the trait hooks reduce them to an `Option<HeapId>`, which
+    // is lossy). The `with` statement still uses the trait hooks via the
+    // `BeforeWith`/`WithExit`/`WithExceptStart` opcodes, which perform the
+    // CPython type-level (class-only) lookup.
+    if matches!(vm.heap.get(heap_id), HeapData::Instance(_)) {
+        return None;
+    }
     Some(match static_str {
         StaticStrings::Enter => {
             let args = args.take().expect("dispatch_dunder called with empty args slot");

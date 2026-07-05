@@ -313,12 +313,12 @@ fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_, impl ResourceTracker>) ->
             HeapData::Path(p) => Ok(p.as_str()),
             _ => Err(ExcType::type_error(format!(
                 "expected str or Path, got {}",
-                val.py_type(vm)
+                val.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "expected str or Path, got {}",
-            val.py_type(vm)
+            val.py_type_name(vm)
         ))),
     }
 }

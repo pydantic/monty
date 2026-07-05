@@ -7,6 +7,7 @@ mod args;
 mod asyncio;
 mod builtins;
 mod bytecode;
+mod codecs;
 mod exception_private;
 mod exception_public;
 mod expressions;
@@ -18,6 +19,7 @@ mod heap_data;
 mod intern;
 mod io;
 mod modules;
+mod name_map;
 mod namespace;
 mod object;
 mod os;
@@ -27,7 +29,6 @@ mod repl;
 mod resource;
 mod run;
 mod run_progress;
-mod signature;
 mod sorting;
 mod string_builder;
 mod types;
@@ -37,11 +38,11 @@ mod value;
 pub use crate::run::RefCountOutput;
 pub use crate::{
     exception_private::ExcType,
-    exception_public::{CodeLoc, MontyException, StackFrame},
+    exception_public::{CodeLoc, ExcData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject},
     io::{PrintStream, PrintWriter, PrintWriterCallback},
     object::{
         DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-        MontyTimeZone,
+        MontyTimeZone, MontyType,
     },
     os::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
@@ -58,5 +59,5 @@ pub use crate::{
     run_progress::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },
-    types::{file::FileMode, str::StringRepr, r#type::Type},
+    types::{file::FileMode, str::StringRepr},
 };

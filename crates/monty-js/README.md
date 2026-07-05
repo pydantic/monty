@@ -55,30 +55,43 @@ Pass values as globals for a feed:
 await session.feedRun('x + y', { inputs: { x: 10, y: 20 } }) // 30
 ```
 
-## External Functions
+## External Lookup
 
-The sandbox can call host functions by name — sync or async (async functions
-are awaited while other sandbox tasks keep running):
+`externalLookup` resolves names a snippet leaves undefined, lazily and on
+demand. A **function** entry becomes a host function the sandbox can call by
+name — sync or async (async functions are awaited while other sandbox tasks
+keep running). Any **other value** is converted and returned directly when the
+name is read. An absent name raises `NameError`.
 
 ```ts
 await session.feedRun('add(2, 3)', {
-  externalFunctions: { add: (a: number, b: number) => a + b },
+  externalLookup: { add: (a: number, b: number) => a + b },
 }) // 5
 
 await session.feedRun('await fetch_data(url)', {
   inputs: { url: 'https://example.com' },
-  externalFunctions: {
+  externalLookup: {
     fetch_data: async (url: string) => {
       const response = await fetch(url)
       return response.text()
     },
   },
 })
+
+await session.feedRun('greeting + name', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greeting: 'hello ' },
+}) // 'hello Ada'
 ```
 
-Keyword arguments arrive as a trailing object; thrown errors cross into the
-sandbox as Python exceptions (the error's `name` is used when it matches a
-Python exception type, e.g. `TypeError`, otherwise `RuntimeError`).
+`externalLookup` is the lazy counterpart to `inputs`, which eagerly binds every
+entry as a global whether or not it is referenced; a name in both is served by
+the eager `inputs` binding.
+
+For function entries, keyword arguments arrive as a trailing object; thrown
+errors cross into the sandbox as Python exceptions (the error's `name` is used
+when it matches a Python exception type, e.g. `TypeError`, otherwise
+`RuntimeError`).
 
 ## Snapshots: pausing and resuming
 
@@ -96,6 +109,25 @@ if (snap instanceof FunctionSnapshot) {
   const done = await snap.resume('hello Ada')
   if (done instanceof MontyComplete) console.log(done.output) // 'hello Ada!'
 }
+```
+
+To iterate a snippet to completion without answering each suspension by hand,
+pass an `externalLookup` (and/or `os`) to `feedStart` and drive with
+`snapshot.resumeAuto()`, which resolves each external call and name lookup from
+them automatically — the same resolution `feedRun` performs, but one step at a
+time so you can inspect or `dump()` each snapshot along the way. A
+promise-returning external is awaited concurrently (surfacing as an intermediate
+`FutureSnapshot`), exactly as under `feedRun`:
+
+```ts
+let snap = await session.feedStart('greet(name) + "!"', {
+  inputs: { name: 'Ada' },
+  externalLookup: { greet: (n: string) => `hello ${n}` },
+})
+while (!(snap instanceof MontyComplete)) {
+  snap = await snap.resumeAuto()
+}
+console.log(snap.output) // 'hello Ada!'
 ```
 
 `snapshot.dump()` serializes the paused worker to bytes; a fresh session's

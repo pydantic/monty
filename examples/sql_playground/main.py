@@ -55,7 +55,7 @@ async def main():
         ) as session:
             results = await session.feed_run(
                 SANDBOX_CODE_PATH.read_text(),
-                external_functions={
+                external_lookup={
                     'query_csv': external_funcs.query_csv,
                     'read_json': external_funcs.read_json,
                     'analyze_sentiment': external_funcs.analyze_sentiment,

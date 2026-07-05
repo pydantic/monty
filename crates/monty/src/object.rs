@@ -19,7 +19,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::FormatFloat,
-    heap::{HeapData, HeapId, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapReadOutput},
+    intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{
         Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
@@ -27,6 +28,7 @@ use crate::{
         date as date_type, datetime as datetime_type,
         dict::Dict,
         file::FileMode,
+        instance::class_name,
         list::List,
         set::{FrozenSet, Set},
         str::{StringRepr, allocate_string, string_repr_fmt},
@@ -274,7 +276,7 @@ pub enum MontyObject {
     /// A Python type object (e.g., `int`, `str`, `list`).
     ///
     /// Returned by the `type()` builtin and can be compared with other types.
-    Type(Type),
+    Type(MontyType),
     BuiltinFunction(BuiltinsFunctions),
     /// Python `pathlib.Path` object (or technically a `PurePosixPath`).
     ///
@@ -326,6 +328,215 @@ pub enum MontyObject {
     ///
     /// This is output-only and cannot be used as an input to `Executor::run()`.
     Cycle(usize, String),
+}
+
+/// The Python type of a value at the host boundary — the public mirror of the
+/// internal runtime `Type` enum.
+///
+/// Where the runtime `Type::Instance` carries a transient heap id, the public
+/// [`MontyType::Instance`] carries the *resolved class name* as an owned
+/// `String`, so a `MontyType` is always self-contained: it can be serialized,
+/// sent over the subprocess wire protocol, and displayed without heap access.
+///
+/// `Instance` is output-only: a class binding cannot be reconstructed from a
+/// name, so passing `MontyType::Instance` as an *input* is rejected with an
+/// [`InvalidInputError`] (see [`MontyObject`] input conversion).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumIter)]
+pub enum MontyType {
+    Ellipsis,
+    Type,
+    NoneType,
+    Bool,
+    Int,
+    Float,
+    Range,
+    Slice,
+    Date,
+    DateTime,
+    TimeDelta,
+    TimeZone,
+    Str,
+    Bytes,
+    List,
+    Tuple,
+    NamedTuple,
+    Dict,
+    DictKeys,
+    DictItems,
+    DictValues,
+    Set,
+    FrozenSet,
+    Dataclass,
+    /// An instance of a sandbox-defined class (`class Foo: ...`), carrying the
+    /// resolved class name (e.g. `"Foo"`). Output-only — rejected as an input.
+    ///
+    /// `#[strum(disabled)]`: excluded from `EnumIter` (no meaningful default
+    /// name; the name round-trip tests iterate the nameable variants only).
+    #[strum(disabled)]
+    Instance(String),
+    Exception(ExcType),
+    Function,
+    BuiltinFunction,
+    Cell,
+    Iterator,
+    Coroutine,
+    Module,
+    TextIOWrapper,
+    BufferedReader,
+    BufferedWriter,
+    BufferedRandom,
+    SpecialForm,
+    Path,
+    Property,
+    RePattern,
+    ReMatch,
+}
+
+impl fmt::Display for MontyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl MontyType {
+    /// The Python-visible name of this type (`"int"`, `"datetime.datetime"`,
+    /// `"ValueError"`, or the class name for [`Instance`](Self::Instance)).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Instance(name) => name,
+            Self::Exception(exc_type) => (*exc_type).into(),
+            // `to_internal` is `Some` for every remaining variant, and strum's
+            // `IntoStaticStr` on `Type` names them all (`Exception`/`Instance`
+            // are peeled off above); the fallback is unreachable but keeps
+            // this panic-free.
+            other => other.to_internal().map_or("object", Into::into),
+        }
+    }
+
+    /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
+    /// back to the `MontyType` — the wire-protocol decode path for builtin
+    /// type names. Never yields [`Instance`](Self::Instance) (`"object"` and
+    /// class names return `None`); the wire carries instance types in a
+    /// dedicated field instead.
+    #[must_use]
+    pub fn from_type_name(name: &str) -> Option<Self> {
+        Type::from_type_name(name).map(Self::from_internal_static)
+    }
+
+    /// The internal runtime [`Type`] this variant mirrors, or `None` for
+    /// [`Instance`](Self::Instance) — a class binding cannot be reconstructed
+    /// from a name, which is exactly why `Instance` inputs are rejected.
+    ///
+    /// Keep in lockstep with [`from_internal_static`](Self::from_internal_static);
+    /// both matches are exhaustive so the compiler enforces totality.
+    pub(crate) fn to_internal(&self) -> Option<Type> {
+        match self {
+            Self::Ellipsis => Some(Type::Ellipsis),
+            Self::Type => Some(Type::Type),
+            Self::NoneType => Some(Type::NoneType),
+            Self::Bool => Some(Type::Bool),
+            Self::Int => Some(Type::Int),
+            Self::Float => Some(Type::Float),
+            Self::Range => Some(Type::Range),
+            Self::Slice => Some(Type::Slice),
+            Self::Date => Some(Type::Date),
+            Self::DateTime => Some(Type::DateTime),
+            Self::TimeDelta => Some(Type::TimeDelta),
+            Self::TimeZone => Some(Type::TimeZone),
+            Self::Str => Some(Type::Str),
+            Self::Bytes => Some(Type::Bytes),
+            Self::List => Some(Type::List),
+            Self::Tuple => Some(Type::Tuple),
+            Self::NamedTuple => Some(Type::NamedTuple),
+            Self::Dict => Some(Type::Dict),
+            Self::DictKeys => Some(Type::DictKeys),
+            Self::DictItems => Some(Type::DictItems),
+            Self::DictValues => Some(Type::DictValues),
+            Self::Set => Some(Type::Set),
+            Self::FrozenSet => Some(Type::FrozenSet),
+            Self::Dataclass => Some(Type::Dataclass),
+            Self::Instance(_) => None,
+            Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
+            Self::Function => Some(Type::Function),
+            Self::BuiltinFunction => Some(Type::BuiltinFunction),
+            Self::Cell => Some(Type::Cell),
+            Self::Iterator => Some(Type::Iterator),
+            Self::Coroutine => Some(Type::Coroutine),
+            Self::Module => Some(Type::Module),
+            Self::TextIOWrapper => Some(Type::TextIOWrapper),
+            Self::BufferedReader => Some(Type::BufferedReader),
+            Self::BufferedWriter => Some(Type::BufferedWriter),
+            Self::BufferedRandom => Some(Type::BufferedRandom),
+            Self::SpecialForm => Some(Type::SpecialForm),
+            Self::Path => Some(Type::Path),
+            Self::Property => Some(Type::Property),
+            Self::RePattern => Some(Type::RePattern),
+            Self::ReMatch => Some(Type::ReMatch),
+        }
+    }
+
+    /// Mirrors a runtime [`Type`] whose class identity is NOT needed. Use
+    /// [`from_internal`](Self::from_internal) when a heap is available.
+    ///
+    /// # Panics
+    /// On `Instance`, whose class name cannot be resolved without a heap; it
+    /// is unreachable on every current call path (`Builtins::Type` and
+    /// `from_type_name` never hold/produce it).
+    pub(crate) fn from_internal_static(ty: Type) -> Self {
+        match ty {
+            Type::Ellipsis => Self::Ellipsis,
+            Type::Type => Self::Type,
+            Type::NoneType => Self::NoneType,
+            Type::Bool => Self::Bool,
+            Type::Int => Self::Int,
+            Type::Float => Self::Float,
+            Type::Range => Self::Range,
+            Type::Slice => Self::Slice,
+            Type::Date => Self::Date,
+            Type::DateTime => Self::DateTime,
+            Type::TimeDelta => Self::TimeDelta,
+            Type::TimeZone => Self::TimeZone,
+            Type::Str => Self::Str,
+            Type::Bytes => Self::Bytes,
+            Type::List => Self::List,
+            Type::Tuple => Self::Tuple,
+            Type::NamedTuple => Self::NamedTuple,
+            Type::Dict => Self::Dict,
+            Type::DictKeys => Self::DictKeys,
+            Type::DictItems => Self::DictItems,
+            Type::DictValues => Self::DictValues,
+            Type::Set => Self::Set,
+            Type::FrozenSet => Self::FrozenSet,
+            Type::Dataclass => Self::Dataclass,
+            Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
+            Type::Exception(exc_type) => Self::Exception(exc_type),
+            Type::Function => Self::Function,
+            Type::BuiltinFunction => Self::BuiltinFunction,
+            Type::Cell => Self::Cell,
+            Type::Iterator => Self::Iterator,
+            Type::Coroutine => Self::Coroutine,
+            Type::Module => Self::Module,
+            Type::TextIOWrapper => Self::TextIOWrapper,
+            Type::BufferedReader => Self::BufferedReader,
+            Type::BufferedWriter => Self::BufferedWriter,
+            Type::BufferedRandom => Self::BufferedRandom,
+            Type::SpecialForm => Self::SpecialForm,
+            Type::Path => Self::Path,
+            Type::Property => Self::Property,
+            Type::RePattern => Self::RePattern,
+            Type::ReMatch => Self::ReMatch,
+        }
+    }
+
+    /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
+    /// name via the heap.
+    pub(crate) fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
+        match ty {
+            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
+            other => Self::from_internal_static(other),
+        }
+    }
 }
 
 impl fmt::Display for MontyObject {
@@ -525,7 +736,15 @@ impl MontyObject {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
             }
-            Self::Type(t) => Ok(Value::Builtin(Builtins::Type(t))),
+            Self::Type(t) => match t.to_internal() {
+                Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
+                // `MontyType::Instance` carries only a class name — the class
+                // binding cannot be reconstructed inside the sandbox (see the
+                // invariant on the runtime `Type::Instance` variant).
+                None => Err(InvalidInputError::invalid_type(
+                    "a sandbox class type object is not a valid input value",
+                )),
+            },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
             Self::Function { name, .. } => {
                 // Try to intern the function name. If the name is already interned
@@ -572,6 +791,10 @@ impl MontyObject {
                 type_name, field_names, ..
             } => type_name.len() + names_len(field_names),
             Self::Dataclass { name, field_names, .. } => name.len() + names_len(field_names),
+            // A `Type::Instance` carries the resolved class name as an owned leaf
+            // `String` (the other `MontyType`s are payload-free), so charge it here
+            // like the `String`/`Function`/... names above.
+            Self::Type(MontyType::Instance(name)) => name.len(),
             _ => 0,
         };
         BASE + payload
@@ -857,8 +1080,8 @@ impl MontyObject {
                 visited.remove(id);
                 result
             }
-            Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
-            Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
+            Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
+            Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
             // Inline external function: export under the same shape as the heap
             // path's `HeapReadOutput::ExtFunction` arm above, so an interned
@@ -881,7 +1104,7 @@ fn repr_or_error(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> MontyO
     match value.py_repr(vm) {
         Ok(s) => MontyObject::Repr(s.into_owned()),
         Err(e) => {
-            let ty = value.py_type(vm);
+            let ty = value.py_type_name(vm);
             let msg = match &e {
                 RunError::Internal(s) => s.to_string(),
                 RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.exc.to_string(),
@@ -1229,7 +1452,7 @@ impl Hash for MontyObject {
                 mode.as_str().hash(state);
                 position.hash(state);
             }
-            Self::Type(t) => t.to_string().hash(state),
+            Self::Type(t) => t.name().hash(state),
             Self::Cycle(_, _) => panic!("cycle values are not hashable"),
             _ => panic!("{} python values are not hashable", self.type_name()),
         }

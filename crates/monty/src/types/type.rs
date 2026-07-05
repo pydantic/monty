@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use num_bigint::BigInt;
 
@@ -7,13 +7,13 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData},
-    intern::{StaticStrings, StringId},
+    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
         AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, long_int::INT_MAX_STR_DIGITS,
-        str::StringRepr, timedelta,
+        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, instance::class_name,
+        long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
     },
     value::Value,
 };
@@ -24,10 +24,27 @@ use crate::{
 /// Some variants are Python builtins accessible by name (e.g., `int`, `list`),
 /// while others are internal types only available through imports or introspection
 /// (e.g., `TextIOWrapper`, `PosixPath`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, strum::EnumIter)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+#[strum(serialize_all = "lowercase")]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "`Type` and `NoneType` mirror the Python type names"
+)]
 pub enum Type {
     Ellipsis,
     Type,
+    #[strum(serialize = "NoneType")]
     NoneType,
     Bool,
     Int,
@@ -35,6 +52,7 @@ pub enum Type {
     Range,
     Slice,
     Date,
+    #[strum(serialize = "datetime.datetime")]
     DateTime,
     TimeDelta,
     TimeZone,
@@ -44,131 +62,128 @@ pub enum Type {
     Tuple,
     NamedTuple,
     Dict,
+    #[strum(serialize = "dict_keys")]
     DictKeys,
+    #[strum(serialize = "dict_items")]
     DictItems,
+    #[strum(serialize = "dict_values")]
     DictValues,
     Set,
     FrozenSet,
     Dataclass,
+    /// An instance of a user-defined class (`class Foo: ...`), carrying the
+    /// `HeapId` of its class object so the real class name can be resolved
+    /// (via [`Type::name`]) for error messages and reprs. The class
+    /// object itself reports [`Type::Type`] (matching `type(Foo) is type`).
+    ///
+    /// **SAFETY/LIFETIME INVARIANT**: the id is a NON-OWNING, transient
+    /// reference — `Type` is `Copy`, untracked by refcounting, and has no
+    /// `Drop`. A `Type::Instance` is only valid while the value it was derived
+    /// from is alive (an instance holds a counted ref to its class, taken in
+    /// `VM::instantiate_class`). It must NEVER be stored long-lived,
+    /// serialized into snapshots/const pools, placed in `Builtins::Type` (the
+    /// `type()` builtin returns the class object itself for instances), or
+    /// converted to `MontyObject` without resolving the name first (the public
+    /// boundary enum `MontyType` carries the resolved name as a `String`).
+    #[strum(disabled)]
+    Instance(HeapId),
+    /// Exception types render/parse via `ExcType`'s own strum name
+    /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
+    /// `#[strum(disabled)]`: every strum consumer (`Display`, [`Type::name`],
+    /// [`Type::from_type_name`]) peels `Exception` off explicitly, and
+    /// enabling it would make `EnumString` accept the meaningless
+    /// `"exception"`.
+    #[strum(disabled)]
     Exception(ExcType),
     Function,
+    #[strum(serialize = "builtin_function_or_method")]
     BuiltinFunction,
     Cell,
     Iterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,
-    /// Marker types like stdout/stderr - displays as "TextIOWrapper"
+    /// Marker types like stdout/stderr - displays as "_io.TextIOWrapper"
+    #[strum(serialize = "_io.TextIOWrapper")]
     TextIOWrapper,
     /// Binary file object returned by `open(..., "rb")`.
+    #[strum(serialize = "_io.BufferedReader")]
     BufferedReader,
     /// Binary file object returned by write-only binary modes.
+    #[strum(serialize = "_io.BufferedWriter")]
     BufferedWriter,
     /// Binary file object returned by read/write binary modes.
+    #[strum(serialize = "_io.BufferedRandom")]
     BufferedRandom,
     /// typing module special forms (Any, Optional, Union, etc.) - displays as "typing._SpecialForm"
+    #[strum(serialize = "typing._SpecialForm")]
     SpecialForm,
     /// A filesystem path from `pathlib.Path` - displays as "PosixPath"
+    #[strum(serialize = "PosixPath")]
     Path,
     /// A property descriptor - displays as "property"
     Property,
     /// A compiled regex pattern from `re.compile()` - displays as "re.Pattern"
+    #[strum(serialize = "re.Pattern")]
     RePattern,
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
+    #[strum(serialize = "re.Match")]
     ReMatch,
-    /// Synthetic context manager exposed via the `_test_cm` builtin. Only
-    /// reachable under the `test-hooks` cargo feature; intentionally a
-    /// distinct `Type` variant rather than one of the existing ones so a
-    /// production sandbox can't get confused with it via stale snapshots.
-    #[cfg(feature = "test-hooks")]
-    TestContextManager,
 }
 
+/// Writes the canonical static name of every non-[`Instance`](Type::Instance)
+/// variant — the single name table backing [`Type::name`] and `MontyType`'s
+/// `Display`.
+///
+/// The names live on the enum via the `IntoStaticStr` derive
+/// (`serialize_all = "lowercase"` plus per-variant `serialize` overrides);
+/// `Exception` delegates to `ExcType`'s own strum name.
+///
+/// # Panics
+/// On `Instance`, which has no static name — callers with heap access must
+/// resolve the real class name via [`Type::name`]. Well-formed data never
+/// puts an `Instance` where no heap exists (`Builtins::Type`, `MontyObject`,
+/// the wire protocol), so this is a programmer-error tripwire. A crafted
+/// snapshot payload *can* smuggle one in, but snapshot bytes are not a
+/// panic-free boundary anyway — any bogus `HeapId` in them panics on first
+/// heap access.
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Ellipsis => f.write_str("ellipsis"),
-            Self::Type => f.write_str("type"),
-            Self::NoneType => f.write_str("NoneType"),
-            Self::Bool => f.write_str("bool"),
-            Self::Int => f.write_str("int"),
-            Self::Float => f.write_str("float"),
-            Self::Range => f.write_str("range"),
-            Self::Slice => f.write_str("slice"),
-            Self::Date => f.write_str("date"),
-            Self::DateTime => f.write_str("datetime.datetime"),
-            Self::TimeDelta => f.write_str("timedelta"),
-            Self::TimeZone => f.write_str("timezone"),
-            Self::Str => f.write_str("str"),
-            Self::Bytes => f.write_str("bytes"),
-            Self::List => f.write_str("list"),
-            Self::Tuple => f.write_str("tuple"),
-            Self::NamedTuple => f.write_str("namedtuple"),
-            Self::Dict => f.write_str("dict"),
-            Self::DictKeys => f.write_str("dict_keys"),
-            Self::DictItems => f.write_str("dict_items"),
-            Self::DictValues => f.write_str("dict_values"),
-            Self::Set => f.write_str("set"),
-            Self::FrozenSet => f.write_str("frozenset"),
-            Self::Dataclass => f.write_str("dataclass"),
-            Self::Exception(exc_type) => write!(f, "{exc_type}"),
-            Self::Function => f.write_str("function"),
-            Self::BuiltinFunction => f.write_str("builtin_function_or_method"),
-            Self::Cell => f.write_str("cell"),
-            Self::Iterator => f.write_str("iterator"),
-            Self::Coroutine => f.write_str("coroutine"),
-            Self::Module => f.write_str("module"),
-            Self::TextIOWrapper => f.write_str("_io.TextIOWrapper"),
-            Self::BufferedReader => f.write_str("_io.BufferedReader"),
-            Self::BufferedWriter => f.write_str("_io.BufferedWriter"),
-            Self::BufferedRandom => f.write_str("_io.BufferedRandom"),
-            Self::SpecialForm => f.write_str("typing._SpecialForm"),
-            Self::Path => f.write_str("PosixPath"),
-            Self::Property => f.write_str("property"),
-            Self::RePattern => f.write_str("re.Pattern"),
-            Self::ReMatch => f.write_str("re.Match"),
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager => f.write_str("_test_cm"),
-        }
-    }
-}
-
-/// `Display` adapter for [`Type::cpython_arg_name`] — see that method.
-///
-/// Held separately so the rendering stays allocation-free (no `Cow<'static, str>`
-/// or owned `String` needed) and embeds directly into `format!` / `write!`.
-pub struct CpythonArgName<'a>(&'a Type);
-
-impl fmt::Display for CpythonArgName<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // CPython's `_PyArg_BadArgument` formatter has a single special case:
-        // when the offending value is `Py_None`, it reports `"None"` rather
-        // than the type name `"NoneType"`. Since `NoneType` is a singleton
-        // (only `None` ever has this type), branching on the type is
-        // equivalent to branching on the value and lets the helper live on
-        // `Type` for callers that already have one.
-        match self.0 {
-            Type::NoneType => f.write_str("None"),
-            other => fmt::Display::fmt(other, f),
-        }
+        f.write_str(match *self {
+            Self::Exception(exc_type) => exc_type.into(),
+            Self::Instance(_) => unreachable!("Type::Instance must be rendered via Type::name"),
+            other => other.into(),
+        })
     }
 }
 
 impl Type {
-    /// Renders the type name used by CPython's `_PyArg_BadArgument`
-    /// ("argument N must be X, not Y") error formatter.
-    ///
-    /// Identical to [`Display`] except that [`Type::NoneType`] renders as
-    /// `"None"` rather than `"NoneType"`. CPython has this special case in
-    /// `_PyArg_BadArgument`: `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`.
-    ///
-    /// Use this for the "not Y" half of arg-type error messages. For repr /
-    /// `type(x).__name__` output, keep using plain [`Display`].
-    ///
-    /// [`Display`]: fmt::Display
-    #[must_use]
-    pub fn cpython_arg_name(&self) -> CpythonArgName<'_> {
-        CpythonArgName(self)
+    /// The Python-visible name of this type: the real class name for
+    /// [`Instance`](Self::Instance), the static `Display` name otherwise —
+    /// the primary way to render a `Type` in error messages and reprs. The
+    /// result borrows only `interns` (never the heap — heap-owned dynamic
+    /// class names are cloned into `Cow::Owned`), so it can be captured
+    /// before heap-mutating cleanup (`drop_with_heap`) at error sites and
+    /// formatted after.
+    pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
+        match self {
+            Self::Instance(class_id) => class_name(class_id, heap, interns),
+            Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
+            other => Cow::Borrowed(other.into()),
+        }
+    }
+
+    /// [`name`](Self::name) as rendered by CPython's `_PyArg_BadArgument`
+    /// ("argument N must be X, not Y") error formatter: identical except that
+    /// `NoneType` renders as `"None"` — CPython special-cases
+    /// `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`, and since `NoneType`
+    /// is a singleton, branching on the type is equivalent to branching on the
+    /// value. Use for the "not Y" half of arg-type error messages only.
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
+        match self {
+            Self::NoneType => Cow::Borrowed("None"),
+            other => other.name(heap, interns),
+        }
     }
 
     /// Returns the Python source-level name for builtin types that can be called directly.
@@ -228,65 +243,27 @@ impl Type {
         }
     }
 
-    /// The exhaustive inverse of this type's [`Display`] impl: resolves any
-    /// string produced by `Display` back to the `Type`, including internal
-    /// names (`"iterator"`, `"_io.TextIOWrapper"`, ...) and exception types.
+    /// The inverse of `Display`: resolves any string it produces back to the
+    /// `Type`, including internal names (`"iterator"`,
+    /// `"_io.TextIOWrapper"`, ...) and exception types.
     ///
     /// Unlike [`Type::from_builtin_name`] this is NOT restricted to nameable
-    /// builtins — it exists for boundaries that serialize a `Type` by its
+    /// builtins — it exists for boundaries that serialize a type by its
     /// display name (e.g. the subprocess wire protocol) and must round-trip
-    /// every variant. Keep in lockstep with `Display`; the round-trip is
-    /// enforced by a test over all variants.
-    ///
-    /// [`Display`]: fmt::Display
+    /// every variant; the round-trip is enforced by a test over all variants.
+    /// [`Instance`](Self::Instance) is intentionally excluded (`"object"`
+    /// returns `None`): its `HeapId` payload cannot be reconstructed from a
+    /// name, and no boundary may carry it.
     #[must_use]
-    pub fn from_type_name(name: &str) -> Option<Self> {
-        match name {
-            "ellipsis" => Some(Self::Ellipsis),
-            "type" => Some(Self::Type),
-            "NoneType" => Some(Self::NoneType),
-            "bool" => Some(Self::Bool),
-            "int" => Some(Self::Int),
-            "float" => Some(Self::Float),
-            "range" => Some(Self::Range),
-            "slice" => Some(Self::Slice),
-            "date" => Some(Self::Date),
-            "datetime.datetime" => Some(Self::DateTime),
-            "timedelta" => Some(Self::TimeDelta),
-            "timezone" => Some(Self::TimeZone),
-            "str" => Some(Self::Str),
-            "bytes" => Some(Self::Bytes),
-            "list" => Some(Self::List),
-            "tuple" => Some(Self::Tuple),
-            "namedtuple" => Some(Self::NamedTuple),
-            "dict" => Some(Self::Dict),
-            "dict_keys" => Some(Self::DictKeys),
-            "dict_items" => Some(Self::DictItems),
-            "dict_values" => Some(Self::DictValues),
-            "set" => Some(Self::Set),
-            "frozenset" => Some(Self::FrozenSet),
-            "dataclass" => Some(Self::Dataclass),
-            "function" => Some(Self::Function),
-            "builtin_function_or_method" => Some(Self::BuiltinFunction),
-            "cell" => Some(Self::Cell),
-            "iterator" => Some(Self::Iterator),
-            "coroutine" => Some(Self::Coroutine),
-            "module" => Some(Self::Module),
-            "_io.TextIOWrapper" => Some(Self::TextIOWrapper),
-            "_io.BufferedReader" => Some(Self::BufferedReader),
-            "_io.BufferedWriter" => Some(Self::BufferedWriter),
-            "_io.BufferedRandom" => Some(Self::BufferedRandom),
-            "typing._SpecialForm" => Some(Self::SpecialForm),
-            "PosixPath" => Some(Self::Path),
-            "property" => Some(Self::Property),
-            "re.Pattern" => Some(Self::RePattern),
-            "re.Match" => Some(Self::ReMatch),
-            #[cfg(feature = "test-hooks")]
-            "_test_cm" => Some(Self::TestContextManager),
-            // Exception types display as their exception name ("ValueError",
-            // "json.JSONDecodeError", ...) — fall back to the ExcType parser.
-            other => other.parse::<ExcType>().ok().map(Self::Exception),
-        }
+    pub(crate) fn from_type_name(name: &str) -> Option<Self> {
+        // `EnumString` parses via the same strum `serialize` attributes that
+        // `IntoStaticStr`/`Display` render with, so the two stay in lockstep
+        // by construction. Exception types display as their exception name
+        // ("ValueError", "json.JSONDecodeError", ...) — fall back to the
+        // ExcType parser.
+        name.parse::<Self>()
+            .ok()
+            .or_else(|| name.parse::<ExcType>().ok().map(Self::Exception))
     }
 
     /// Checks if a value of type `self` is an instance of `other`.
@@ -427,9 +404,9 @@ impl Type {
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
                         HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
-                        _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
+                        _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
                     },
-                    _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
+                    _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
                 }
             }
             Self::Float => {
@@ -447,9 +424,9 @@ impl Type {
                     }
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
                         HeapData::Str(s) => Ok(Value::Float(parse_f64_from_str(s.as_str())?)),
-                        _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
+                        _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                     },
-                    _ => Err(ExcType::type_error_float_conversion(v.py_type(vm))),
+                    _ => Err(ExcType::type_error_float_conversion(&v.py_type_name(vm))),
                 }
             }
             Self::Bool => {
@@ -461,7 +438,7 @@ impl Type {
             }
 
             // Non-callable types - raise TypeError
-            _ => Err(ExcType::type_error_not_callable(self)),
+            _ => Err(ExcType::type_error_not_callable(&self.name(vm.heap, vm.interns))),
         }
     }
 }

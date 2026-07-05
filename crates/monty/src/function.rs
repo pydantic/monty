@@ -1,6 +1,6 @@
 use std::fmt::{self, Write};
 
-use crate::{bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId, signature::Signature};
+use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
 
 /// A defined function once compiled and ready for execution.
 ///

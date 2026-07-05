@@ -30,8 +30,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("+", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "+",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e.into()),
         }
@@ -68,8 +73,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("-", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "-",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e.into()),
         }
@@ -93,8 +103,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("*", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "*",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -118,8 +133,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("/", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "/",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -143,8 +163,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("//", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "//",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -168,8 +193,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("%", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "%",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -194,8 +224,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             }
             Ok(None) => {
                 let lhs_type = lhs.py_type(this);
-                let rhs_type = rhs.py_type(this);
-                Err(ExcType::binary_type_error("** or pow()", lhs_type, rhs_type))
+                let lhs_name = lhs_type.name(this.heap, this.interns);
+                Err(ExcType::binary_type_error(
+                    "** or pow()",
+                    lhs_type,
+                    lhs_name,
+                    rhs.py_type_name(this),
+                ))
             }
             Err(e) => Err(e),
         }
@@ -344,8 +379,13 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
 
         let lhs_type = lhs.py_type(this);
-        let rhs_type = rhs.py_type(this);
-        Err(ExcType::binary_type_error("+=", lhs_type, rhs_type))
+        let lhs_name = lhs_type.name(this.heap, this.interns);
+        Err(ExcType::binary_type_error(
+            "+=",
+            lhs_type,
+            lhs_name,
+            rhs.py_type_name(this),
+        ))
     }
 
     /// Binary matrix multiplication (`@` operator).

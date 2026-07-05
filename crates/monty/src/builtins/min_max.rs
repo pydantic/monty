@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::HeapGuard,
     resource::ResourceTracker,
-    types::{MontyIter, PyTrait},
+    types::{CmpOrder, MontyIter, PyTrait},
     value::Value,
 };
 
@@ -250,8 +250,13 @@ fn candidate_wins(
     is_min: bool,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<bool> {
-    let Some(ordering) = candidate.py_cmp(current, vm)? else {
-        return Err(ord_not_supported(candidate, current, is_min, vm));
+    let ordering = match candidate.py_cmp(current, vm)? {
+        CmpOrder::Ordered(ordering) => ordering,
+        // A `NaN` candidate (or `NaN`-carrying container) is neither smaller nor
+        // larger, so it never displaces the incumbent — matching CPython, where
+        // `min`/`max` only swap on a strict `<`/`>` and `NaN` yields neither.
+        CmpOrder::Unordered => return Ok(false),
+        CmpOrder::Incomparable => return Err(ord_not_supported(candidate, current, is_min, vm)),
     };
 
     Ok((is_min && ordering == Ordering::Less) || (!is_min && ordering == Ordering::Greater))
@@ -269,10 +274,8 @@ fn default_with_multiple_args(func_name: &str) -> RunError {
 
 #[cold]
 fn ord_not_supported(left: &Value, right: &Value, is_min: bool, vm: &VM<'_, impl ResourceTracker>) -> RunError {
-    let left_type = left.py_type(vm);
-    let right_type = right.py_type(vm);
-    let operator = if is_min { '<' } else { '>' };
-    ExcType::type_error(format!(
-        "'{operator}' not supported between instances of '{left_type}' and '{right_type}'"
-    ))
+    let left_type = left.py_type_name(vm);
+    let right_type = right.py_type_name(vm);
+    let operator = if is_min { "<" } else { ">" };
+    ExcType::type_error_ordering(operator, &left_type, &right_type)
 }

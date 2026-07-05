@@ -1,6 +1,6 @@
 //! The transport-agnostic Monty protocol-child state machine.
 //!
-//! [`Child`] is the REPL session worker that both `monty --subprocess` (native,
+//! [`Child`] is the REPL session worker that both `monty subprocess` (native,
 //! over stdio pipes) and the browser wasm worker (over `postMessage`) drive. It
 //! consumes [`pb::ParentRequest`]s and emits [`pb::ChildEvent`]s through an
 //! [`EventSink`], so the same turn logic serves any byte channel — the only
@@ -862,6 +862,7 @@ pub fn protocol_violation(message: &str) -> pb::ChildEvent {
             exc_type: ExcType::RuntimeError.to_string(),
             message: Some(format!("protocol violation: {message}")),
             traceback: vec![],
+            data: None,
         }),
     }))
 }
@@ -889,6 +890,7 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
             traceback: vec![],
+            data: None,
         }),
     }))
 }

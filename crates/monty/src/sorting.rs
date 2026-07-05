@@ -16,7 +16,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     resource::ResourceTracker,
-    types::PyTrait,
+    types::{CmpOrder, PyTrait},
     value::Value,
 };
 
@@ -152,11 +152,15 @@ fn compare_values(
         return Ordering::Equal;
     }
     let err = match a.py_cmp(b, vm) {
-        Ok(Some(ord)) => return if reverse { ord.reverse() } else { ord },
-        Ok(None) => ExcType::type_error(format!(
+        Ok(CmpOrder::Ordered(ord)) => return if reverse { ord.reverse() } else { ord },
+        // A `NaN` (or `NaN`-carrying container) has no ordering but must not
+        // raise: CPython's `sorted`/`list.sort` leave such elements wherever the
+        // comparisons happen to place them. Treat it as "equal" — no swap.
+        Ok(CmpOrder::Unordered) => return Ordering::Equal,
+        Ok(CmpOrder::Incomparable) => ExcType::type_error(format!(
             "'<' not supported between instances of '{}' and '{}'",
-            a.py_type(vm),
-            b.py_type(vm)
+            a.py_type_name(vm),
+            b.py_type_name(vm)
         )),
         Err(e) => e,
     };

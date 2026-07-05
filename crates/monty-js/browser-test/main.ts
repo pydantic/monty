@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   const session = await pool.checkout()
   results.add = await session.feedRun('1 + 2')
   results.ext = await session.feedRun('add_ints(2, 3)', {
-    externalFunctions: { add_ints: (a: number, b: number) => a + b },
+    externalLookup: { add_ints: (a: number, b: number) => a + b },
   })
   await session.close()
 

@@ -285,7 +285,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(vm))),
+            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, &key.py_type_name(vm))),
         };
 
         // Get by index with bounds checking

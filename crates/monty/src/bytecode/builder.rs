@@ -499,11 +499,11 @@ impl CodeBuilder {
     /// Positive values indicate pushes, negative values indicate pops.
     /// In the dead-code state this is a no-op: dead code can be emitted
     /// freely.
-    fn adjust_stack(&mut self, delta: i16) -> Result<(), CompileError> {
+    fn adjust_stack(&mut self, delta: i32) -> Result<(), CompileError> {
         let Some(depth) = self.current_stack_depth else {
             return Ok(());
         };
-        let new_depth = i32::from(depth) + i32::from(delta);
+        let new_depth = i32::from(depth) + delta;
         // Stack depth shouldn't go negative (indicates compiler bug)
         debug_assert!(new_depth >= 0, "Stack depth went negative: {new_depth}");
         let new_depth = u16::try_from(new_depth.max(0)).map_err(|_| self.stack_too_large())?;
