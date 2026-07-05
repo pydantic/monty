@@ -35,7 +35,7 @@ use crate::{
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
-    modules::{StandardLib, json::JsonStringCache},
+    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object::InvalidInputError,
     os::OsFunctionCall,
     parse::CodeRange,
@@ -741,6 +741,13 @@ pub struct VM<'h, T: ResourceTracker> {
     /// `evaluate_function`), so the budget is always full at a snapshot;
     /// `debug_assert!`-checked in [`Self::snapshot`].
     run_reentry_depth: u8,
+
+    /// Per-run cache of compiled regex patterns for module-level `re.*` calls.
+    ///
+    /// Avoids recompiling the same pattern on every `re.search`/`re.split`/… call.
+    /// Not part of the snapshot (a pure performance cache), so it is default-
+    /// initialized on both `new` and `restore`.
+    pub(crate) re_pattern_cache: RePatternCache,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -768,6 +775,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
         }
     }
 
@@ -836,6 +844,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
         }
     }
 
