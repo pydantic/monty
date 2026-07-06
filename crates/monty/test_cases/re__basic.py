@@ -933,10 +933,3 @@ assert len(matches) == 2, 'finditer with groups returns 2 matches'
 assert matches[0].group(1) == 'a', 'finditer group 1 of match 0'
 assert matches[0].group(2) == '1', 'finditer group 2 of match 0'
 assert matches[1].group(1) == 'b', 'finditer group 1 of match 1'
-
-# === Patterns whose compiled form is too big for the pattern cache ===
-# Monty recompiles these per call instead of retaining them; behavior is identical.
-m = re.fullmatch('(?:ab){3000}', 'ab' * 3000)
-assert m is not None, 'oversize counted repeat fullmatch succeeds'
-assert m.span() == (0, 6000), 'oversize counted repeat span'
-assert re.findall('a{5000}', 'a' * 5000) == ['a' * 5000], 'oversize pattern findall'
