@@ -45,7 +45,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::{
-        Module, RePattern, Type,
+        BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit},
         str::allocate_string,
     },
@@ -633,9 +633,9 @@ impl DropWithHeap for ResolvedPattern {
     }
 }
 
-/// One slot of [`RePatternCache`]: the key hash, the `(pattern, flags)` it was
-/// compiled from (rechecked on a hash hit to rule out collisions), and the
-/// compiled pattern shared with callers.
+/// One slot of [`RePatternCache`], holding the key hash, the pattern text, the
+/// flags (text + flags are rechecked on a hash hit to rule out collisions), and
+/// the compiled pattern shared with callers.
 type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
 
 /// Slot count of [`RePatternCache`] — power of two so the index modulo is a mask;
@@ -699,12 +699,15 @@ impl RePatternCache {
         }
 
         // Miss: compile size-bounded so a retained entry can never pin a huge
-        // compiled regex. If that fails — oversize, or a genuine syntax error —
-        // recompile at default limits and return the result uncached: oversize
-        // patterns still work (just recompiled per call), and syntax errors
-        // surface the same `re.PatternError` an unbounded compile raises.
-        let Ok(compiled) = RePattern::compile_bounded(pattern.to_owned(), flags, CACHED_SIZE_LIMIT) else {
-            return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+        // compiled regex. A valid pattern that compiles past the cap is
+        // recompiled at default limits and returned uncached — it still works,
+        // just recompiled per call.
+        let compiled = match RePattern::compile_bounded(pattern.to_owned(), flags, CACHED_SIZE_LIMIT) {
+            Ok(compiled) => compiled,
+            Err(BoundedCompileError::TooBig) => {
+                return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+            }
+            Err(BoundedCompileError::Invalid(err)) => return Err(err),
         };
 
         // Fill the empty slot, else evict `hash_index` (LRU-on-collision) when

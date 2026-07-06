@@ -19,7 +19,7 @@ use crate::{
     defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
-    intern::{Interns, StaticStrings},
+    intern::StaticStrings,
     resource::ResourceTracker,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
@@ -132,16 +132,15 @@ impl ReMatch {
     /// Converts a stored byte offset into the subject to the Unicode character
     /// offset CPython's position APIs report. ASCII subjects need no conversion;
     /// otherwise the subject text is read back from the heap for a forward scan.
-    fn char_offset(&self, byte_offset: usize, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> usize {
-        if self.all_ascii {
+    fn char_offset(&self, byte_offset: usize, vm: &VM<'_, impl ResourceTracker>) -> i64 {
+        let char_offset = if self.all_ascii {
             byte_offset
         } else {
-            let text = self
-                .subject
-                .to_str_heap(heap, interns)
-                .expect("subject is always a str");
+            let text = self.subject.to_str(vm).expect("subject is always a str");
             byte_to_char_offset(text, byte_offset)
-        }
+        };
+        // positions should always be small enough for i64
+        i64::try_from(char_offset).unwrap_or(i64::MAX)
     }
 
     /// Returns the match for a given group number.
@@ -225,10 +224,9 @@ impl ReMatch {
     /// Returns the start character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_start(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    fn get_start(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start, heap, interns) as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start, vm))),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -236,7 +234,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((s, _)) => Ok(Value::Int(self.char_offset(*s, heap, interns) as i64)),
+                    Some((s, _)) => Ok(Value::Int(self.char_offset(*s, vm))),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -246,10 +244,9 @@ impl ReMatch {
     /// Returns the end character position for a given group.
     ///
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
-    #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_end(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    fn get_end(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end, heap, interns) as i64)),
+            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end, vm))),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -257,7 +254,7 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 match &self.group_spans[idx] {
-                    Some((_, e)) => Ok(Value::Int(self.char_offset(*e, heap, interns) as i64)),
+                    Some((_, e)) => Ok(Value::Int(self.char_offset(*e, vm))),
                     None => Ok(Value::Int(-1)),
                 }
             }
@@ -267,15 +264,14 @@ impl ReMatch {
     /// Returns a `(start, end)` tuple for a given group.
     ///
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
-    #[expect(clippy::cast_possible_wrap, reason = "positions are always small enough for i64")]
-    fn get_span(&self, n: i64, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
+    fn get_span(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
             Ordering::Equal => Ok(allocate_tuple(
                 smallvec![
-                    Value::Int(self.char_offset(self.start, heap, interns) as i64),
-                    Value::Int(self.char_offset(self.end, heap, interns) as i64)
+                    Value::Int(self.char_offset(self.start, vm)),
+                    Value::Int(self.char_offset(self.end, vm))
                 ],
-                heap,
+                vm.heap,
             )?),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
@@ -284,13 +280,10 @@ impl ReMatch {
                     return Err(ExcType::re_match_group_index_error());
                 }
                 let (s, e) = match &self.group_spans[idx] {
-                    Some((s, e)) => (
-                        self.char_offset(*s, heap, interns) as i64,
-                        self.char_offset(*e, heap, interns) as i64,
-                    ),
+                    Some((s, e)) => (self.char_offset(*s, vm), self.char_offset(*e, vm)),
                     None => (-1, -1),
                 };
-                Ok(allocate_tuple(smallvec![Value::Int(s), Value::Int(e)], heap)?)
+                Ok(allocate_tuple(smallvec![Value::Int(s), Value::Int(e)], vm.heap)?)
             }
         }
     }
@@ -325,8 +318,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         write!(
             f,
             "<re.Match object; span=({}, {}), match=",
-            m.char_offset(m.start, vm.heap, vm.interns),
-            m.char_offset(m.end, vm.heap, vm.interns)
+            m.char_offset(m.start, vm),
+            m.char_offset(m.end, vm)
         )?;
         string_repr_fmt(&m.full_match, f)?;
         Ok(f.write_char('>')?)
@@ -366,15 +359,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
             }
             Some(StaticStrings::Start) => {
                 let n = extract_optional_group_arg(args, "re.Match.start", 0, vm.heap)?;
-                self.get(vm.heap).get_start(n, vm.heap, vm.interns)?
+                self.get(vm.heap).get_start(n, vm)?
             }
             Some(StaticStrings::End) => {
                 let n = extract_optional_group_arg(args, "re.Match.end", 0, vm.heap)?;
-                self.get(vm.heap).get_end(n, vm.heap, vm.interns)?
+                self.get(vm.heap).get_end(n, vm)?
             }
             Some(StaticStrings::Span) => {
                 let n = extract_optional_group_arg(args, "re.Match.span", 0, vm.heap)?;
-                self.get(vm.heap).get_span(n, vm.heap, vm.interns)?
+                self.get(vm.heap).get_span(n, vm)?
             }
             _ => {
                 return Err(ExcType::attribute_error(Type::ReMatch, attr.as_str(vm.interns)));
