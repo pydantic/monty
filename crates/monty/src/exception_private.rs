@@ -497,6 +497,34 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for a `startswith`/`endswith` affix argument that is
+    /// neither the expected string type nor a tuple.
+    ///
+    /// Matches CPython: `{method} first arg must be {expected} or a tuple of {expected}, not {type}`
+    /// (`expected` is `str` for `str` methods, `bytes` for `bytes` methods).
+    #[must_use]
+    pub(crate) fn type_error_affix_arg(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{method} first arg must be {expected} or a tuple of {expected}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a non-string element in a `startswith`/`endswith`
+    /// affix tuple.
+    ///
+    /// Matches CPython: `tuple for {method} must only contain {expected}, not {type}`.
+    /// Raised lazily while matching — elements after a successful match are never checked.
+    #[must_use]
+    pub(crate) fn type_error_affix_tuple_item(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("tuple for {method} must only contain {expected}, not {type_name}"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for too many arguments to a method or named function.
     ///
     /// Matches CPython's format for method-style calls:

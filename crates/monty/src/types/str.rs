@@ -1049,10 +1049,11 @@ fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl
 
 /// Shared implementation of `str.startswith`/`str.endswith`.
 ///
-/// Validates the affix argument up front (preserving error precedence: affix type
-/// errors surface before bad start/end indices), then tests the sliced string
-/// against affix strings borrowed straight from interns/heap instead of copying
-/// them into owned `String`s.
+/// Argument handling mirrors CPython's order: arg count, then start/end index
+/// conversion (bad indices raise before the affix is even looked at), then the
+/// affix itself — where tuple elements are validated lazily and in order, so a
+/// match short-circuits before later elements are type-checked. Affix strings
+/// are borrowed straight from interns/heap, never copied.
 fn str_starts_ends_with<'h>(
     s: &HeapRead<'h, str>,
     method: &'static str,
@@ -1069,7 +1070,6 @@ fn str_starts_ends_with<'h>(
     if rest.len() > 2 {
         return Err(ExcType::type_error_at_most(method, 3, pos.len()));
     }
-    check_str_or_tuple_of_str(affix, vm)?;
     let start = match rest.first() {
         Some(value) => optional_index(value, 0, str_len, vm)?,
         None => 0,
@@ -1079,35 +1079,24 @@ fn str_starts_ends_with<'h>(
         None => str_len,
     };
     let slice = slice_string(s.get(vm.heap), start, end);
-    Ok(Value::Bool(affix_matches(affix, slice, forward, vm)))
+    Ok(Value::Bool(affix_matches(affix, slice, method, forward, vm)?))
 }
 
-/// Validates that a `startswith`/`endswith` affix argument is a `str` or a
-/// tuple of `str`, without copying any string contents.
-fn check_str_or_tuple_of_str(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<()> {
-    let ok = match value {
-        Value::InternString(_) => true,
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(_) => true,
-            HeapData::Tuple(tuple) => tuple.as_slice().iter().all(|item| match item {
-                Value::InternString(_) => true,
-                Value::Ref(hid) => matches!(vm.heap.get(*hid), HeapData::Str(_)),
-                _ => false,
-            }),
-            _ => false,
-        },
-        _ => false,
-    };
-    if ok {
-        Ok(())
-    } else {
-        Err(ExcType::type_error("expected str or tuple of str"))
-    }
-}
-
-/// Tests whether `slice` starts (`forward = true`) or ends with the pre-validated
-/// affix argument (a str, or any element of a tuple of str) — see [`str_starts_ends_with`].
-fn affix_matches(affix: &Value, slice: &str, forward: bool, vm: &VM<'_, impl ResourceTracker>) -> bool {
+/// Tests whether `slice` starts (`forward = true`) or ends with the affix
+/// argument, validating the affix in the process — see [`str_starts_ends_with`].
+///
+/// Tuple elements are checked in CPython order: a matching element returns
+/// `Ok(true)` before later elements are type-checked; the first non-str element
+/// reached raises `tuple for {method} must only contain str, not {type}`.
+fn affix_matches(
+    affix: &Value,
+    slice: &str,
+    method: &'static str,
+    forward: bool,
+    vm: &VM<'_, impl ResourceTracker>,
+) -> RunResult<bool> {
+    // CPython error messages use the bare method name, not "str.startswith".
+    let short_method = method.strip_prefix("str.").unwrap_or(method);
     let check = |a: &str| {
         if forward {
             slice.starts_with(a)
@@ -1116,17 +1105,39 @@ fn affix_matches(affix: &Value, slice: &str, forward: bool, vm: &VM<'_, impl Res
         }
     };
     match affix {
-        Value::InternString(id) => check(vm.interns.get_str(*id)),
+        Value::InternString(id) => Ok(check(vm.interns.get_str(*id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(a) => check(a.as_str()),
-            HeapData::Tuple(tuple) => tuple.as_slice().iter().any(|item| match item {
-                Value::InternString(id) => check(vm.interns.get_str(*id)),
-                Value::Ref(hid) => matches!(vm.heap.get(*hid), HeapData::Str(a) if check(a.as_str())),
-                _ => false,
-            }),
-            _ => false,
+            HeapData::Str(a) => Ok(check(a.as_str())),
+            HeapData::Tuple(tuple) => {
+                for item in tuple.as_slice() {
+                    let matched = match item {
+                        Value::InternString(id) => check(vm.interns.get_str(*id)),
+                        Value::Ref(hid) if let HeapData::Str(a) = vm.heap.get(*hid) => check(a.as_str()),
+                        _ => {
+                            return Err(ExcType::type_error_affix_tuple_item(
+                                short_method,
+                                "str",
+                                &item.py_type_name(vm),
+                            ));
+                        }
+                    };
+                    if matched {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Err(ExcType::type_error_affix_arg(
+                short_method,
+                "str",
+                &affix.py_type_name(vm),
+            )),
         },
-        _ => false,
+        _ => Err(ExcType::type_error_affix_arg(
+            short_method,
+            "str",
+            &affix.py_type_name(vm),
+        )),
     }
 }
 
@@ -1193,20 +1204,28 @@ fn extract_int_arg(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunR
     }
 }
 
-/// Extracts an optional index from a `Value`, treating `None` as `default`.
+/// Extracts an optional slice index from a `Value`, treating `None` as `default`.
 ///
 /// Used by argument parsers where `None` means "use the default index" and
 /// any other value is interpreted as an integer and normalized against `str_len`.
+/// Accepts `bool` like CPython (an `int` subtype); non-integers raise CPython's
+/// `slice indices must be integers or None ...` rather than the generic
+/// `expected int` used for non-slice integer args.
 fn optional_index(
     value: &Value,
     default: usize,
     str_len: usize,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<usize> {
-    if matches!(value, Value::None) {
-        Ok(default)
-    } else {
-        Ok(normalize_sequence_index(extract_int_arg(value, vm)?, str_len))
+    match value {
+        Value::None => Ok(default),
+        Value::Int(i) => Ok(normalize_sequence_index(*i, str_len)),
+        Value::Bool(b) => Ok(normalize_sequence_index(i64::from(*b), str_len)),
+        Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
+            let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
+            Ok(normalize_sequence_index(i, str_len))
+        }
+        _ => Err(ExcType::type_error_slice_indices()),
     }
 }
 

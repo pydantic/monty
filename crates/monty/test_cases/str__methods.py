@@ -255,6 +255,52 @@ assert 'hello'.endswith(('lo', 'he')) == True, 'endswith tuple second match'
 assert 'hello'.endswith(('x', 'y')) == False, 'endswith tuple no match'
 assert 'hello'.startswith(('ell',), 1) == True, 'startswith tuple with start'
 
+# startswith/endswith affix validation matches CPython: tuple elements are
+# validated lazily and in order, so a match short-circuits before later
+# elements are type-checked
+assert 'hello'.startswith(('he', 1)) == True, 'startswith match before invalid tuple element'
+assert 'hello'.endswith(('lo', 1)) == True, 'endswith match before invalid tuple element'
+try:
+    'hello'.startswith(('xx', 1))
+    assert False, 'expected startswith invalid tuple element to raise'
+except TypeError as exc:
+    assert str(exc) == 'tuple for startswith must only contain str, not int', 'startswith tuple element error'
+try:
+    'hello'.endswith((1, 'lo'))
+    assert False, 'expected endswith invalid element before match to raise'
+except TypeError as exc:
+    assert str(exc) == 'tuple for endswith must only contain str, not int', 'endswith invalid element before match'
+try:
+    'hello'.startswith(42)
+    assert False, 'expected startswith non-str affix to raise'
+except TypeError as exc:
+    assert str(exc) == 'startswith first arg must be str or a tuple of str, not int', 'startswith affix type error'
+try:
+    'hello'.endswith(None)
+    assert False, 'expected endswith None affix to raise'
+except TypeError as exc:
+    assert str(exc) == 'endswith first arg must be str or a tuple of str, not NoneType', 'endswith affix type error'
+
+# bad start/end indices raise before the affix is inspected, with CPython's message
+try:
+    'hello'.startswith(42, 'x')
+    assert False, 'expected startswith bad start to raise'
+except TypeError as exc:
+    assert str(exc) == 'slice indices must be integers or None or have an __index__ method', (
+        'bad start beats affix type error'
+    )
+try:
+    'hello'.endswith(('lo', 1), None, 'x')
+    assert False, 'expected endswith bad end to raise'
+except TypeError as exc:
+    assert str(exc) == 'slice indices must be integers or None or have an __index__ method', (
+        'bad end beats tuple element error'
+    )
+
+# bool is accepted as a slice index (int subtype)
+assert 'hello'.startswith('ello', True) == True, 'startswith bool start index'
+assert 'hello'.count('l', True) == 2, 'count bool start index'
+
 # find/rfind/index/rindex/count with None as start/end
 assert 'hello'.find('l', None) == 2, 'find with None start'
 assert 'hello'.find('l', None, None) == 2, 'find with None start and end'
