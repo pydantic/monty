@@ -20,7 +20,9 @@ use crate::{
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
-        Set, Slice, Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
+        Set, Slice, Str, Tuple, Type, date, datetime,
+        str::{allocate_string, concat_allocate_str},
+        timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -832,10 +834,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
+                a.get(vm.heap).as_str(),
+                b.get(vm.heap).as_str(),
+                vm.heap,
+            )?)),
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();
                 let b_bytes = b.get(vm.heap).as_slice();

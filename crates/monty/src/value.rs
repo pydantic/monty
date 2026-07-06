@@ -19,7 +19,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
-    hash::{HashValue, hash_python_long_int, hash_python_str},
+    hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -34,7 +34,7 @@ use crate::{
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
         path,
         slice::slice_collect_iterator,
-        str::{allocate_char, allocate_string, get_char_at_index, string_repr_fmt},
+        str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, string_repr_fmt},
         timedelta,
     },
 };
@@ -445,19 +445,18 @@ impl<'h> PyTrait<'h> for Value {
                 let right = vm.heap.read(*id2);
                 left.py_add(&right, vm)
             }
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
+                interns.get_str(*s1),
+                interns.get_str(*s2),
+                vm.heap,
+            )?)),
             // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
-            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
+                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
+            )),
+            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => Ok(Some(
+                concat_allocate_str(s1.as_str(), interns.get_str(*string_id), vm.heap)?,
+            )),
             // same for bytes
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 let bytes1 = interns.get_bytes(*b1);
@@ -1621,18 +1620,19 @@ impl Value {
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
     pub fn py_hash(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
+        // The hot arms (int/str/ref) return precomputed or cached hashes; only the
+        // cold arms construct a hasher, via `hash_one`.
         match self {
-            Self::InternString(string_id) => return Ok(Some(vm.interns.str_hash(*string_id))),
-            Self::InternBytes(bytes_id) => return Ok(Some(vm.interns.bytes_hash(*bytes_id))),
-            Self::InternLongInt(long_int_id) => return Ok(Some(vm.interns.long_int_hash(*long_int_id))),
+            Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
+            Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
+            Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
-            Self::Bool(b) => return Ok(Some(HashValue::new((*b).into()))),
-            Self::Int(i) => return Ok(Some(HashValue::new(i.cast_unsigned()))),
+            Self::Bool(b) => Ok(Some(HashValue::new((*b).into()))),
+            Self::Int(i) => Ok(Some(HashValue::new(i.cast_unsigned()))),
             Self::Float(f) => {
                 // 2^63, the first power of two past i64::MAX (exactly representable).
                 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
-                return if f.fract() != 0.0 || !f.is_finite() {
+                if f.fract() != 0.0 || !f.is_finite() {
                     // Non-integral or non-finite: hash the bit representation.
                     Ok(Some(HashValue::new(f.to_bits())))
                 } else if *f >= -TWO_POW_63 && *f < TWO_POW_63 {
@@ -1647,33 +1647,31 @@ impl Value {
                     Ok(Some(hash_python_long_int(
                         &BigInt::from_f64(*f).expect("finite f64 converts to BigInt"),
                     )))
-                };
+                }
             }
             // For heap-allocated values, dispatch to the per-type `py_hash`
             // impl. Types that benefit from caching (Str/Bytes/Tuple/
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
-            Self::Ref(id) => return vm.heap.read(*id).py_hash(*id, vm),
-            // Singleton values can be hashed directly
-            Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
-            Self::Builtin(b) => b.hash(&mut hasher),
-            Self::ModuleFunction(mf) => mf.hash(&mut hasher),
+            Self::Ref(id) => vm.heap.read(*id).py_hash(*id, vm),
+            // Singleton values hash by discriminant
+            Self::Undefined | Self::Ellipsis | Self::None => Ok(Some(hash_one(discriminant(self)))),
+            Self::Builtin(b) => Ok(Some(hash_one(b))),
+            Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
             // Hash functions based on function ID
-            Self::DefFunction(f_id) => f_id.hash(&mut hasher),
+            Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
             // Hash the function name's string contents so the inline path
             // agrees with the heap `HeapData::ExtFunction` arm in `heap_data.rs`.
             // Required so cross-representation equality (added in the same fix
             // series) preserves the dict invariant `a == b ⇒ hash(a) == hash(b)`.
-            Self::ExtFunction(name_id) => return Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
-            // Markers are hashable based on their discriminant (already included above)
-            Self::Marker(m) => m.hash(&mut hasher),
+            Self::ExtFunction(name_id) => Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
+            // Markers are hashable based on their discriminant
+            Self::Marker(m) => Ok(Some(hash_one(m))),
             // Properties are hashable based on their OS function discriminant
-            Self::Property(p) => p.hash(&mut hasher),
+            Self::Property(p) => Ok(Some(hash_one(p))),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
-
-        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     /// TODO this doesn't have many tests!!! also doesn't cover bytes

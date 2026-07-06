@@ -1012,6 +1012,9 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn dec_ref(&mut self, id: HeapId) {
         HeapReader::with(self, &mut (), |reader, ()| {
             let mut current_id = id;
+            // A fresh Vec is deliberate: it costs nothing unless children are
+            // actually pushed, whereas pooling it on the Heap was measured
+            // (CodSpeed, PR #536) to add take/restore traffic to every call.
             let mut work_stack = Vec::new();
             loop {
                 // Using `HeapPtr` avoids the possibility of aliasing with live borrows

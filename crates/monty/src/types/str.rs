@@ -156,6 +156,19 @@ pub fn allocate_char(c: char, heap: &Heap<impl ResourceTracker>) -> Result<Value
     }
 }
 
+/// Concatenates two string slices and allocates the result as a Python string.
+///
+/// Backs the `str + str` arms of `py_add`: one exactly-sized allocation filled
+/// via `push_str`, instead of `format!`'s runtime formatting machinery. The
+/// result size is bounded by two already-tracked inputs, so a plain `String`
+/// is fine per the `StringBuilder` rule.
+pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    let mut concat = String::with_capacity(a.len() + b.len());
+    concat.push_str(a);
+    concat.push_str(b);
+    allocate_string(concat, heap)
+}
+
 /// Gets the character at a given index in a string, handling negative indices.
 ///
 /// Returns `None` if the index is out of bounds. This uses a single-pass scan
@@ -250,10 +263,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     }
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        let self_str = self.get(vm.heap).0.clone();
-        let other_str = other.get(vm.heap).0.clone();
-        let result = format!("{self_str}{other_str}");
-        Ok(Some(allocate_string(result, vm.heap)?))
+        Ok(Some(concat_allocate_str(
+            self.get(vm.heap).as_str(),
+            other.get(vm.heap).as_str(),
+            vm.heap,
+        )?))
     }
 
     fn py_call_attr(
@@ -1022,12 +1036,7 @@ fn str_startswith<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let str_len = s.get(vm.heap).chars().count();
-    let (prefixes, start, end) = parse_prefix_suffix_args("str.startswith", str_len, args, vm)?;
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    let result = prefixes.iter().any(|prefix| slice.starts_with(prefix));
-    Ok(Value::Bool(result))
+    str_starts_ends_with(s, "str.startswith", true, args, vm)
 }
 
 /// Implements Python's `str.endswith(suffix, start?, end?)` method.
@@ -1035,12 +1044,90 @@ fn str_startswith<'h>(
 /// Returns True if the string ends with the suffix, otherwise returns False.
 /// The suffix argument can be a string or a tuple of strings.
 fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    str_starts_ends_with(s, "str.endswith", false, args, vm)
+}
+
+/// Shared implementation of `str.startswith`/`str.endswith`.
+///
+/// Validates the affix argument up front (preserving error precedence: affix type
+/// errors surface before bad start/end indices), then tests the sliced string
+/// against affix strings borrowed straight from interns/heap instead of copying
+/// them into owned `String`s.
+fn str_starts_ends_with<'h>(
+    s: &HeapRead<'h, str>,
+    method: &'static str,
+    forward: bool,
+    args: ArgValues,
+    vm: &mut VM<'h, impl ResourceTracker>,
+) -> RunResult<Value> {
     let str_len = s.get(vm.heap).chars().count();
-    let (suffixes, start, end) = parse_prefix_suffix_args("str.endswith", str_len, args, vm)?;
-    let s = s.get(vm.heap);
-    let slice = slice_string(s, start, end);
-    let result = suffixes.iter().any(|suffix| slice.ends_with(suffix));
-    Ok(Value::Bool(result))
+    let pos = args.into_pos_only(method, vm.heap)?;
+    defer_drop!(pos, vm);
+    let [affix, rest @ ..] = pos.as_slice() else {
+        return Err(ExcType::type_error_at_least(method, 1, 0));
+    };
+    if rest.len() > 2 {
+        return Err(ExcType::type_error_at_most(method, 3, pos.len()));
+    }
+    check_str_or_tuple_of_str(affix, vm)?;
+    let start = match rest.first() {
+        Some(value) => optional_index(value, 0, str_len, vm)?,
+        None => 0,
+    };
+    let end = match rest.get(1) {
+        Some(value) => optional_index(value, str_len, str_len, vm)?,
+        None => str_len,
+    };
+    let slice = slice_string(s.get(vm.heap), start, end);
+    Ok(Value::Bool(affix_matches(affix, slice, forward, vm)))
+}
+
+/// Validates that a `startswith`/`endswith` affix argument is a `str` or a
+/// tuple of `str`, without copying any string contents.
+fn check_str_or_tuple_of_str(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<()> {
+    let ok = match value {
+        Value::InternString(_) => true,
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::Str(_) => true,
+            HeapData::Tuple(tuple) => tuple.as_slice().iter().all(|item| match item {
+                Value::InternString(_) => true,
+                Value::Ref(hid) => matches!(vm.heap.get(*hid), HeapData::Str(_)),
+                _ => false,
+            }),
+            _ => false,
+        },
+        _ => false,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(ExcType::type_error("expected str or tuple of str"))
+    }
+}
+
+/// Tests whether `slice` starts (`forward = true`) or ends with the pre-validated
+/// affix argument (a str, or any element of a tuple of str) — see [`str_starts_ends_with`].
+fn affix_matches(affix: &Value, slice: &str, forward: bool, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    let check = |a: &str| {
+        if forward {
+            slice.starts_with(a)
+        } else {
+            slice.ends_with(a)
+        }
+    };
+    match affix {
+        Value::InternString(id) => check(vm.interns.get_str(*id)),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::Str(a) => check(a.as_str()),
+            HeapData::Tuple(tuple) => tuple.as_slice().iter().any(|item| match item {
+                Value::InternString(id) => check(vm.interns.get_str(*id)),
+                Value::Ref(hid) => matches!(vm.heap.get(*hid), HeapData::Str(a) if check(a.as_str())),
+                _ => false,
+            }),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Parses arguments for search methods (find, rfind, index, rindex, count, startswith, endswith).
@@ -1072,76 +1159,6 @@ fn parse_search_args(
         }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
-}
-
-/// Parses arguments for startswith/endswith methods.
-///
-/// Returns (prefixes/suffixes as Vec, start, end) where start and end are character indices.
-/// The first argument can be either a string or a tuple of strings.
-fn parse_prefix_suffix_args(
-    method: &str,
-    str_len: usize,
-    args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<(Vec<String>, usize, usize)> {
-    let pos = args.into_pos_only(method, vm.heap)?;
-    defer_drop!(pos, vm);
-    match pos.as_slice() {
-        [prefix_value] => {
-            let prefixes = extract_str_or_tuple_of_str(prefix_value, vm)?;
-            Ok((prefixes, 0, str_len))
-        }
-        [prefix_value, start_value] => {
-            let prefixes = extract_str_or_tuple_of_str(prefix_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm)?;
-            Ok((prefixes, start, str_len))
-        }
-        [prefix_value, start_value, end_value] => {
-            let prefixes = extract_str_or_tuple_of_str(prefix_value, vm)?;
-            let start = optional_index(start_value, 0, str_len, vm)?;
-            let end = optional_index(end_value, str_len, str_len, vm)?;
-            Ok((prefixes, start, end))
-        }
-        [] => Err(ExcType::type_error_at_least(method, 1, 0)),
-        _ => Err(ExcType::type_error_at_most(method, 3, pos.len())),
-    }
-}
-
-/// Extracts a string or tuple of strings from a Value.
-///
-/// Returns a Vec of strings - a single-element Vec if given a string,
-/// or multiple elements if given a tuple of strings.
-fn extract_str_or_tuple_of_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<String>> {
-    match value {
-        Value::InternString(id) => Ok(vec![vm.interns.get_str(*id).to_owned()]),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(vec![s.as_str().to_owned()]),
-            HeapData::Tuple(tuple) => {
-                // Inline string extraction to avoid borrow conflict — vm.heap is
-                // already borrowed immutably to access the tuple's items.
-                let items = tuple.as_slice();
-                let mut strings = Vec::with_capacity(items.len());
-                for item in items {
-                    match item {
-                        Value::InternString(id) => {
-                            strings.push(vm.interns.get_str(*id).to_owned());
-                        }
-                        Value::Ref(hid) => {
-                            if let HeapData::Str(s) = vm.heap.get(*hid) {
-                                strings.push(s.as_str().to_owned());
-                            } else {
-                                return Err(ExcType::type_error("expected str or tuple of str"));
-                            }
-                        }
-                        _ => return Err(ExcType::type_error("expected str or tuple of str")),
-                    }
-                }
-                Ok(strings)
-            }
-            _ => Err(ExcType::type_error("expected str or tuple of str")),
-        },
-        _ => Err(ExcType::type_error("expected str or tuple of str")),
     }
 }
 
