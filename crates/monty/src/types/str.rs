@@ -1036,7 +1036,7 @@ fn str_startswith<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    str_starts_ends_with(s, "str.startswith", true, args, vm)
+    str_starts_ends_with(s, "str.startswith", |hay, prefix| hay.starts_with(prefix), args, vm)
 }
 
 /// Implements Python's `str.endswith(suffix, start?, end?)` method.
@@ -1044,7 +1044,7 @@ fn str_startswith<'h>(
 /// Returns True if the string ends with the suffix, otherwise returns False.
 /// The suffix argument can be a string or a tuple of strings.
 fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    str_starts_ends_with(s, "str.endswith", false, args, vm)
+    str_starts_ends_with(s, "str.endswith", |hay, suffix| hay.ends_with(suffix), args, vm)
 }
 
 /// Shared implementation of `str.startswith`/`str.endswith`.
@@ -1057,7 +1057,7 @@ fn str_endswith<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, impl
 fn str_starts_ends_with<'h>(
     s: &HeapRead<'h, str>,
     method: &'static str,
-    forward: bool,
+    matcher: impl Fn(&str, &str) -> bool,
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
@@ -1079,11 +1079,11 @@ fn str_starts_ends_with<'h>(
         None => str_len,
     };
     let slice = slice_string(s.get(vm.heap), start, end);
-    Ok(Value::Bool(affix_matches(affix, slice, method, forward, vm)?))
+    Ok(Value::Bool(affix_matches(affix, slice, method, matcher, vm)?))
 }
 
-/// Tests whether `slice` starts (`forward = true`) or ends with the affix
-/// argument, validating the affix in the process — see [`str_starts_ends_with`].
+/// Tests `matcher(slice, affix)` (`str::starts_with` or `str::ends_with`) against
+/// the affix argument, validating it in the process — see [`str_starts_ends_with`].
 ///
 /// Tuple elements are checked in CPython order: a matching element returns
 /// `Ok(true)` before later elements are type-checked; the first non-str element
@@ -1092,18 +1092,12 @@ fn affix_matches(
     affix: &Value,
     slice: &str,
     method: &'static str,
-    forward: bool,
+    matcher: impl Fn(&str, &str) -> bool,
     vm: &VM<'_, impl ResourceTracker>,
 ) -> RunResult<bool> {
     // CPython error messages use the bare method name, not "str.startswith".
     let short_method = method.strip_prefix("str.").unwrap_or(method);
-    let check = |a: &str| {
-        if forward {
-            slice.starts_with(a)
-        } else {
-            slice.ends_with(a)
-        }
-    };
+    let check = |a: &str| matcher(slice, a);
     match affix {
         Value::InternString(id) => Ok(check(vm.interns.get_str(*id))),
         Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
