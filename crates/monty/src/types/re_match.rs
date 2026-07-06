@@ -9,7 +9,7 @@
 //! is held as a single refcounted heap reference shared across every match from
 //! one `finditer`/`findall` call, so `py_dec_ref_ids` releases that reference.
 
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem};
 
 use smallvec::smallvec;
 
@@ -43,7 +43,8 @@ use crate::{
 ///
 /// Offsets are stored as byte offsets (what the `regex` crate produces) and
 /// converted to the character offsets CPython reports lazily, only when
-/// `.start()`/`.end()`/`.span()`/`repr` read them. ASCII input needs no conversion.
+/// `.start()`/`.end()`/`.span()`/`repr` read them; the full match's conversion
+/// is memoized (`char_span`). ASCII input needs no conversion.
 ///
 /// # Group Indexing
 ///
@@ -70,6 +71,10 @@ pub(crate) struct ReMatch {
     subject: Value,
     /// Whether the subject is pure ASCII, so byte offset == character offset.
     all_ascii: bool,
+    /// Char-offset `(start, end)` of the full match, computed lazily by
+    /// [`ReMatch::char_span`]. A pure cache — skipped by serde, rebuilt on demand.
+    #[serde(skip)]
+    char_span: OnceCell<(i64, i64)>,
 }
 
 impl ReMatch {
@@ -120,6 +125,7 @@ impl ReMatch {
             named_groups,
             subject,
             all_ascii,
+            char_span: OnceCell::new(),
         }
     }
 
@@ -129,9 +135,28 @@ impl ReMatch {
         &self.subject
     }
 
+    /// The `(start, end)` char offsets of the full match — what `.start()`,
+    /// `.end()`, `.span()`, and `repr` report. Memoized: a non-ASCII subject is
+    /// scanned once (only up to the match end) on first access, O(1) after.
+    fn char_span(&self, vm: &VM<'_, impl ResourceTracker>) -> (i64, i64) {
+        *self.char_span.get_or_init(|| {
+            let (start, end) = if self.all_ascii {
+                (self.start, self.end)
+            } else {
+                let text = self.subject.to_str(vm).expect("subject is always a str");
+                let start = byte_to_char_offset(text, self.start);
+                // Count only the matched slice for `end` instead of rescanning from zero.
+                (start, start + text[self.start..self.end].chars().count())
+            };
+            (position_i64(start), position_i64(end))
+        })
+    }
+
     /// Converts a stored byte offset into the subject to the Unicode character
-    /// offset CPython's position APIs report. ASCII subjects need no conversion;
-    /// otherwise the subject text is read back from the heap for a forward scan.
+    /// offset CPython reports — used for capture-group positions (the full
+    /// match's span goes through the memoized [`ReMatch::char_span`] instead).
+    /// ASCII subjects need no conversion; otherwise the subject text is read
+    /// back from the heap for a forward scan.
     fn char_offset(&self, byte_offset: usize, vm: &VM<'_, impl ResourceTracker>) -> i64 {
         let char_offset = if self.all_ascii {
             byte_offset
@@ -139,8 +164,7 @@ impl ReMatch {
             let text = self.subject.to_str(vm).expect("subject is always a str");
             byte_to_char_offset(text, byte_offset)
         };
-        // positions should always be small enough for i64
-        i64::try_from(char_offset).unwrap_or(i64::MAX)
+        position_i64(char_offset)
     }
 
     /// Returns the match for a given group number.
@@ -226,7 +250,7 @@ impl ReMatch {
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
     fn get_start(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.start, vm))),
+            Ordering::Equal => Ok(Value::Int(self.char_span(vm).0)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -246,7 +270,7 @@ impl ReMatch {
     /// Group 0 is the full match. Returns -1 for unmatched optional groups
     fn get_end(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(Value::Int(self.char_offset(self.end, vm))),
+            Ordering::Equal => Ok(Value::Int(self.char_span(vm).1)),
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -266,13 +290,10 @@ impl ReMatch {
     /// Group 0 is the full match. Returns `(-1, -1)` for unmatched optional groups
     fn get_span(&self, n: i64, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Value> {
         match n.cmp(&0) {
-            Ordering::Equal => Ok(allocate_tuple(
-                smallvec![
-                    Value::Int(self.char_offset(self.start, vm)),
-                    Value::Int(self.char_offset(self.end, vm))
-                ],
-                vm.heap,
-            )?),
+            Ordering::Equal => {
+                let (start, end) = self.char_span(vm);
+                Ok(allocate_tuple(smallvec![Value::Int(start), Value::Int(end)], vm.heap)?)
+            }
             Ordering::Less => Err(ExcType::re_match_group_index_error()),
             Ordering::Greater => {
                 let idx = group_index(n);
@@ -315,12 +336,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let m = self.get(vm.heap);
-        write!(
-            f,
-            "<re.Match object; span=({}, {}), match=",
-            m.char_offset(m.start, vm),
-            m.char_offset(m.end, vm)
-        )?;
+        let (start, end) = m.char_span(vm);
+        write!(f, "<re.Match object; span=({start}, {end}), match=")?;
         string_repr_fmt(&m.full_match, f)?;
         Ok(f.write_char('>')?)
     }
@@ -517,6 +534,12 @@ fn extract_optional_group_arg(
 /// byte position.
 fn byte_to_char_offset(s: &str, byte_offset: usize) -> usize {
     s[..byte_offset].chars().count()
+}
+
+/// Converts a position to the `i64` Python-facing APIs report, saturating on
+/// the (practically impossible) overflow rather than wrapping negative.
+fn position_i64(offset: usize) -> i64 {
+    i64::try_from(offset).unwrap_or(i64::MAX)
 }
 
 /// Converts a positive group number (1-based) to a 0-based index.
