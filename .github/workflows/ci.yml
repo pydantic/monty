@@ -449,6 +449,7 @@ jobs:
       - test-rust-os
       - test-python
       - test-js
+      - test-browser
       - bench-test
       - fuzz
     runs-on: ubuntu-latest
@@ -1079,6 +1080,41 @@ jobs:
           NAPI_RS_FORCE_WASI: true
         working-directory: crates/monty-js
 
+  test-browser:
+    name: test browser wasm
+    needs:
+      - build-wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup node
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: crates/monty-js/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: crates/monty-js
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasm-bindings
+          path: crates/monty-js
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: crates/monty-js
+
+      - name: Test browser bindings
+        run: npx playwright test
+        working-directory: crates/monty-js
+
   release-js:
     name: Release to NPM
     runs-on: ubuntu-latest
@@ -1088,6 +1124,7 @@ jobs:
       - test-js
       - build-js-binaries
       - test-wasm
+      - test-browser
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     permissions:
       contents: write

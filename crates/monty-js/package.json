@@ -60,6 +60,7 @@
     "format": "prettier . -w",
     "lint": "oxlint .",
     "test": "ava",
+    "test:browser": "playwright test",
     "smoke-test": "bash scripts/smoke-test.sh",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
@@ -69,13 +70,15 @@
     "@napi-rs/cli": "^3.2.0",
     "@napi-rs/wasm-runtime": "^1.1.5",
     "@oxc-node/core": "^0.0.35",
+    "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
     "ava": "^6.4.1",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vite": "^6.3.5"
   },
   "ava": {
     "extensions": {
