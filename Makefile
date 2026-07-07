@@ -1,5 +1,11 @@
 .DEFAULT_GOAL := main
 
+ifeq ($(OS),Windows_NT)
+EXE_EXT := .exe
+else
+EXE_EXT :=
+endif
+
 .PHONY: .cargo
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
@@ -38,7 +44,7 @@ lint-js: install-js ## Lint JS code with oxlint
 .PHONY: test-js
 test-js: build-js ## Test the JS package (builds the monty binary the workers run)
 	cargo build -p monty-cli
-	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty" npm test
+	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
 
 .PHONY: smoke-test-js
 smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)

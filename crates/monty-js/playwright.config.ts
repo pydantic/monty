@@ -10,6 +10,10 @@ export default defineConfig({
   fullyParallel: true,
   use: {
     baseURL: 'http://localhost:5179',
+    // The current napi-rs WASI browser loader synchronously compiles the
+    // generated wasm module. Chromium blocks sync compilation above 8MB by
+    // default, so this flag keeps the smoke test focused on Monty's browser
+    // packaging path until the loader can move compilation off the main thread.
     launchOptions: { args: ['--enable-features=WebAssemblyUnlimitedSyncCompilation'] },
   },
   webServer: {

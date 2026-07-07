@@ -32,6 +32,6 @@ function main(): void {
 try {
   main()
 } catch (err: unknown) {
-  window.__error = String(err instanceof Error ? err.stack : err)
+  window.__error = String(err instanceof Error ? (err.stack ?? err.message) : err)
   document.getElementById('status')!.textContent = 'error'
 }
