@@ -22,7 +22,7 @@ mod monty_cls;
 mod mount;
 // The subprocess pool spawns worker processes, which wasm cannot do — wasm
 // builds expose only the in-process API.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod pool;
 
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
@@ -32,5 +32,5 @@ pub use monty_cls::{
     NameLookupLoadOptions, NameLookupResumeOptions, ResumeOptions, RunOptions, SnapshotLoadOptions, StartOptions,
 };
 pub use mount::{MountDir, MountDirOptions};
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(target_arch = "wasm32"))]
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};

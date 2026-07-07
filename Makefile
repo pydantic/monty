@@ -38,7 +38,7 @@ lint-js: install-js ## Lint JS code with oxlint
 .PHONY: test-js
 test-js: build-js ## Test the JS package (builds the monty binary the workers run)
 	cargo build -p monty-cli
-	cd crates/monty-js && npm test
+	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty" npm test
 
 .PHONY: smoke-test-js
 smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests installation)

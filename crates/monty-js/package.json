@@ -81,6 +81,9 @@
     "vite": "^6.3.5"
   },
   "ava": {
+    "files": [
+      "__test__/*.spec.ts"
+    ],
     "extensions": {
       "ts": "module"
     },
