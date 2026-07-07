@@ -637,6 +637,32 @@ pub enum Node<F> {
         or_else: Vec<Self>,
     },
     FunctionDef(F),
+    /// Class definition (e.g. `class Foo: ...`).
+    ///
+    /// Modelled on CPython's class-body code object: the class body is a
+    /// synthetic zero-argument function ([`body`](Self::ClassDef::body), riding
+    /// the same `F` = Raw→Prepared pipeline as [`Node::FunctionDef`]) that
+    /// executes the class statements top-to-bottom into its own scope, then
+    /// assembles the namespace and returns a `Class`. Methods are ordinary
+    /// `FunctionDef`s in that body (with `self` as the first parameter); class
+    /// variables are `Assign`s. Inheritance, metaclasses, decorators and
+    /// `classmethod`/`staticmethod`/`property` are rejected at parse time — see
+    /// `limitations/classes.md`.
+    ClassDef {
+        /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
+        name: Identifier,
+        /// The synthetic class-body function: its body is the class statements
+        /// in source order. Prepared and compiled exactly like a function; its
+        /// emitted code ends by building the namespace `Dict` and returning the
+        /// `Class` object.
+        body: F,
+        /// Top-level member names (methods + class vars) in source order.
+        /// Each is resolved to a class-body-local slot during prepare; the
+        /// compiler uses them to assemble the namespace dict.
+        members: Vec<Identifier>,
+        /// Source position of the `class` statement (for error reporting).
+        position: CodeRange,
+    },
     /// Global variable declaration. Only present in parsed form, consumed during prepare.
     ///
     /// Declares that the listed names refer to module-level (global) variables,

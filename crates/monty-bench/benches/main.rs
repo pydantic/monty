@@ -132,12 +132,6 @@ fn wrap_for_cpython(code: &str) -> String {
 
 const ADD_TWO: &str = "1 + 2";
 
-const LIST_APPEND: &str = "
-a = []
-a.append(42)
-a[0]
-";
-
 const LOOP_MOD_13: &str = "
 v = ''
 for i in range(1_000):
@@ -205,6 +199,141 @@ const EMPTY_TUPLES: &str = "len([() for _ in range(100_000)])";
 
 /// 2-tuple creation benchmark - creates 100,000 2-tuples in a list.
 const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
+
+// --- Agent-workload benchmarks -------------------------------------------
+//
+// Monty's primary real-world use is "code mode" agents (pydantic-ai
+// CodeMode, the examples/ directory, pydantic/talks demos): LLM-written
+// Python that pulls rows out of a database/API via external functions,
+// aggregates them with plain dicts/lists, and formats a report. The
+// benchmarks below mirror those hot loops so regressions in the paths that
+// dominate real agent runs (str-keyed dict access, f-string formatting,
+// str parsing methods, datetime and re) show up in CI.
+
+/// Group-by aggregation over rows-of-dicts — the core loop of every
+/// data-analysis agent (group revenue by segment, rank, filter). Dominated
+/// by str-keyed dict get/insert, `sorted` with a lambda key, tuple
+/// unpacking, and a filtered generator-expression `sum`.
+const AGG_ROWS: &str = "
+regions = ['north', 'south', 'east', 'west']
+segments = ['consumer', 'smb', 'enterprise']
+channels = ['organic', 'paid', 'referral', 'email', 'social']
+rows = []
+for i in range(1_000):
+    rows.append({
+        'order_id': i,
+        'region': regions[i % 4],
+        'segment': segments[i % 3],
+        'channel': channels[i % 5],
+        'amount': (i * 37) % 500 + 1,
+        'quantity': i % 7 + 1,
+    })
+
+checksum = 0
+for _ in range(10):
+    revenue = {}
+    orders = {}
+    for row in rows:
+        key = row['region'] + '/' + row['segment']
+        value = row['amount'] * row['quantity']
+        revenue[key] = revenue.get(key, 0) + value
+        orders[key] = orders.get(key, 0) + 1
+    ranked = sorted(revenue.items(), key=lambda kv: kv[1], reverse=True)
+    top_key, top_revenue = ranked[0]
+    big = sum(1 for row in rows if row['amount'] > 400 and row['quantity'] >= 3)
+    checksum += top_revenue + big + top_revenue // orders[top_key]
+checksum
+";
+
+/// Report formatting with f-strings — how agents present results (markdown
+/// tables, aligned columns, percentages, thousands separators). Exercises
+/// the format mini-language (`fstring.rs`), float formatting, and
+/// `str.join` over a large list of tracked strings.
+const FSTRING_REPORT: &str = "
+total = 0.0
+lines = []
+for i in range(2_000):
+    name = 'product-' + str(i % 100)
+    price = (i * 7) % 300 + 0.99
+    share = (i % 100) / 100
+    total += price
+    lines.append(f'| {name:<14} | {price:>10.2f} | {share:>7.1%} | {i:06d} |')
+lines.append(f'total: {total:,.2f}')
+report = '\\n'.join(lines)
+len(report)
+";
+
+/// Line-oriented text parsing — the scraping/ETL shape (split lines, split
+/// fields, strip/lower/startswith/`in`, `int()` conversion). Measures str
+/// method throughput on real text rather than `FromArgs` binding (which
+/// `builtin_args` covers with tiny strings).
+const STR_PARSE: &str = "
+lines = []
+for i in range(500):
+    status = 'ACTIVE' if i % 3 else 'retired'
+    lines.append('  Widget-' + str(i) + ' ;  ' + str((i * 13) % 400) + ' ; ' + status + ' ; north-' + str(i % 7) + '  ')
+text = '\\n'.join(lines)
+
+count = 0
+total = 0
+for _ in range(10):
+    for line in text.split('\\n'):
+        parts = line.split(';')
+        name = parts[0].strip()
+        qty = int(parts[1].strip())
+        state = parts[2].strip().lower()
+        zone = parts[3].strip()
+        if state == 'active' and name.lower().startswith('widget') and 'north' in zone:
+            count += 1
+            total += qty
+count + total
+";
+
+/// Timestamp cohort analysis — parse ISO timestamps, bucket by weekday and
+/// `strftime` month key, subtract datetimes. The retention/day-of-week
+/// questions agents get asked constantly; covers `fromisoformat`,
+/// `strftime`, `weekday`, and timedelta arithmetic.
+const DATETIME_OPS: &str = "
+import datetime
+
+stamps = []
+for i in range(500):
+    stamps.append(f'2024-{i % 12 + 1:02d}-{i % 28 + 1:02d}T{i % 24:02d}:{i % 60:02d}:00')
+
+start = datetime.datetime(2024, 1, 1)
+weekday_counts = [0, 0, 0, 0, 0, 0, 0]
+cohorts = {}
+total_days = 0
+for _ in range(4):
+    for s in stamps:
+        dt = datetime.datetime.fromisoformat(s)
+        weekday_counts[dt.weekday()] += 1
+        cohorts[dt.strftime('%Y-%m')] = cohorts.get(dt.strftime('%Y-%m'), 0) + 1
+        total_days += (dt - start).days
+weekend = weekday_counts[5] + weekday_counts[6]
+total_days + weekend + len(cohorts)
+";
+
+/// Regex extraction over a large string — `finditer` with group capture and
+/// `re.split`. The engine is fancy-regex, but Monty's wrapper (match-object
+/// allocation, group extraction into tracked strings) is what this guards.
+const RE_EXTRACT: &str = "
+import re
+
+parts = []
+for i in range(300):
+    parts.append('name=item' + str(i) + ' qty=' + str(i % 50) + ' price=' + str((i * 7) % 900))
+text = ' '.join(parts)
+
+pattern = re.compile(r'qty=(\\d+) price=(\\d+)')
+total = 0
+for _ in range(5):
+    for m in pattern.finditer(text):
+        total += int(m.group(1)) + int(m.group(2))
+    words = re.split(r'\\s+', text)
+    total += len(words)
+total
+";
 
 /// Single-collection latency benchmark.
 ///
@@ -300,10 +429,6 @@ fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(not(codspeed))]
     c.bench_function("add_two__cpython", |b| run_cpython(b, ADD_TWO, 3));
 
-    c.bench_function("list_append__monty", |b| run_monty(b, LIST_APPEND, 42));
-    #[cfg(not(codspeed))]
-    c.bench_function("list_append__cpython", |b| run_cpython(b, LIST_APPEND, 42));
-
     c.bench_function("loop_mod_13__monty", |b| run_monty(b, LOOP_MOD_13, 77));
     #[cfg(not(codspeed))]
     c.bench_function("loop_mod_13__cpython", |b| run_cpython(b, LOOP_MOD_13, 77));
@@ -372,6 +497,26 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("json_dumps__cpython", |b| {
         run_cpython_with_data(b, JSON_DUMPS, JSON_MEDIUM, 1815);
     });
+
+    c.bench_function("agg_rows__monty", |b| run_monty(b, AGG_ROWS, 909_800));
+    #[cfg(not(codspeed))]
+    c.bench_function("agg_rows__cpython", |b| run_cpython(b, AGG_ROWS, 909_800));
+
+    c.bench_function("fstring_report__monty", |b| run_monty(b, FSTRING_REPORT, 102_017));
+    #[cfg(not(codspeed))]
+    c.bench_function("fstring_report__cpython", |b| run_cpython(b, FSTRING_REPORT, 102_017));
+
+    c.bench_function("str_parse__monty", |b| run_monty(b, STR_PARSE, 655_040));
+    #[cfg(not(codspeed))]
+    c.bench_function("str_parse__cpython", |b| run_cpython(b, STR_PARSE, 655_040));
+
+    c.bench_function("datetime_ops__monty", |b| run_monty(b, DATETIME_OPS, 360_100));
+    #[cfg(not(codspeed))]
+    c.bench_function("datetime_ops__cpython", |b| run_cpython(b, DATETIME_OPS, 360_100));
+
+    c.bench_function("re_extract__monty", |b| run_monty(b, RE_EXTRACT, 652_500));
+    #[cfg(not(codspeed))]
+    c.bench_function("re_extract__cpython", |b| run_cpython(b, RE_EXTRACT, 652_500));
 
     c.bench_function("gc_collect__monty", |b| run_monty(b, GC_COLLECT, 0));
     #[cfg(not(codspeed))]

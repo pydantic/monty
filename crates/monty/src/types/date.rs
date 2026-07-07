@@ -4,15 +4,12 @@
 //! constructor validation and arithmetic behavior.
 
 use std::{
-    borrow::Cow,
-    cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
     mem,
 };
 
-use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
@@ -26,7 +23,7 @@ use crate::{
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, PyTrait, TimeDelta, Type,
+        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},
         timedelta,
     },
@@ -224,8 +221,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -236,16 +233,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
         write!(f, "datetime.date({year}, {month}, {day})")?;
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let (year, month, day) = to_ymd(*self.get(vm.heap));
-        Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
+        Ok(allocate_string(format!("{year:04}-{month:02}-{day:02}"), vm.heap)?)
     }
 
     fn py_call_attr(

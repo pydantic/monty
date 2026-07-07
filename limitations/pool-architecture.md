@@ -157,6 +157,34 @@ properties that real CPython does not provide, per the caveat above.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are handled inside the worker and never reach the
   callback.
+- **`external_lookup` resolves undefined names lazily.** `feed_run` /
+  `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
+  leaves undefined is resolved on first reference against this dict — a
+  *callable* entry becomes a host function proxy (invoked on the eventual call),
+  any *other value* is converted and returned directly, and an absent name
+  raises `NameError`. It is the lazy counterpart to the eager `inputs` (a name
+  present in both is served by the `inputs` binding, so no lookup fires). A
+  non-callable value that cannot be converted rejects the turn host-side —
+  because `external_lookup` (and `inputs`) may hold untrusted values, an
+  unrepresentable *type* surfaces as a dedicated `MontyError` subclass (in
+  `pydantic_monty`, `MontyConversionError`; its `exception()` reconstructs a
+  native `TypeError`), **never** as a masquerading `NameError`; other converter
+  failures, such as exceeding the max input nesting depth, keep their own type
+  (`MontyRuntimeError`). The two
+  workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
+  worker caches it in the namespace slot, so a second reference in the same feed
+  does not re-fire `NameLookup` (a later host mutation of the dict entry is not
+  observed), whereas the `monty-cpython` worker caches only function proxies and
+  re-fires `NameLookup` on every value reference (re-reading live). Function
+  proxies are cached by both — but unlike a CPython function object, a proxy
+  dispatches by *name* against the dict passed to the current feed at call
+  time: replacing an entry rebinds every reference already holding the proxy,
+  and replacing it with a non-callable makes calls raise the `TypeError`
+  CPython would for calling that value (`'int' object is not callable`).
+  Because only *undefined* names fire lookups, an entry shadowing a builtin
+  (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
+  `external_lookup` — they surface name lookups as snapshots, which resolve only
+  to a function (see below).
 - **Dependency installation is only available on the embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
   `session.installDependencies([...])` in `@pydantic/monty`) makes the

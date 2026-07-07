@@ -1,17 +1,10 @@
 """
 Shared CPython-side fixtures for the monty-datatest harness.
 
-Holds two unrelated bundles of helpers that are both injected into CPython
-test globals via the `exported_globals` dict at the bottom of this file:
-
-1. External-function implementations for iter mode tests (the historical
-   contents of this file), which mirror `dispatch_external_call` in the
-   Rust runner so iter-mode tests produce identical results on both sides.
-2. The `_test_cm` synthetic context manager — a CPython equivalent of
-   Monty's `test-hooks` builtin (see `crates/monty/src/types/test_cm.rs`).
-   **REMOVE** the `_TestCm` class, the `test_cm` wrapper, and the
-   `'_test_cm'` entry in `exported_globals` once a real production
-   context manager covers the same paths.
+Holds external-function implementations for iter mode tests, injected into
+CPython test globals via the `exported_globals` dict at the bottom of this
+file. They mirror `dispatch_external_call` in the Rust runner so iter-mode
+tests produce identical results on both sides.
 
 This module is shared between:
 - scripts/run_traceback.py (for traceback tests)
@@ -25,7 +18,6 @@ import os
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
-from types import TracebackType
 
 
 def add_ints(a: int, b: int) -> int:
@@ -570,107 +562,9 @@ os.environ = VirtualEnviron()
 
 
 # =============================================================================
-# Synthetic context manager — CPython mirror of Monty's `_test_cm()` test-hook
-# builtin. **Remove** alongside `crates/monty/src/types/test_cm.rs` once a
-# real production context manager covers the same paths.
-# =============================================================================
-
-
-class _TestCm:
-    """Synthetic context manager — see `crates/monty/src/types/test_cm.rs`.
-
-    Mirrors the Monty-side `TestContextManager` semantics exactly:
-
-    | behavior          | payload | effect                                              |
-    | ----------------- | ------- | --------------------------------------------------- |
-    | (none)            | —       | passthrough: returns self on enter, None on exit    |
-    | `"suppress"`      | (none)  | `__exit__` returns True on the exception path       |
-    | `"enter_value"`   | int     | `__enter__` returns the int instead of self         |
-    | `"raise_on_enter"`| str     | `__enter__` raises `ValueError(payload)`            |
-    | `"raise_on_exit"` | str     | `__exit__` raises `ValueError(payload)`             |
-
-    Type validation matches Monty's error messages so traceback-equivalence
-    tests pass on both sides.
-    """
-
-    __slots__ = ('_behavior', '_payload')
-
-    def __init__(self, behavior: object = None, payload: object = None) -> None:
-        if behavior is not None and not isinstance(behavior, str):
-            # Match the Monty-side TypeError text exactly so error-path
-            # tests pass against both interpreters.
-            raise TypeError(f'_test_cm() behavior must be str, not {type(behavior).__name__}')
-        if behavior is None:
-            if payload is not None:
-                raise TypeError('_test_cm() payload requires a leading behavior argument')
-            self._behavior: str | None = None
-            self._payload: object = None
-            return
-
-        if behavior == 'suppress':
-            if payload is not None:
-                raise TypeError("_test_cm('suppress') takes no payload")
-        elif behavior == 'enter_value':
-            if payload is None:
-                raise TypeError("_test_cm('enter_value', n) requires an int payload")
-            # bool is a subclass of int in Python — reject it to keep
-            # parity with Monty, where `Value::Bool` and `Value::Int` are
-            # distinct variants and only Int is accepted.
-            if not isinstance(payload, int) or isinstance(payload, bool):
-                raise TypeError(f"_test_cm('enter_value', n) requires int payload, not {type(payload).__name__}")
-        elif behavior in ('raise_on_enter', 'raise_on_exit'):
-            if payload is None:
-                raise TypeError(f"_test_cm('{behavior}', msg) requires a str payload")
-            if not isinstance(payload, str):
-                raise TypeError(f"_test_cm('{behavior}', msg) requires str payload, not {type(payload).__name__}")
-        else:
-            raise TypeError(f"_test_cm() unknown behavior '{behavior}'")
-
-        self._behavior = behavior
-        self._payload = payload
-
-    def __enter__(self) -> object:
-        if self._behavior == 'raise_on_enter':
-            assert isinstance(self._payload, str)
-            raise ValueError(self._payload)
-        if self._behavior == 'enter_value':
-            return self._payload
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> bool | None:
-        if self._behavior == 'raise_on_exit':
-            assert isinstance(self._payload, str)
-            raise ValueError(self._payload)
-        # The suppress flag only matters when an exception is propagating;
-        # CPython ignores the return value on the normal-exit path. The
-        # Monty implementation always returns Bool(False)/None on the
-        # normal path for the same reason.
-        if self._behavior == 'suppress' and exc_type is not None:
-            return True
-        return None
-
-
-def test_cm(*args: object) -> _TestCm:
-    """Mirrors the Monty `_test_cm()` builtin's positional-only signature.
-
-    Exposed in `exported_globals` under the underscore-prefixed name
-    `_test_cm` to match the Monty builtin.
-    """
-    if len(args) <= 2:
-        return _TestCm(*args)
-    raise TypeError(f'_test_cm() takes at most 2 positional arguments ({len(args)} given)')
-
-
-# =============================================================================
 # Names exported into every CPython test's globals.
 # =============================================================================
 #
-# Both the iter-mode helpers and the synthetic context manager live here.
 # The iter-mode helpers don't strictly need to be visible in non-iter-mode
 # tests, but the names are unlikely to collide and the simpler "inject one
 # dict for every test" model removes a branch in the test runner. Tests
@@ -697,6 +591,4 @@ exported_globals: dict[str, object] = {
     'CONST_BOOL': CONST_BOOL,
     'CONST_LIST': CONST_LIST,
     'CONST_NONE': CONST_NONE,
-    # Synthetic context manager — see the "REMOVE THIS" note at the top.
-    '_test_cm': test_cm,
 }

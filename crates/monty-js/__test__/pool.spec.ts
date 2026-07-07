@@ -182,7 +182,7 @@ test('suspension time does not consume the duration budget', async (t) => {
   await using pool = await Monty.create()
   await using session = await pool.checkout({ limits: { maxDurationSecs: 0.3 } })
   const result = await session.feedRun("await fetch_data('u') + '!'", {
-    externalFunctions: {
+    externalLookup: {
       fetch_data: async () => {
         await new Promise((resolve) => setTimeout(resolve, 600))
         return 'body'

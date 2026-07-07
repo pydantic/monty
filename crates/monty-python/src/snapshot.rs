@@ -26,7 +26,10 @@
 
 use std::{
     convert::Infallible,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ::monty::{ExtFunctionResult, MontyException, MontyObject};
@@ -39,14 +42,17 @@ use pyo3::{
     types::{PyBytes, PyDict, PyTuple},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
+use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
+    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     convert::{monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
+    external::{CallResult, ExternalLookup},
     pool::{
-        FeedArgs, SharedCheckout, dispatch_os_parts, finalize_turn, lock, pool_err_to_py, run_turn_async,
-        run_turn_blocking,
+        FeedArgs, SharedCheckout, discard_checkout, discard_checkout_async, dispatch_os_parts, ext_to_resume,
+        finalize_turn, lock, pool_err_to_py, run_turn_async, run_turn_blocking,
     },
     print_target::PrintTarget,
 };
@@ -56,11 +62,32 @@ use crate::{
 /// sink. Cloning bumps the shared handles (the checkout `Arc`, the dataclass
 /// registry dict, the print collector buffer) — every clone drives the **same**
 /// underlying session.
+///
+/// It also carries the `external_lookup=` / `os=` captured at
+/// `feed_start` / `load_snapshot` and a session-persistent pool of pending
+/// coroutine externals: these back [`resume_auto`](PyFunctionSnapshot::resume_auto),
+/// which answers each suspension automatically instead of surfacing it to the
+/// caller. Plain `resume(...)` ignores `external_lookup` and takes its own
+/// per-call `os=`, so these fields only matter to `resume_auto`.
 pub(crate) struct DriveContext {
     checkout: SharedCheckout,
     dc_registry: DcRegistry,
     print_target: PrintTarget,
     script_name: String,
+    /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
+    /// only by `resume_auto` (plain `resume` never looks names up here).
+    external_lookup: Option<Py<PyDict>>,
+    /// `os=` captured at `feed_start` / `load_snapshot`; used by `resume_auto`
+    /// and by the initial feed drive's OS auto-dispatch. Plain
+    /// `resume(*, os=None)` keeps its per-call argument and never falls back to
+    /// this.
+    os: Option<Py<PyAny>>,
+    /// Pending coroutine externals spawned by async `resume_auto`, keyed by
+    /// `call_id`. `Arc` so every `clone_ref`'d snapshot of one session shares a
+    /// single `JoinSet`; the `tokio` `Mutex` because `wait_for_futures` holds it
+    /// across `.await`. Unused (but harmlessly present) on sync sessions, where
+    /// a coroutine external is a hard error.
+    pending_futures: Arc<Mutex<JoinSet<(u32, ExtFunctionResult)>>>,
 }
 
 impl DriveContext {
@@ -69,12 +96,17 @@ impl DriveContext {
         dc_registry: DcRegistry,
         print_target: PrintTarget,
         script_name: String,
+        external_lookup: Option<Py<PyDict>>,
+        os: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             checkout,
             dc_registry,
             print_target,
             script_name,
+            external_lookup,
+            os,
+            pending_futures: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
@@ -84,7 +116,15 @@ impl DriveContext {
             dc_registry: self.dc_registry.clone_ref(py),
             print_target: self.print_target.clone_handle(py),
             script_name: self.script_name.clone(),
+            external_lookup: self.external_lookup.as_ref().map(|d| d.clone_ref(py)),
+            os: self.os.as_ref().map(|o| o.clone_ref(py)),
+            pending_futures: Arc::clone(&self.pending_futures),
         }
+    }
+
+    /// Clones the captured `os=` handle for a per-drive `os` argument.
+    fn clone_os(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.os.as_ref().map(|o| o.clone_ref(py))
     }
 }
 
@@ -93,8 +133,15 @@ impl DriveContext {
 // =============================================================================
 
 /// Runs the first feed turn synchronously and returns the resulting snapshot
-/// (or [`MontyComplete`]).
-pub(crate) fn feed_start_sync(py: Python<'_>, args: FeedArgs, script_name: String) -> PyResult<Py<PyAny>> {
+/// (or [`MontyComplete`]). `external_lookup` is stored on the [`DriveContext`]
+/// for later `resume_auto` calls; the initial drive still surfaces external
+/// calls as snapshots (only OS calls auto-dispatch through `os=`).
+pub(crate) fn feed_start_sync(
+    py: Python<'_>,
+    args: FeedArgs,
+    external_lookup: Option<Py<PyDict>>,
+    script_name: String,
+) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -105,8 +152,9 @@ pub(crate) fn feed_start_sync(py: Python<'_>, args: FeedArgs, script_name: Strin
         checkout,
         dc_registry,
     } = args;
-    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
-    drive_sync(py, ctx, os, move |c, p| {
+    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
+    let os_for_drive = ctx.clone_os(py);
+    drive_sync(py, ctx, os_for_drive, move |c, p| {
         c.feed(&code, inputs, mounts, skip_type_check, p)
     })
 }
@@ -114,7 +162,12 @@ pub(crate) fn feed_start_sync(py: Python<'_>, args: FeedArgs, script_name: Strin
 /// Async counterpart of [`feed_start_sync`]: the returned coroutine runs the
 /// first feed turn off the event loop and resolves to the snapshot (or
 /// [`MontyComplete`]).
-pub(crate) fn feed_start_async(py: Python<'_>, args: FeedArgs, script_name: String) -> PyResult<Bound<'_, PyAny>> {
+pub(crate) fn feed_start_async(
+    py: Python<'_>,
+    args: FeedArgs,
+    external_lookup: Option<Py<PyDict>>,
+    script_name: String,
+) -> PyResult<Bound<'_, PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -125,9 +178,13 @@ pub(crate) fn feed_start_async(py: Python<'_>, args: FeedArgs, script_name: Stri
         checkout,
         dc_registry,
     } = args;
-    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name);
+    let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
+    let os_for_drive = ctx.clone_os(py);
     future_into_py(py, async move {
-        drive_async(ctx, os, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p)).await
+        drive_async(ctx, os_for_drive, move |c, p| {
+            c.feed(&code, inputs, mounts, skip_type_check, p)
+        })
+        .await
     })
 }
 
@@ -388,6 +445,13 @@ fn ext_result_to_resume(result: ExtFunctionResult) -> ResumeValue {
     }
 }
 
+/// Resolves a name against the [`DriveContext`]'s captured `external_lookup=`,
+/// shared by the sync and async name-lookup `resume_auto`. `None` leaves the
+/// name undefined so the sandbox raises `NameError`, matching `feed_run`.
+fn resolve_captured_name(py: Python<'_>, ctx: &DriveContext, name: &str) -> PyResult<Option<MontyObject>> {
+    ExternalLookup::new(py, ctx.external_lookup.as_ref().map(|d| d.bind(py)), &ctx.dc_registry).resolve_name(name)
+}
+
 /// Parses an `ExternalResult` TypedDict — one of `{'return_value': obj}`,
 /// `{'exception': exc}`, `{'exc_type': str, 'message'?: str}`, or
 /// `{'future': ...}` — into a [`ResumeValue`]. `call_id` is unused by the pool
@@ -470,6 +534,10 @@ fn kwargs_to_py<'py>(
 // =============================================================================
 
 /// The pending-call payload shared by the sync and async function snapshots.
+///
+/// `Clone` so async `resume_auto` can move an owned copy into the `'static`
+/// dispatch future (the snapshot itself is borrowed for only the pymethod call).
+#[derive(Clone)]
 struct FunctionCallData {
     function_name: String,
     args: Vec<MontyObject>,
@@ -567,6 +635,50 @@ impl PyFunctionSnapshot {
         drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
     }
 
+    /// Answers this call automatically from the `external_lookup=` / `os=`
+    /// captured at `feed_start` / `load_snapshot`, then drives to the next
+    /// snapshot (or [`MontyComplete`]). A function name absent from
+    /// `external_lookup` resolves to `NotFound`, so the sandbox raises
+    /// `NameError` — matching `feed_run`. A coroutine external raises
+    /// `RuntimeError` (async externals need `AsyncMonty`). Consumes the snapshot.
+    fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let ctx = self.0.snapshot.claim(py)?;
+        let call = &self.0.call;
+        let result = if call.is_os_function {
+            dispatch_os_parts(
+                py,
+                &call.function_name,
+                &call.args,
+                &call.kwargs,
+                call.not_handled_error.as_ref(),
+                ctx.os.as_ref(),
+                &ctx.dc_registry,
+            )
+        } else {
+            match dispatch_function_call(
+                &call.function_name,
+                call.is_method_call,
+                &call.args,
+                &call.kwargs,
+                ctx.external_lookup.as_ref(),
+                &ctx.dc_registry,
+            ) {
+                CallResult::Sync(result) => result,
+                CallResult::Coroutine(coro) => {
+                    // Close the un-awaited coroutine so it doesn't leak a
+                    // "coroutine was never awaited" ResourceWarning: a sync
+                    // session has no event loop to drive it.
+                    let _ = coro.bind(py).call_method0(intern!(py, "close"));
+                    py.detach(|| discard_checkout(&ctx.checkout));
+                    return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
+                }
+            }
+        };
+        let value = ext_result_to_resume(result);
+        let os = ctx.clone_os(py);
+        drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
+    }
+
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         self.0.snapshot.dump(py)
     }
@@ -644,6 +756,59 @@ impl PyAsyncFunctionSnapshot {
             py,
             async move { drive_async(ctx, os, move |c, p| c.resume(value, p)).await },
         )
+    }
+
+    /// Async sibling of [`PyFunctionSnapshot::resume_auto`]. A coroutine external
+    /// is spawned into the session's shared future pool and answered with a
+    /// pending future — so other sandbox tasks keep running — to be settled
+    /// later by an [`PyAsyncFutureSnapshot::resume_auto`].
+    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = self.0.snapshot.claim(py)?;
+        // owned copy: the snapshot is borrowed only for this synchronous prologue
+        let call = self.0.call.clone();
+        future_into_py(py, async move {
+            // Dispatch inside the future: a coroutine's `into_future` needs the
+            // asyncio task-locals that `future_into_py`'s scope establishes.
+            let answer: PyResult<ResumeValue> = if call.is_os_function {
+                let result = Python::attach(|py| {
+                    dispatch_os_parts(
+                        py,
+                        &call.function_name,
+                        &call.args,
+                        &call.kwargs,
+                        call.not_handled_error.as_ref(),
+                        ctx.os.as_ref(),
+                        &ctx.dc_registry,
+                    )
+                });
+                Ok(ext_result_to_resume(result))
+            } else {
+                match dispatch_function_call(
+                    &call.function_name,
+                    call.is_method_call,
+                    &call.args,
+                    &call.kwargs,
+                    ctx.external_lookup.as_ref(),
+                    &ctx.dc_registry,
+                ) {
+                    CallResult::Sync(result) => Ok(ext_result_to_resume(result)),
+                    CallResult::Coroutine(coro) => {
+                        let mut join_set = ctx.pending_futures.lock().await;
+                        spawn_coroutine_task(&mut join_set, call.call_id, coro, &ctx.dc_registry)
+                            .map(|()| ResumeValue::Future)
+                    }
+                }
+            };
+            let value = match answer {
+                Ok(value) => value,
+                Err(err) => {
+                    discard_checkout_async(&ctx.checkout).await;
+                    return Err(err);
+                }
+            };
+            let os = Python::attach(|py| ctx.clone_os(py));
+            drive_async(ctx, os, move |c, p| c.resume(value, p)).await
+        })
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -727,6 +892,23 @@ impl PyNameLookupSnapshot {
         drive_sync(py, ctx, os, move |c, p| c.resume_name_lookup(value, p))
     }
 
+    /// Answers this name lookup automatically from the captured
+    /// `external_lookup=`, then drives to the next snapshot. A name absent from
+    /// the lookup leaves it undefined, so the sandbox raises `NameError`.
+    /// Consumes the snapshot.
+    fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let ctx = self.0.snapshot.claim(py)?;
+        let value = match resolve_captured_name(py, &ctx, &self.0.name) {
+            Ok(value) => value,
+            Err(err) => {
+                py.detach(|| discard_checkout(&ctx.checkout));
+                return Err(err);
+            }
+        };
+        let os = ctx.clone_os(py);
+        drive_sync(py, ctx, os, move |c, p| c.resume_name_lookup(value, p))
+    }
+
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         self.0.snapshot.dump(py)
     }
@@ -762,6 +944,23 @@ impl PyAsyncNameLookupSnapshot {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
+            drive_async(ctx, os, move |c, p| c.resume_name_lookup(value, p)).await
+        })
+    }
+
+    /// Async sibling of [`PyNameLookupSnapshot::resume_auto`].
+    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = self.0.snapshot.claim(py)?;
+        let name = self.0.name.clone();
+        future_into_py(py, async move {
+            let value = match Python::attach(|py| resolve_captured_name(py, &ctx, &name)) {
+                Ok(value) => value,
+                Err(err) => {
+                    discard_checkout_async(&ctx.checkout).await;
+                    return Err(err);
+                }
+            };
+            let os = Python::attach(|py| ctx.clone_os(py));
             drive_async(ctx, os, move |c, p| c.resume_name_lookup(value, p)).await
         })
     }
@@ -835,6 +1034,14 @@ impl PyFutureSnapshot {
         drive_sync(py, ctx, os, move |c, p| c.resume_futures(resolved, p))
     }
 
+    /// Sync sessions have no event loop to drive coroutine externals, so this
+    /// always raises; resolve the pending futures manually with
+    /// `resume({call_id: ...})`. Does not consume the snapshot (no side effects).
+    #[expect(clippy::unused_self, reason = "a pyclass instance method must take &self")]
+    fn resume_auto(&self) -> PyResult<Py<PyAny>> {
+        Err(PyRuntimeError::new_err("async external functions require AsyncMonty"))
+    }
+
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         self.0.snapshot.dump(py)
     }
@@ -871,6 +1078,36 @@ impl PyAsyncFutureSnapshot {
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
             drive_async(ctx, os, move |c, p| c.resume_futures(resolved, p)).await
+        })
+    }
+
+    /// Waits for one or more of the coroutine externals spawned by earlier
+    /// `resume_auto` calls to settle, delivers them, and drives to the next
+    /// snapshot. Raises if there are no pending coroutines to await — e.g. on a
+    /// snapshot restored via `load_snapshot`, whose spawned coroutines lived in
+    /// the previous process (resolve those manually with `resume({...})`).
+    fn resume_auto<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let ctx = self.0.snapshot.claim(py)?;
+        future_into_py(py, async move {
+            let resolved = {
+                let mut join_set = ctx.pending_futures.lock().await;
+                wait_for_futures(&mut join_set).await
+            }
+            .and_then(|results| {
+                results
+                    .into_iter()
+                    .map(|(call_id, result)| Ok((call_id, ext_to_resume(result)?)))
+                    .collect::<PyResult<Vec<_>>>()
+            });
+            let results = match resolved {
+                Ok(results) => results,
+                Err(err) => {
+                    discard_checkout_async(&ctx.checkout).await;
+                    return Err(err);
+                }
+            };
+            let os = Python::attach(|py| ctx.clone_os(py));
+            drive_async(ctx, os, move |c, p| c.resume_futures(results, p)).await
         })
     }
 

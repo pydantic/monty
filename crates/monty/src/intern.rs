@@ -731,6 +731,31 @@ pub enum StaticStrings {
     // Module dunder values.
     #[strum(serialize = "__main__")]
     DunderMain,
+
+    // ==========================
+    // Class dunder attributes.
+    /// `__doc__` — synthesized into the namespace of classes created by the
+    /// 3-arg `type()` builtin when the caller's dict omits it (compiled
+    /// `class` bodies get theirs from the parser). Appended at the enum end:
+    /// StaticStrings discriminants are serialized `StringId`s, so mid-enum
+    /// insertion would shift every later id.
+    #[strum(serialize = "__doc__")]
+    DunderDoc,
+
+    // ==========================
+    // Singleton `repr()`/`str()` values. Interned so `str(None)`, `repr(True)`,
+    // `f"{...}"`, `print(False)` etc. resolve to an existing `StringId` instead
+    // of allocating a fresh heap string each time — see `Value::py_repr`.
+    // Appended at the enum end: discriminants are serialized `StringId`s, so
+    // mid-enum insertion would shift every later id.
+    #[strum(serialize = "None")]
+    NoneRepr,
+    #[strum(serialize = "True")]
+    TrueRepr,
+    #[strum(serialize = "False")]
+    FalseRepr,
+    #[strum(serialize = "Ellipsis")]
+    EllipsisRepr,
 }
 
 impl StaticStrings {

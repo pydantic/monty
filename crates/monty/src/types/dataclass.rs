@@ -4,10 +4,9 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use serde::ser::SerializeStruct;
 
-use super::{Dict, PyTrait};
+use super::{Dict, LazyHeapSet, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -133,10 +132,13 @@ impl<'h> HeapRead<'h, Dataclass> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
-            // Get attribute name for error message
+            // Build the error message from the field name's repr (a heap `str`
+            // `Value`), dropping that temporary before dropping our own args.
+            let name_repr = name.py_repr(vm)?;
+            defer_drop!(name_repr, vm);
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
-                format!("cannot assign to field {}", name.py_repr(vm)?),
+                format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
             // Drop the values we were given ownership of
             name.drop_with(vm);
@@ -215,7 +217,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         // Check depth limit before recursing
         let Ok(mut guard) = vm.recursion_guard() else {
@@ -291,8 +293,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 
             // If the attribute exists in attrs, it's a data value (not callable)
             if let Some(value) = self.get(vm.heap).attrs.get_by_str(method_name, vm.heap, vm.interns) {
-                let type_name = value.py_type(vm);
-                Err(ExcType::type_error_not_callable_object(type_name))
+                let type_name = value.py_type_name(vm);
+                Err(ExcType::type_error_not_callable_object(&type_name))
             } else {
                 // Attribute doesn't exist — use the class name (e.g., "Point") not "Dataclass"
                 Err(ExcType::attribute_error(

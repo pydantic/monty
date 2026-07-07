@@ -1,8 +1,11 @@
-//! External function callback support.
+//! Resolving names a sandbox snippet leaves undefined against the session's
+//! `external_lookup` dict, plus dataclass method dispatch.
 //!
-//! Allows Python code running in Monty to call back to host Python functions.
-//! External functions are registered by name and called when Monty execution
-//! reaches a call to that function.
+//! [`ExternalLookup`] owns both halves of the lazy-resolution protocol — the
+//! `NameLookup` that resolves a bare name and the `FunctionCall` that invokes a
+//! resolved host function — so the callable-vs-value rule linking them lives in
+//! one place. Dataclass method calls (`dispatch_method_call*`) are a separate
+//! concern: they consult the dataclass instance, not `external_lookup`.
 
 use ::monty::{ExtFunctionResult, MontyObject};
 use pyo3::{
@@ -14,7 +17,7 @@ use pyo3::{
 use crate::{
     convert::{monty_to_py, py_to_monty, py_to_monty_value},
     dataclass::DcRegistry,
-    exceptions::exc_py_to_monty,
+    exceptions::{MontyConversionError, exc_py_to_monty},
 };
 
 /// Dispatches a dataclass method call back to the original Python object.
@@ -76,23 +79,62 @@ fn dispatch_method_call_inner(
     py_to_monty(&result, dc_registry, 0)
 }
 
-/// Maps external function names to Python callables, dispatching calls when
-/// Monty pauses at an external function. Dataclass types in return values are
-/// auto-registered into `dc_registry` transparently.
-pub struct ExternalFunctionRegistry<'a, 'py> {
+/// The session's `external_lookup` dict (`name -> value`, absent when the
+/// caller passed none) plus the `Python` token and dataclass registry every
+/// resolution needs. Owns both halves of the lazy-resolution protocol:
+/// [`resolve_name`](Self::resolve_name) answers a `NameLookup`, and
+/// [`call`](Self::call) / [`call_or_coroutine`](Self::call_or_coroutine)
+/// answer the follow-up `FunctionCall` by invoking the current dict entry —
+/// which may have been replaced since it resolved, so calling a now
+/// non-callable entry raises `TypeError` exactly as CPython would. Dataclass
+/// types in return values are auto-registered into `dc_registry` transparently.
+pub struct ExternalLookup<'a, 'py> {
     py: Python<'py>,
-    functions: &'py Bound<'py, PyDict>,
+    lookup: Option<&'py Bound<'py, PyDict>>,
     dc_registry: &'a DcRegistry,
 }
 
-impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
-    /// Creates a new registry from a Python dict of `name -> callable`.
-    pub fn new(py: Python<'py>, functions: &'py Bound<'py, PyDict>, dc_registry: &'a DcRegistry) -> Self {
+impl<'a, 'py> ExternalLookup<'a, 'py> {
+    /// Wraps the `external_lookup` dict (`None` when the caller passed none, in
+    /// which case every name resolves to `NameError` / `NotFound`).
+    pub fn new(py: Python<'py>, lookup: Option<&'py Bound<'py, PyDict>>, dc_registry: &'a DcRegistry) -> Self {
         Self {
             py,
-            functions,
+            lookup,
             dc_registry,
         }
+    }
+
+    /// Resolves a bare-name lookup (a `NameLookup` event): a plain callable
+    /// becomes a host function proxy invoked on the eventual `FunctionCall`,
+    /// any other value is converted and returned directly, and an absent name
+    /// (or absent dict) yields `None` → the sandbox raises `NameError`.
+    ///
+    /// [`py_to_monty_value`] decides callable-vs-other (notably a type object
+    /// Monty models converts to `MontyObject::Type`, not a proxy); a function
+    /// proxy is renamed to the lookup *key* (not the callable's `__name__`) so
+    /// the `FunctionCall` hits the same dict entry. An unconvertible value
+    /// rejects the turn via [`MontyConversionError::value_conversion_err`] —
+    /// because `external_lookup` may hold untrusted values, an unrepresentable
+    /// type surfaces as the dedicated `MontyConversionError` (a `MontyError`),
+    /// not a masquerading `NameError`.
+    pub fn resolve_name(&self, name: &str) -> PyResult<Option<MontyObject>> {
+        let Some(lookup) = self.lookup else {
+            return Ok(None);
+        };
+        let Some(value) = lookup.get_item(name)? else {
+            return Ok(None);
+        };
+        let obj = match py_to_monty_value(&value, self.dc_registry)
+            .map_err(|exc| MontyConversionError::value_conversion_err(self.py, exc))?
+        {
+            MontyObject::Function { docstring, .. } => MontyObject::Function {
+                name: name.to_owned(),
+                docstring,
+            },
+            other => other,
+        };
+        Ok(Some(obj))
     }
 
     /// Calls an external function by name, converting args/kwargs from Monty
@@ -112,14 +154,17 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     }
 
     /// `PyResult`-returning core of [`call`](Self::call); `Ok(None)` means the
-    /// function name was not found.
+    /// name was not found (an absent dict or an absent key).
     fn call_inner(
         &self,
         function_name: &str,
         args: &[MontyObject],
         kwargs: &[(MontyObject, MontyObject)],
     ) -> PyResult<Option<MontyObject>> {
-        let Some(callable) = self.functions.get_item(function_name)? else {
+        let Some(lookup) = self.lookup else {
+            return Ok(None);
+        };
+        let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
 
@@ -171,7 +216,10 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     where
         'py: 'b,
     {
-        let Some(callable) = self.functions.get_item(function_name)? else {
+        let Some(lookup) = self.lookup else {
+            return Ok(None);
+        };
+        let Some(callable) = lookup.get_item(function_name)? else {
             return Ok(None);
         };
 

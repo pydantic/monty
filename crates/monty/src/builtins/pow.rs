@@ -196,7 +196,8 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>)
         _ => Err(ExcType::binary_type_error(
             "** or pow()",
             base.py_type(vm),
-            exp.py_type(vm),
+            base.py_type_name(vm),
+            exp.py_type_name(vm),
         )),
     }
 }

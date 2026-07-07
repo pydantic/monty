@@ -1,9 +1,10 @@
 //! The main `Monty` class and iterative execution support for the TypeScript/JavaScript bindings.
 //!
 //! Provides a sandboxed Python interpreter that can be configured with inputs
-//! and resource limits. External functions are provided at runtime via
-//! `RunOptions` or `StartOptions`. Supports both immediate execution
-//! via `run()` and iterative execution via `start()`/`resume()`.
+//! and resource limits. Undefined names are resolved at runtime via the
+//! `externalLookup` on `RunOptions` (or, for iterative execution, by answering
+//! the name-lookup/function-call suspensions). Supports both immediate
+//! execution via `run()` and iterative execution via `start()`/`resume()`.
 //!
 //! ## Quick Start
 //!
@@ -104,9 +105,10 @@ pub struct RunOptions<'env> {
     pub limits: Option<JsResourceLimits>,
     /// Optional print callback function.
     pub print_callback: Option<JsPrintCallback<'env>>,
-    /// Dict of external function callbacks.
-    /// Keys are function names, values are callable functions.
-    pub external_functions: Option<Object<'env>>,
+    /// Lazy resolution for names the code leaves undefined. Keys are names; a
+    /// callable value resolves to a host function proxy, any other value is
+    /// converted and returned directly, and an absent name raises `NameError`.
+    pub external_lookup: Option<Object<'env>>,
     /// Filesystem mount(s) for the sandbox.
     /// A single `MountDir` or an array of `MountDir`.
     pub mount: Option<Object<'env>>,
@@ -181,11 +183,11 @@ impl Monty {
     }
 
     /// Executes the code, returning the last expression's result or a
-    /// MontyException on failure. With runtime `externalFunctions` or mounts,
+    /// MontyException on failure. With a runtime `externalLookup` or mounts,
     /// dispatches calls/lookups via the start/resume loop; otherwise runs
     /// directly.
     ///
-    /// @param options - Execution options (inputs, limits, externalFunctions)
+    /// @param options - Execution options (inputs, limits, externalLookup)
     /// @returns The result of the last expression, or a MontyException if execution fails
     #[napi]
     pub fn run<'env>(
@@ -196,7 +198,7 @@ impl Monty {
         let options = options.unwrap_or_default();
         let input_values = self.extract_input_values(options.inputs, *env)?;
 
-        let external_functions = options.external_functions;
+        let external_lookup = options.external_lookup;
         let os_handler = match options.mount.as_ref() {
             Some(obj) => OsHandler::from_extracted(extract_mounts(obj)?),
             None => None,
@@ -211,14 +213,14 @@ impl Monty {
             None => PrintWriter::Stdout,
         };
 
-        // If we have runtime external functions or mounts, use the start/resume
+        // If we have a runtime external lookup or mounts, use the start/resume
         // loop to handle FunctionCall, NameLookup, and OsCall dispatching
-        if external_functions.is_some() || os_handler.is_some() {
+        if external_lookup.is_some() || os_handler.is_some() {
             return self.run_with_dispatch_loop(
                 env,
                 input_values,
                 options.limits,
-                external_functions,
+                external_lookup,
                 os_handler,
                 print_writer,
             );
@@ -238,16 +240,16 @@ impl Monty {
         }
     }
 
-    /// Runs code with external function callbacks and/or mounts, looping over
-    /// `FunctionCall`/`NameLookup`/`OsCall`. Name lookups resolve to a
-    /// `Function` when present in the external map (else `Undefined`); OS calls
-    /// dispatch to the mount table when available.
+    /// Runs code with an external lookup and/or mounts, looping over
+    /// `FunctionCall`/`NameLookup`/`OsCall`. Name lookups resolve a callable to
+    /// a `Function` proxy and any other entry to its converted value (else
+    /// `Undefined`); OS calls dispatch to the mount table when available.
     fn run_with_dispatch_loop<'env>(
         &self,
         env: &'env Env,
         input_values: Vec<MontyObject>,
         limits: Option<JsResourceLimits>,
-        external_functions: Option<Object<'env>>,
+        external_lookup: Option<Object<'env>>,
         os_handler: Option<OsHandler>,
         mut print_output: PrintWriter<'_>,
     ) -> Result<Either<JsMontyObject<'env>, JsMontyException>> {
@@ -282,13 +284,22 @@ impl Monty {
                             return Ok(Either::A(monty_to_js(&result, env)?));
                         }
                         RunProgress::FunctionCall(call) => {
-                            let return_value = call_external_function(
+                            // Dispatching the call can fail (arg/result conversion).
+                            // Restore the mount table before propagating so the
+                            // shared slots are not left empty.
+                            let return_value = match call_external_function(
                                 env,
-                                external_functions.as_ref(),
+                                external_lookup.as_ref(),
                                 &call.function_name,
                                 &call.args,
                                 &call.kwargs,
-                            )?;
+                            ) {
+                                Ok(v) => v,
+                                Err(err) => {
+                                    put_back(mount_table);
+                                    return Err(err);
+                                }
+                            };
 
                             progress = match call.resume(return_value, print_output.reborrow()) {
                                 Ok(p) => p,
@@ -299,7 +310,15 @@ impl Monty {
                             };
                         }
                         RunProgress::NameLookup(lookup) => {
-                            let result = resolve_name_lookup(external_functions.as_ref(), &lookup.name)?;
+                            // As above: resolution can fail (converting a non-callable
+                            // value), so restore the mount table before propagating.
+                            let result = match resolve_name_lookup(env, external_lookup.as_ref(), &lookup.name) {
+                                Ok(r) => r,
+                                Err(err) => {
+                                    put_back(mount_table);
+                                    return Err(err);
+                                }
+                            };
                             progress = match lookup.resume(result, print_output.reborrow()) {
                                 Ok(p) => p,
                                 Err(exc) => {
@@ -1564,33 +1583,45 @@ struct SerializedNameLookupOwned {
 // External function support
 // =============================================================================
 
-/// Calls a JavaScript external function and returns the result.
+/// Calls a JavaScript external-lookup callable and returns the result.
 ///
-/// Converts args/kwargs from Monty format, calls the JS function,
-/// and converts the result back to Monty format (or an exception).
+/// Converts args/kwargs from Monty format, calls the JS function, and converts
+/// the result back to Monty format (or an exception). Only a callable *own*
+/// property is invocable: an absent name or an inherited member (e.g.
+/// `Object.prototype.toString`) raises `NameError`, while an own non-callable
+/// entry — a cached function proxy whose entry was later replaced by a plain
+/// value — raises the `TypeError` CPython would for calling that value.
 fn call_external_function(
     env: &Env,
-    external_functions: Option<&Object<'_>>,
+    external_lookup: Option<&Object<'_>>,
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
 ) -> Result<ExtFunctionResult> {
-    let functions = external_functions.ok_or_else(|| {
-        Error::from_reason(format!(
-            "External function '{function_name}' called but no externalFunctions provided"
-        ))
-    })?;
-
-    if !functions.has_named_property(function_name)? {
-        // NameError matches Python's behavior for undefined names.
-        let exc = MontyException::new(
+    // NameError matches Python's behavior for a name the lookup does not expose.
+    let name_error = || {
+        ExtFunctionResult::Error(MontyException::new(
             ExcType::NameError,
             Some(format!("name '{function_name}' is not defined")),
-        );
-        return Ok(ExtFunctionResult::Error(exc));
-    }
+        ))
+    };
 
-    let callable: Unknown = functions.get_named_property(function_name)?;
+    let Some(lookup) = external_lookup else {
+        return Ok(name_error());
+    };
+    if !lookup.has_own_property(function_name)? {
+        return Ok(name_error());
+    }
+    let callable: Unknown = lookup.get_named_property(function_name)?;
+    if callable.get_type()? != ValueType::Function {
+        // Converting just to name the type is fine on this cold path; values
+        // with no Monty equivalent (symbols etc.) fall back to `object`.
+        let type_name = js_to_monty(callable, *env).map_or("object", |obj| obj.type_name());
+        return Ok(ExtFunctionResult::Error(MontyException::new(
+            ExcType::TypeError,
+            Some(format!("'{type_name}' object is not callable")),
+        )));
+    }
 
     let mut js_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);
     for arg in args {
@@ -1705,19 +1736,29 @@ fn extract_js_exception(exception_obj: Object<'_>) -> MontyException {
     MontyException::new(exc_type, msg)
 }
 
-/// Resolves a name lookup against the runtime external functions map.
+/// Resolves a name lookup against the runtime external lookup.
 ///
-/// If the name exists as a property on the external functions object, returns
-/// `NameLookupResult::Value` with a `Function` object. Otherwise returns
-/// `NameLookupResult::Undefined` so the VM raises `NameError`.
-fn resolve_name_lookup(external_functions: Option<&Object<'_>>, name: &str) -> Result<NameLookupResult> {
-    if let Some(functions) = external_functions {
-        if functions.has_named_property(name)? {
-            return Ok(NameLookupResult::Value(MontyObject::Function {
-                name: name.to_string(),
-                docstring: None, // TODO, can we do better?
-            }));
-        }
+/// Only *own* properties resolve, so inherited members (e.g.
+/// `Object.prototype.toString`) never satisfy a name the host did not expose. A
+/// callable becomes a host-function proxy keyed by the lookup *name* (so the
+/// follow-up `FunctionCall` dispatches against the same key); any other value is
+/// converted and returned directly. An absent name (or absent lookup) yields
+/// `Undefined`, so the VM raises `NameError`.
+fn resolve_name_lookup(env: &Env, external_lookup: Option<&Object<'_>>, name: &str) -> Result<NameLookupResult> {
+    let Some(lookup) = external_lookup else {
+        return Ok(NameLookupResult::Undefined);
+    };
+    if !lookup.has_own_property(name)? {
+        return Ok(NameLookupResult::Undefined);
     }
-    Ok(NameLookupResult::Undefined)
+    let value: Unknown = lookup.get_named_property(name)?;
+    let resolved = if value.get_type()? == ValueType::Function {
+        MontyObject::Function {
+            name: name.to_string(),
+            docstring: None, // TODO, can we do better?
+        }
+    } else {
+        js_to_monty(value, *env)?
+    };
+    Ok(NameLookupResult::Value(resolved))
 }

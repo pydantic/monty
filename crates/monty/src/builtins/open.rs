@@ -202,7 +202,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm).cpython_arg_name()
+                    value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
                 )));
             }
         }
@@ -216,7 +216,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
             } else {
                 return Err(ExcType::type_error(format!(
                     "open() argument '{name}' must be str or None, not {}",
-                    value.py_type(vm).cpython_arg_name()
+                    value.py_type(vm).cpython_arg_name(vm.heap, vm.interns)
                 )));
             }
         }
@@ -239,6 +239,6 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
 fn path_type_error(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunError {
     ExcType::type_error(format!(
         "expected str, bytes or os.PathLike object, not {}",
-        value.py_type(vm)
+        value.py_type_name(vm)
     ))
 }

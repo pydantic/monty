@@ -93,8 +93,9 @@ fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<C
             default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
         })))
     } else {
-        let type_name = key_value.py_type_heap(vm.heap);
+        let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);
         key_value.drop_with(vm.heap);
+
         if let Some(d) = default_value {
             d.drop_with(vm.heap);
         }

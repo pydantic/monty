@@ -87,3 +87,6 @@ representation does not carry them.
 - Backreference syntax `\10` and higher is not recognized; only `\1`–`\9`.
 - Error messages for invalid patterns come from `fancy-regex` and do not
   match CPython's wording.
+- Patterns whose *compiled* form is very large — e.g. huge counted repeats
+  like `a{5000000}` — raise `re.PatternError` (`fancy-regex`/`regex` enforce a
+  compiled-size limit), whereas CPython compiles them.

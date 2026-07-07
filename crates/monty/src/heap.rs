@@ -19,9 +19,9 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
-        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date,
-        datetime, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
+        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
+        TimeZone, Tuple, date, datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -29,11 +29,6 @@ use crate::{
 mod free_list;
 mod stable_heap;
 use stable_heap::StableHeap;
-
-// Imported separately because `#[cfg]` cannot be applied to individual items
-// inside a brace-grouped `use`.
-#[cfg(feature = "test-hooks")]
-use crate::types::TestContextManager;
 
 /// Unique identifier for values stored inside the heap arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -226,6 +221,9 @@ pub enum HeapReadOutput<'a> {
     Slice(HeapRead<'a, Slice>),
     Exception(HeapRead<'a, SimpleException>),
     Dataclass(HeapRead<'a, Dataclass>),
+    Class(HeapRead<'a, Class>),
+    Instance(HeapRead<'a, Instance>),
+    BoundMethod(HeapRead<'a, BoundMethod>),
     Iter(HeapRead<'a, MontyIter>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
@@ -240,9 +238,6 @@ pub enum HeapReadOutput<'a> {
     DateTime(HeapRead<'a, datetime::DateTime>),
     TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
     TimeZone(HeapRead<'a, timezone::TimeZone>),
-    /// Synthetic context manager — only present under `test-hooks`.
-    #[cfg(feature = "test-hooks")]
-    TestContextManager(HeapRead<'a, TestContextManager>),
 }
 
 pub struct HeapRead<'a, T: ?Sized> {
@@ -615,6 +610,9 @@ impl<'a> HeapPtr<'a> {
                 HeapReadOutput::Exception(heap_read(base, simple_exception, readers))
             }
             HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read(base, dataclass, readers)),
+            HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
+            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
+            HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
@@ -633,8 +631,6 @@ impl<'a> HeapPtr<'a> {
             HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
             HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
             HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
-            #[cfg(feature = "test-hooks")]
-            HeapData::TestContextManager(cm) => HeapReadOutput::TestContextManager(heap_read(base, cm, readers)),
         }
     }
 }
@@ -1016,6 +1012,9 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn dec_ref(&mut self, id: HeapId) {
         HeapReader::with(self, &mut (), |reader, ()| {
             let mut current_id = id;
+            // A fresh Vec is deliberate: it costs nothing unless children are
+            // actually pushed, whereas pooling it on the Heap was measured
+            // (CodSpeed, PR #536) to add take/restore traffic to every call.
             let mut work_stack = Vec::new();
             loop {
                 // Using `HeapPtr` avoids the possibility of aliasing with live borrows
@@ -1524,6 +1523,37 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::Class(class) => {
+            // The class namespace holds method/class-variable values.
+            for (k, v) in class.namespace() {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
+        HeapData::Instance(instance) => {
+            // An instance references its class plus its attribute dict's entries.
+            on_child(instance.class());
+            for (k, v) in instance.attrs() {
+                if let Value::Ref(id) = k {
+                    on_child(*id);
+                }
+                if let Value::Ref(id) = v {
+                    on_child(*id);
+                }
+            }
+        }
+        HeapData::BoundMethod(bm) => {
+            if let Value::Ref(id) = &bm.instance {
+                on_child(*id);
+            }
+            if let Value::Ref(id) = &bm.func {
+                on_child(*id);
+            }
+        }
         HeapData::Iter(iter) => {
             // Iterator holds a reference to the iterable being iterated
             if let Value::Ref(id) = iter.value() {
@@ -1608,6 +1638,13 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(buffer_id);
             }
         }
+        HeapData::ReMatch(m) => {
+            // Mirror `py_dec_ref_ids_for_data`: a match holds one ref on its
+            // shared subject string (`None` for an interned subject).
+            if let Value::Ref(id) = m.subject_ref() {
+                on_child(*id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1642,6 +1679,9 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         }
         HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
         HeapData::Dataclass(dc) => dc.py_dec_ref_ids(stack),
+        HeapData::Class(class) => class.py_dec_ref_ids(stack),
+        HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
+        HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
@@ -1695,6 +1735,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             // never `close()`d).
             f.py_dec_ref_ids(stack);
         }
+        // Release the shared subject reference (mirrors `for_each_child_id`).
+        HeapData::ReMatch(m) => m.py_dec_ref_ids(stack),
         // other types have no nested heap references
         _ => {}
     }

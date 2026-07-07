@@ -494,8 +494,10 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     let data_str = value_to_owned_string(&data, heap, interns);
-    let py_type = data.py_type_heap(heap);
+
+    let py_type = data.py_type_name_heap(heap, interns);
     data.drop_with(heap);
+
     match data_str {
         Some(data) => Ok(PathStringDataArgs { path, data }),
         None => Err(ExcType::type_error(format!("data must be str, not {py_type}"))),
@@ -513,8 +515,10 @@ fn extract_bytes_data(
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     let bytes = value_to_owned_bytes(&data, heap, interns);
-    let py_type = data.py_type_heap(heap);
+
+    let py_type = data.py_type_name_heap(heap, interns);
     data.drop_with(heap);
+
     match bytes {
         Some(data) => Ok(PathBytesDataArgs { path, data }),
         None => Err(ExcType::type_error(format!(

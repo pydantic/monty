@@ -7,12 +7,17 @@ any code runs.
 
 ## Statements rejected at parse time
 
-- **`class` definitions** — bare `class Foo: ...` is not supported. There
-  is no in-sandbox class factory: `@dataclass`, `typing.NamedTuple`, and
-  `collections.namedtuple` are all unavailable inside the sandbox (and
-  `collections` is not importable). Host-supplied dataclass / namedtuple
-  values can be passed in and used; use a plain function or a host-defined
-  type for new structured data. See [classes.md](classes.md).
+- **`class` definitions** — simple classes are supported (instance methods,
+  `__init__`/`__repr__`/`__str__`, class variables of arbitrary expressions).
+  Rejected at parse time: base classes / metaclasses (`class Foo(Bar):`) and
+  class-body statements other than `def`, a simple `name [: T] = <expr>`
+  assignment, `pass`, or a docstring. There is no inheritance and no general
+  dunder protocol. See [classes.md](classes.md).
+- **Decorators** (`@deco`) — rejected at parse time on functions, methods, and
+  classes alike (so `@dataclass`, `@classmethod`, `@staticmethod`, `@property`,
+  and any user decorator are unavailable). Previously top-level `def` decorators
+  were silently ignored; they now raise `NotImplementedError` rather than
+  changing behaviour without warning.
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator
   *expressions* (`(x for x in ...)`) parse but currently materialize to a
@@ -89,9 +94,34 @@ exposing `None` would diverge on type — and a real loader is neither available
 nor safe to surface in the sandbox. `__file__` is omitted so no host path can
 leak into the sandbox.
 
+## Ordering comparisons
+
+`<`, `<=`, `>`, `>=` on operands with no defined ordering raise
+`TypeError: '<' not supported between instances of '{a}' and '{b}'`, matching
+CPython (int vs str, `None` vs `None`, user-class instances without comparison
+dunders, etc.). Lists and tuples order lexicographically as in CPython. A `NaN`
+operand is *unordered* rather than incomparable, so `float('nan') < 1` (and
+every operator/direction, including two NaNs) returns `False` without raising —
+also matching CPython, and likewise inside `sorted`/`min`/`max`.
+
+One message divergence: when a **list or tuple** compares unequal only because
+an *inner element* pair is unorderable (e.g. `(1, 2) < (1, 'a')`), Monty names
+the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
+element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
+differs.
+
+One value divergence: CPython's sequence comparison shortcuts equality by
+*object identity* (`x is x` ⇒ equal) before falling back to `==`, so a shared
+`NaN` element in a prefix position makes the shorter sequence compare less
+(`x = float('nan'); [1, x] < [1, x, 3]` is `True`). Monty has no object identity
+for immediate floats, so it treats the two `NaN`s as a differing pair and yields
+`False`. Distinct `NaN` objects (`[1, float('nan')] < [1, float('nan'), 3]`)
+give `False` on both.
+
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures, decorators.
+- Functions (`def`, `async def`), nested functions, closures (but not
+  decorators — see above).
 - List / dict / set comprehensions (generator comprehensions degrade to
   lists — see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.

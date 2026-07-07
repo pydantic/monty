@@ -9,12 +9,11 @@
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use std::borrow::Cow;
 use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-use super::Type;
+use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -66,6 +65,62 @@ impl From<AttrCallResult> for CallResult {
     }
 }
 
+/// Outcome of an ordering comparison ([`PyTrait::py_cmp`] / [`Value::py_cmp`]).
+///
+/// A plain `Option<Ordering>` conflated two very different "no ordering" cases;
+/// this enum splits them so callers reproduce CPython exactly:
+///
+/// - [`Ordered`](Self::Ordered) — a definite `<` / `==` / `>` result.
+/// - [`Unordered`](Self::Unordered) — the operands *are* valid comparison
+///   partners but have no ordering because a `NaN` is involved (directly, or as
+///   the first differing element of a list/tuple). CPython's ordering operators
+///   (`<`, `<=`, `>`, `>=`) all yield `False` here rather than raising, and
+///   `sorted`/`min`/`max` treat it as "no swap".
+/// - [`Incomparable`](Self::Incomparable) — the operand types (or the types of
+///   their first differing elements) have no defined ordering at all; ordering
+///   operators raise `TypeError`.
+///
+/// Collapsing `Unordered` into `Incomparable` is exactly the bug that made
+/// `float('nan') < 1` raise instead of returning `False`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CmpOrder {
+    /// A definite ordering between the two operands.
+    Ordered(Ordering),
+    /// Valid partners, but unordered because a `NaN` is involved.
+    Unordered,
+    /// The operand types have no defined ordering.
+    Incomparable,
+}
+
+impl CmpOrder {
+    /// Maps an `Option<Ordering>` from a numeric comparison helper, where `None`
+    /// can *only* mean a `NaN` operand (`f64::partial_cmp`, `i64_cmp_f64`,
+    /// `bigint_cmp_f64`, and `LongInt::partial_cmp_f64` all return `None`
+    /// exclusively for `NaN`). `None` therefore becomes [`Unordered`], never
+    /// [`Incomparable`].
+    ///
+    /// [`Unordered`]: Self::Unordered
+    /// [`Incomparable`]: Self::Incomparable
+    pub(crate) fn from_numeric(ordering: Option<Ordering>) -> Self {
+        match ordering {
+            Some(ordering) => Self::Ordered(ordering),
+            None => Self::Unordered,
+        }
+    }
+
+    /// Maps an `Option<Ordering>` from a *total*-order comparison (strings,
+    /// bytes, dates, timedeltas), where `None` never arises from a valid pair —
+    /// so `None` means the types don't compare at all ([`Incomparable`]).
+    ///
+    /// [`Incomparable`]: Self::Incomparable
+    pub(crate) fn from_total(ordering: Option<Ordering>) -> Self {
+        match ordering {
+            Some(ordering) => Self::Ordered(ordering),
+            None => Self::Incomparable,
+        }
+    }
+}
+
 /// Common operations for heap-allocated Python values.
 ///
 /// Implementers should provide Python-compatible semantics for all operations.
@@ -82,7 +137,7 @@ impl From<AttrCallResult> for CallResult {
 /// The lifetime `'h` is the heap borrow lifetime. For concrete types (e.g. `Dict`,
 /// `List`) this is unused and should be `'_`. For `HeapRead<'h, T>` implementers
 /// the lifetime connects the read handle to the VM's heap reference.
-pub trait PyTrait<'h> {
+pub(crate) trait PyTrait<'h> {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -121,8 +176,8 @@ pub trait PyTrait<'h> {
     /// recognise `other`, so the caller should try the reflected `other == self`.
     /// The reflection and the final "unequal" fallback are driven by
     /// [`Value::py_eq`]; implementations only handle their own side and must
-    /// not attempt reflection themselves. This is the same convention as
-    /// [`py_cmp`](Self::py_cmp)'s `Option<Ordering>` (`None` = NotImplemented).
+    /// not attempt reflection themselves. This mirrors the `NotImplemented`
+    /// half of [`py_cmp`](Self::py_cmp)'s [`CmpOrder::Incomparable`].
     ///
     /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
     /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
@@ -142,10 +197,14 @@ pub trait PyTrait<'h> {
     ///
     /// Recursion depth is tracked via `vm.recursion_guard()`.
     ///
-    /// Returns `Ok(Some(Ordering))` for comparable values, `Ok(None)` if not comparable,
-    /// or `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(None)
+    /// Returns a [`CmpOrder`] distinguishing a definite ordering, a
+    /// `NaN`-driven unordered-but-valid result (ordering operators yield
+    /// `False`), and a genuine type mismatch (ordering operators raise
+    /// `TypeError`) — see [`CmpOrder`] for why the distinction matters. The
+    /// default is [`CmpOrder::Incomparable`] (the type has no ordering).
+    /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
+    fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Incomparable)
     }
 
     /// Returns the truthiness of the value following Python semantics.
@@ -171,42 +230,32 @@ pub trait PyTrait<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()>;
 
-    /// Returns the Python `repr()` string for this value.
+    /// Returns the Python `repr()` string for this value as a heap `str` `Value`.
     ///
-    /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
+    /// Convenience wrapper around `py_repr_fmt` that allocates the result.
     ///
     /// TODO: the intermediate `String` here is *not* tracked, so recursive
     /// `repr()` of nested containers can amplify into a multi-gigabyte
     /// host-side buffer before `allocate_string` consults the tracker.
-    /// `StringBuilder` is the canonical fix, but plugging it in requires
-    /// either (a) restructuring so `py_repr_fmt` no longer needs `&mut vm`
-    /// while the builder is alive, or (b) refactoring `py_str` / `py_repr`
-    /// to return `Value` directly so the builder can be consumed via
-    /// `StringBuilder::finish` *outside* the recursive call. Today's
-    /// per-type protections (`INT_MAX_STR_DIGITS`, `check_repeat_size`, etc.)
-    /// blunt the worst amplifications but don't fully cover container
-    /// `repr()`.
-    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    /// `StringBuilder` is the canonical fix: now that `py_repr` returns a
+    /// `Value`, the builder can be `finish`ed here (outside the recursion),
+    /// but `py_repr_fmt` still borrows `&mut vm` while writing, so plugging it
+    /// in first needs `py_repr_fmt` to no longer need `&mut vm` while the
+    /// builder is alive. Today's per-type protections (`INT_MAX_STR_DIGITS`,
+    /// `check_repeat_size`, etc.) blunt the worst amplifications but don't
+    /// fully cover container `repr()`.
+    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let mut s = String::new();
-        let mut heap_ids = AHashSet::new();
+        let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-        Ok(Cow::Owned(s))
+        Ok(allocate_string(s, vm.heap)?)
     }
 
     /// Returns the Python `str()` string for this value.
-    ///
-    /// TODO: should return a `Value` rather than `Cow<'static, str>` — see
-    /// the TODO on [`py_repr`](Self::py_repr). For `Value::InternString` /
-    /// heap `str` values, today's `Cow::Owned` impl clones the underlying
-    /// bytes; a `Value`-returning impl could just hand back the same
-    /// `Value`. Callers that need a `&str` (f-string formatters, the print
-    /// writer, error messages) would resolve the `Value` to `&str` via the
-    /// interns table / heap — equivalent to the existing `EitherStr`
-    /// accessor pattern.
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         self.py_repr(vm)
     }
 
@@ -323,8 +372,12 @@ pub trait PyTrait<'h> {
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
         // references on the error path (caught by `memory-model-checks`).
+
         args.drop_with(vm);
-        Err(ExcType::attribute_error(self.py_type(vm), attr.as_str(vm.interns)))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            attr.as_str(vm.interns),
+        ))
     }
 
     /// Whether this type implements the context-manager protocol.
@@ -340,9 +393,15 @@ pub trait PyTrait<'h> {
     /// Default is `false`; types implementing the protocol override this
     /// alongside [`py_enter`] / [`py_exit`].
     ///
+    /// Takes `&VM` (not just the heap) because user-defined instances resolve
+    /// the check against their class namespace, which needs both heap and
+    /// interns access. Mirroring CPython, the check is for `__exit__` — the
+    /// dunder CPython's own protocol error names first — while a missing
+    /// `__enter__` is reported by [`py_enter`] itself.
+    ///
     /// [`py_enter`]: PyTrait::py_enter
     /// [`py_exit`]: PyTrait::py_exit
-    fn py_is_context_manager(&self) -> bool {
+    fn py_is_context_manager(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
         false
     }
 
@@ -363,7 +422,10 @@ pub trait PyTrait<'h> {
     ///
     /// [`py_is_context_manager`]: PyTrait::py_is_context_manager
     fn py_enter(&mut self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(self.py_type(vm), "__enter__"))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            "__enter__",
+        ))
     }
 
     /// Context-manager exit hook (`__exit__`).
@@ -391,7 +453,10 @@ pub trait PyTrait<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
         _exc: Option<HeapId>,
     ) -> RunResult<CallResult> {
-        Err(ExcType::attribute_error(self.py_type(vm), "__exit__"))
+        Err(ExcType::attribute_error(
+            self.py_type(vm).name(vm.heap, vm.interns),
+            "__exit__",
+        ))
     }
 
     /// Python subscript get operation (`__getitem__`), e.g., `d[key]`.
@@ -404,7 +469,7 @@ pub trait PyTrait<'h> {
     ///
     /// Default implementation returns TypeError.
     fn py_getitem(&self, _key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(vm)))
+        Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -418,7 +483,10 @@ pub trait PyTrait<'h> {
         value.drop_with(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
-            format!("'{}' object does not support item assignment", self.py_type(vm)),
+            format!(
+                "'{}' object does not support item assignment",
+                self.py_type(vm).name(vm.heap, vm.interns)
+            ),
         )
         .into())
     }
@@ -441,5 +509,33 @@ pub trait PyTrait<'h> {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         Ok(None)
+    }
+}
+
+/// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct LazyHeapSet(Option<AHashSet<HeapId>>);
+
+impl LazyHeapSet {
+    pub fn insert(&mut self, heap_id: HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.insert(heap_id);
+        } else {
+            let mut s = AHashSet::default();
+            s.insert(heap_id);
+            self.0 = Some(s);
+        }
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn contains(&self, heap_id: &HeapId) -> bool {
+        self.0.as_ref().is_some_and(|s| s.contains(heap_id))
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn remove(&mut self, heap_id: &HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.remove(heap_id);
+        }
     }
 }

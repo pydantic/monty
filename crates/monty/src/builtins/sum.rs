@@ -59,8 +59,13 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         } else {
             // Types don't support addition
             let acc_type = accumulator.py_type(vm);
-            let item_type = item.py_type(vm);
-            return Err(ExcType::binary_type_error("+", acc_type, item_type));
+            let acc_name = acc_type.name(vm.heap, vm.interns);
+            return Err(ExcType::binary_type_error(
+                "+",
+                acc_type,
+                acc_name,
+                item.py_type_name(vm),
+            ));
         }
     }
 

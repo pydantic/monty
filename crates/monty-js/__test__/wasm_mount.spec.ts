@@ -109,6 +109,24 @@ test('read_text via mount', (t) => {
   }
 })
 
+test('mount survives an externalLookup conversion error mid-run', (t) => {
+  // A name-lookup value that cannot cross into the sandbox aborts the run. The
+  // mount table taken for that run must still be restored, so the same MountDir
+  // keeps working rather than being left permanently taken from its shared slot.
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDir('/data', dir, { mode: 'read-only' })
+    // First run references an unconvertible value (a JS Symbol) by name.
+    const error = t.throws(() => new Monty('bad').run({ mount: md, externalLookup: { bad: Symbol('nope') } }))
+    t.is(error?.message, 'Cannot convert JS Symbol to Monty value')
+    // The mount is not corrupted: a second run with the same MountDir works.
+    const result = new Monty("from pathlib import Path; Path('/data/hello.txt').read_text()").run({ mount: md })
+    t.is(result, 'hello world')
+  } finally {
+    cleanup()
+  }
+})
+
 test('read_bytes via mount', (t) => {
   const { dir, cleanup } = createTestDir()
   try {

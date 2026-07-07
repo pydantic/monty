@@ -6,7 +6,7 @@ use std::{
     io::{self, ErrorKind},
 };
 
-use crate::{ExcType, MontyException, types::str::StringRepr};
+use crate::{ExcData, ExcType, MontyException, exception_private::unicode_decode_error_msg, types::str::StringRepr};
 
 /// Errors from mount configuration or filesystem operations.
 #[derive(Debug)]
@@ -35,12 +35,23 @@ pub enum MountError {
     /// An I/O error from the host filesystem.
     Io(io::Error, String),
 
-    /// A file contained bytes that could not be decoded as UTF-8.
+    /// A file contained bytes that could not be decoded as UTF-8. Carries the
+    /// details needed to reproduce CPython's `UnicodeDecodeError` wording
+    /// exactly (see `exception_private::unicode_decode_error_msg`).
     InvalidUtf8 {
         /// Byte offset of the first invalid byte.
-        position: usize,
-        /// The invalid byte value.
-        invalid_byte: u8,
+        start: usize,
+        /// End of the invalid byte range (exclusive); `start + 1` for a
+        /// single bad byte, further for truncated multi-byte sequences.
+        end: usize,
+        /// The first invalid byte value, shown in the single-byte message form.
+        first_byte: u8,
+        /// CPython's reason wording, from `codecs::utf8_error_reason`.
+        reason: &'static str,
+        /// Structured exception fields including the undecodable file bytes
+        /// (omitted for files above `UnicodeErrorData::MAX_OBJECT_LEN`), so
+        /// hosts can build a real `UnicodeDecodeError`.
+        data: ExcData,
     },
 
     /// Invalid mount configuration (e.g., host path doesn't exist or isn't a directory).
@@ -111,12 +122,17 @@ impl MountError {
                 ),
                 _ => MontyException::new(ExcType::OSError, Some(format!("{err}: {}", StringRepr(&path)))),
             },
-            Self::InvalidUtf8 { position, invalid_byte } => MontyException::new(
+            Self::InvalidUtf8 {
+                start,
+                end,
+                first_byte,
+                reason,
+                data,
+            } => MontyException::new(
                 ExcType::UnicodeDecodeError,
-                Some(format!(
-                    "'utf-8' codec can't decode byte 0x{invalid_byte:02x} in position {position}: invalid start byte"
-                )),
-            ),
+                Some(unicode_decode_error_msg("utf-8", first_byte, start, end, reason)),
+            )
+            .with_data(data),
             Self::InvalidMount(msg) => MontyException::new(ExcType::TypeError, Some(msg)),
             Self::WriteLimitExceeded(limit) => MontyException::new(
                 ExcType::OSError,
@@ -144,8 +160,8 @@ impl fmt::Display for MountError {
             Self::ReadOnly(path) => write!(f, "read-only mount: {path}"),
             Self::CrossMountRename { src, dst } => write!(f, "cross-mount rename: {src} -> {dst}"),
             Self::Io(err, path) => write!(f, "I/O error on {path}: {err}"),
-            Self::InvalidUtf8 { position, invalid_byte } => {
-                write!(f, "invalid UTF-8 byte 0x{invalid_byte:02x} at position {position}")
+            Self::InvalidUtf8 { start, first_byte, .. } => {
+                write!(f, "invalid UTF-8 byte 0x{first_byte:02x} at position {start}")
             }
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
             Self::WriteLimitExceeded(limit) => {

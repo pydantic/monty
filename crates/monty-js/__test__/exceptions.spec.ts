@@ -28,6 +28,24 @@ test('type error', async (t) => {
   t.is(error.message, 'TypeError: can only concatenate str (not "int") to str')
 })
 
+test('unicode encode error', async (t) => {
+  const error = await t.throwsAsync(() => run('"café".encode("ascii")'), isRuntimeError)
+  t.is(error.exception.typeName, 'UnicodeEncodeError')
+  t.is(
+    error.message,
+    "UnicodeEncodeError: 'ascii' codec can't encode character '\\xe9' in position 3: ordinal not in range(128)",
+  )
+})
+
+test('unicode decode error', async (t) => {
+  const error = await t.throwsAsync(() => run('b"\\xe9".decode("ascii")'), isRuntimeError)
+  t.is(error.exception.typeName, 'UnicodeDecodeError')
+  t.is(
+    error.message,
+    "UnicodeDecodeError: 'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)",
+  )
+})
+
 test('index error', async (t) => {
   const error = await t.throwsAsync(() => run('[1, 2, 3][10]'), isRuntimeError)
   t.is(error.message, 'IndexError: list index out of range')

@@ -70,7 +70,7 @@ async def test_inputs_and_async_external_function_over_websocket(ws_url: str):
             result = await session.feed_run(
                 'await double(n) + 1',
                 inputs={'n': 20},
-                external_functions={'double': double},
+                external_lookup={'double': double},
             )
     assert result == snapshot(41)
 

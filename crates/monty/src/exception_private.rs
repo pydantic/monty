@@ -11,8 +11,8 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_public::{MontyException, SourceMap, StackFrame},
-    fstring::FormatError,
+    exception_public::{ExcData, MontyException, SourceMap, StackFrame, UnicodeErrorData},
+    fstring::{FormatError, ascii_escape},
     heap::{HeapData, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
@@ -86,6 +86,9 @@ pub enum ExcType {
     ValueError,
     /// Subclass of ValueError - for encoding/decoding errors.
     UnicodeDecodeError,
+    /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
+    /// on a string containing non-ASCII characters).
+    UnicodeEncodeError,
     /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
     #[strum(serialize = "json.JSONDecodeError")]
     JsonDecodeError,
@@ -175,11 +178,14 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError, json.JSONDecodeError, and
-            // io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
+            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
             Self::ValueError => matches!(
                 self,
-                Self::UnicodeDecodeError | Self::JsonDecodeError | Self::UnsupportedOperation
+                Self::UnicodeDecodeError
+                    | Self::UnicodeEncodeError
+                    | Self::JsonDecodeError
+                    | Self::UnsupportedOperation
             ),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
@@ -252,11 +258,29 @@ impl ExcType {
         })
     }
 
+    /// Creates an AttributeError for a missing attribute on a class object.
+    ///
+    /// Matches CPython's wording for type objects: `type object 'Foo' has no
+    /// attribute 'nope'` (instances use [`Self::attribute_error`] instead).
+    /// Sets `hide_caret: true` because CPython doesn't show carets for attribute GET errors.
+    #[must_use]
+    pub(crate) fn attribute_error_type(class_name: &str, attr: &str) -> RunError {
+        let exc = SimpleException::new_msg(
+            Self::AttributeError,
+            format!("type object '{class_name}' has no attribute '{attr}'"),
+        );
+        RunError::Exc(ExceptionRaise {
+            exc,
+            frame: None,
+            hide_caret: true, // CPython doesn't show carets for attribute GET errors
+        })
+    }
+
     /// Creates an AttributeError for attribute assignment on types that don't support it.
     ///
     /// Matches CPython's format for setting attributes on built-in types.
     #[must_use]
-    pub(crate) fn attribute_error_no_setattr(type_: Type, attr_name: &str) -> RunError {
+    pub(crate) fn attribute_error_no_setattr(type_: &str, attr_name: &str) -> RunError {
         SimpleException::new_msg(
             Self::AttributeError,
             format!("'{type_}' object has no attribute '{attr_name}' and no __dict__ for setting new attributes"),
@@ -282,15 +306,30 @@ impl ExcType {
     }
 
     #[must_use]
-    pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
+    }
+
+    /// Creates the TypeError for an ordering comparison (`<`, `<=`, `>`, `>=`)
+    /// between values whose types define no ordering, e.g. `1 < 'a'` or two
+    /// instances of a user class without comparison dunders.
+    ///
+    /// Matches CPython's format:
+    /// `TypeError: '{op}' not supported between instances of '{left}' and '{right}'`
+    #[must_use]
+    pub(crate) fn type_error_ordering(operator: &str, left_type: &str, right_type: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{operator}' not supported between instances of '{left_type}' and '{right_type}'"),
+        )
+        .into()
     }
 
     /// Creates a TypeError for awaiting a non-awaitable object.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object can't be awaited`
     #[must_use]
-    pub(crate) fn object_not_awaitable(type_: Type) -> RunError {
+    pub(crate) fn object_not_awaitable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object can't be awaited")).into()
     }
 
@@ -305,7 +344,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object does not support item assignment`
     #[must_use]
-    pub(crate) fn type_error_not_sub_assignment(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_sub_assignment(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("'{type_}' object does not support item assignment"),
@@ -317,7 +356,7 @@ impl ExcType {
     ///
     /// This matches Python 3.14's error message: `TypeError: unhashable type: 'list'`
     #[must_use]
-    pub(crate) fn type_error_unhashable(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("unhashable type: '{type_}'")).into()
     }
 
@@ -326,7 +365,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a dict key (unhashable type: 'list')`
     #[must_use]
-    pub(crate) fn type_error_unhashable_dict_key(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_dict_key(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("cannot use '{type_}' as a dict key (unhashable type: '{type_}')"),
@@ -339,7 +378,7 @@ impl ExcType {
     /// This matches Python 3.14's error message:
     /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
     #[must_use]
-    pub(crate) fn type_error_unhashable_set_element(type_: Type) -> RunError {
+    pub(crate) fn type_error_unhashable_set_element(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
@@ -355,8 +394,16 @@ impl ExcType {
     /// `KeyError` is always raised rather than a spurious `ValueError`.
     pub(crate) fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
         let key_str = match key.py_str(vm) {
-            Ok(s) => s.into_owned(),
-            Err(_) => format!("<{}>", key.py_type(vm)),
+            Ok(key_value) => {
+                // `key_value` is a heap `str` `Value`; extract its text and drop it.
+                defer_drop!(key_value, vm);
+                if let Ok(s) = key_value.to_str(vm) {
+                    s.to_owned()
+                } else {
+                    format!("<{}>", key.py_type_name(vm))
+                }
+            }
+            Err(_) => format!("<{}>", key.py_type_name(vm)),
         };
         SimpleException::new_msg(Self::KeyError, key_str).into()
     }
@@ -446,6 +493,34 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name} expected at most {max} argument{plural}, got {actual}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a `startswith`/`endswith` affix argument that is
+    /// neither the expected string type nor a tuple.
+    ///
+    /// Matches CPython: `{method} first arg must be {expected} or a tuple of {expected}, not {type}`
+    /// (`expected` is `str` for `str` methods, `bytes` for `bytes` methods).
+    #[must_use]
+    pub(crate) fn type_error_affix_arg(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{method} first arg must be {expected} or a tuple of {expected}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a non-string element in a `startswith`/`endswith`
+    /// affix tuple.
+    ///
+    /// Matches CPython: `tuple for {method} must only contain {expected}, not {type}`.
+    /// Raised lazily while matching — elements after a successful match are never checked.
+    #[must_use]
+    pub(crate) fn type_error_affix_tuple_item(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("tuple for {method} must only contain {expected}, not {type_name}"),
         )
         .into()
     }
@@ -789,11 +864,10 @@ impl ExcType {
     /// failure so the caller sees the same wording as CPython's C-implemented
     /// functions (e.g. `strftime() argument 1 must be str, not None`).
     ///
-    /// The `got` type label should come from [`Type::cpython_arg_name`] so
+    /// The `got` type label should come from `Type::cpython_arg_name` so
     /// that `NoneType` becomes `"None"` to match CPython's special case.
     ///
     /// [`FromValue`]: crate::args::FromValue
-    /// [`Type::cpython_arg_name`]: crate::types::Type::cpython_arg_name
     #[must_use]
     pub(crate) fn type_error_bad_arg_pos(name: &str, pos: usize, expected: &str, got: impl fmt::Display) -> RunError {
         SimpleException::new_msg(
@@ -844,7 +918,7 @@ impl ExcType {
     /// Note: this differs from [`type_error_kwargs_not_mapping`] which is used for
     /// function-call `**kwargs` and includes the function name in the message.
     #[must_use]
-    pub(crate) fn type_error_not_mapping(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_mapping(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not a mapping")).into()
     }
 
@@ -860,7 +934,7 @@ impl ExcType {
     ///
     /// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
     #[must_use]
-    pub(crate) fn type_error_tzinfo(ty: Type) -> RunError {
+    pub(crate) fn type_error_tzinfo(ty: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("tzinfo argument must be None or of a tzinfo subclass, not type '{ty}'"),
@@ -874,6 +948,37 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
+    /// Creates the TypeError raised when a `with` statement's context expression
+    /// does not implement the context-manager protocol.
+    ///
+    /// Matches CPython 3.14's wording, which names the specific missing dunder:
+    /// `__exit__` when the protocol check fails outright (`BeforeWith`'s
+    /// [`py_is_context_manager`](crate::types::PyTrait::py_is_context_manager)
+    /// gate), `__enter__` when a user class defines `__exit__` but not
+    /// `__enter__`.
+    #[must_use]
+    pub(crate) fn type_error_not_context_manager(type_name: impl Display, missing_dunder: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!(
+                "'{type_name}' object does not support the context manager protocol (missed {missing_dunder} method)"
+            ),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `__init__` returning a value other than `None`.
+    ///
+    /// Matches CPython's format: `TypeError: __init__() should return None, not '{type}'`
+    #[must_use]
+    pub(crate) fn type_error_init_return(type_name: impl Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("__init__() should return None, not '{type_name}'"),
+        )
+        .into()
+    }
+
     /// Creates a generic `ValueError` with a custom message.
     pub(crate) fn value_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(Self::ValueError, msg).into()
@@ -883,7 +988,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
     #[must_use]
-    pub(crate) fn type_error_bytes_init(type_: Type) -> RunError {
+    pub(crate) fn type_error_bytes_init(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("cannot convert '{type_}' object to bytes")).into()
     }
 
@@ -891,7 +996,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: cannot create '{type}' instances`
     #[must_use]
-    pub(crate) fn type_error_not_callable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_callable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("cannot create '{type_}' instances")).into()
     }
 
@@ -899,7 +1004,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not callable`
     #[must_use]
-    pub(crate) fn type_error_not_callable_object(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_callable_object(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not callable")).into()
     }
 
@@ -907,7 +1012,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not iterable`
     #[must_use]
-    pub(crate) fn type_error_not_iterable(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_iterable(type_: &str) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
@@ -918,7 +1023,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: Value after * must be an iterable, not {type}`
     #[must_use]
-    pub(crate) fn type_error_value_after_star(type_: Type) -> RunError {
+    pub(crate) fn type_error_value_after_star(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("Value after * must be an iterable, not {type_}"),
@@ -930,7 +1035,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: int() argument must be a string, a bytes-like object or a real number, not '{type}'`
     #[must_use]
-    pub(crate) fn type_error_int_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_int_conversion(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("int() argument must be a string, a bytes-like object or a real number, not '{type_}'"),
@@ -942,7 +1047,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: float() argument must be a string or a real number, not '{type}'`
     #[must_use]
-    pub(crate) fn type_error_float_conversion(type_: Type) -> RunError {
+    pub(crate) fn type_error_float_conversion(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("float() argument must be a string or a real number, not '{type_}'"),
@@ -1104,7 +1209,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError('{type}' indices must be integers, not '{index_type}')`
     #[must_use]
-    pub(crate) fn type_error_indices(type_str: Type, index_type: Type) -> RunError {
+    pub(crate) fn type_error_indices(type_str: Type, index_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{type_str} indices must be integers, not '{index_type}'"),
@@ -1116,7 +1221,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError('list indices must be integers or slices, not {index_type}')`
     #[must_use]
-    pub(crate) fn type_error_list_assignment_indices(index_type: Type) -> RunError {
+    pub(crate) fn type_error_list_assignment_indices(index_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("list indices must be integers or slices, not {index_type}"),
@@ -1309,11 +1414,16 @@ impl ExcType {
     /// For other cases, uses the generic format:
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
-    pub(crate) fn binary_type_error(op: &str, lhs_type: Type, rhs_type: Type) -> RunError {
-        let message = if (op == "+" || op == "+=") && (lhs_type == Type::Str || lhs_type == Type::List) {
-            format!("can only concatenate {lhs_type} (not \"{rhs_type}\") to {lhs_type}")
+    pub(crate) fn binary_type_error(
+        op: &str,
+        lhs_type: Type,
+        lhs_name: impl Display,
+        rhs_name: impl Display,
+    ) -> RunError {
+        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+            format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
-            format!("unsupported operand type(s) for {op}: '{lhs_type}' and '{rhs_type}'")
+            format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
         };
         SimpleException::new_msg(Self::TypeError, message).into()
     }
@@ -1322,7 +1432,7 @@ impl ExcType {
     ///
     /// Uses CPython's format: `bad operand type for unary {op}: '{type}'`
     #[must_use]
-    pub(crate) fn unary_type_error(op: &str, value_type: Type) -> RunError {
+    pub(crate) fn unary_type_error(op: &str, value_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("bad operand type for unary {op}: '{value_type}'"),
@@ -1334,7 +1444,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: '{type}' object cannot be interpreted as an integer`
     #[must_use]
-    pub(crate) fn type_error_not_integer(type_: Type) -> RunError {
+    pub(crate) fn type_error_not_integer(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("'{type_}' object cannot be interpreted as an integer"),
@@ -1372,7 +1482,7 @@ impl ExcType {
     ///
     /// Matches CPython's format: `TypeError: sequence item {index}: expected str instance, {type} found`
     #[must_use]
-    pub(crate) fn type_error_join_item(index: usize, item_type: Type) -> RunError {
+    pub(crate) fn type_error_join_item(index: usize, item_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("sequence item {index}: expected str instance, {item_type} found"),
@@ -1476,15 +1586,63 @@ impl ExcType {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
     }
 
-    /// Creates a UnicodeDecodeError for invalid UTF-8 bytes in decode().
+    /// Creates a UnicodeEncodeError for a run of `start..end` consecutive
+    /// characters (character indices, not byte offsets) of `object` — the
+    /// full string being encoded — that can't be represented in the target
+    /// `codec`. `first_char` is the character at `start`, used for the
+    /// single-character message form.
     ///
-    /// Matches CPython's format: `UnicodeDecodeError: 'utf-8' codec can't decode bytes...`
+    /// Matches CPython's format, which differs for a single character vs. a run:
+    /// `UnicodeEncodeError: 'ascii' codec can't encode character '\xe9' in
+    /// position 1: ordinal not in range(128)` or `... can't encode characters
+    /// in position 1-2: ordinal not in range(128)`.
     #[must_use]
-    pub(crate) fn unicode_decode_error_invalid_utf8() -> RunError {
+    pub(crate) fn unicode_encode_error(
+        codec: &str,
+        object: &str,
+        first_char: char,
+        start: usize,
+        end: usize,
+        reason: &str,
+    ) -> RunError {
+        // Callers must pass a non-empty range; checked in debug builds only so
+        // a wrong caller can't panic the VM in release (it gets a garbled
+        // message position instead, which is harmless).
+        debug_assert!(
+            end > start,
+            "unicode_encode_error: end ({end}) must be > start ({start})"
+        );
+        let msg = if end - start == 1 {
+            format!(
+                "'{codec}' codec can't encode character '{}' in position {start}: {reason}",
+                ascii_escape(&first_char.to_string())
+            )
+        } else {
+            let last = end - 1;
+            format!("'{codec}' codec can't encode characters in position {start}-{last}: {reason}")
+        };
+        SimpleException::new_msg(Self::UnicodeEncodeError, msg)
+            .with_data(UnicodeErrorData::encode(codec, object, start, end, reason))
+            .into()
+    }
+
+    /// Creates a UnicodeDecodeError for the undecodable byte range `start..end`
+    /// (byte offsets into `object` — the full input being decoded).
+    ///
+    /// Matches CPython's format, which differs for a single byte vs. a run:
+    /// `UnicodeDecodeError: 'ascii' codec can't decode byte 0xe9 in position 6:
+    /// ordinal not in range(128)` or `'utf-8' codec can't decode bytes in
+    /// position 0-1: unexpected end of data`.
+    #[must_use]
+    pub(crate) fn unicode_decode_error(codec: &str, object: &[u8], start: usize, end: usize, reason: &str) -> RunError {
+        // Defensive `get`: `start` always indexes a real byte for the errors
+        // Monty produces, but a wrong caller must not be able to panic the VM.
+        let first_byte = object.get(start).copied().unwrap_or(0);
         SimpleException::new_msg(
             Self::UnicodeDecodeError,
-            "'utf-8' codec can't decode bytes: invalid utf-8 sequence",
+            unicode_decode_error_msg(codec, first_byte, start, end, reason),
         )
+        .with_data(UnicodeErrorData::decode(codec, object, start, end, reason))
         .into()
     }
 
@@ -1502,6 +1660,40 @@ impl ExcType {
     #[must_use]
     pub(crate) fn lookup_error_unknown_error_handler(name: &str) -> RunError {
         SimpleException::new_msg(Self::LookupError, format!("unknown error handler name '{name}'")).into()
+    }
+
+    /// Creates a TypeError for an encode-only error handler (`xmlcharrefreplace`,
+    /// `namereplace`) invoked for a decode error.
+    ///
+    /// Matches CPython's format: `TypeError: don't know how to handle
+    /// UnicodeDecodeError in error callback`
+    #[must_use]
+    pub(crate) fn type_error_decode_error_callback() -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            "don't know how to handle UnicodeDecodeError in error callback",
+        )
+        .into()
+    }
+
+    /// Creates a NotImplementedError for a decode error handler that would
+    /// produce lone surrogates (`surrogateescape` always; `surrogatepass` when
+    /// the input actually contains an encoded surrogate).
+    ///
+    /// CPython's handlers put lone surrogates (e.g. U+DC80–U+DCFF for
+    /// `surrogateescape`) in the resulting string. Monty strings are strict
+    /// UTF-8 and cannot represent lone surrogates, so these cases cannot be
+    /// supported — see `limitations/encoding.md`.
+    #[must_use]
+    pub(crate) fn not_implemented_surrogate_handler_decode(handler: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::NotImplementedError,
+            format!(
+                "the '{handler}' error handler is not supported by Monty for decoding: \
+                 Monty strings cannot contain the lone surrogate characters it produces"
+            ),
+        )
+        .into()
     }
 
     /// Creates a `re.PatternError` for an invalid regex pattern or unsupported regex feature.
@@ -1530,7 +1722,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `the JSON object must be str, bytes or bytearray, not {type}`
     #[must_use]
-    pub(crate) fn json_loads_type_error(type_: Type) -> RunError {
+    pub(crate) fn json_loads_type_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("the JSON object must be str, bytes or bytearray, not {type_}"),
@@ -1551,7 +1743,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `Object of type {type} is not JSON serializable`
     #[must_use]
-    pub(crate) fn json_not_serializable_error(type_: Type) -> RunError {
+    pub(crate) fn json_not_serializable_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("Object of type {type_} is not JSON serializable"),
@@ -1564,7 +1756,7 @@ impl ExcType {
     /// Matches CPython's format:
     /// `keys must be str, int, float, bool or None, not {type}`
     #[must_use]
-    pub(crate) fn json_invalid_key_error(type_: Type) -> RunError {
+    pub(crate) fn json_invalid_key_error(type_: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
             format!("keys must be str, int, float, bool or None, not {type_}"),
@@ -1586,6 +1778,30 @@ impl ExcType {
     }
 }
 
+/// Formats the message for a `UnicodeDecodeError` covering the byte range
+/// `start..end`: CPython's single-byte form (`byte 0x{first_byte:02x} in
+/// position {start}`) when the range is one byte, otherwise the range form
+/// (`bytes in position {start}-{end - 1}`).
+///
+/// A free function (rather than folded into [`ExcType::unicode_decode_error`])
+/// so the fs layer can produce the identical wording when converting a
+/// `MountError::InvalidUtf8` from a text-mode file read into an exception.
+pub(crate) fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
+    // Callers must pass a non-empty range; checked in debug builds only so a
+    // wrong caller can't panic the VM in release (it gets a garbled message
+    // position instead, which is harmless).
+    debug_assert!(
+        end > start,
+        "unicode_decode_error_msg: end ({end}) must be > start ({start})"
+    );
+    if end - start == 1 {
+        format!("'{codec}' codec can't decode byte 0x{first_byte:02x} in position {start}: {reason}")
+    } else {
+        let last = end - 1;
+        format!("'{codec}' codec can't decode bytes in position {start}-{last}: {reason}")
+    }
+}
+
 /// Simple lightweight representation of an exception.
 ///
 /// This is used for performance reasons for common exception patterns.
@@ -1594,6 +1810,13 @@ impl ExcType {
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
+    /// Structured payload (e.g. unicode-error constructor fields), carried
+    /// through catch/re-raise so it reaches the public `MontyException` when
+    /// the exception escapes the sandbox. No `skip_serializing_if`:
+    /// exceptions round-trip through non-self-describing snapshot formats
+    /// where skipped fields break deserialization.
+    #[serde(default)]
+    data: ExcData,
 }
 
 impl fmt::Display for SimpleException {
@@ -1602,9 +1825,10 @@ impl fmt::Display for SimpleException {
     }
 }
 impl From<MontyException> for SimpleException {
-    fn from(exc: MontyException) -> Self {
+    fn from(mut exc: MontyException) -> Self {
         Self {
             exc_type: exc.exc_type(),
+            data: exc.take_data(),
             arg: exc.into_message(),
         }
     }
@@ -1614,7 +1838,11 @@ impl SimpleException {
     /// Creates a new exception with the given type and optional argument message.
     #[must_use]
     pub fn new(exc_type: ExcType, arg: Option<String>) -> Self {
-        Self { exc_type, arg }
+        Self {
+            exc_type,
+            arg,
+            data: ExcData::None,
+        }
     }
 
     /// Creates a new exception with the given type and argument message.
@@ -1623,13 +1851,31 @@ impl SimpleException {
         Self {
             exc_type,
             arg: Some(arg.to_string()),
+            data: ExcData::None,
         }
     }
 
     /// Creates a new exception with the given type and no argument message.
     #[must_use]
     pub fn new_none(exc_type: ExcType) -> Self {
-        Self { exc_type, arg: None }
+        Self {
+            exc_type,
+            arg: None,
+            data: ExcData::None,
+        }
+    }
+
+    /// Attaches a structured payload — see [`ExcData`].
+    #[must_use]
+    pub fn with_data(mut self, data: ExcData) -> Self {
+        self.data = data;
+        self
+    }
+
+    /// The structured payload, [`ExcData::None`] for most exceptions.
+    #[must_use]
+    pub fn data(&self) -> &ExcData {
+        &self.data
     }
 
     #[must_use]
@@ -1841,7 +2087,7 @@ impl ExceptionRaise {
             })
             .unwrap_or_default();
 
-        MontyException::new_full(self.exc.exc_type(), self.exc.arg().cloned(), traceback)
+        MontyException::new_full(self.exc.exc_type, self.exc.arg, traceback).with_data(self.exc.data)
     }
 }
 

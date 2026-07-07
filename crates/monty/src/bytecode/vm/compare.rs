@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
     resource::ResourceTracker,
-    types::{LongInt, PyTrait},
+    types::{CmpOrder, LongInt, PyTrait},
     value::Value,
 };
 
@@ -40,8 +40,19 @@ impl<T: ResourceTracker> VM<'_, T> {
         Ok(())
     }
 
-    /// Ordering comparison with a predicate.
-    pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
+    /// Ordering comparison (`<`, `<=`, `>`, `>=`) with a predicate.
+    ///
+    /// `operator` is the source symbol, used only for the error message when the
+    /// operands are of incomparable types. The three [`CmpOrder`] outcomes map
+    /// to CPython behaviour:
+    /// - [`Ordered`](CmpOrder::Ordered) — apply `check` to the ordering.
+    /// - [`Unordered`](CmpOrder::Unordered) — a `NaN` is involved
+    ///   (`float('nan') < 1`, `[nan] < [1]`, …); CPython yields `False` for
+    ///   every ordering operator, so push `False` rather than raising.
+    /// - [`Incomparable`](CmpOrder::Incomparable) — `1 < 'a'`, `None < None`,
+    ///   user-class instances without comparison dunders, etc.; raise
+    ///   `TypeError: '{op}' not supported between instances of ...`.
+    pub(super) fn compare_ord<F>(&mut self, operator: &str, check: F) -> Result<(), RunError>
     where
         F: FnOnce(Ordering) -> bool,
     {
@@ -52,9 +63,21 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
-        this.push(Value::Bool(result));
-        Ok(())
+        match lhs.py_cmp(rhs, this)? {
+            CmpOrder::Ordered(ordering) => {
+                this.push(Value::Bool(check(ordering)));
+                Ok(())
+            }
+            CmpOrder::Unordered => {
+                this.push(Value::Bool(false));
+                Ok(())
+            }
+            CmpOrder::Incomparable => {
+                let left_type = lhs.py_type_name(this);
+                let right_type = rhs.py_type_name(this);
+                Err(ExcType::type_error_ordering(operator, &left_type, &right_type))
+            }
+        }
     }
 
     /// Identity comparison (is/is not).

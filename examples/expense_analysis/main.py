@@ -97,7 +97,7 @@ async def main():
             output = await session.feed_run(
                 code,
                 inputs={'prompt': 'testing'},
-                external_functions={
+                external_lookup={
                     'get_team_members': data.get_team_members,
                     'get_expenses': data.get_expenses,
                     'get_custom_budget': data.get_custom_budget,

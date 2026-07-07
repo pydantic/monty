@@ -416,6 +416,8 @@ NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF
 
 NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
 
+Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
+
 ## Tests
 
 Do **NOT** write tests within modules unless explicitly prompted to do so.
@@ -718,7 +720,7 @@ await using session = await pool.checkout({ typeCheck: false })
 await session.feedRun('x = 21') // session state persists across feeds
 const result = await session.feedRun('x * 2', {
   inputs: { y: 1 },
-  externalFunctions: { fetch: async (url: string) => '...' }, // sync or async
+  externalLookup: { fetch: async (url: string) => '...' }, // sync or async
   printCallback: (stream, text) => {},
 })
 ```

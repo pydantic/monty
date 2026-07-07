@@ -6,7 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     resource::ResourceTracker,
-    types::{PyTrait, str::allocate_char},
+    types::str::allocate_char,
     value::Value,
 };
 
@@ -44,7 +44,7 @@ pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             Ok(allocate_char(c, vm.heap)?)
         }
         _ => {
-            let type_name = value.py_type(vm);
+            let type_name = value.py_type_name(vm);
             Err(SimpleException::new_msg(
                 ExcType::TypeError,
                 format!("an integer is required (got type {type_name})"),

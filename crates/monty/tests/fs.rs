@@ -16,7 +16,7 @@ use std::{
 
 use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs,
+    RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
     fs::{Mount, MountError, MountMode, MountTable, OverlayState},
 };
 use tempfile::TempDir;
@@ -287,6 +287,51 @@ fn rw_read_text() {
     assert_eq!(
         call_ok(&mut mt, &OsFunctionCall::ReadText("/mnt/subdir/deep/file.txt".into())),
         MontyObject::String("deep file".to_owned())
+    );
+}
+
+/// Text-mode reads of invalid UTF-8 must raise `UnicodeDecodeError` with the
+/// same reason wording CPython uses for `bytes.decode('utf-8')` — including
+/// the distinction between an invalid continuation byte mid-file and a
+/// sequence truncated at end-of-file (previously both reported the sometimes
+/// wrong `invalid start byte`).
+#[test]
+fn rw_read_text_invalid_utf8() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("bad_start.txt"), b"a\xffb").unwrap();
+    fs::write(dir.path().join("bad_continuation.txt"), b"a\xe2(b").unwrap();
+    fs::write(dir.path().join("truncated.txt"), b"ab\xe2\x82").unwrap();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/bad_start.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode byte 0xff in position 1: invalid start byte",
+    );
+    // file-read decode errors carry the structured constructor fields
+    // (including the file's bytes) just like `bytes.decode()`
+    assert_eq!(
+        err.unicode_data(),
+        Some(&UnicodeErrorData {
+            encoding: "utf-8".to_owned(),
+            object: UnicodeErrorObject::Bytes(b"a\xffb".to_vec()),
+            start: 1,
+            end: 2,
+            reason: "invalid start byte".to_owned(),
+        })
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/bad_continuation.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode byte 0xe2 in position 1: invalid continuation byte",
+    );
+    let err = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/truncated.txt".into()));
+    assert_exc(
+        &err,
+        ExcType::UnicodeDecodeError,
+        "'utf-8' codec can't decode bytes in position 2-3: unexpected end of data",
     );
 }
 

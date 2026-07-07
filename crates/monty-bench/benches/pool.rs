@@ -135,11 +135,85 @@ fn ext_calls_1000(bench: &mut Bencher) {
     session.finish().unwrap();
 }
 
+/// Sums `amount * quantity` over every row of every external-call result —
+/// the aggregation a code-mode agent runs over a SQL tool's rows.
+const EXT_ROWS_LOOP: &str = "
+total = 0
+for i in range(20):
+    rows = fetch_rows(i)
+    for row in rows:
+        total += row['amount'] * row['quantity']
+total
+";
+
+/// Builds a 100-row result set shaped like a SQL tool reply: a list of dicts
+/// with string keys and mixed str/int values. This is the payload shape real
+/// agents pull across the wire on every external call.
+fn make_rows() -> MontyObject {
+    MontyObject::List(
+        (0..100)
+            .map(|i| {
+                MontyObject::dict(vec![
+                    (MontyObject::String("order_id".to_owned()), MontyObject::Int(i)),
+                    (
+                        MontyObject::String("customer".to_owned()),
+                        MontyObject::String(format!("customer-{i}@example.com")),
+                    ),
+                    (
+                        MontyObject::String("region".to_owned()),
+                        MontyObject::String("north".to_owned()),
+                    ),
+                    (
+                        MontyObject::String("amount".to_owned()),
+                        MontyObject::Int((i * 37) % 500 + 1),
+                    ),
+                    (MontyObject::String("quantity".to_owned()), MontyObject::Int(i % 7 + 1)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// Large-payload wire throughput: 20 external calls per iteration, each
+/// answered with a 100-row list-of-dicts. Unlike `ext_calls_1000` (which
+/// replies `None` and isolates framing), this measures WireObject
+/// encode/decode and heap conversion of realistic tool results — the
+/// dominant wire cost for data-analysis agents.
+fn ext_call_rows(bench: &mut Bencher) {
+    let rows = make_rows();
+    // Expected sandbox result: 20 identical calls, each summing amount * quantity.
+    let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
+    let expected = MontyObject::Int(per_call * 20);
+
+    let pool = Pool::new(PoolConfig::subprocess(monty_binary())).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    bench.iter(|| {
+        let mut event = session
+            .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
+            .unwrap();
+        let value = loop {
+            match event {
+                TurnEvent::Complete(value) => break value,
+                TurnEvent::FunctionCall { .. } => {
+                    event = session
+                        .resume(ResumeValue::Return(rows.clone()), &mut no_print)
+                        .unwrap();
+                }
+                other => panic!("expected Complete or FunctionCall, got {other:?}"),
+            }
+        };
+        assert_eq!(value, expected);
+        black_box(value);
+    });
+    session.finish().unwrap();
+}
+
 /// Configures the pool benchmarks.
 fn pool_benchmark(c: &mut Criterion) {
     c.bench_function("pool_create_session_run", pool_create_session_run);
     c.bench_function("session_checkout_run", session_checkout_run);
     c.bench_function("ext_calls_1000", ext_calls_1000);
+    c.bench_function("ext_call_rows", ext_call_rows);
 }
 
 // Use pprof flamegraph profiler when running locally on Unix (not on CodSpeed or Windows)

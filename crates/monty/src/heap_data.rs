@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -7,26 +6,23 @@ use std::{
     ops::Deref,
 };
 
-use ahash::AHashSet;
 use num_integer::Integer;
 
-// Imported separately because `#[cfg]` cannot be applied to individual items
-// inside a brace-grouped `use`.
-#[cfg(feature = "test-hooks")]
-use crate::types::TestContextManager;
 use crate::{
     ExcType, ResourceTracker,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
     exception_private::{RunError, RunResult, SimpleException},
-    hash::{HashValue, hash_python_str},
+    hash::{HashValue, hash_python_str, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
-        MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
-        datetime, str::allocate_string, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
+        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
+        Set, Slice, Str, Tuple, Type, date, datetime,
+        str::{allocate_string, concat_allocate_str},
+        timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -78,6 +74,17 @@ pub(crate) enum HeapData {
     /// Contains a class name, a Dict of field name -> value mappings, and a set
     /// of method names that trigger external function calls when invoked.
     Dataclass(Dataclass),
+    /// A user-defined class object created by `class Foo: ...`.
+    ///
+    /// Holds the class name and a namespace of methods + class variables. Its own
+    /// `HeapId` is the type identity used by `type()`/`isinstance`.
+    Class(Class),
+    /// An instance of a user-defined class.
+    ///
+    /// Holds a reference to its `Class` and an `attrs` dict (the instance `__dict__`).
+    Instance(Instance),
+    /// A method bound to an instance, produced by `obj.method` without calling it.
+    BoundMethod(BoundMethod),
     /// An iterator for for-loop iteration and the `iter()` type constructor.
     ///
     /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
@@ -146,12 +153,6 @@ pub(crate) enum HeapData {
     TimeDelta(timedelta::TimeDelta),
     /// A fixed-offset `datetime.timezone` value.
     TimeZone(timezone::TimeZone),
-    /// Synthetic context manager used by tests to exercise `with` statement
-    /// code paths no production type currently reaches. See
-    /// [`crate::types::test_cm`] for the full rationale and removal plan.
-    /// Only present under the `test-hooks` cargo feature.
-    #[cfg(feature = "test-hooks")]
-    TestContextManager(TestContextManager),
 }
 
 impl HeapData {
@@ -180,6 +181,9 @@ impl HeapData {
                 | Self::FunctionDefaults(_)
                 | Self::Cell(_)
                 | Self::Dataclass(_)
+                | Self::Class(_)
+                | Self::Instance(_)
+                | Self::BoundMethod(_)
                 | Self::Iter(_)
                 | Self::Module(_)
                 | Self::Coroutine(_)
@@ -217,6 +221,10 @@ impl HeapData {
             Self::Slice(_) => Type::Slice,
             Self::Exception(e) => Type::Exception(e.exc_type()),
             Self::Dataclass(_) => Type::Dataclass,
+            // A class object's type is `type`; an instance's carries its class id.
+            Self::Class(_) => Type::Type,
+            Self::Instance(instance) => Type::Instance(instance.class()),
+            Self::BoundMethod(_) => Type::Function,
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
@@ -229,8 +237,6 @@ impl HeapData {
             Self::DateTime(_) => Type::DateTime,
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager(_) => Type::TestContextManager,
         }
     }
 
@@ -254,6 +260,9 @@ impl HeapData {
             Self::Slice(s) => s.py_estimate_size(),
             Self::Exception(e) => e.py_estimate_size(),
             Self::Dataclass(dc) => dc.py_estimate_size(),
+            Self::Class(class) => class.py_estimate_size(),
+            Self::Instance(instance) => instance.py_estimate_size(),
+            Self::BoundMethod(bm) => bm.py_estimate_size(),
             Self::Iter(iter) => iter.py_estimate_size(),
             Self::LongInt(li) => li.py_estimate_size(),
             Self::Module(m) => m.py_estimate_size(),
@@ -269,8 +278,6 @@ impl HeapData {
             Self::DateTime(d) => d.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager(cm) => cm.py_estimate_size(),
         }
     }
 }
@@ -362,7 +369,7 @@ impl HeapItem for FunctionDefaults {
 
 impl HeapItem for SimpleException {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.arg().map_or(0, String::len)
+        mem::size_of::<Self>() + self.arg().map_or(0, String::len) + self.data().estimate_size()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -468,6 +475,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Slice(s) => s.py_bool(vm),
             Self::Exception(_) => true,
             Self::Dataclass(dc) => dc.py_bool(vm),
+            // Classes, instances and bound methods are always truthy.
+            Self::Class(_) | Self::Instance(_) | Self::BoundMethod(_) => true,
             Self::Iter(_) => true,
             Self::LongInt(li) => !li.get(vm.heap).is_zero(),
             Self::Module(_) => true,
@@ -480,8 +489,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
             Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager(cm) => cm.py_bool(vm),
         }
     }
 
@@ -504,6 +511,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Set(s) => Ok(s.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::FrozenSet(fs) => Ok(fs.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dataclass(dc) => Ok(dc.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Class(class) => Ok(class.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Instance(instance) => Ok(instance.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Path(p) => Ok(p.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::OpenFile(file) => Ok(file.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Module(m) => Ok(m.py_call_attr(self_id, vm, attr, args)?),
@@ -512,27 +521,24 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::TimeDelta(td) => Ok(td.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Date(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DateTime(dt) => Ok(dt.py_call_attr(self_id, vm, attr, args)?),
-            #[cfg(feature = "test-hooks")]
-            HeapReadOutput::TestContextManager(cm) => cm.py_call_attr(self_id, vm, attr, args),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with(vm);
-                let type_name = vm.heap.read(self_id).py_type(vm);
+                let type_name = vm.heap.read(self_id).py_type(vm).name(vm.heap, vm.interns);
                 Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
             }
         }
     }
 
-    fn py_is_context_manager(&self) -> bool {
+    fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
         // Only types that implement the protocol return true; everything else
         // inherits the default `false`. The `with` statement gates `py_enter`
         // / `py_exit` on this check, so a real context manager whose
         // `__enter__` happens to raise `AttributeError` is no longer
         // misdiagnosed as "not a context manager".
         match self {
-            HeapReadOutput::OpenFile(file) => file.py_is_context_manager(),
-            #[cfg(feature = "test-hooks")]
-            HeapReadOutput::TestContextManager(cm) => cm.py_is_context_manager(),
+            HeapReadOutput::OpenFile(file) => file.py_is_context_manager(vm),
+            HeapReadOutput::Instance(inst) => inst.py_is_context_manager(vm),
             _ => false,
         }
     }
@@ -543,9 +549,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         // `py_call_attr` is structured.
         match self {
             HeapReadOutput::OpenFile(file) => file.py_enter(self_id, vm),
-            #[cfg(feature = "test-hooks")]
-            HeapReadOutput::TestContextManager(cm) => cm.py_enter(self_id, vm),
-            _ => Err(ExcType::attribute_error(self.py_type(vm), "__enter__")),
+            HeapReadOutput::Instance(inst) => inst.py_enter(self_id, vm),
+            _ => Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                "__enter__",
+            )),
         }
     }
 
@@ -557,9 +565,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     ) -> RunResult<CallResult> {
         match self {
             HeapReadOutput::OpenFile(file) => file.py_exit(self_id, vm, exc),
-            #[cfg(feature = "test-hooks")]
-            HeapReadOutput::TestContextManager(cm) => cm.py_exit(self_id, vm, exc),
-            _ => Err(ExcType::attribute_error(self.py_type(vm), "__exit__")),
+            HeapReadOutput::Instance(inst) => inst.py_exit(self_id, vm, exc),
+            _ => Err(ExcType::attribute_error(
+                self.py_type(vm).name(vm.heap, vm.interns),
+                "__exit__",
+            )),
         }
     }
 
@@ -582,6 +592,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Slice(s) => s.py_type(vm),
             Self::Exception(e) => e.py_type(vm),
             Self::Dataclass(dc) => dc.py_type(vm),
+            Self::Class(class) => class.py_type(vm),
+            Self::Instance(instance) => instance.py_type(vm),
+            Self::BoundMethod(bm) => bm.py_type(vm),
             Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
@@ -594,8 +607,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_type(vm),
             Self::TimeDelta(d) => d.py_type(vm),
             Self::TimeZone(d) => d.py_type(vm),
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager(cm) => cm.py_type(vm),
         }
     }
 
@@ -671,9 +682,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | HeapReadOutput::Module(_)
             | HeapReadOutput::Coroutine(_)
             | HeapReadOutput::GatherFuture(_)
-            | HeapReadOutput::ExternalFuture(_) => Ok(None),
-            #[cfg(feature = "test-hooks")]
-            HeapReadOutput::TestContextManager(a) => a.py_eq_impl(other, vm),
+            | HeapReadOutput::ExternalFuture(_)
+            // User classes, instances and bound methods compare by identity, which
+            // `Value::py_eq_impl` resolves before reaching here.
+            | HeapReadOutput::Class(_)
+            | HeapReadOutput::Instance(_)
+            | HeapReadOutput::BoundMethod(_) => Ok(None),
         }
     }
 
@@ -691,6 +705,10 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
             Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
             Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            // Classes, instances and bound methods hash by identity.
+            Self::Class(class) => class.py_hash(self_id, vm),
+            Self::Instance(instance) => instance.py_hash(self_id, vm),
+            Self::BoundMethod(bm) => bm.py_hash(self_id, vm),
             Self::Range(r) => r.py_hash(self_id, vm),
             Self::Slice(s) => s.py_hash(self_id, vm),
             Self::Path(p) => p.py_hash(self_id, vm),
@@ -711,11 +729,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Ok(Some(HashValue::new(hasher.finish())))
             }
             // Cell uses identity hashing (matches Python's default for cell objects).
-            Self::Cell(_) => {
-                let mut hasher = DefaultHasher::new();
-                self_id.hash(&mut hasher);
-                Ok(Some(HashValue::new(hasher.finish())))
-            }
+            Self::Cell(_) => Ok(Some(identity_hash(self_id))),
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
             Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
@@ -730,7 +744,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         match self {
             Self::Str(s) => s.py_repr_fmt(f, vm, heap_ids),
@@ -752,11 +766,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 .interns
                 .get_function(fd.get(vm.heap).func_id)
                 .py_repr_fmt(f, vm.interns, 0)?),
-            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm))?),
+            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
             Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
+            Self::Class(class) => class.py_repr_fmt(f, vm, heap_ids),
+            Self::Instance(instance) => instance.py_repr_fmt(f, vm, heap_ids),
+            Self::BoundMethod(bm) => bm.py_repr_fmt(f, vm, heap_ids),
             Self::Iter(_) => Ok(write!(f, "<iterator>")?),
             Self::LongInt(li) => {
                 let li = li.get(vm.heap);
@@ -784,25 +801,23 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeZone(d) => d.py_repr_fmt(f, vm, heap_ids),
-            #[cfg(feature = "test-hooks")]
-            Self::TestContextManager(cm) => cm.py_repr_fmt(f, vm, heap_ids),
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             // Strings return their value directly without quotes
-            Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
+            Self::Str(s) => Ok(allocate_string(s.get(vm.heap).as_str(), vm.heap)?),
             // LongInt returns its string representation
             Self::LongInt(li) => {
                 let li = li.get(vm.heap);
                 li.check_str_digits_limit()?;
-                Ok(Cow::Owned(li.to_string()))
+                Ok(allocate_string(li.to_string(), vm.heap)?)
             }
             // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Ok(Cow::Owned(e.get(vm.heap).py_str())),
+            Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)?),
             // Paths return the path string without the PosixPath() wrapper
-            Self::Path(p) => Ok(Cow::Owned(p.get(vm.heap).as_str().to_owned())),
+            Self::Path(p) => Ok(allocate_string(p.get(vm.heap).as_str(), vm.heap)?),
             // Datetime types have their own str output
             Self::Date(d) => d.py_str(vm),
             Self::DateTime(d) => d.py_str(vm),
@@ -819,10 +834,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
+                a.get(vm.heap).as_str(),
+                b.get(vm.heap).as_str(),
+                vm.heap,
+            )?)),
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();
                 let b_bytes = b.get(vm.heap).as_slice();
@@ -944,7 +960,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dict(d) => d.py_getitem(key, vm),
             Self::Range(r) => r.py_getitem(key, vm),
             Self::ReMatch(m) => m.py_getitem(key, vm),
-            _ => Err(ExcType::type_error_not_sub(self.py_type(vm))),
+            _ => Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns))),
         }
     }
 
@@ -955,7 +971,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             _ => {
                 key.drop_with(vm);
                 value.drop_with(vm);
-                Err(ExcType::type_error_not_sub_assignment(self.py_type(vm)))
+                Err(ExcType::type_error_not_sub_assignment(
+                    &self.py_type(vm).name(vm.heap, vm.interns),
+                ))
             }
         }
     }
@@ -976,6 +994,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Range(r) => r.py_getattr(attr, vm),
             Self::Slice(s) => s.py_getattr(attr, vm),
             Self::Dataclass(dc) => dc.py_getattr(attr, vm),
+            Self::Class(class) => class.py_getattr(attr, vm),
             Self::ReMatch(m) => m.py_getattr(attr, vm),
             Self::RePattern(p) => p.py_getattr(attr, vm),
             Self::Module(m) => Ok(m.py_getattr(attr, vm)),

@@ -2317,3 +2317,25 @@ fn set_from_range_within_limit() {
     assert!(result.is_ok(), "small set/map construction should succeed: {result:?}");
     assert_eq!(result.unwrap(), MontyObject::Int(70));
 }
+
+/// Regression: `re.finditer` over a large subject with many matches shares one
+/// refcounted subject copy across every `re.Match`, so its memory accounting is
+/// bounded by the subject size, not `matches × subject`. When each match kept
+/// its own subject copy, this held ~48 MB (4000 × ~12 KB) and blew a limit far
+/// larger than the data actually in use.
+#[test]
+fn finditer_shares_subject_memory() {
+    // ~12 KB subject, 4000 word matches all held live in the returned list.
+    let code = "import re\nlen(re.finditer(r'\\w+', 'aa ' * 4000))";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+
+    let limits = ResourceLimits::new()
+        .max_memory(8_388_608)
+        .max_duration(Duration::from_secs(30));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert_eq!(
+        result.expect("finditer over a large subject must stay within the memory limit"),
+        MontyObject::Int(4000)
+    );
+}

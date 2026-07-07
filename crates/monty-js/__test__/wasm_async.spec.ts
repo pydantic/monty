@@ -10,7 +10,7 @@ test('runMontyAsync with sync external function', async (t) => {
   const m = new Monty('get_value()')
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       get_value: () => 42,
     },
   })
@@ -22,7 +22,7 @@ test('runMontyAsync with async external function', async (t) => {
   const m = new Monty('fetch_data()')
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       fetch_data: async () => {
         // Simulate async operation
         await new Promise((resolve) => setTimeout(resolve, 10))
@@ -45,7 +45,7 @@ a + b
   )
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       fetch_a: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
         return 10
@@ -65,7 +65,7 @@ test('runMontyAsync with inputs', async (t) => {
 
   const result = await runMontyAsync(m, {
     inputs: { x: 5 },
-    externalFunctions: {
+    externalLookup: {
       multiply: async (n: number) => n * 2,
     },
   })
@@ -77,7 +77,7 @@ test('runMontyAsync with args and kwargs', async (t) => {
   const m = new Monty('process(1, 2, name="test")')
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       process: async (a: number, b: number, kwargs: { name: string }) => {
         return `${kwargs.name}: ${a + b}`
       },
@@ -100,7 +100,7 @@ test('runMontyAsync sync function throws exception', async (t) => {
 
   const error = await t.throwsAsync(
     runMontyAsync(m, {
-      externalFunctions: {
+      externalLookup: {
         fail_sync: () => {
           throw new ValueError('sync error')
         },
@@ -120,7 +120,7 @@ test('runMontyAsync async function throws exception', async (t) => {
 
   const error = await t.throwsAsync(
     runMontyAsync(m, {
-      externalFunctions: {
+      externalLookup: {
         fail_async: async () => {
           await new Promise((resolve) => setTimeout(resolve, 5))
           throw new ValueError('async error')
@@ -149,7 +149,7 @@ result
   }
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       might_fail: async () => {
         throw new ValueError('expected error')
       },
@@ -162,7 +162,7 @@ result
 test('runMontyAsync missing external function raises NameError', async (t) => {
   const m = new Monty('missing_func()')
 
-  const error = await t.throwsAsync(runMontyAsync(m, { externalFunctions: {} }))
+  const error = await t.throwsAsync(runMontyAsync(m, { externalLookup: {} }))
 
   t.true(error instanceof MontyRuntimeError)
   t.true(error!.message.includes('NameError'))
@@ -179,7 +179,7 @@ result
 `,
   )
 
-  const result = await runMontyAsync(m, { externalFunctions: {} })
+  const result = await runMontyAsync(m, { externalLookup: {} })
 
   t.is(result, 'caught')
 })
@@ -192,7 +192,7 @@ test('runMontyAsync returns complex types', async (t) => {
   const m = new Monty('get_data()')
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       get_data: async () => {
         return [1, 2, { key: 'value' }]
       },
@@ -211,7 +211,7 @@ test('runMontyAsync with list input', async (t) => {
 
   const result = await runMontyAsync(m, {
     inputs: { items: [1, 2, 3, 4, 5] },
-    externalFunctions: {
+    externalLookup: {
       sum_list: async (items: number[]) => {
         return items.reduce((a, b) => a + b, 0)
       },
@@ -236,7 +236,7 @@ sync_result + async_result
   )
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       sync_func: () => 100,
       async_func: async () => {
         await new Promise((resolve) => setTimeout(resolve, 5))
@@ -259,7 +259,7 @@ finalize(second)
   )
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       get_first: async () => 'hello',
       process: async (s: string) => s.toUpperCase(),
       finalize: async (s: string) => `${s}!`,
@@ -317,13 +317,11 @@ test('runMontyAsync with printCallback', async (t) => {
 })
 
 test('runMontyAsync printCallback with external functions', async (t) => {
-  const m = new Monty('x = get_value()\nprint(f"got {x}")\nx', {
-    externalFunctions: ['get_value'],
-  })
+  const m = new Monty('x = get_value()\nprint(f"got {x}")\nx')
   const output: string[] = []
 
   const result = await runMontyAsync(m, {
-    externalFunctions: {
+    externalLookup: {
       get_value: () => 42,
     },
     printCallback: (stream, text) => {
@@ -347,4 +345,64 @@ test('runMontyAsync printCallback with multiple prints', async (t) => {
   })
 
   t.deepEqual(output, ['a', '\n', 'b', '\n', 'c', '\n'])
+})
+
+// =============================================================================
+// externalLookup value resolution
+// =============================================================================
+
+test('runMontyAsync resolves a bare name to a value', async (t) => {
+  const m = new Monty('x + 1')
+  t.is(await runMontyAsync(m, { externalLookup: { x: 41 } }), 42)
+})
+
+test('runMontyAsync resolves a falsy value', async (t) => {
+  // 0 is falsy but a present own key, so it must resolve rather than raise.
+  const m = new Monty('n + 1')
+  t.is(await runMontyAsync(m, { externalLookup: { n: 0 } }), 1)
+})
+
+test('runMontyAsync resolves null and undefined values to None', async (t) => {
+  t.is(await runMontyAsync(new Monty('x is None'), { externalLookup: { x: null } }), true)
+  t.is(await runMontyAsync(new Monty('y is None'), { externalLookup: { y: undefined } }), true)
+})
+
+test('runMontyAsync calling a proxy whose entry is now non-callable raises TypeError', async (t) => {
+  // Calls dispatch by name against the *current* lookup on every call: the
+  // first call replaces the entry with a plain value, so the second raises
+  // what CPython would for calling that value.
+  const lookup: Record<string, unknown> = {
+    f: () => {
+      lookup.f = 5
+      return 1
+    },
+  }
+  const error = await t.throwsAsync(runMontyAsync(new Monty('f()\nf()'), { externalLookup: lookup }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "TypeError: 'int' object is not callable")
+})
+
+test('runMontyAsync mixes an async function and a value', async (t) => {
+  // The host awaits the JS promise and hands the sandbox the resolved value, so
+  // the sandbox calls the function directly (no `await`). `url`/`suffix` are
+  // non-callable externalLookup values resolved on bare-name reads.
+  const m = new Monty('fetch_data(url) + suffix')
+  const result = await runMontyAsync(m, {
+    externalLookup: {
+      fetch_data: async (u: string) => `<${u}>`,
+      url: 'u',
+      suffix: '!',
+    },
+  })
+  t.is(result, '<u>!')
+})
+
+test('runMontyAsync inherited property name raises name error', async (t) => {
+  // toString is inherited from Object.prototype, not an own key.
+  const m = new Monty('toString')
+  const error = await t.throwsAsync(runMontyAsync(m, { externalLookup: { present: 1 } }), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, "NameError: name 'toString' is not defined")
 })

@@ -22,7 +22,7 @@ with pydantic_monty.Monty() as pool:
         return f'Fetched: {url}'
 
     with pool.checkout() as session:
-        result = session.feed_run('fetch("https://example.com")', external_functions={'fetch': fetch})
+        result = session.feed_run('fetch("https://example.com")', external_lookup={'fetch': fetch})
         print(f'External: {result}')
 
     # Print output is forwarded to Python stdout

@@ -10,7 +10,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyRuntimeError
+from pydantic_monty import MontyConversionError, MontyRuntimeError
 
 
 def test_none_input(monty_run: RunMonty):
@@ -621,8 +621,8 @@ def test_namedtuple_custom_missing_attr_error(monty_run: RunMonty):
 
 
 def test_unsupported_type_raises_type_error(monty_run: RunMonty):
-    """Passing an unsupported type raises TypeError during conversion."""
-    with pytest.raises(MontyRuntimeError, match='Cannot convert') as exc_info:
+    """Passing an unsupported type raises a MontyConversionError."""
+    with pytest.raises(MontyConversionError, match='Cannot convert') as exc_info:
         monty_run('x', inputs={'x': re.compile('foo')})
     assert isinstance(exc_info.value.exception(), TypeError)
 
@@ -739,7 +739,7 @@ def test_zoneinfo_datetime_preserves_fields(monty_run: RunMonty):
 def test_zoneinfo_standalone_raises_type_error(monty_run: RunMonty):
     """Standalone ZoneInfo objects (without a datetime) are not convertible."""
     tz = zoneinfo.ZoneInfo('America/New_York')
-    with pytest.raises(MontyRuntimeError, match='Cannot convert') as exc_info:
+    with pytest.raises(MontyConversionError, match='Cannot convert') as exc_info:
         monty_run('x', inputs={'x': tz})
     assert isinstance(exc_info.value.exception(), TypeError)
 

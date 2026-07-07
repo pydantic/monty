@@ -201,7 +201,7 @@ def fetch(url: str) -> str:
     with pool.checkout(type_check=True, type_check_stubs=stubs) as session:
         result = session.feed_run(
             'result = fetch("https://example.com")',
-            external_functions={'fetch': lambda url: 'response'},  # pyright: ignore[reportUnknownLambdaType]
+            external_lookup={'fetch': lambda url: 'response'},  # pyright: ignore[reportUnknownLambdaType]
         )
         assert result == snapshot(None)
 
@@ -258,7 +258,7 @@ def test_type_check_stubs_without_trailing_newline(pool: Monty):
     with pool.checkout(type_check=True, type_check_stubs=stubs) as session:
         session.feed_run(
             "response = fetch('url')",
-            external_functions={'fetch': lambda url: 'data'},  # pyright: ignore[reportUnknownLambdaType]
+            external_lookup={'fetch': lambda url: 'data'},  # pyright: ignore[reportUnknownLambdaType]
         )
         # response must be visible in the next snippet even though stubs lacked \n
         assert session.feed_run('response.upper()') == snapshot('DATA')

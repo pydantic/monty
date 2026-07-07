@@ -10,6 +10,7 @@ use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
 
 use crate::{
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     expressions::ExprLoc,
     heap::HeapData,
@@ -686,8 +687,9 @@ pub fn format_with_spec(
     // identical specs (`f"{x:#}"` and `f"{x!s:#}"` raise the same error).
     if value_type == Type::Str {
         validate_string_spec(spec)?;
-        let s = value.py_str(vm)?;
-        return Ok(format_string(&s, spec)?);
+        // `value` is already a `str`, so borrow it directly — no `py_str`
+        // round-trip (which would allocate a fresh heap copy just to drop it).
+        return Ok(format_string(value.to_str(vm)?, spec)?);
     }
 
     // A grouping option (`,`/`_`) is only legal for certain presentation
@@ -720,8 +722,9 @@ pub fn format_with_spec(
         return Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!(
-                "Unknown format code '{}' for object of type '{value_type}'",
-                c.as_char()
+                "Unknown format code '{}' for object of type '{}'",
+                c.as_char(),
+                value_type.name(vm.heap, vm.interns)
             ),
         )
         .into());
@@ -773,7 +776,7 @@ pub fn format_with_spec(
     if let Value::Ref(id) = value
         && let HeapData::LongInt(li) = vm.heap.get(*id)
     {
-        return format_long_int(li, value_type, spec, vm.heap.tracker());
+        return format_long_int(li, &value_type.name(vm.heap, vm.interns), spec, vm.heap.tracker());
     }
 
     match (value, spec.type_char) {
@@ -809,15 +812,17 @@ pub fn format_with_spec(
         // format. (`str` values are handled by the short-circuit above.)
         (_, None) => {
             let s = value.py_str(vm)?;
-            Ok(format_string(&s, spec)?)
+            defer_drop!(s, vm);
+            Ok(format_string(s.to_str(vm)?, spec)?)
         }
 
         // Type mismatch errors
         (_, Some(c)) => Err(SimpleException::new_msg(
             ExcType::ValueError,
             format!(
-                "Unknown format code '{}' for object of type '{value_type}'",
-                c.as_char()
+                "Unknown format code '{}' for object of type '{}'",
+                c.as_char(),
+                value_type.name(vm.heap, vm.interns)
             ),
         )
         .into()),
@@ -1310,7 +1315,7 @@ pub fn format_int_base(n: i64, base: u32, uppercase: bool, spec: &ParsedFormatSp
 /// up front against `tracker`.
 fn format_long_int(
     li: &LongInt,
-    value_type: Type,
+    value_type: &str,
     spec: &ParsedFormatSpec,
     tracker: &impl ResourceTracker,
 ) -> Result<String, RunError> {

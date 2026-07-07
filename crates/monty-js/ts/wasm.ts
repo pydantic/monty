@@ -31,6 +31,7 @@ import {
   MontyException as NativeMontyException,
   MontyTypingError as NativeMontyTypingError,
 } from '../index.js'
+import { notCallableMessage } from './errors.js'
 
 export type {
   MontyOptions,
@@ -621,8 +622,12 @@ export class MontyComplete {
 export interface RunMontyAsyncOptions {
   /** Input values for the script. */
   inputs?: Record<string, JsMontyObject>
-  /** External function implementations (sync or async). */
-  externalFunctions?: Record<string, (...args: unknown[]) => unknown>
+  /**
+   * Lazy resolution for names the code leaves undefined. A callable (sync or
+   * async) resolves to a host function; any other value is returned directly on
+   * a bare-name read; an absent name raises `NameError`.
+   */
+  externalLookup?: Record<string, unknown>
   /** Resource limits. */
   limits?: ResourceLimits
   /** Callback invoked on each print() call. The first argument is the stream name (always "stdout"), the second is the printed text. */
@@ -632,11 +637,12 @@ export interface RunMontyAsyncOptions {
 }
 
 /**
- * Runs a Monty script with async external function support.
+ * Runs a Monty script with async external-lookup support.
  *
- * This function handles both synchronous and asynchronous external functions.
- * When an external function returns a Promise, it will be awaited before
- * resuming execution.
+ * Resolves undefined names against `externalLookup`: a callable (sync or async)
+ * resolves to a host function whose call is dispatched here (a returned Promise
+ * is awaited before resuming); any other value is returned directly on a
+ * bare-name read; an absent name raises `NameError`.
  *
  * @param montyRunner - The Monty runner instance to execute
  * @param options - Execution options
@@ -651,7 +657,7 @@ export interface RunMontyAsyncOptions {
  *
  * const result = await runMontyAsync(m, {
  *   inputs: { url: 'https://example.com' },
- *   externalFunctions: {
+ *   externalLookup: {
  *     fetch_data: async (url) => {
  *       const response = await fetch(url);
  *       return response.text();
@@ -660,7 +666,11 @@ export interface RunMontyAsyncOptions {
  * });
  */
 export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOptions = {}): Promise<JsMontyObject> {
-  const { inputs, externalFunctions = {}, limits, printCallback, mount } = options
+  const { inputs, externalLookup = {}, limits, printCallback, mount } = options
+
+  // Only own keys resolve a name — an inherited member (`toString`,
+  // `constructor`, …) must never satisfy a lookup the host did not expose.
+  const hasOwn = (name: string): boolean => Object.prototype.hasOwnProperty.call(externalLookup, name)
 
   let progress: MontySnapshot | MontyNameLookup | MontyComplete = montyRunner.start({
     inputs,
@@ -671,12 +681,14 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
 
   while (!(progress instanceof MontyComplete)) {
     if (progress instanceof MontyNameLookup) {
-      // Name lookup — check if the name is a known external function
+      // Name lookup — a callable resolves to a host function proxy, any other
+      // own value is returned directly, and an absent name raises NameError.
       const name = progress.variableName
-      const extFunction = externalFunctions[name]
-      if (extFunction) {
-        // Resolve the name as a function value
-        progress = progress.resume({ value: extFunction })
+      if (hasOwn(name)) {
+        // `resume({ value: undefined })` means "unresolved" in the snapshot
+        // API, so an entry that *is* undefined crosses as null (Python None).
+        const v = externalLookup[name]
+        progress = progress.resume({ value: v === undefined ? null : v })
       } else {
         // Unknown name — resume with no value to raise NameError
         progress = progress.resume()
@@ -684,14 +696,13 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
       continue
     }
 
-    // MontySnapshot — external function call
+    // MontySnapshot — external function call. Only an own callable is
+    // invocable; these branches shouldn't normally fire (NameLookup already
+    // filtered), but the host can mutate `externalLookup` mid-run.
     const snapshot = progress
     const funcName = snapshot.functionName
-    const extFunction = externalFunctions[funcName]
 
-    if (!extFunction) {
-      // Function not found — this shouldn't normally happen since NameLookup
-      // would have raised NameError, but handle it defensively
+    if (!hasOwn(funcName)) {
       progress = snapshot.resume({
         exception: {
           type: 'NameError',
@@ -700,10 +711,22 @@ export async function runMontyAsync(montyRunner: Monty, options: RunMontyAsyncOp
       })
       continue
     }
+    const extFunction = externalLookup[funcName]
+    if (typeof extFunction !== 'function') {
+      // A function proxy whose entry was replaced by a plain value: raise what
+      // CPython would for calling that value.
+      progress = snapshot.resume({
+        exception: {
+          type: 'TypeError',
+          message: notCallableMessage(extFunction),
+        },
+      })
+      continue
+    }
 
     try {
       // Call the external function
-      let result = extFunction(...snapshot.args, snapshot.kwargs)
+      let result = (extFunction as (...args: unknown[]) => unknown)(...snapshot.args, snapshot.kwargs)
 
       // If the result is a Promise, await it
       if (result && typeof (result as Promise<unknown>).then === 'function') {

@@ -20,7 +20,7 @@ use super::{
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
-    builtins::Builtins,
+    builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
     exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
@@ -75,8 +75,8 @@ const MAX_COMP_GENERATORS: usize = 255;
 /// Converts a `usize` namespace size into the `u16` slot count expected by
 /// the bytecode, surfacing a `CompileError` if the limit is exceeded.
 ///
-/// `kind` ("module", "function", or "lambda") is interpolated into the error
-/// message so the user can distinguish which scope hit the cap. The position
+/// `kind` ("module", "function", "lambda", or "class body") is interpolated
+/// into the error message so the user can distinguish which scope hit the cap. The position
 /// is left as the default `CodeRange` because the relevant location is the
 /// whole compile unit — there is no single offending statement to highlight.
 fn check_namespace_size_u16(size: usize, kind: &'static str) -> Result<u16, CompileError> {
@@ -645,6 +645,12 @@ impl<'a> Compiler<'a> {
                 }
             }
             Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::ClassDef {
+                name,
+                body,
+                members,
+                position,
+            } => self.compile_class_def(name, body, members, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::With {
                 context, target, body, ..
@@ -675,6 +681,58 @@ impl<'a> Compiler<'a> {
     /// 3. Adding the Function to the compiler's functions vector
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
     fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
+        // Build the function object on the stack, then bind it to its name slot.
+        self.emit_make_function(func_def, "function")?;
+        self.compile_store(&func_def.name)?;
+        Ok(())
+    }
+
+    /// Compiles a lambda expression.
+    ///
+    /// This is similar to `compile_function_def` but does NOT store the function
+    /// to a name slot — it stays on the stack as the expression result. The
+    /// lambda's `PreparedFunctionDef` already has `<lambda>` as its name.
+    fn compile_lambda(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
+        self.emit_make_function(func_def, "lambda")
+    }
+
+    /// Compiles a function body and emits the bytecode that builds the runtime
+    /// function/closure object, leaving it on the operand stack.
+    ///
+    /// Shared by `def` definitions, lambdas, and class methods. The caller decides
+    /// what to do with the resulting value: store it to a name
+    /// ([`compile_function_def`](Self::compile_function_def)), leave it as an
+    /// expression result ([`compile_lambda`](Self::compile_lambda)), or fold it
+    /// into a class namespace ([`compile_class_def`](Self::compile_class_def)).
+    ///
+    /// `what` labels the construct ("function"/"lambda"/"method") for the
+    /// namespace-size error message. Net stack effect is `+1`: even when free
+    /// variables are captured, the pushed cells are consumed by `MakeClosure`.
+    fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
+        self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
+            Self::compile_function_body(&func_def.body, interns, functions, namespace_size)
+        })
+    }
+
+    /// Shared core of [`emit_make_function`](Self::emit_make_function) and
+    /// [`emit_make_class_body`](Self::emit_make_class_body): compiles a callable's
+    /// body via `compile_body`, registers the resulting [`Function`], pushes its
+    /// default values, and emits `MakeFunction`/`MakeClosure`, leaving the
+    /// function/closure value on the operand stack (net stack effect `+1`).
+    ///
+    /// `compile_body` is the only thing that varies: ordinary functions/lambdas
+    /// use [`compile_function_body`](Self::compile_function_body) (implicit
+    /// `return None` tail), while a class body uses
+    /// [`compile_class_body`](Self::compile_class_body) (assemble-namespace +
+    /// return-class tail). It receives the interner, the moved-out `functions`
+    /// vector, and this body's namespace size; it returns the compiled body code
+    /// and the (possibly extended) `functions` vector.
+    fn emit_make_callable(
+        &mut self,
+        func_def: &PreparedFunctionDef,
+        what: &'static str,
+        compile_body: impl FnOnce(&Interns, Vec<Function>, u16) -> Result<(Code, Vec<Function>), CompileError>,
+    ) -> Result<(), CompileError> {
         let func_pos = func_def.name.position;
 
         // Bound the bytecode-operand counts before compiling — the `u8` casts
@@ -682,12 +740,11 @@ impl<'a> Compiler<'a> {
         let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
         let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
 
-        // 1. Compile the function body recursively
-        // Take ownership of functions for the recursive compile, then restore
+        // 1. Compile the body recursively.
+        // Take ownership of functions for the recursive compile, then restore.
         let functions = mem::take(&mut self.functions);
-        let namespace_size = check_namespace_size_u16(func_def.namespace_size, "function")?;
-        let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
+        let namespace_size = check_namespace_size_u16(func_def.namespace_size, what)?;
+        let (body_code, mut functions) = compile_body(self.interns, functions, namespace_size)?;
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
@@ -720,7 +777,7 @@ impl<'a> Compiler<'a> {
             self.code
                 .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
         } else {
-            // Push captured cells from enclosing scope
+            // Push captured cells from enclosing scope.
             for &slot in &func_def.free_var_enclosing_slots {
                 // Load the cell reference from the enclosing namespace.
                 // `slot` is a `NamespaceId` bound by `check_namespace_size_u16`
@@ -733,78 +790,113 @@ impl<'a> Compiler<'a> {
                 .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count)?;
         }
 
-        // 5. Store the function object to its name slot
-        self.compile_store(&func_def.name)?;
-
         Ok(())
     }
 
-    /// Compiles a lambda expression.
+    /// Compiles a `class Foo: ...` definition.
     ///
-    /// This is similar to `compile_function_def` but:
-    /// - Does NOT store the function to a name slot (it stays on the stack as an expression result)
-    ///
-    /// The lambda's `PreparedFunctionDef` already has `<lambda>` as its name.
-    fn compile_lambda(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
-        let func_pos = func_def.name.position;
-
-        // Bound the bytecode-operand counts before compiling — the `u8` casts
-        // below depend on these fitting in 255.
-        let defaults_count = check_call_args_u8(func_def.default_exprs.len(), "default parameter values", func_pos)?;
-        let cell_count = check_call_args_u8(func_def.free_var_enclosing_slots.len(), "closure variables", func_pos)?;
-
-        // 1. Compile the function body recursively
-        let functions = mem::take(&mut self.functions);
-        let namespace_size = check_namespace_size_u16(func_def.namespace_size, "lambda")?;
-        let (body_code, mut functions) =
-            Self::compile_function_body(&func_def.body, self.interns, functions, namespace_size)?;
-
-        // 2. Create the compiled Function and add to the vector
-        let func_id = functions.len();
-        let function = Function::new(
-            func_def.name,
-            func_def.signature.clone(),
-            func_def.namespace_size,
-            func_def.free_var_enclosing_slots.clone(),
-            func_def.free_var_slots.clone(),
-            func_def.cell_var_slots.clone(),
-            func_def.cell_param_indices.clone(),
-            func_def.default_exprs.len(),
-            func_def.is_async,
-            body_code,
-        );
-        functions.push(function);
-
-        // Restore functions to self
-        self.functions = functions;
-
-        // 3. Compile and push default values (evaluated at definition time)
-        for default_expr in &func_def.default_exprs {
-            self.compile_expr(default_expr)?;
-        }
-        let func_id_u16 = check_function_count_u16(func_id, func_pos)?;
-
-        // 4. Emit MakeFunction or MakeClosure (if has free vars)
-        if func_def.free_var_enclosing_slots.is_empty() {
-            // MakeFunction: func_id (u16) + defaults_count (u8)
-            self.code
-                .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
-        } else {
-            // Push captured cells from enclosing scope. `slot` is a
-            // `NamespaceId` from the enclosing scope, bounded by
-            // `check_namespace_size_u16`; the conversion is an invariant.
-            for &slot in &func_def.free_var_enclosing_slots {
-                self.code.emit_load_local(slot.as_u16())?;
-            }
-            // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
-            self.code
-                .emit_u16_u8_u8(Opcode::MakeClosure, func_id_u16, defaults_count, cell_count)?;
-        }
-
-        // NOTE: Unlike compile_function_def, we do NOT call compile_store here.
-        // The function object stays on the stack as an expression result.
-
+    /// Modelled on CPython's class-body code object: the class body is compiled
+    /// to a synthetic zero-arg function (via
+    /// [`emit_make_class_body`](Self::emit_make_class_body)) that runs the class
+    /// statements in its own scope and returns the assembled `Class`. We emit
+    /// that function value, call it with zero args, and bind the result to the
+    /// class name.
+    fn compile_class_def(
+        &mut self,
+        name: &Identifier,
+        body: &PreparedFunctionDef,
+        members: &[Identifier],
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        // Build the class-body function/closure value on the stack...
+        self.emit_make_class_body(body, members, name, position)?;
+        // ...call it with zero args — it runs the body and returns the `Class`.
+        // Record the class statement as the call site so a traceback from inside
+        // the class body attributes this frame to the `class` statement (like
+        // CPython) rather than falling back to `CodeRange::default()`.
+        self.code.set_location(position, None);
+        self.code.emit_u8(Opcode::CallFunction, 0)?;
+        // ...and bind the class object to the class name's slot.
+        self.compile_store(name)?;
         Ok(())
+    }
+
+    /// Emits the class-body function value (a `MakeFunction`/`MakeClosure`),
+    /// leaving it on the operand stack (net stack effect `+1`).
+    ///
+    /// Sibling of [`emit_make_function`](Self::emit_make_function): identical
+    /// closure/cell handling, but compiles the body with
+    /// [`compile_class_body`](Self::compile_class_body) so the emitted code ends
+    /// by assembling the namespace and returning the `Class`.
+    fn emit_make_class_body(
+        &mut self,
+        body: &PreparedFunctionDef,
+        members: &[Identifier],
+        class_name: &Identifier,
+        position: CodeRange,
+    ) -> Result<(), CompileError> {
+        self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
+            Self::compile_class_body(
+                &body.body,
+                members,
+                class_name,
+                position,
+                interns,
+                functions,
+                namespace_size,
+            )
+        })
+    }
+
+    /// Compiles a class body, mirroring
+    /// [`compile_function_body`](Self::compile_function_body) but replacing the
+    /// implicit `LoadNone; ReturnValue` tail with a `type(name, (), {...})`
+    /// call: push the class name and an empty bases tuple, then for each
+    /// member (in source order) push `LoadConst <name>` and the member's value
+    /// from its class-body slot, build the namespace dict, and call the 3-arg
+    /// `type()` builtin (which builds the `Class`), then `ReturnValue`.
+    ///
+    /// Members are plain locals (the prepare phase forces class-body locals to
+    /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
+    /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
+    /// changed, so no assumption is hard-coded here.
+    fn compile_class_body(
+        body: &[PreparedNode],
+        members: &[Identifier],
+        class_name: &Identifier,
+        position: CodeRange,
+        interns: &Interns,
+        functions: Vec<Function>,
+        num_locals: u16,
+    ) -> Result<(Code, Vec<Function>), CompileError> {
+        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        compiler.compile_block(body)?;
+
+        // Assembly errors (e.g. resource limits while building the dict)
+        // should point at the class statement, not the last member's line.
+        compiler.code.set_location(position, None);
+
+        // type(name, (), {members...}): push the name and empty bases tuple...
+        let class_name_const = compiler.code.add_const(Value::InternString(class_name.name_id))?;
+        compiler.code.emit_u16(Opcode::LoadConst, class_name_const)?;
+        compiler.code.emit_u16(Opcode::BuildTuple, 0)?;
+
+        // ...then the namespace dict: (name, value) for each member in order.
+        for member in members {
+            let name_const = compiler.code.add_const(Value::InternString(member.name_id))?;
+            compiler.code.emit_u16(Opcode::LoadConst, name_const)?;
+            compiler.compile_name(member)?;
+        }
+        let member_count = check_collection_size_u16(members.len(), position)?;
+        compiler.code.emit_u16(Opcode::BuildDict, member_count)?;
+
+        // ...and call the 3-arg type() builtin, which builds the class object.
+        compiler
+            .code
+            .emit_call_builtin_function(BuiltinsFunctions::Type as u8, 3)?;
+        compiler.code.emit(Opcode::ReturnValue)?;
+
+        Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
     /// Compiles an import statement.
@@ -3557,6 +3649,16 @@ impl<'a> Compiler<'a> {
         // Evaluate context expr and invoke __enter__.
         self.compile_expr(context)?;
         self.code.emit(Opcode::BeforeWith)?;
+        // Padding between `BeforeWith` and the protected region. A user-class
+        // `__enter__` runs as a *pushed frame*; an exception escaping that
+        // frame is attributed to the parent frame's resume point — the
+        // instruction after `BeforeWith` (see `pop_frame`). That offset must
+        // sit OUTSIDE the exception-table entry, or a failing `__enter__`
+        // would incorrectly invoke `__exit__` (CPython only protects the body
+        // once `__enter__` has returned). The Nop keeps the resume point
+        // outside the region while the unpack/Pop that follows stays inside,
+        // so `with cm as (a, b):` unpack failures still call `__exit__`.
+        self.code.emit(Opcode::Nop)?;
 
         // Track early exits inside the body so we can call __exit__ before
         // they propagate. Mirrors the FinallyTarget push in `compile_try`.

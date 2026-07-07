@@ -397,6 +397,120 @@ assert b'hello'.decode('utf-8', 'strict') == 'hello', 'decode with strict errors
 assert b'hello'.decode('utf-8', 'ignore') == 'hello', 'decode with ignore errors'
 assert b'hello'.decode('utf-8', 'replace') == 'hello', 'decode with replace errors'
 
+# === bytes.decode() with the 'ascii' codec ===
+assert b'hello'.decode('ascii') == 'hello', 'decode plain ascii'
+assert b'hello'.decode('us-ascii') == 'hello', 'decode us-ascii alias'
+assert b'hello'.decode('us_ascii') == 'hello', 'decode us_ascii (underscore) alias'
+assert b'hello'.decode('US_ASCII') == 'hello', 'decode US_ASCII case insensitive underscore alias'
+assert b'hello'.decode('ASCII') == 'hello', 'decode ASCII case insensitive'
+assert b'hello \xe9 world'.decode('ascii', 'ignore') == 'hello  world', 'decode ascii ignore drops bad bytes'
+assert b'hello \xe9 world'.decode('ascii', 'replace') == 'hello � world', 'decode ascii replace uses U+FFFD'
+assert b'hello \xe9 world'.decode('ascii', 'backslashreplace') == 'hello \\xe9 world', (
+    'decode ascii backslashreplace escapes bad bytes as literal text'
+)
+# Consecutive bad bytes: each is handled independently (no merging, unlike encode's strict range message).
+assert b'\xe9\xf6\xff'.decode('ascii', 'ignore') == '', 'decode ascii ignore drops all-bad bytes to empty'
+assert b'\xe9\xf6\xff'.decode('ascii', 'replace') == '���', 'decode ascii replace uses one U+FFFD per bad byte'
+assert b'\xe9\xf6\xff'.decode('ascii', 'backslashreplace') == '\\xe9\\xf6\\xff', (
+    'decode ascii backslashreplace escapes each bad byte independently'
+)
+assert b'x\xe9\xf6\xffy'.decode('ascii', 'ignore') == 'xy', 'decode ascii ignore drops consecutive bad bytes'
+assert b'x\xe9\xf6\xffy'.decode('ascii', 'replace') == 'x���y', 'decode ascii replace handles consecutive bad bytes'
+assert b'x\xe9\xf6\xffy'.decode('ascii', 'backslashreplace') == 'x\\xe9\\xf6\\xffy', (
+    'decode ascii backslashreplace handles consecutive bad bytes'
+)
+# encode(errors='ignore') then decode('ascii') round-trips since only ASCII bytes remain.
+assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
+    'encode ignore then decode ascii strips non-ascii characters'
+)
+
+# strict (the default) raises UnicodeDecodeError, a ValueError subclass, with CPython's exact wording.
+try:
+    b'hello \xe9 world'.decode('ascii')
+    assert False, 'decode ascii of non-ascii bytes should error'
+except ValueError as e:
+    assert isinstance(e, UnicodeDecodeError), 'UnicodeDecodeError should be a ValueError subclass'
+    assert type(e).__name__ == 'UnicodeDecodeError', f'exception type name: {type(e).__name__}'
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 6: ordinal not in range(128)", (
+        f'decode ascii strict message: {e}'
+    )
+
+# Boundary: the bad byte at the very start (position 0) of the bytes object.
+try:
+    b'\xe9xyz'.decode('ascii')
+    assert False, 'decode ascii of non-ascii bytes should error'
+except UnicodeDecodeError as e:
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)", (
+        f'decode ascii strict bad byte at position 0: {e}'
+    )
+# Boundary: the bad byte at the very end of the bytes object.
+try:
+    b'xyz\xe9'.decode('ascii')
+    assert False, 'decode ascii of non-ascii bytes should error'
+except UnicodeDecodeError as e:
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 3: ordinal not in range(128)", (
+        f'decode ascii strict bad byte at last position: {e}'
+    )
+# Boundary: a single-byte bytes object that is itself non-ascii.
+try:
+    b'\xe9'.decode('ascii')
+    assert False, 'decode ascii of non-ascii bytes should error'
+except UnicodeDecodeError as e:
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 0: ordinal not in range(128)", (
+        f'decode ascii strict single-byte bytes: {e}'
+    )
+
+# surrogatepass only special-cases surrogate sequences in the UTF codecs, so
+# with the ascii codec it re-raises exactly like strict.
+assert b'hello'.decode('ascii', 'surrogatepass') == 'hello', 'unused surrogatepass handler'
+try:
+    b'h\xe9llo'.decode('ascii', 'surrogatepass')
+    assert False, 'decode ascii surrogatepass of non-ascii bytes should error'
+except UnicodeDecodeError as e:
+    assert str(e) == "'ascii' codec can't decode byte 0xe9 in position 1: ordinal not in range(128)", (
+        f'decode ascii surrogatepass behaves like strict: {e}'
+    )
+
+# xmlcharrefreplace/namereplace are encode-only handlers: unused they pass
+# (lazy lookup), but a bad byte triggers CPython's callback TypeError.
+assert b'hello'.decode('ascii', 'xmlcharrefreplace') == 'hello', 'unused xmlcharrefreplace handler'
+assert b'hello'.decode('ascii', 'namereplace') == 'hello', 'unused namereplace handler'
+try:
+    b'h\xe9llo'.decode('ascii', 'xmlcharrefreplace')
+    assert False, 'decode ascii xmlcharrefreplace of non-ascii bytes should error'
+except TypeError as e:
+    assert str(e) == "don't know how to handle UnicodeDecodeError in error callback", (
+        f'decode ascii xmlcharrefreplace callback error: {e}'
+    )
+try:
+    b'h\xe9llo'.decode('ascii', 'namereplace')
+    assert False, 'decode ascii namereplace of non-ascii bytes should error'
+except TypeError as e:
+    assert str(e) == "don't know how to handle UnicodeDecodeError in error callback", (
+        f'decode ascii namereplace callback error: {e}'
+    )
+
+# surrogateescape passes unused (lazy lookup, like CPython); a bad byte raises
+# NotImplementedError in Monty — CPython would produce a lone surrogate, which
+# Monty strings cannot represent. The divergent-error path is covered by a
+# Rust-side regression test (`crates/monty/tests/encoding.rs`) since this suite
+# also runs under CPython.
+assert b'hello'.decode('ascii', 'surrogateescape') == 'hello', 'unused surrogateescape handler'
+
+# Like CPython, an unknown error handler name is only looked up if it's actually needed.
+assert b'hello'.decode('ascii', 'bogus') == 'hello', 'unused error handler name is never validated'
+try:
+    b'hello \xe9 world'.decode('ascii', 'bogus')
+    assert False, 'decode ascii with unknown error handler should error'
+except LookupError as e:
+    assert str(e) == "unknown error handler name 'bogus'", f'decode ascii unknown error handler: {e}'
+
+try:
+    b'hello'.decode('not-a-real-codec')
+    assert False, 'decode with unsupported codec should error'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: not-a-real-codec', f'decode unknown encoding: {e}'
+
 # === bytes.decode() type-error wording (CPython `_PyArg_BadArgument`) ===
 # Wrong-type encoding / errors must produce the named bad-arg wording
 # (`decode() argument '<name>' must be str, not <type>`) including the

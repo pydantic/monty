@@ -33,6 +33,7 @@ pub fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
             exc_type: exc_type.to_string(),
             message: Some(message.to_owned()),
             traceback: vec![],
+            data: None,
         }),
     }))
 }

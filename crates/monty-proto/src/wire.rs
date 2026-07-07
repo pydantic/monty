@@ -24,14 +24,16 @@
 //! implementation replaces the value (last one wins) — stricter, and only
 //! observable on frames our encoders never produce.
 //!
-//! Encoding leaf arms whose wire form is a `Display` rendering (`Type`,
+//! Encoding leaf arms whose wire form is a `Display` rendering (`MontyType`,
 //! builtin functions, exception type names) allocates the rendered string in
 //! both `encoded_len` and `encode_raw`; those arms are rare in real payloads
 //! and the strings are tiny.
 
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
-use monty::{DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, Type};
+use monty::{
+    DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+};
 use num_bigint::{BigInt, Sign};
 use prost::{
     DecodeError, Message,
@@ -272,6 +274,7 @@ mod tag {
     pub const FUNCTION: u32 = 25;
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
+    pub const INSTANCE_TYPE: u32 = 28;
 }
 
 // ============================================================================
@@ -341,7 +344,12 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_str(1, &name, buf);
             encode_opt_str(2, arg.as_deref(), buf);
         }
-        MontyObject::Type(t) => encoding::string::encode(tag::TYPE, &t.to_string(), buf),
+        MontyObject::Type(t) => match t {
+            // Sandbox-class type objects carry the class name in a dedicated
+            // field so a class named e.g. "int" cannot decode as the builtin.
+            MontyType::Instance(name) => encoding::string::encode(tag::INSTANCE_TYPE, name, buf),
+            other => encoding::string::encode(tag::TYPE, &other.to_string(), buf),
+        },
         MontyObject::BuiltinFunction(bf) => encoding::string::encode(tag::BUILTIN_FUNCTION, &bf.to_string(), buf),
         MontyObject::Path(p) => encoding::string::encode(tag::PATH, p, buf),
         MontyObject::FileHandle(fh) => {
@@ -422,7 +430,10 @@ fn object_len(obj: &MontyObject) -> usize {
             let name = exc_type.to_string();
             submessage_len(tag::EXCEPTION, str_len(1, &name) + opt_str_len(2, arg.as_deref()))
         }
-        MontyObject::Type(t) => encoding::string::encoded_len(tag::TYPE, &t.to_string()),
+        MontyObject::Type(t) => match t {
+            MontyType::Instance(name) => encoding::string::encoded_len(tag::INSTANCE_TYPE, name),
+            other => encoding::string::encoded_len(tag::TYPE, &other.to_string()),
+        },
         MontyObject::BuiltinFunction(bf) => encoding::string::encoded_len(tag::BUILTIN_FUNCTION, &bf.to_string()),
         MontyObject::Path(p) => encoding::string::encoded_len(tag::PATH, p),
         MontyObject::FileHandle(fh) => submessage_len(tag::FILE_HANDLE, file_handle_len(fh)),
@@ -744,10 +755,11 @@ fn decode_field(
         }
         tag::TYPE => {
             let name = merge_string(wire_type, buf, ctx)?;
-            Type::from_type_name(&name)
+            MontyType::from_type_name(&name)
                 .map(MontyObject::Type)
                 .ok_or_else(|| to_decode_err(ProtoConvertError::UnknownType(name)))?
         }
+        tag::INSTANCE_TYPE => MontyObject::Type(MontyType::Instance(merge_string(wire_type, buf, ctx)?)),
         tag::BUILTIN_FUNCTION => {
             let name = merge_string(wire_type, buf, ctx)?;
             MontyObject::builtin_function_from_name(&name)

@@ -149,3 +149,81 @@ assert 'b' in ['a', 'b', 'c'], 'str in list'
 # === Containment: in/not in tuple (found) ===
 assert 'b' in ('a', 'b', 'c'), 'str in tuple'
 assert 2 in (1, 2, 3), 'int in tuple'
+
+# === List ordering (lexicographic, like tuples) ===
+assert [1, 2] < [1, 3], 'list lt by element'
+assert [1, 2, 3] > [1, 2], 'longer list gt when prefix equal'
+assert [1] < [1, 2], 'shorter list lt when prefix equal'
+assert [1, 2] <= [1, 2], 'equal lists le'
+assert [1, 2] >= [1, 2], 'equal lists ge'
+assert ['a', 'b'] < ['a', 'c'], 'str-element list lt'
+assert [[1], [2]] < [[1], [3]], 'nested list lt'
+assert not ([2] < [1]), 'list not lt'
+# equal-but-unorderable elements don't block ordering (None == None), like CPython
+assert [None, 1] < [None, 2], 'None prefix does not block later ordering'
+
+# === Unorderable comparisons raise TypeError (not silently False) ===
+try:
+    1 < 'a'
+    assert False, 'expected int < str to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'int' and 'str'", 'int < str message'
+
+try:
+    None < None
+    assert False, 'expected None < None to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'NoneType' and 'NoneType'", 'None < None message'
+
+try:
+    [1] >= 'a'
+    assert False, 'expected list >= str to raise'
+except TypeError as exc:
+    assert str(exc) == "'>=' not supported between instances of 'list' and 'str'", 'list >= str message'
+
+# === NaN ordering returns False, never raises (NaN is unordered, not incomparable) ===
+# CPython: every ordering operator against a NaN yields False, for both directions
+# and for two NaNs. This is distinct from a type mismatch, which raises.
+nan = float('nan')
+assert not (nan < 1), 'nan < int is False'
+assert not (nan <= 1), 'nan <= int is False'
+assert not (nan > 1), 'nan > int is False'
+assert not (nan >= 1), 'nan >= int is False'
+assert not (1 < nan), 'int < nan is False'
+assert not (1 >= nan), 'int >= nan is False'
+assert not (nan < nan), 'nan < nan is False'
+assert not (nan >= nan), 'nan >= nan is False'
+assert not (nan < 10**30), 'nan < LongInt is False'
+assert not (nan < 1.5), 'nan < float is False'
+assert not (nan < True), 'nan < bool is False'
+
+# NaN combined with a genuine type mismatch still raises (numeric-vs-str)
+try:
+    nan < 'a'
+    assert False, 'expected nan < str to raise'
+except TypeError as exc:
+    assert str(exc) == "'<' not supported between instances of 'float' and 'str'", 'nan < str raises'
+
+# === NaN inside containers ===
+# The first differing element decides: a NaN element makes the container unordered
+# (False), a type-mismatched element makes it incomparable (raises).
+assert not ([nan] < [1]), 'list with nan element is unordered'
+assert not ((nan,) < (1,)), 'tuple with nan element is unordered'
+assert not ([1, nan] < [1, 2]), 'nan as second element is unordered'
+try:
+    [nan] < ['a']
+    assert False, 'expected list with float/str element mismatch to raise'
+except TypeError:
+    # Both raise TypeError; only the message text diverges (Monty names the
+    # outer 'list'/'list', CPython the inner 'float'/'str') — see
+    # limitations/language.md, so the exact message is not asserted here.
+    pass
+
+# === sorted / min / max with NaN do not raise ===
+# NaN compares as neither less nor greater, so it never triggers a swap; CPython
+# leaves such elements in place rather than erroring.
+assert sorted([3, 1, 2]) == [1, 2, 3], 'sorted without nan still works'
+assert sorted([nan, 1, 2, nan])[1:3] == [1, 2], 'sorted with nan does not raise'
+assert min([nan, 1, 2]) != min([nan, 1, 2]), 'min keeps leading nan (nan != nan)'
+assert max([1, nan, 2]) == 2, 'max skips nan'
+assert min([1, 2, nan]) == 1, 'min skips trailing nan'

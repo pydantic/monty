@@ -131,3 +131,8 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'list' object is not a mapping", f'wrong error: {e}'
+
+# === Duplicate literal keys: last value wins, replaced value is released ===
+dup = {'k': [1], 'k': [2]}
+assert dup == {'k': [2]}, 'duplicate literal key keeps the last value'
+assert len(dup) == 1, 'duplicate literal key produces a single entry'

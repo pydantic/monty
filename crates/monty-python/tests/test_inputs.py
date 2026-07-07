@@ -6,7 +6,8 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import MontyRuntimeError
+import pydantic_monty
+from pydantic_monty import MontyError, MontyRuntimeError
 
 
 def test_single_input(monty_run: RunMonty):
@@ -38,6 +39,18 @@ def test_input_keys_must_be_strings(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('x', inputs=bad_inputs)
     assert str(exc_info.value) == snapshot('TypeError: inputs keys must be str')
+    assert isinstance(exc_info.value.exception(), TypeError)
+
+
+def test_input_value_unconvertible_raises_conversion_error(monty_run: RunMonty):
+    # an input *value* Monty cannot represent rejects the feed with the dedicated
+    # MontyConversionError (both a MontyError and a TypeError), like an
+    # external_lookup value does
+    bad_inputs: Any = {'x': object()}
+    with pytest.raises(pydantic_monty.MontyConversionError) as exc_info:
+        monty_run('x', inputs=bad_inputs)
+    assert isinstance(exc_info.value, MontyError)
+    assert str(exc_info.value) == snapshot('Cannot convert builtins.object to Monty value')
     assert isinstance(exc_info.value.exception(), TypeError)
 
 

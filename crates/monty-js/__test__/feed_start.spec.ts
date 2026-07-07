@@ -201,3 +201,187 @@ test('mounts are re-supplied to loadSnapshot and validated', async (t) => {
     await session.close()
   }
 })
+
+// =============================================================================
+// resumeAuto: answer each suspension from the captured externalLookup / os
+// =============================================================================
+
+test('resumeAuto answers a function call from externalLookup', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.feedStart('add(2, 3) * 10', {
+      externalLookup: { add: (a: number, b: number) => a + b },
+    })) as FunctionSnapshot
+    const done = (await snap.resumeAuto()) as MontyComplete
+    t.true(done instanceof MontyComplete)
+    t.is(done.output, 50)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto drives a snippet to completion', async (t) => {
+  const session = await pool().checkout()
+  try {
+    // mixes a name lookup (`base`) and two external calls (`add`)
+    const code = 'total = base\nfor i in [1, 2]:\n    total = add(total, i)\ntotal'
+    const externalLookup = { base: 10, add: (a: number, b: number) => a + b }
+    let snap = await session.feedStart(code, { externalLookup })
+    let steps = 0
+    while (!(snap instanceof MontyComplete)) {
+      snap = await snap.resumeAuto()
+      steps++
+    }
+    t.is(snap.output, 13)
+    t.is(steps, 3)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto resolves a name lookup to a value', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.feedStart('missing + 1', { externalLookup: { missing: 41 } })) as NameLookupSnapshot
+    const done = (await snap.resumeAuto()) as MontyComplete
+    t.is(done.output, 42)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto resolves a name lookup to a function', async (t) => {
+  const session = await pool().checkout()
+  try {
+    // `greet` is read as a value (name lookup), then the bound name is called
+    let snap = await session.feedStart('g = greet\ng("hi")', {
+      externalLookup: { greet: (s: string) => s + '!' },
+    })
+    while (!(snap instanceof MontyComplete)) {
+      snap = await snap.resumeAuto()
+    }
+    t.is(snap.output, 'hi!')
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto with a missing name raises NameError', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.feedStart('missing + 1', { externalLookup: {} })) as NameLookupSnapshot
+    const error = await t.throwsAsync(() => snap.resumeAuto(), { instanceOf: MontyRuntimeError })
+    t.is(error.message, "NameError: name 'missing' is not defined")
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto with a function absent from the lookup raises NameError', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.feedStart('add(2, 3)', { externalLookup: {} })) as FunctionSnapshot
+    const error = await t.throwsAsync(() => snap.resumeAuto(), { instanceOf: MontyRuntimeError })
+    t.is(error.message, "NameError: name 'add' is not defined")
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto answers an OS call with the default unhandled error', async (t) => {
+  const session = await pool().checkout()
+  try {
+    // no os handler was captured, so resumeAuto answers with monty's default
+    // unhandled-OS error, which the snippet catches
+    const code = [
+      'from pathlib import Path',
+      'try:',
+      "    Path('/etc/secret').read_text()",
+      "    r = 'unexpected'",
+      'except Exception as e:',
+      '    r = type(e).__name__',
+      'r',
+    ].join('\n')
+    const snap = (await session.feedStart(code)) as FunctionSnapshot
+    t.true(snap.isOsFunction)
+    const done = (await snap.resumeAuto()) as MontyComplete
+    t.is(done.output, 'PermissionError')
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto spawns a promise external and settles it via a FutureSnapshot', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
+    const snap = (await session.feedStart(code, { externalLookup: { go: async () => 99 } })) as FunctionSnapshot
+    // the coroutine is spawned and answered with a pending future
+    const futures = (await snap.resumeAuto()) as FutureSnapshot
+    t.true(futures instanceof FutureSnapshot)
+    const done = (await futures.resumeAuto()) as MontyComplete
+    t.is(done.output, 99)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto drives multiple pending promises via gather', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(1), go(2))\nasyncio.run(main())'
+    let snap = await session.feedStart(code, { externalLookup: { go: async (n: number) => n * 10 } })
+    while (!(snap instanceof MontyComplete)) {
+      snap = await snap.resumeAuto()
+    }
+    t.deepEqual(snap.output, [10, 20])
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto and manual resume share the captured lookup', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const code = 'a = first()\nb = second()\na + b'
+    const snap = (await session.feedStart(code, { externalLookup: { second: () => 20 } })) as FunctionSnapshot
+    t.is(snap.functionName, 'first')
+    const next = (await snap.resume(5)) as FunctionSnapshot
+    t.is(next.functionName, 'second')
+    const done = (await next.resumeAuto()) as MontyComplete
+    t.is(done.output, 25)
+  } finally {
+    await session.close()
+  }
+})
+
+test('resumeAuto resumes at most once', async (t) => {
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.feedStart('add(1, 2)', {
+      externalLookup: { add: (a: number, b: number) => a + b },
+    })) as FunctionSnapshot
+    await snap.resumeAuto()
+    t.throws(() => snap.resumeAuto(), { message: 'snapshot has already been resumed' })
+  } finally {
+    await session.close()
+  }
+})
+
+test('loadSnapshot captures externalLookup for resumeAuto', async (t) => {
+  let blob: Buffer
+  {
+    const session = await pool().checkout()
+    const snap = (await session.feedStart('y = fetch()\ny + 1')) as FunctionSnapshot
+    blob = await snap.dump()
+    await session.close()
+  }
+  const session = await pool().checkout()
+  try {
+    const snap = (await session.loadSnapshot(blob, { externalLookup: { fetch: () => 41 } })) as FunctionSnapshot
+    const done = (await snap.resumeAuto()) as MontyComplete
+    t.is(done.output, 42)
+  } finally {
+    await session.close()
+  }
+})

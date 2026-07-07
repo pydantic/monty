@@ -1,6 +1,5 @@
 use std::{cell::Cell, fmt::Write, mem};
 
-use ahash::AHashSet;
 use hashbrown::HashTable;
 use smallvec::SmallVec;
 
@@ -17,7 +16,7 @@ use crate::{
     },
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::Type,
+    types::{LazyHeapSet, Type},
     value::{EitherStr, Value},
 };
 
@@ -506,7 +505,7 @@ impl<'h> HeapRead<'h, SetStorage> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, T>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
         type_name: &str,
     ) -> RunResult<()> {
         let len = self.get(vm.heap).len();
@@ -1005,7 +1004,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         self.storage().repr_fmt(f, vm, heap_ids, "set")
     }
@@ -1296,7 +1295,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         self.storage().repr_fmt(f, vm, heap_ids, "frozenset")
     }
@@ -1444,6 +1443,6 @@ impl<'de> serde::Deserialize<'de> for FrozenSet {
 fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
     match value.py_hash(vm)? {
         Some(h) => Ok(h.raw()),
-        None => Err(ExcType::type_error_unhashable_set_element(value.py_type(vm))),
+        None => Err(ExcType::type_error_unhashable_set_element(&value.py_type_name(vm))),
     }
 }

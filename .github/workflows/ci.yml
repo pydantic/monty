@@ -986,8 +986,7 @@ jobs:
   build-wasm:
     name: build wasm
     runs-on: ubuntu-latest
-    # only run on push to main, on tags, or if 'Full Build' label is present
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'Full Build') || (github.event_name == 'workflow_dispatch' && inputs.run_release)
+    # used by test-wasm so always run this
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1077,7 +1076,7 @@ jobs:
       - name: Test bindings
         run: npx ava "__test__/wasm_*.spec.ts"
         env:
-          NAPI_RS_FORCE_WASI: 1
+          NAPI_RS_FORCE_WASI: true
         working-directory: crates/monty-js
 
   release-js:

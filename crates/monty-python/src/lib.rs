@@ -24,7 +24,9 @@ mod snapshot;
 
 use std::sync::OnceLock;
 
-pub use exceptions::{MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
+pub use exceptions::{
+    MontyConversionError, MontyCrashedError, MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame,
+};
 pub use mount::PyMountDir;
 pub use pool::{PyAsyncMonty, PyAsyncMontySession, PyAsyncMontyWebsocket, PyMonty, PyMontySession};
 pub use print_target::{PyCollectStreams, PyCollectString};
@@ -83,6 +85,8 @@ mod _monty {
 
     #[pymodule_export]
     use super::MontyComplete;
+    #[pymodule_export]
+    use super::MontyConversionError;
     #[pymodule_export]
     use super::MontyCrashedError;
     #[pymodule_export]

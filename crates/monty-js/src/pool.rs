@@ -35,7 +35,8 @@ use monty_pool::{
 };
 use napi::{
     bindgen_prelude::{
-        block_on, spawn_blocking, Array, Buffer, FnArgs, FromNapiValue, Function, Object, PromiseRaw, Unknown,
+        block_on, spawn_blocking, Array, Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,
+        Unknown,
     },
     threadsafe_function::UnknownReturnValue,
     Env, Result,
@@ -323,20 +324,30 @@ impl NativeSession {
         })
     }
 
-    /// Answers a `nameLookup` suspension. A name only ever resolves to an
-    /// external *function* (mirroring `pydantic_monty`), so the answer is
-    /// the function's display name — or absent when the name is undefined,
-    /// making the sandbox raise `NameError`.
+    /// Answers a `nameLookup` suspension against `externalLookup`. A callable
+    /// entry resolves to a host function proxy, passed here as its display name
+    /// (`function_name`); any other entry is passed inside the `value` wrapper
+    /// (`{ value: ... }`) and converted to a wire value returned directly. The
+    /// wrapper exists because napi maps a bare JS `null`/`undefined` argument to
+    /// "absent" — without it, an entry whose value *is* `null` would be
+    /// indistinguishable from an undefined name. With both arguments absent the
+    /// name is undefined and the sandbox raises `NameError`. A `value` that
+    /// cannot cross the wire rejects the turn (the worker has not yet observed
+    /// the name).
     #[napi]
     pub fn resume_name_lookup<'env>(
         &self,
         env: &'env Env,
         function_name: Option<String>,
+        value: Option<Object<'env>>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let value = function_name.map(|name| MontyObject::Function { name, docstring: None });
+        let resolved = match value {
+            Some(wrapper) => Some(name_lookup_value(env, &wrapper)?),
+            None => function_name.map(|name| MontyObject::Function { name, docstring: None }),
+        };
         self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume_name_lookup(value, on_print)
+            checkout.resume_name_lookup(resolved, on_print)
         })
     }
 
@@ -742,6 +753,25 @@ fn convert_inputs(env: &Env, inputs: Option<Object<'_>>) -> Result<Vec<(String, 
             }
         })
         .collect()
+}
+
+/// Converts a non-callable `externalLookup` entry — carried inside a
+/// `{ value: ... }` wrapper so JS `null`/`undefined` survive napi's
+/// null-means-absent argument mapping — into a wire value for a name lookup,
+/// rejecting values the wire cannot carry. Unlike a `resume_return` value
+/// (which becomes a catchable in-sandbox error), the worker has not yet
+/// observed the name, so a bad value fails the turn cleanly — matching the
+/// Python resolver, which surfaces a conversion error rather than `NameError`.
+fn name_lookup_value(env: &Env, wrapper: &Object<'_>) -> Result<MontyObject> {
+    // `get_named_property` (not `get`) so an inner `undefined` still converts
+    // (to `None`) instead of collapsing back to Option::None.
+    let value: Unknown = wrapper.get_named_property("value")?;
+    let obj = js_to_monty(value, *env)?;
+    if exceeds_max_value_depth(&obj) {
+        Err(invalid("Max input depth exceeded"))
+    } else {
+        Ok(obj)
+    }
 }
 
 /// Reads a required field from a JS object argument.

@@ -1,9 +1,8 @@
-use std::{fmt::Write, mem};
+use std::{cmp::Ordering, fmt::Write, mem};
 
-use ahash::AHashSet;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{CmpOrder, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -14,7 +13,7 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
     types::{
-        Type,
+        LazyHeapSet, Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -208,6 +207,45 @@ impl<'h> HeapRead<'h, List> {
         self.get(vm.heap).items[index].clone_with_heap(vm.heap)
     }
 
+    /// Lexicographic comparison for lists — the ordering behind `<`/`<=`/`>`/`>=`.
+    ///
+    /// Element-by-element left-to-right; the first non-equal pair decides. If all
+    /// compared elements are equal, the shorter list is less (`[1] < [1, 2]`).
+    /// The first differing pair's [`CmpOrder`] propagates: a `NaN` element makes
+    /// the list [`CmpOrder::Unordered`] (`[nan] < [1]` is `False`), a
+    /// type-mismatched element makes it [`CmpOrder::Incomparable`] (`[1] < ['a']`
+    /// raises `TypeError`). Mirrors [`Tuple::py_cmp`](super::Tuple) — the
+    /// `ListIter` holds the recursion token that bounds nested-container depth.
+    pub(crate) fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        let a_len = self.get(vm.heap).items.len();
+        let b_len = other.get(vm.heap).items.len();
+        let min_len = a_len.min(b_len);
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((i, av)) = iter.next_with_index(vm)? {
+            if i >= min_len {
+                break;
+            }
+            let bv = other.clone_item(i, vm);
+            defer_drop!(bv, vm);
+            match av.py_cmp(bv, vm)? {
+                CmpOrder::Ordered(Ordering::Equal) => {}
+                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
+                // A `NaN` element is never `==`-equal, so it is the first
+                // differing pair and the list is unordered (yields `False`).
+                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
+                // CPython checks `__eq__` first and only orders non-equal pairs, so
+                // equal-but-unorderable elements (e.g. `None == None`) don't block.
+                CmpOrder::Incomparable => {
+                    if !av.py_eq(bv, vm)? {
+                        return Ok(CmpOrder::Incomparable);
+                    }
+                }
+            }
+        }
+        Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
+    }
+
     /// Clones all items from this list with proper refcount management.
     fn clone_all_items(&self, vm: &mut VM<'h, impl ResourceTracker>) -> Vec<Value> {
         let len = self.get(vm.heap).items.len();
@@ -380,13 +418,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
                         return Err(ExcType::index_error_int_too_large());
                     }
                 } else {
-                    let key_type = key.py_type(vm);
-                    return Err(ExcType::type_error_list_assignment_indices(key_type));
+                    let key_type = key.py_type_name(vm);
+                    return Err(ExcType::type_error_list_assignment_indices(&key_type));
                 }
             }
             _ => {
-                let key_type = key.py_type(vm);
-                return Err(ExcType::type_error_list_assignment_indices(key_type));
+                let key_type = key.py_type_name(vm);
+                return Err(ExcType::type_error_list_assignment_indices(&key_type));
             }
         };
 
@@ -440,7 +478,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let len = self.get(vm.heap).len();
         repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
@@ -854,7 +892,7 @@ pub(crate) fn repr_sequence_fmt<'h, T: ResourceTracker>(
     get_item: impl for<'r> Fn(&'r HeapReader<'h, T>, usize) -> &'r Value,
     f: &mut impl Write,
     vm: &mut VM<'h, T>,
-    heap_ids: &mut AHashSet<HeapId>,
+    heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     // Check depth limit before recursing
     let Ok(mut guard) = vm.recursion_guard() else {

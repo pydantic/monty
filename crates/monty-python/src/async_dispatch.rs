@@ -13,8 +13,7 @@ use tokio::task::{JoinError, JoinSet};
 use crate::{
     dataclass::DcRegistry,
     external::{
-        CallResult, ExternalFunctionRegistry, dispatch_method_call_or_coroutine, py_err_to_ext_result,
-        py_obj_to_ext_result,
+        CallResult, ExternalLookup, dispatch_method_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
     },
 };
 
@@ -26,18 +25,18 @@ pub(crate) fn dispatch_function_call(
     method_call: bool,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    external_functions: Option<&Py<PyDict>>,
+    external_lookup: Option<&Py<PyDict>>,
     dc_registry: &DcRegistry,
 ) -> CallResult {
     Python::attach(|py| {
         if method_call {
             dispatch_method_call_or_coroutine(py, function_name, args, kwargs, dc_registry)
-        } else if let Some(ext_fns) = external_functions {
-            let ext_fns = ext_fns.bind(py);
-            let registry = ExternalFunctionRegistry::new(py, ext_fns, dc_registry);
-            registry.call_or_coroutine(function_name, args, kwargs)
         } else {
-            CallResult::Sync(ExtFunctionResult::NotFound(function_name.to_owned()))
+            ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), dc_registry).call_or_coroutine(
+                function_name,
+                args,
+                kwargs,
+            )
         }
     })
 }
@@ -67,10 +66,11 @@ pub(crate) fn spawn_coroutine_task(
 }
 
 /// Waits for at least one `JoinSet` task to complete, then drains any other
-/// immediately-ready results to batch them into one worker resume.
+/// immediately-ready results to batch them into one worker resume. Delivering
+/// any completed task is sound: the sandbox resolves futures by `call_id` and
+/// re-emits `ResolveFutures` if it still needs a different one.
 pub(crate) async fn wait_for_futures(
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
-    _pending_call_ids: &[u32],
 ) -> PyResult<Vec<(u32, ExtFunctionResult)>> {
     let mut results = Vec::new();
 

@@ -582,6 +582,10 @@ impl Opcode {
     /// Returns the operand-stack effect of this opcode paired with `operand`
     /// (positive = push, negative = pop).
     ///
+    /// Returns `i32` because u16-count opcodes (notably `BuildDict`)
+    /// can pop up to `2 * u16::MAX` values, which overflows `i16`; the
+    /// builder's depth tracker accumulates in `i32` anyway.
+    ///
     /// Variable-effect opcodes have explicit `(opcode, operand-variant)` arms;
     /// fixed-effect opcodes match on the opcode alone and ignore the operand
     /// variant. A variable-effect opcode whose operand variant doesn't match
@@ -598,47 +602,47 @@ impl Opcode {
     /// because it doesn't have an `Operand` to pass (the operand is a raw
     /// i16 offset, not a stack-effect-bearing shape).
     #[must_use]
-    pub fn stack_effect(self, operand: Operand<'_>) -> i16 {
+    pub fn stack_effect(self, operand: Operand<'_>) -> i32 {
         #![expect(clippy::allow_attributes, reason = "expect seems broken with enum_glob_use")]
         #[allow(clippy::enum_glob_use, reason = "simplifies churn")]
         use Opcode::*; // allow local import
         match (self, operand) {
             // === Variable-effect: U8 operand ===
-            (CallFunction, Operand::U8(arg_count)) => -i16::from(arg_count),
-            (CallFunctionExtended, Operand::U8(flags)) => -(1 + i16::from(flags & 0x01)),
+            (CallFunction, Operand::U8(arg_count)) => -i32::from(arg_count),
+            (CallFunctionExtended, Operand::U8(flags)) => -(1 + i32::from(flags & 0x01)),
             (FormatValue, Operand::U8(flags)) => {
                 // Spec is on the stack iff `FORMAT_VALUE_HAS_SPEC` is set —
                 // the static/dynamic discriminator (`FORMAT_VALUE_STATIC_SPEC`)
                 // doesn't change the pop count.
                 if flags & FORMAT_VALUE_HAS_SPEC != 0 { -1 } else { 0 }
             }
-            (UnpackSequence, Operand::U8(n)) => i16::from(n) - 1,
+            (UnpackSequence, Operand::U8(n)) => i32::from(n) - 1,
 
             // === Variable-effect: U16 operand ===
-            (BuildList | BuildTuple | BuildSet | BuildFString, Operand::U16(n)) => 1 - n.cast_signed(),
-            (BuildDict, Operand::U16(n)) => 1 - 2 * n.cast_signed(),
+            (BuildList | BuildTuple | BuildSet | BuildFString, Operand::U16(n)) => 1 - i32::from(n),
+            (BuildDict, Operand::U16(n)) => 1 - 2 * i32::from(n),
 
             // === Variable-effect: U8U8 operand ===
             // UnpackEx: pops 1, pushes (before + 1 + after) → before + after.
-            (UnpackEx, Operand::U8U8(before, after)) => i16::from(before) + i16::from(after),
+            (UnpackEx, Operand::U8U8(before, after)) => i32::from(before) + i32::from(after),
             // Builtin calls: no callable on stack, pops args, pushes result → 1 - arg_count.
-            (CallBuiltinFunction | CallBuiltinType, Operand::U8U8(_, arg_count)) => 1 - i16::from(arg_count),
+            (CallBuiltinFunction | CallBuiltinType, Operand::U8U8(_, arg_count)) => 1 - i32::from(arg_count),
 
             // === Variable-effect: U16U8 operand ===
-            (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i16::from(defaults),
-            (CallAttr, Operand::U16U8(_, arg_count)) => -i16::from(arg_count),
-            (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i16::from(flags & 0x01)),
+            (MakeFunction, Operand::U16U8(_, defaults)) => 1 - i32::from(defaults),
+            (CallAttr, Operand::U16U8(_, arg_count)) => -i32::from(arg_count),
+            (CallAttrExtended, Operand::U16U8(_, flags)) => -(1 + i32::from(flags & 0x01)),
 
             // === Variable-effect: U16U8U8 operand ===
             // MakeClosure: pops `cell_count` cells AND `defaults_count` defaults,
             // pushes the closure → 1 - defaults - cells.
-            (MakeClosure, Operand::U16U8U8(_, defaults, cells)) => 1 - i16::from(defaults) - i16::from(cells),
+            (MakeClosure, Operand::U16U8U8(_, defaults, cells)) => 1 - i32::from(defaults) - i32::from(cells),
 
             // === Variable-effect: variable-length kw operands ===
             // pops callable + pos_args + kw_args, pushes result → -(pos_count + kw_count).
             (CallFunctionKw, Operand::CallKw { pos_count, kwname_ids }) => {
-                let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-                -(i16::from(pos_count) + kw_count)
+                let kw_count = i32::try_from(kwname_ids.len()).expect("keyword count exceeds i32");
+                -(i32::from(pos_count) + kw_count)
             }
             (
                 CallAttrKw,
@@ -646,8 +650,8 @@ impl Opcode {
                     pos_count, kwname_ids, ..
                 },
             ) => {
-                let kw_count = i16::try_from(kwname_ids.len()).expect("keyword count exceeds i16");
-                -(i16::from(pos_count) + kw_count)
+                let kw_count = i32::try_from(kwname_ids.len()).expect("keyword count exceeds i32");
+                -(i32::from(pos_count) + kw_count)
             }
 
             // === Fixed-effect, no operand ===
@@ -808,8 +812,8 @@ mod tests {
     fn test_serialized_opcode_values_remain_stable() {
         // Locks the tail-opcode discriminants for the current wire-format version. Removing
         // an opcode in the middle of the enum (e.g. `LoadLocalCallable`/`W` in v3) shifts
-        // everything after it down — update both these assertions and bump
-        // `SERIALIZATION_VERSION` in `monty-python/src/serialization.rs` when that happens.
+        // everything after it down — update these assertions when that happens (any released
+        // serialized-`Code` format would also need a version bump, none exists today).
         assert_eq!(Opcode::RaiseImportError as u8, 108);
         assert_eq!(Opcode::Dup2 as u8, 109);
         assert_eq!(Opcode::DeleteGlobal as u8, 110);

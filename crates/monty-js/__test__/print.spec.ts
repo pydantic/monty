@@ -170,7 +170,7 @@ print("hello")
 print(func())
 `
   const { output, callback } = makePrintCollector(t)
-  const result = await run(code, { printCallback: callback, externalFunctions: { func: () => 'world' } })
+  const result = await run(code, { printCallback: callback, externalLookup: { func: () => 'world' } })
   t.is(result, null)
   t.deepEqual(output, ['hello\n', 'world\n'])
 })

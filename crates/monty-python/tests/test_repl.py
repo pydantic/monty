@@ -292,7 +292,7 @@ def test_external_function_basic(session: MontySession):
     def add(a: int, b: int) -> int:
         return a + b
 
-    assert session.feed_run('result = add(3, 4)', external_functions={'add': add}) == snapshot(None)
+    assert session.feed_run('result = add(3, 4)', external_lookup={'add': add}) == snapshot(None)
     assert session.feed_run('result') == snapshot(7)
 
 
@@ -300,7 +300,7 @@ def test_external_function_return_value(session: MontySession):
     def greet(name: str) -> str:
         return f'hello {name}'
 
-    assert session.feed_run('greet("world")', external_functions={'greet': greet}) == snapshot('hello world')
+    assert session.feed_run('greet("world")', external_lookup={'greet': greet}) == snapshot('hello world')
 
 
 def test_external_function_called_multiple_times(session: MontySession):
@@ -312,8 +312,8 @@ def test_external_function_called_multiple_times(session: MontySession):
         return call_count
 
     ext = {'counter': counter}
-    assert session.feed_run('counter()', external_functions=ext) == snapshot(1)
-    assert session.feed_run('counter()', external_functions=ext) == snapshot(2)
+    assert session.feed_run('counter()', external_lookup=ext) == snapshot(1)
+    assert session.feed_run('counter()', external_lookup=ext) == snapshot(2)
     assert call_count == 2
 
 
@@ -322,7 +322,7 @@ def test_external_function_persists_state_across_feeds(session: MontySession):
         return x * 2
 
     session.feed_run('x = 5')
-    assert session.feed_run('double(x)', external_functions={'double': double}) == snapshot(10)
+    assert session.feed_run('double(x)', external_lookup={'double': double}) == snapshot(10)
 
 
 def test_external_function_exception_becomes_runtime_error(session: MontySession):
@@ -330,7 +330,7 @@ def test_external_function_exception_becomes_runtime_error(session: MontySession
         raise ValueError('external failure')
 
     with pytest.raises(MontyRuntimeError) as exc_info:
-        session.feed_run('fail()', external_functions={'fail': fail})
+        session.feed_run('fail()', external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert str(inner) == snapshot('external failure')
@@ -342,22 +342,22 @@ def test_external_function_error_preserves_session_state(session: MontySession):
 
     session.feed_run('x = 42')
     with pytest.raises(MontyRuntimeError):
-        session.feed_run('fail()', external_functions={'fail': fail})
+        session.feed_run('fail()', external_lookup={'fail': fail})
     # session state should be preserved after error
     assert session.feed_run('x') == snapshot(42)
 
 
 def test_external_function_undefined_raises_name_error(session: MontySession):
-    """Calling a name that's not in external_functions raises NameError."""
+    """Calling a name that's not in external_lookup raises NameError."""
     with pytest.raises(MontyRuntimeError) as exc_info:
-        session.feed_run('unknown()', external_functions={'known': lambda: 1})
+        session.feed_run('unknown()', external_lookup={'known': lambda: 1})
     assert isinstance(exc_info.value.exception(), NameError)
 
 
 def test_external_function_with_print_callback(session: MontySession):
     output, callback = make_print_collector()
     ext = {'get_msg': lambda: 'from external'}
-    session.feed_run('x = get_msg()\nprint(x)', external_functions=ext, print_callback=callback)
+    session.feed_run('x = get_msg()\nprint(x)', external_lookup=ext, print_callback=callback)
     assert ''.join(output) == snapshot('from external\n')
 
 
@@ -365,9 +365,7 @@ def test_external_function_with_kwargs(session: MontySession):
     def greet(name: str, greeting: str = 'hello') -> str:
         return f'{greeting} {name}'
 
-    assert session.feed_run("greet('world', greeting='hi')", external_functions={'greet': greet}) == snapshot(
-        'hi world'
-    )
+    assert session.feed_run("greet('world', greeting='hi')", external_lookup={'greet': greet}) == snapshot('hi world')
 
 
 # === Inputs ===
@@ -391,11 +389,11 @@ def test_inputs_override_existing_variable(session: MontySession):
     assert session.feed_run('x', inputs={'x': 99}) == snapshot(99)
 
 
-def test_inputs_with_external_functions(session: MontySession):
+def test_inputs_with_external_lookup(session: MontySession):
     def double(n: int) -> int:
         return n * 2
 
-    assert session.feed_run('double(x)', inputs={'x': 5}, external_functions={'double': double}) == snapshot(10)
+    assert session.feed_run('double(x)', inputs={'x': 5}, external_lookup={'double': double}) == snapshot(10)
 
 
 def test_inputs_various_types(session: MontySession):
