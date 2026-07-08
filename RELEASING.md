@@ -10,7 +10,7 @@ Run
 make lint-rs
 ```
 
-To update `Cargo.lock` and sync `package.json`/`package-lock.json` (these are updated via a `crates/monty-js/build.rs`).
+This will update `Cargo.lock` and sync `package.json`/`package-lock.json` (these are updated via a `crates/monty-js/build.rs`).
 
 ## 2. Commit and Push
 
