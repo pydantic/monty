@@ -8,7 +8,6 @@ use std::{
     str::FromStr,
 };
 
-use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
@@ -17,9 +16,10 @@ use smallvec::SmallVec;
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
-    hash::{HashValue, hash_python_long_int, hash_python_str},
+    hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
@@ -28,13 +28,13 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, CmpOrder, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
         path,
         slice::slice_collect_iterator,
-        str::{allocate_char, allocate_string, get_char_at_index, string_repr_fmt},
+        str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, string_repr_fmt},
         timedelta,
     },
 };
@@ -123,7 +123,7 @@ impl From<bool> for Value {
     }
 }
 
-impl PyTrait<'_> for Value {
+impl<'h> PyTrait<'h> for Value {
     fn py_type(&self, vm: &VM<'_, impl ResourceTracker>) -> Type {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
@@ -318,7 +318,7 @@ impl PyTrait<'_> for Value {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'_, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let interns = vm.interns;
         match self {
@@ -327,7 +327,9 @@ impl PyTrait<'_> for Value {
             Self::None => Ok(f.write_str("None")?),
             Self::Bool(true) => Ok(f.write_str("True")?),
             Self::Bool(false) => Ok(f.write_str("False")?),
-            Self::Int(v) => Ok(write!(f, "{v}")?),
+            // `itoa` formats into a fixed stack buffer, skipping the generic
+            // `fmt`/`pad_integral` path and its repeated `RawVec` reallocation.
+            Self::Int(v) => Ok(f.write_str(itoa::Buffer::new().format(*v))?),
             Self::InternLongInt(long_int_id) => {
                 let bi = interns.get_long_int(*long_int_id);
                 check_bits_str_digits_limit(bi.bits())?;
@@ -355,14 +357,13 @@ impl PyTrait<'_> for Value {
                 } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
                     // Instances dispatch to a user `__repr__` (or the default), which
                     // needs the heap id to pass `self` — handled here, not at the heap
-                    // level, so no `heap_ids` insertion happens. NOTE: recursion here
-                    // re-enters the VM on the *Rust* stack and is currently NOT
-                    // bounded before the native stack overflows — a pre-existing
-                    // `evaluate_function` issue (see the "Recursive/deep `__repr__`/
-                    // `__str__`" divergence in limitations/classes.md) that also
-                    // affects `sorted`/`map`/`filter` callbacks.
-                    let s = instance_repr(*id, vm)?;
-                    Ok(f.write_str(&s)?)
+                    // level, so no `heap_ids` insertion happens. Recursion here
+                    // re-enters the VM on the *Rust* stack, bounded by
+                    // `evaluate_function`'s re-entry guard (see the "Recursive/deep
+                    // `__repr__`/`__str__`" divergence in limitations/classes.md).
+                    let str_value = instance_repr(*id, vm)?;
+                    defer_drop!(str_value, vm);
+                    Ok(f.write_str(str_value.to_str(vm)?)?)
                 } else {
                     heap_ids.insert(*id);
                     let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
@@ -375,9 +376,39 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    /// Overrides the default `py_repr` with allocation-light fast paths for the
+    /// values whose repr is cheap to produce:
+    /// - singletons (`None`/`True`/`False`/`Ellipsis`) resolve to a pre-interned
+    ///   `StringId`, so `repr`/`str`/`print`/f-strings allocate nothing at all;
+    /// - `int` formats via `itoa` straight into a right-sized `allocate_string`,
+    ///   skipping the grow-then-shrink intermediate `String`.
+    ///
+    /// Every other variant takes the generic `py_repr_fmt` buffered path. `str`
+    /// is also served allocation-free, but by [`py_str`](Self::py_str) — `repr`
+    /// of a `str` still needs a buffer for quoting/escaping.
+    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
-            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id).to_owned().into()),
+            Self::None => Ok(Self::InternString(StaticStrings::NoneRepr.into())),
+            Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
+            Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
+            Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
+            Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)?),
+            _ => {
+                let mut s = String::new();
+                let mut heap_ids = LazyHeapSet::default();
+                self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
+                Ok(allocate_string(s, vm.heap)?)
+            }
+        }
+    }
+
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        match self {
+            // Interned/heap strings are already what `str()` returns — hand the
+            // same value back (inc-ref'd for the heap case) instead of cloning
+            // the bytes into a fresh allocation.
+            Self::InternString(string_id) => Ok(Self::InternString(*string_id)),
+            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Str(_)) => Ok(self.clone_with_heap(vm.heap)),
             // Instances dispatch to a user `__str__`/`__repr__` (needs the heap id).
             Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_str(*id, vm),
             Self::Ref(id) => vm.heap.read(*id).py_str(vm),
@@ -414,19 +445,18 @@ impl PyTrait<'_> for Value {
                 let right = vm.heap.read(*id2);
                 left.py_add(&right, vm)
             }
-            (Self::InternString(s1), Self::InternString(s2)) => {
-                let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (Self::InternString(s1), Self::InternString(s2)) => Ok(Some(concat_allocate_str(
+                interns.get_str(*s1),
+                interns.get_str(*s2),
+                vm.heap,
+            )?)),
             // for strings we need to account for the fact they might be either interned or not
-            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => {
-                let concat = format!("{}{}", interns.get_str(*string_id), s2.as_str());
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
-            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => {
-                let concat = format!("{}{}", s1.as_str(), interns.get_str(*string_id));
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (Self::InternString(string_id), Self::Ref(id2)) if let HeapData::Str(s2) = vm.heap.get(*id2) => Ok(Some(
+                concat_allocate_str(interns.get_str(*string_id), s2.as_str(), vm.heap)?,
+            )),
+            (Self::Ref(id1), Self::InternString(string_id)) if let HeapData::Str(s1) = vm.heap.get(*id1) => Ok(Some(
+                concat_allocate_str(s1.as_str(), interns.get_str(*string_id), vm.heap)?,
+            )),
             // same for bytes
             (Self::InternBytes(b1), Self::InternBytes(b2)) => {
                 let bytes1 = interns.get_bytes(*b1);
@@ -1590,18 +1620,19 @@ impl Value {
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
     pub fn py_hash(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
-        let mut hasher = DefaultHasher::new();
+        // The hot arms (int/str/ref) return precomputed or cached hashes; only the
+        // cold arms construct a hasher, via `hash_one`.
         match self {
-            Self::InternString(string_id) => return Ok(Some(vm.interns.str_hash(*string_id))),
-            Self::InternBytes(bytes_id) => return Ok(Some(vm.interns.bytes_hash(*bytes_id))),
-            Self::InternLongInt(long_int_id) => return Ok(Some(vm.interns.long_int_hash(*long_int_id))),
+            Self::InternString(string_id) => Ok(Some(vm.interns.str_hash(*string_id))),
+            Self::InternBytes(bytes_id) => Ok(Some(vm.interns.bytes_hash(*bytes_id))),
+            Self::InternLongInt(long_int_id) => Ok(Some(vm.interns.long_int_hash(*long_int_id))),
             // Bool and int hash directly as their value, and are equivalent
-            Self::Bool(b) => return Ok(Some(HashValue::new((*b).into()))),
-            Self::Int(i) => return Ok(Some(HashValue::new(i.cast_unsigned()))),
+            Self::Bool(b) => Ok(Some(HashValue::new((*b).into()))),
+            Self::Int(i) => Ok(Some(HashValue::new(i.cast_unsigned()))),
             Self::Float(f) => {
                 // 2^63, the first power of two past i64::MAX (exactly representable).
                 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
-                return if f.fract() != 0.0 || !f.is_finite() {
+                if f.fract() != 0.0 || !f.is_finite() {
                     // Non-integral or non-finite: hash the bit representation.
                     Ok(Some(HashValue::new(f.to_bits())))
                 } else if *f >= -TWO_POW_63 && *f < TWO_POW_63 {
@@ -1616,33 +1647,31 @@ impl Value {
                     Ok(Some(hash_python_long_int(
                         &BigInt::from_f64(*f).expect("finite f64 converts to BigInt"),
                     )))
-                };
+                }
             }
             // For heap-allocated values, dispatch to the per-type `py_hash`
             // impl. Types that benefit from caching (Str/Bytes/Tuple/
             // NamedTuple/FrozenSet/Path) carry an inline `cached_hash`;
             // cheap-to-hash types recompute each call.
-            Self::Ref(id) => return vm.heap.read(*id).py_hash(*id, vm),
-            // Singleton values can be hashed directly
-            Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
-            Self::Builtin(b) => b.hash(&mut hasher),
-            Self::ModuleFunction(mf) => mf.hash(&mut hasher),
+            Self::Ref(id) => vm.heap.read(*id).py_hash(*id, vm),
+            // Singleton values hash by discriminant
+            Self::Undefined | Self::Ellipsis | Self::None => Ok(Some(hash_one(discriminant(self)))),
+            Self::Builtin(b) => Ok(Some(hash_one(b))),
+            Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
             // Hash functions based on function ID
-            Self::DefFunction(f_id) => f_id.hash(&mut hasher),
+            Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
             // Hash the function name's string contents so the inline path
             // agrees with the heap `HeapData::ExtFunction` arm in `heap_data.rs`.
             // Required so cross-representation equality (added in the same fix
             // series) preserves the dict invariant `a == b ⇒ hash(a) == hash(b)`.
-            Self::ExtFunction(name_id) => return Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
-            // Markers are hashable based on their discriminant (already included above)
-            Self::Marker(m) => m.hash(&mut hasher),
+            Self::ExtFunction(name_id) => Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
+            // Markers are hashable based on their discriminant
+            Self::Marker(m) => Ok(Some(hash_one(m))),
             // Properties are hashable based on their OS function discriminant
-            Self::Property(p) => p.hash(&mut hasher),
+            Self::Property(p) => Ok(Some(hash_one(p))),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
-
-        Ok(Some(HashValue::new(hasher.finish())))
     }
 
     /// TODO this doesn't have many tests!!! also doesn't cover bytes
@@ -2134,20 +2163,31 @@ impl Value {
     /// argument it does not need to own; the borrow keeps `self` and the heap
     /// pinned, so drop/allocate only once it ends.
     pub(crate) fn to_str<'a>(&'a self, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+        self.to_str_heap(vm.heap, vm.interns)
+    }
+
+    /// [`to_str`](Self::to_str) for contexts without a `&VM` — takes `heap` and
+    /// `interns` separately so callers can keep a disjoint `&mut` borrow of
+    /// another `VM` field alive (e.g. resolving a `str` `Value` produced by
+    /// `py_str` while writing it to `vm.print_writer`).
+    pub(crate) fn to_str_heap<'a>(
+        &'a self,
+        heap: &'a Heap<impl ResourceTracker>,
+        interns: &'a Interns,
+    ) -> RunResult<&'a str> {
         match self {
-            Self::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
-            Self::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                HeapData::Str(s) => Ok(s.as_str()),
-                _ => Err(ExcType::type_error(format!(
-                    "expected string, not {}",
-                    self.py_type_name(vm)
-                ))),
-            },
-            _ => Err(ExcType::type_error(format!(
-                "expected string, not {}",
-                self.py_type_name(vm)
-            ))),
+            Self::InternString(string_id) => return Ok(interns.get_str(*string_id)),
+            Self::Ref(heap_id) => {
+                if let HeapData::Str(s) = heap.get(*heap_id) {
+                    return Ok(s.as_str());
+                }
+            }
+            _ => {}
         }
+        Err(ExcType::type_error(format!(
+            "expected string, not {}",
+            self.py_type_name_heap(heap, interns)
+        )))
     }
 
     /// check if the value is a string.

@@ -1102,7 +1102,11 @@ impl MontyObject {
 /// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
 fn repr_or_error(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> MontyObject {
     match value.py_repr(vm) {
-        Ok(s) => MontyObject::Repr(s.into_owned()),
+        Ok(s) => {
+            // `py_repr` yields a heap `str` `Value`; extract its text and drop it.
+            defer_drop!(s, vm);
+            MontyObject::Repr(s.to_str(vm).map(str::to_owned).unwrap_or_default())
+        }
         Err(e) => {
             let ty = value.py_type_name(vm);
             let msg = match &e {

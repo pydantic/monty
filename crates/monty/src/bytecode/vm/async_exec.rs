@@ -299,7 +299,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Extends the VM stack with the coroutine's pre-bound namespace values
     /// and pushes a new frame to execute the coroutine's function body.
     fn start_coroutine_frame(&mut self, func_id: FunctionId, namespace_values: Vec<Value>) -> Result<(), RunError> {
-        let call_position = self.current_position();
+        let call_offset = self.current_offset();
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
@@ -321,7 +321,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             locals_count,
             exc_stack_base,
             func_id,
-            call_position,
+            call_offset,
         ))?;
 
         Ok(())
@@ -546,7 +546,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 stack_base: f.stack_base,
                 locals_count: f.locals_count,
                 exception_stack_base: f.exception_stack_base,
-                call_position: f.call_position,
+                call_offset: f.call_offset,
                 is_initializer: f.is_initializer,
             })
             .collect();
@@ -619,7 +619,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         locals_count: sf.locals_count,
                         exception_stack_base: sf.exception_stack_base,
                         function_id: sf.function_id,
-                        call_position: sf.call_position,
+                        call_offset: sf.call_offset,
                         should_return: false,
                         is_initializer: sf.is_initializer,
                     }
@@ -680,7 +680,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         coro.get_mut(self.heap).state = CoroutineState::Running;
 
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
-        // because that needs a current frame for call_position, but spawned tasks
+        // because that needs a current frame for call_offset, but spawned tasks
         // don't have a parent frame — the coroutine is the root)
         let func = self.interns.get_function(func_id);
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");

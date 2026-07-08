@@ -101,6 +101,96 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
     }
 }
 
+/// Hard cap on native Rust call-stack re-entry, enforced by
+/// [`VM::enter_run_reentry`] and released by [`RunReentryGuard`]. Much smaller
+/// than the 1000-frame Python recursion limit because each level costs a real
+/// nested call to [`VM::run`], not a push onto the heap-allocated `frames` vec.
+///
+/// Tuned conservatively from the smallest native stack observed while fixing
+/// recursive callback crashes. A debug monty-datatest worker with an ~2 MiB
+/// stack crashed at depth 19 on macOS/arm64; keep this much lower and
+/// revalidate on all supported host targets before raising it.
+///
+/// A hard safety constant, not a Python-visible setting: unlike ordinary
+/// recursion depth, it does not go through the tracker and cannot be changed
+/// by sandboxed code or test hooks.
+// TODO set this value to custom values per-OS/arch
+pub(crate) const MAX_RUN_REENTRY_DEPTH: u8 = 12;
+
+impl<T: ResourceTracker> VM<'_, T> {
+    /// Charges one native re-entry level, counting the remaining budget down
+    /// from [`MAX_RUN_REENTRY_DEPTH`]; errors when it's exhausted. Pair with
+    /// [`RunReentryGuard::new`] to release the level on every exit path.
+    ///
+    /// Split into a plain `Result<(), _>` check (unlike
+    /// [`recursion_guard`](Self::recursion_guard)'s combined check-and-wrap) so
+    /// `evaluate_function` can `if let Err(e) = ...` it and run its own cleanup
+    /// (dropping owned arguments) without a `Drop` guard extending `self`'s
+    /// borrow across the match. Bypasses the tracker: a fixed safety constant,
+    /// not a user-configurable limit.
+    #[inline]
+    pub(crate) fn enter_run_reentry(&mut self) -> Result<(), ResourceError> {
+        if let Some(new_value) = self.run_reentry_depth.checked_sub(1) {
+            self.run_reentry_depth = new_value;
+            Ok(())
+        } else {
+            Err(ResourceError::Recursion {
+                limit: MAX_RUN_REENTRY_DEPTH as usize,
+                depth: MAX_RUN_REENTRY_DEPTH as usize,
+            })
+        }
+    }
+
+    /// Releases one native re-entry level. Paired with
+    /// [`enter_run_reentry`](Self::enter_run_reentry); called only by
+    /// [`RunReentryGuard`]'s `Drop` impl.
+    #[inline]
+    pub(crate) fn release_run_reentry(&mut self) {
+        debug_assert!(
+            self.run_reentry_depth < MAX_RUN_REENTRY_DEPTH,
+            "release_run_reentry called when depth is MAX_RUN_REENTRY_DEPTH"
+        );
+        self.run_reentry_depth += 1;
+    }
+}
+
+/// RAII guard for one level of native `run()` re-entry, wrapping a level
+/// already reserved via [`VM::enter_run_reentry`].
+///
+/// Derefs to the [`VM`] so the nested `call_function`/`run()` call runs
+/// through the guard; the reserved level is released when the guard is
+/// dropped on any code path (normal return, `?`, or early return).
+pub(crate) struct RunReentryGuard<'a, 'h, T: ResourceTracker> {
+    vm: &'a mut VM<'h, T>,
+}
+
+impl<'a, 'h, T: ResourceTracker> RunReentryGuard<'a, 'h, T> {
+    /// Wraps a re-entry level already charged by a prior
+    /// [`VM::enter_run_reentry`] call.
+    pub(crate) fn new(vm: &'a mut VM<'h, T>) -> Self {
+        Self { vm }
+    }
+}
+
+impl<'h, T: ResourceTracker> Deref for RunReentryGuard<'_, 'h, T> {
+    type Target = VM<'h, T>;
+    fn deref(&self) -> &Self::Target {
+        self.vm
+    }
+}
+
+impl<T: ResourceTracker> DerefMut for RunReentryGuard<'_, '_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.vm
+    }
+}
+
+impl<T: ResourceTracker> Drop for RunReentryGuard<'_, '_, T> {
+    fn drop(&mut self) {
+        self.vm.release_run_reentry();
+    }
+}
+
 /// Zero-size reservation of one recursion level, returned by [`VM::incr_recursion`].
 ///
 /// Released via [`DropWithVM`] (it cannot reach the VM counter through the heap).

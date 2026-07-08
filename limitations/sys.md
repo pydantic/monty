@@ -19,8 +19,11 @@ Minimal. The module exposes only the attributes listed below; every other
 
 `argv`, `path`, `modules`, `prefix`, `executable`, `byteorder`,
 `maxsize`, `maxunicode`, `flags`, `float_info`, `int_info`, `hash_info`,
-`exit`, `exc_info`, `getrecursionlimit`, `setrecursionlimit`,
+`exit`, `exc_info`, `getrecursionlimit`,
 `getsizeof`, `getrefcount`, `intern`, `displayhook`, `excepthook`,
 `settrace`, `setprofile`, `stdin`, `__stdout__`, `_getframe`, `audit`.
 
-The recursion limit is hardcoded; see [resource_limits.md](resource_limits.md).
+Production builds do not expose `sys.setrecursionlimit`. Test builds expose a
+lowering-only hook so shared fixtures can force deterministic recursion errors;
+it cannot raise the host-configured ceiling. See
+[resource_limits.md](resource_limits.md).

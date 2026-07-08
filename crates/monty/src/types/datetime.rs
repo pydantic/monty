@@ -4,14 +4,12 @@
 //! constructor rules, aware/naive comparison semantics, and arithmetic on top.
 
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
 };
 
-use ahash::AHashSet;
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
@@ -28,7 +26,7 @@ use crate::{
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
-        AttrCallResult, CmpOrder, PyTrait, TimeDelta, TimeZone, Type,
+        AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},
         str::{StringRepr, allocate_string, allocate_string_no_interning},
         timedelta, timezone,
@@ -941,7 +939,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
@@ -972,10 +970,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let dt = self.get(vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
-            return Ok(Cow::Borrowed("<out of range>"));
+            return Ok(allocate_string("<out of range>", vm.heap)?);
         };
         let mut s = format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}");
         if microsecond != 0 {
@@ -984,7 +982,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         if let Some(offset) = offset_seconds(dt) {
             s.push_str(&timezone::format_offset_hms(offset));
         }
-        Ok(Cow::Owned(s))
+        Ok(allocate_string(s, vm.heap)?)
     }
 
     fn py_call_attr(

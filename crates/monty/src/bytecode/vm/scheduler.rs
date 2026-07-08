@@ -15,7 +15,6 @@ use crate::{
     exception_private::RunError,
     heap::{ContainsHeap, DropWithHeap, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    parse::CodeRange,
     resource::{ResourceError, ResourceTracker},
     value::Value,
 };
@@ -131,8 +130,9 @@ pub(crate) struct SerializedTaskFrame {
     /// Base index into the VM-wide `exception_stack` for this frame.
     /// See `CallFrame.exception_stack_base`.
     pub exception_stack_base: usize,
-    /// Call site position (for tracebacks).
-    pub call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). See
+    /// `CallFrame.call_offset`.
+    pub call_offset: Option<u32>,
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     #[serde(default)]
     pub is_initializer: bool,

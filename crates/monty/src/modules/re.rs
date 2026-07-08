@@ -30,6 +30,10 @@
 //! - `re.ASCII` / `re.A` — ASCII-only matching for `\w`, `\d`, `\s` (value: 256)
 //! - `re.PatternError` / `re.error` — exception type for invalid patterns
 
+use std::rc::Rc;
+
+use ahash::RandomState;
+
 use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
@@ -41,7 +45,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
     types::{
-        Module, RePattern, Type,
+        BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit},
         str::allocate_string,
     },
@@ -217,7 +221,11 @@ pub(super) fn call(
 fn call_compile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let ReCompileArgs { pattern, flags } = ReCompileArgs::from_args(args, vm)?;
     match resolve_pattern(pattern, flags, vm)? {
-        ResolvedPattern::Owned(compiled) => Ok(Value::Ref(vm.heap.allocate(HeapData::RePattern(compiled))?)),
+        // Clone out of the shared cache entry: the returned `re.Pattern` is the
+        // user's own object, independent of the cache.
+        ResolvedPattern::Cached(compiled) => Ok(Value::Ref(
+            vm.heap.allocate(HeapData::RePattern(Box::new((*compiled).clone())))?,
+        )),
         // Ownership of the extracted value transfers straight to the caller,
         // so the refcount taken at argument extraction is the caller's.
         ResolvedPattern::Heap(value) => Ok(value),
@@ -233,7 +241,7 @@ fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).search(subject_str(string, vm)?, vm.heap)
+    resolved.get(vm.heap).search(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.match(pattern, string, flags=0)` — match at the beginning of the string.
@@ -245,7 +253,9 @@ fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).match_start(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .match_start(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
@@ -257,7 +267,9 @@ fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).fullmatch(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .fullmatch(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.findall(pattern, string, flags=0)` — find all non-overlapping matches.
@@ -583,13 +595,12 @@ impl ReFlags {
     }
 }
 
-/// A pattern ready to run: freshly compiled from a string, or borrowed from a
-/// still-live `re.Pattern` heap value. The `Heap` variant's value must stay
-/// alive for the whole match call — callers guard it with `defer_drop!`.
+/// A pattern ready to run: shared out of the [`RePatternCache`], or a still-live
+/// `re.Pattern` heap value (which callers keep alive with `defer_drop!`).
 enum ResolvedPattern {
-    /// Compiled here from a `str` pattern; boxed so the eventual
-    /// `HeapData::RePattern` allocation in `re.compile` reuses the box.
-    Owned(Box<RePattern>),
+    /// Compiled from a `str` pattern and shared (`Rc`) with the pattern cache
+    /// (or uncached when its compiled form exceeds [`CACHED_SIZE_LIMIT`]).
+    Cached(Rc<RePattern>),
     /// A live `re.Pattern` heap value (always a `Value::Ref` to
     /// `HeapData::RePattern`, guaranteed by [`PatternArg::extract`]).
     Heap(Value),
@@ -599,7 +610,7 @@ impl ResolvedPattern {
     /// Borrows the compiled pattern (from the heap for the `Heap` variant).
     fn get<'a>(&'a self, heap: &'a Heap<impl ResourceTracker>) -> &'a RePattern {
         match self {
-            Self::Owned(pattern) => pattern,
+            Self::Cached(pattern) => pattern,
             Self::Heap(value) => {
                 let Value::Ref(heap_id) = value else {
                     unreachable!("ResolvedPattern::Heap always holds a heap ref")
@@ -618,6 +629,93 @@ impl DropWithHeap for ResolvedPattern {
         if let Self::Heap(value) = self {
             value.drop_with_heap(heap);
         }
+        // `Cached` holds only an `Rc<RePattern>` (no heap references); it drops here.
+    }
+}
+
+/// One slot of [`RePatternCache`], holding the key hash, the pattern text, the
+/// flags (text + flags are rechecked on a hash hit to rule out collisions), and
+/// the compiled pattern shared with callers.
+type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
+
+/// Slot count of [`RePatternCache`] — power of two so the index modulo is a mask;
+/// 256 (vs CPython's 512 `re._MAXCACHE`) to halve the untracked worst-case retained
+/// memory of `CACHE_CAPACITY × CACHED_SIZE_LIMIT`.
+const CACHE_CAPACITY: usize = 256;
+
+/// `delegate_size_limit` for compiles that will be retained in the cache. The cache
+/// is invisible to the `ResourceTracker`, so this caps its worst-case footprint at
+/// ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`; patterns whose compiled form is bigger
+/// still work — they are recompiled per call at default limits and never retained.
+const CACHED_SIZE_LIMIT: usize = 64 * 1024;
+
+/// Fixed-size, per-run cache of compiled patterns for module-level `re.*` calls,
+/// keyed on `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles
+/// once, not per call. Direct-mapped with 5-slot linear probing and
+/// LRU-on-collision (jiter's `py_string_cache` design), so retained
+/// compiled-regex memory is hard-bounded by `CACHE_CAPACITY` entries of at most
+/// [`CACHED_SIZE_LIMIT`] each. Mirrors CPython's `re._cache`; not snapshotted
+/// (rebuilt on demand).
+///
+/// The `CACHE_CAPACITY`-slot backing store is allocated lazily on first use:
+/// every VM constructs a `RePatternCache`, but the vast majority never touch
+/// `re`, and eagerly zeroing ~`CACHE_CAPACITY × size_of::<ReCacheEntry>()` bytes
+/// per VM measurably regressed setup-bound benchmarks (`add_two`, `func_call_*`).
+#[derive(Default)]
+pub(crate) struct RePatternCache(Option<(Box<[ReCacheEntry]>, RandomState)>);
+
+impl RePatternCache {
+    /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
+    /// on a miss. Compile errors propagate and nothing is cached; patterns whose
+    /// compiled form exceeds [`CACHED_SIZE_LIMIT`] are returned uncached. The
+    /// backing store is allocated here on the first call.
+    fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
+        let (entries, hash_builder) = self
+            .0
+            .get_or_insert_with(|| (vec![None; CACHE_CAPACITY].into_boxed_slice(), RandomState::default()));
+
+        let hash = hash_builder.hash_one((pattern, flags));
+        // `hash % CACHE_CAPACITY` is < CACHE_CAPACITY, so it always fits usize.
+        let hash_index = usize::try_from(hash % CACHE_CAPACITY as u64).expect("index < CACHE_CAPACITY");
+
+        // Probe up to 5 contiguous slots for a match, remembering the first
+        // empty slot to fill on a miss.
+        let mut empty_slot = None;
+        for index in hash_index..hash_index + 5 {
+            match entries.get(index) {
+                Some(Some((entry_hash, entry_pattern, entry_flags, compiled))) => {
+                    if *entry_hash == hash && *entry_flags == flags && &**entry_pattern == pattern {
+                        return Ok(Rc::clone(compiled));
+                    }
+                }
+                // First empty slot — a miss lands here.
+                Some(None) => {
+                    empty_slot = Some(index);
+                    break;
+                }
+                // Ran past the end of the array.
+                None => break,
+            }
+        }
+
+        // Miss: compile size-bounded so a retained entry can never pin a huge
+        // compiled regex. A valid pattern that compiles past the cap is
+        // recompiled at default limits and returned uncached — it still works,
+        // just recompiled per call.
+        let compiled = match RePattern::compile_bounded(pattern.to_owned(), flags, CACHED_SIZE_LIMIT) {
+            Ok(compiled) => compiled,
+            Err(BoundedCompileError::TooBig) => {
+                return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+            }
+            Err(BoundedCompileError::Invalid(err)) => return Err(err),
+        };
+
+        // Fill the empty slot, else evict `hash_index` (LRU-on-collision) when
+        // every probed slot was occupied.
+        let compiled = Rc::new(compiled);
+        let slot = empty_slot.unwrap_or(hash_index);
+        entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
+        Ok(compiled)
     }
 }
 
@@ -647,10 +745,9 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTr
         }
     };
     match pattern {
-        PatternArg::Str(pattern) => Ok(ResolvedPattern::Owned(Box::new(RePattern::compile(
-            pattern,
-            flags.get(),
-        )?))),
+        PatternArg::Str(pattern) => Ok(ResolvedPattern::Cached(
+            vm.re_pattern_cache.get_or_compile(&pattern, flags.get())?,
+        )),
         PatternArg::Compiled(value) => {
             if flags.get() == 0 {
                 Ok(ResolvedPattern::Heap(value))
@@ -674,7 +771,9 @@ fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    resolved.get(vm.heap).finditer(subject_str(string, vm)?, vm.heap)
+    resolved
+        .get(vm.heap)
+        .finditer(string, subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.escape(pattern)` — escape special regex characters in a string.
@@ -737,4 +836,81 @@ fn should_escape(c: char) -> bool {
             | '}'
             | '~'
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Counts the occupied slots in the cache (0 while unallocated).
+    fn occupied(cache: &RePatternCache) -> usize {
+        cache
+            .0
+            .as_ref()
+            .map_or(0, |(entries, _)| entries.iter().filter(|e| e.is_some()).count())
+    }
+
+    #[test]
+    fn hit_shares_one_entry() {
+        let mut cache = RePatternCache::default();
+        let first = cache.get_or_compile(r"\s+", 0).unwrap();
+        let second = cache.get_or_compile(r"\s+", 0).unwrap();
+        // A hit returns the *same* compiled pattern, not a recompile.
+        assert!(Rc::ptr_eq(&first, &second));
+        assert_eq!(occupied(&cache), 1);
+    }
+
+    #[test]
+    fn flags_key_the_entry() {
+        let mut cache = RePatternCache::default();
+        let plain = cache.get_or_compile("abc", 0).unwrap();
+        let ignorecase = cache.get_or_compile("abc", IGNORECASE).unwrap();
+        // Same pattern text but different flags are distinct entries.
+        assert!(!Rc::ptr_eq(&plain, &ignorecase));
+        assert_eq!(occupied(&cache), 2);
+    }
+
+    #[test]
+    fn compile_error_caches_nothing() {
+        let mut cache = RePatternCache::default();
+        // Unbalanced parenthesis fails to compile.
+        assert!(cache.get_or_compile("(", 0).is_err());
+        assert_eq!(occupied(&cache), 0);
+    }
+
+    /// A counted repeat that expands far past [`CACHED_SIZE_LIMIT`] in the
+    /// delegated regex compiler while still compiling fine at default limits.
+    const OVERSIZE_PATTERN: &str = "a{5000}";
+
+    #[test]
+    fn oversize_pattern_compiles_but_is_not_retained() {
+        let mut cache = RePatternCache::default();
+        let first = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        let second = cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        // Both calls succeed but nothing is retained: each call recompiles.
+        assert!(!Rc::ptr_eq(&first, &second));
+        assert_eq!(occupied(&cache), 0);
+    }
+
+    #[test]
+    fn oversize_pattern_does_not_disturb_cached_entries() {
+        let mut cache = RePatternCache::default();
+        let small = cache.get_or_compile("abc", 0).unwrap();
+        cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
+        let again = cache.get_or_compile("abc", 0).unwrap();
+        // The small pattern's entry survives the uncached oversize compile.
+        assert!(Rc::ptr_eq(&small, &again));
+        assert_eq!(occupied(&cache), 1);
+    }
+
+    #[test]
+    fn occupancy_is_bounded_by_capacity() {
+        let mut cache = RePatternCache::default();
+        // Far more distinct patterns than slots: LRU-on-collision must keep
+        // the occupied count hard-bounded rather than growing unboundedly.
+        for i in 0..CACHE_CAPACITY * 4 {
+            cache.get_or_compile(&format!("pat{i}"), 0).unwrap();
+        }
+        assert!(occupied(&cache) <= CACHE_CAPACITY);
+    }
 }

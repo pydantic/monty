@@ -35,7 +35,7 @@ use crate::{
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
-    modules::{StandardLib, json::JsonStringCache},
+    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object::InvalidInputError,
     os::OsFunctionCall,
     parse::CodeRange,
@@ -356,8 +356,10 @@ pub struct CallFrame<'code> {
     /// Function ID (for tracebacks). None for module-level code.
     function_id: Option<FunctionId>,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). Stored raw
+    /// and resolved to a `CodeRange` lazily on unwind (see `resolve_offset`) to
+    /// skip the location-table scan unless the call raises. `None` at the root.
+    call_offset: Option<u32>,
 
     /// When this frame returns (or exits with an exception) the VM should exit the run loop
     /// and return to the caller. Supports `evaluate_function`.
@@ -386,7 +388,7 @@ impl<'code> CallFrame<'code> {
             locals_count: 0,
             exception_stack_base,
             function_id: None,
-            call_position: None,
+            call_offset: None,
             should_return: false,
             is_initializer: false,
         }
@@ -406,7 +408,7 @@ impl<'code> CallFrame<'code> {
         locals_count: u16,
         exception_stack_base: usize,
         function_id: FunctionId,
-        call_position: Option<CodeRange>,
+        call_offset: Option<u32>,
     ) -> Self {
         Self {
             code,
@@ -415,7 +417,7 @@ impl<'code> CallFrame<'code> {
             locals_count,
             exception_stack_base,
             function_id: Some(function_id),
-            call_position,
+            call_offset,
             should_return: false,
             is_initializer: false,
         }
@@ -547,8 +549,9 @@ pub struct SerializedFrame {
     /// See `CallFrame.exception_stack_base`.
     exception_stack_base: usize,
 
-    /// Call site position (for tracebacks).
-    call_position: Option<CodeRange>,
+    /// Caller's bytecode offset at the call site (for tracebacks). See
+    /// `CallFrame.call_offset`.
+    call_offset: Option<u32>,
 
     /// Whether this frame is a class `__init__` (see `CallFrame.is_initializer`).
     ///
@@ -573,7 +576,7 @@ impl CallFrame<'_> {
             stack_base: self.stack_base,
             locals_count: self.locals_count,
             exception_stack_base: self.exception_stack_base,
-            call_position: self.call_position,
+            call_offset: self.call_offset,
             is_initializer: self.is_initializer,
         }
     }
@@ -723,6 +726,25 @@ pub struct VM<'h, T: ResourceTracker> {
     /// maintain it. Not serialized: it is reconstructed from the active frame
     /// count on `restore` and rebalanced per-task across async switches.
     recursion_depth: usize,
+
+    /// Reusable scratch buffer for building a sync call's locals, avoiding a
+    /// `malloc`/`free` per call. Only held transiently within
+    /// `call_sync_function`, so one shared buffer is safe under recursion.
+    namespace_scratch: Vec<Value>,
+    /// Remaining native Rust call-stack re-entry budget, counted down from
+    /// [`recursion::MAX_RUN_REENTRY_DEPTH`] only around `evaluate_function`'s
+    /// nested call into [`Self::run`] (the one place the interpreter recurses
+    /// on its own stack instead of the heap-allocated `frames` vec).
+    ///
+    /// Not serialized: a nested `run()` never reaches a snapshot boundary (its
+    /// non-`Return` exits are converted to `NotImplementedError` in
+    /// `evaluate_function`), so the budget is always full at a snapshot;
+    /// `debug_assert!`-checked in [`Self::snapshot`].
+    run_reentry_depth: u8,
+
+    /// Per-run cache of compiled patterns for module-level `re.*` calls. Not
+    /// snapshotted (a pure performance cache), so default-initialized on restore.
+    pub(crate) re_pattern_cache: RePatternCache,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -748,6 +770,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: None,
             recursion_depth: 0,
+            namespace_scratch: Vec::new(),
+            run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
         }
     }
 
@@ -786,7 +811,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     locals_count: sf.locals_count,
                     exception_stack_base: sf.exception_stack_base,
                     function_id: sf.function_id,
-                    call_position: sf.call_position,
+                    call_offset: sf.call_offset,
                     should_return: false,
                     is_initializer: sf.is_initializer,
                 }
@@ -813,6 +838,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: snapshot.pending_file_effect,
             recursion_depth: current_frame_depth,
+            namespace_scratch: Vec::new(),
+            // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
+            run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
+            re_pattern_cache: RePatternCache::default(),
         }
     }
 
@@ -825,6 +854,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// This is NOT a clone - it's a transfer. After calling this, the original VM
     /// is gone and only the snapshot (+ serialized heap/namespaces) represents the state.
     pub fn snapshot(mut self) -> VMSnapshot {
+        // Always fully released (== MAX) here — see the field doc. Asserted to
+        // catch a future `run()` call site that can suspend mid-re-entry.
+        debug_assert_eq!(
+            self.run_reentry_depth,
+            recursion::MAX_RUN_REENTRY_DEPTH,
+            "VM snapshotted while inside a nested evaluate_function re-entry"
+        );
+
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
         self.json_string_cache.drop_all(self.heap);
@@ -2026,6 +2063,28 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 .map(LocationEntry::range)
                 .unwrap_or_default(),
         )
+    }
+
+    /// Captures the caller's current bytecode offset for a call site, or `None`
+    /// when no frame is on the stack (host-initiated calls).
+    ///
+    /// The cheap counterpart to [`current_position`](Self::current_position):
+    /// no location-table scan, so it is affordable on every call. Out-of-range
+    /// offsets (an invariant violation) degrade to `None` rather than panic.
+    pub(super) fn current_offset(&self) -> Option<u32> {
+        self.frames.last()?;
+        u32::try_from(self.instruction_ip).ok()
+    }
+
+    /// Resolves a raw caller offset (`CallFrame::call_offset`) to a source
+    /// [`CodeRange`] against the current frame's code, during traceback unwind
+    /// once the failing frame has been popped so the current frame is the caller.
+    pub(super) fn resolve_offset(&self, offset: u32) -> CodeRange {
+        self.frames
+            .last()
+            .and_then(|frame| frame.code.location_for_offset(offset as usize))
+            .map(LocationEntry::range)
+            .unwrap_or_default()
     }
 
     // ========================================================================

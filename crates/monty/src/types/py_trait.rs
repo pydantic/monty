@@ -9,12 +9,11 @@
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use std::borrow::Cow;
 use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-use super::Type;
+use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -138,7 +137,7 @@ impl CmpOrder {
 /// The lifetime `'h` is the heap borrow lifetime. For concrete types (e.g. `Dict`,
 /// `List`) this is unused and should be `'_`. For `HeapRead<'h, T>` implementers
 /// the lifetime connects the read handle to the VM's heap reference.
-pub trait PyTrait<'h> {
+pub(crate) trait PyTrait<'h> {
     /// Returns the Python type name for this value (e.g., "list", "str").
     ///
     /// Used for error messages and the `type()` builtin.
@@ -231,42 +230,32 @@ pub trait PyTrait<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()>;
 
-    /// Returns the Python `repr()` string for this value.
+    /// Returns the Python `repr()` string for this value as a heap `str` `Value`.
     ///
-    /// Convenience wrapper around `py_repr_fmt` that returns an owned string.
+    /// Convenience wrapper around `py_repr_fmt` that allocates the result.
     ///
     /// TODO: the intermediate `String` here is *not* tracked, so recursive
     /// `repr()` of nested containers can amplify into a multi-gigabyte
     /// host-side buffer before `allocate_string` consults the tracker.
-    /// `StringBuilder` is the canonical fix, but plugging it in requires
-    /// either (a) restructuring so `py_repr_fmt` no longer needs `&mut vm`
-    /// while the builder is alive, or (b) refactoring `py_str` / `py_repr`
-    /// to return `Value` directly so the builder can be consumed via
-    /// `StringBuilder::finish` *outside* the recursive call. Today's
-    /// per-type protections (`INT_MAX_STR_DIGITS`, `check_repeat_size`, etc.)
-    /// blunt the worst amplifications but don't fully cover container
-    /// `repr()`.
-    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    /// `StringBuilder` is the canonical fix: now that `py_repr` returns a
+    /// `Value`, the builder can be `finish`ed here (outside the recursion),
+    /// but `py_repr_fmt` still borrows `&mut vm` while writing, so plugging it
+    /// in first needs `py_repr_fmt` to no longer need `&mut vm` while the
+    /// builder is alive. Today's per-type protections (`INT_MAX_STR_DIGITS`,
+    /// `check_repeat_size`, etc.) blunt the worst amplifications but don't
+    /// fully cover container `repr()`.
+    fn py_repr(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let mut s = String::new();
-        let mut heap_ids = AHashSet::new();
+        let mut heap_ids = LazyHeapSet::default();
         self.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-        Ok(Cow::Owned(s))
+        Ok(allocate_string(s, vm.heap)?)
     }
 
     /// Returns the Python `str()` string for this value.
-    ///
-    /// TODO: should return a `Value` rather than `Cow<'static, str>` — see
-    /// the TODO on [`py_repr`](Self::py_repr). For `Value::InternString` /
-    /// heap `str` values, today's `Cow::Owned` impl clones the underlying
-    /// bytes; a `Value`-returning impl could just hand back the same
-    /// `Value`. Callers that need a `&str` (f-string formatters, the print
-    /// writer, error messages) would resolve the `Value` to `&str` via the
-    /// interns table / heap — equivalent to the existing `EitherStr`
-    /// accessor pattern.
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         self.py_repr(vm)
     }
 
@@ -519,5 +508,33 @@ pub trait PyTrait<'h> {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         Ok(None)
+    }
+}
+
+/// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct LazyHeapSet(Option<AHashSet<HeapId>>);
+
+impl LazyHeapSet {
+    pub fn insert(&mut self, heap_id: HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.insert(heap_id);
+        } else {
+            let mut s = AHashSet::default();
+            s.insert(heap_id);
+            self.0 = Some(s);
+        }
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn contains(&self, heap_id: &HeapId) -> bool {
+        self.0.as_ref().is_some_and(|s| s.contains(heap_id))
+    }
+
+    #[expect(clippy::trivially_copy_pass_by_ref, reason = "Match AHashSet method")]
+    pub fn remove(&mut self, heap_id: &HeapId) {
+        if let Some(s) = self.0.as_mut() {
+            s.remove(heap_id);
+        }
     }
 }

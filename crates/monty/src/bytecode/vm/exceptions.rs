@@ -228,9 +228,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Some(error);
             }
 
-            // Get the call site position before popping frame
-            // This is where the caller invoked the function that's failing
-            let call_position = this.current_frame().call_position;
+            // Get the caller's call-site offset before popping frame.
+            // This is where the caller invoked the function that's failing.
+            let call_offset = this.current_frame().call_offset;
 
             // Pop this frame
             if this.pop_frame() {
@@ -239,8 +239,11 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Some(error);
             }
 
-            // Add caller frame info to traceback (if we have call position)
-            if let Some(pos) = call_position {
+            // Add caller frame info to traceback (if we have a call site).
+            // Resolve the offset now — against the caller, which is the current
+            // frame after the pop above.
+            if let Some(off) = call_offset {
+                let pos = this.resolve_offset(off);
                 let frame_name = this.current_frame_name();
                 match &mut error {
                     RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
@@ -258,14 +261,16 @@ impl<T: ResourceTracker> VM<'_, T> {
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
         while self.frames.len() > 1 {
-            // Get the call site position before popping frame
-            let call_position = self.current_frame().call_position;
+            // Get the caller's call-site offset before popping frame
+            let call_offset = self.current_frame().call_offset;
 
             // Pop this frame (cleans up namespace, etc.)
             self.pop_frame();
 
-            // Add caller frame info to traceback
-            if let Some(pos) = call_position {
+            // Add caller frame info to traceback. Resolve the offset against the
+            // caller, which is the current frame after the pop above.
+            if let Some(off) = call_offset {
+                let pos = self.resolve_offset(off);
                 let frame_name = self.current_frame_name();
                 match &mut error {
                     RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),

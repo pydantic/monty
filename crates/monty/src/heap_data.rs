@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
@@ -7,7 +6,6 @@ use std::{
     ops::Deref,
 };
 
-use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
@@ -21,8 +19,10 @@ use crate::{
     intern::FunctionId,
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice,
-        Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
+        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
+        Set, Slice, Str, Tuple, Type, date, datetime,
+        str::{allocate_string, concat_allocate_str},
+        timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -744,7 +744,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         match self {
             Self::Str(s) => s.py_repr_fmt(f, vm, heap_ids),
@@ -804,20 +804,20 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         match self {
             // Strings return their value directly without quotes
-            Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
+            Self::Str(s) => Ok(allocate_string(s.get(vm.heap).as_str(), vm.heap)?),
             // LongInt returns its string representation
             Self::LongInt(li) => {
                 let li = li.get(vm.heap);
                 li.check_str_digits_limit()?;
-                Ok(Cow::Owned(li.to_string()))
+                Ok(allocate_string(li.to_string(), vm.heap)?)
             }
             // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Ok(Cow::Owned(e.get(vm.heap).py_str())),
+            Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)?),
             // Paths return the path string without the PosixPath() wrapper
-            Self::Path(p) => Ok(Cow::Owned(p.get(vm.heap).as_str().to_owned())),
+            Self::Path(p) => Ok(allocate_string(p.get(vm.heap).as_str(), vm.heap)?),
             // Datetime types have their own str output
             Self::Date(d) => d.py_str(vm),
             Self::DateTime(d) => d.py_str(vm),
@@ -834,10 +834,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
-                Ok(Some(allocate_string(concat, vm.heap)?))
-            }
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
+                a.get(vm.heap).as_str(),
+                b.get(vm.heap).as_str(),
+                vm.heap,
+            )?)),
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
                 let a_bytes = a.get(vm.heap).as_slice();
                 let b_bytes = b.get(vm.heap).as_slice();

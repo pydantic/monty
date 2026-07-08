@@ -64,10 +64,8 @@
 
 use std::{borrow::Cow, fmt::Write, mem, str::FromStr};
 
-use ahash::AHashSet;
-
 use super::{
-    List, PyTrait, Type,
+    LazyHeapSet, List, PyTrait, Type,
     bytes::Bytes,
     str::{allocate_string, allocate_string_no_interning},
 };
@@ -539,7 +537,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         let file = self.get(vm.heap);
         write!(

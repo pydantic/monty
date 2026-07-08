@@ -4,10 +4,9 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use serde::ser::SerializeStruct;
 
-use super::{Dict, PyTrait};
+use super::{Dict, LazyHeapSet, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -133,10 +132,13 @@ impl<'h> HeapRead<'h, Dataclass> {
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
-            // Get attribute name for error message
+            // Build the error message from the field name's repr (a heap `str`
+            // `Value`), dropping that temporary before dropping our own args.
+            let name_repr = name.py_repr(vm)?;
+            defer_drop!(name_repr, vm);
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
-                format!("cannot assign to field {}", name.py_repr(vm)?),
+                format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
             // Drop the values we were given ownership of
             name.drop_with_heap(vm);
@@ -215,7 +217,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut AHashSet<HeapId>,
+        heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         // Check depth limit before recursing
         let Ok(mut guard) = vm.recursion_guard() else {

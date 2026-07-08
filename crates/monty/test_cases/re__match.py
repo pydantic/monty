@@ -3,9 +3,11 @@
 import re
 
 # === Match .string attribute ===
-m = re.search('hello', 'say hello')
+subject = 'say ' + 'hello'  # concatenate so it isn't interned
+m = re.search('hello', subject)
 assert m is not None, 'search finds match for .string test'
 assert m.string == 'say hello', '.string returns the input string'
+assert m.string is subject, '.string is the original subject object, not a copy'
 
 # === Match truthiness ===
 m = re.search(r'\d+', '123')
@@ -146,3 +148,24 @@ try:
     assert False, 'out-of-range subscript should raise IndexError'
 except IndexError as e:
     assert str(e) == 'no such group', 'subscript IndexError message'
+
+# === Non-ASCII subjects: positions are character offsets, not bytes ===
+subject = 'héllo wörld date: 2026-07-06 ünd'
+m = re.search(r'\d{4}-\d{2}-\d{2}', subject)
+assert m is not None, 'search finds date in non-ASCII subject'
+assert m.span() == (18, 28), 'non-ASCII subject span is in characters'
+assert m.start() == 18, 'non-ASCII subject start is in characters'
+assert m.end() == 28, 'non-ASCII subject end is in characters'
+assert m.span() == (18, 28), 'repeated span call returns the same result'
+assert subject[m.start() : m.end()] == '2026-07-06', 'char offsets slice the subject correctly'
+
+# group spans and unmatched groups on a non-ASCII subject
+m = re.search(r'(\w+)@(\w+)(!)?', 'çontact: müller@pydantic é')
+assert m is not None, 'search finds match in non-ASCII subject with groups'
+assert m.span() == (9, 24), 'full-match span in characters'
+assert m.span(1) == (9, 15), 'group 1 span in characters'
+assert m.span(2) == (16, 24), 'group 2 span in characters'
+assert m.span(3) == (-1, -1), 'unmatched group span is (-1, -1)'
+assert m.start(2) == 16, 'group 2 start in characters'
+assert m.end(2) == 24, 'group 2 end in characters'
+assert repr(m) == "<re.Match object; span=(9, 24), match='müller@pydantic'>", 'repr span in characters'

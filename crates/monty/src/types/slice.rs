@@ -11,8 +11,7 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
-
+use super::LazyHeapSet;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -194,7 +193,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str("slice(")?;
         format_option_i64(f, self.get(vm.heap).start)?;

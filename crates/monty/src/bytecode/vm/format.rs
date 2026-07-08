@@ -24,7 +24,8 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         for part in parts.as_slice() {
             let part_str = part.py_str(this)?;
-            result.push_str(&part_str);
+            defer_drop!(part_str, this);
+            result.push_str(part_str.to_str(this)?);
         }
 
         let value = allocate_string(result, this.heap)?;
@@ -93,10 +94,10 @@ impl<T: ResourceTracker> VM<'_, T> {
                     // type, …). Validate via the same `validate_string_spec` the
                     // `str` branch of `format_with_spec` uses, then format.
                     let s = match conversion {
-                        2 => value.py_repr(this)?.into_owned(),
-                        3 => ascii_escape(&value.py_repr(this)?),
+                        2 => str_value_into_string(value.py_repr(this)?, this)?,
+                        3 => ascii_escape(&str_value_into_string(value.py_repr(this)?, this)?),
                         // `!s` (1) and any unused bit pattern fall back to `str()`.
-                        _ => value.py_str(this)?.into_owned(),
+                        _ => str_value_into_string(value.py_str(this)?, this)?,
                     };
                     validate_string_spec(&spec)?;
                     format_string(&s, &spec)?
@@ -105,11 +106,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         } else {
             // No format spec - just convert based on conversion flag
             match conversion {
-                0 => value.py_str(this)?.into_owned(),
-                1 => value.py_str(this)?.into_owned(),
-                2 => value.py_repr(this)?.into_owned(),
-                3 => ascii_escape(&value.py_repr(this)?),
-                _ => value.py_str(this)?.into_owned(),
+                0 => str_value_into_string(value.py_str(this)?, this)?,
+                1 => str_value_into_string(value.py_str(this)?, this)?,
+                2 => str_value_into_string(value.py_repr(this)?, this)?,
+                3 => ascii_escape(&str_value_into_string(value.py_repr(this)?, this)?),
+                _ => str_value_into_string(value.py_str(this)?, this)?,
             }
         };
 
@@ -127,28 +128,31 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// (dynamic) spec string; an empty spec maps to `str()`, matching
     /// `datetime.__format__('')`.
     fn try_format_temporal(&mut self, value: &Value, spec_value: &Value) -> Result<Option<String>, RunError> {
+        let this = self;
         let Value::Ref(id) = value else {
             return Ok(None);
         };
         let id = *id;
         let temporal = matches!(
-            self.heap.read(id),
+            this.heap.read(id),
             HeapReadOutput::Date(_) | HeapReadOutput::DateTime(_)
         );
         if !temporal {
             return Ok(None);
         }
 
-        let spec_str = spec_value.py_str(self)?;
+        let spec_str_value = spec_value.py_str(this)?;
+        defer_drop!(spec_str_value, this);
+        let spec_str = spec_str_value.to_str(this)?;
         // An empty (dynamic) spec behaves like `str()`; strftime("") is also
         // "" but routing explicitly keeps the intent clear.
         if spec_str.is_empty() {
-            return Ok(Some(value.py_str(self)?.into_owned()));
+            return str_value_into_string(value.py_str(this)?, this).map(Some);
         }
 
-        let formatted = match self.heap.read(id) {
-            HeapReadOutput::Date(d) => format_date_strftime(*d.get(self.heap), &spec_str),
-            HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(self.heap), &spec_str),
+        let formatted = match this.heap.read(id) {
+            HeapReadOutput::Date(d) => format_date_strftime(*d.get(this.heap), spec_str),
+            HeapReadOutput::DateTime(d) => format_datetime_strftime(d.get(this.heap), spec_str),
             _ => unreachable!("temporal-ness checked above"),
         };
         formatted.map(Some)
@@ -178,14 +182,16 @@ impl<T: ResourceTracker> VM<'_, T> {
             };
             Ok(decode_format_spec(*encoded))
         } else {
-            let spec_str = spec_value.py_str(self)?;
-            spec_str.parse::<ParsedFormatSpec>().map_err(|err| {
+            let this = self;
+            let spec_str_value = spec_value.py_str(this)?;
+            defer_drop!(spec_str_value, this);
+            spec_str_value.to_str(this)?.parse::<ParsedFormatSpec>().map_err(|err| {
                 // CPython suffixes the value's type onto some spec errors
                 // (`Invalid format specifier`, `Unknown format code`) but not
                 // others (`Format specifier missing precision`, the `Cannot
                 // specify …` grouping conflicts), which are self-contained.
                 let message = if err.needs_type_suffix() {
-                    let value_type = value_for_error.py_type_name(self);
+                    let value_type = value_for_error.py_type_name(this);
                     format!("{err} for object of type '{value_type}'")
                 } else {
                     err.to_string()
@@ -194,4 +200,13 @@ impl<T: ResourceTracker> VM<'_, T> {
             })
         }
     }
+}
+
+/// Resolves a `str` `Value` (as returned by `py_str`/`py_repr`) to an owned
+/// `String`, dropping the value's heap reference on every path. Used by the
+/// f-string conversion arms, which need the text in an owned buffer to feed
+/// the mini-language formatter.
+fn str_value_into_string(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<String, RunError> {
+    defer_drop!(value, vm);
+    Ok(value.to_str(vm)?.to_owned())
 }

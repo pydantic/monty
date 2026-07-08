@@ -5,7 +5,6 @@
 //! and formatting.
 
 use std::{
-    borrow::Cow,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
     fmt::Write,
@@ -13,7 +12,6 @@ use std::{
     mem,
 };
 
-use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
 
 use crate::{
@@ -24,7 +22,7 @@ use crate::{
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{CmpOrder, PyTrait, Type},
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -342,13 +340,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         f.write_str(&format_repr(self.get(vm.heap)))?;
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let (days, seconds, microseconds) = components(self.get(vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
@@ -359,12 +357,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
             format!("{hours}:{minutes:02}:{second:02}.{microseconds:06}")
         };
 
-        if days == 0 {
-            return Ok(Cow::Owned(time));
-        }
-
-        let day_word = if days.abs() == 1 { "day" } else { "days" };
-        Ok(Cow::Owned(format!("{days} {day_word}, {time}")))
+        let s = if days == 0 {
+            time
+        } else {
+            let day_word = if days.abs() == 1 { "day" } else { "days" };
+            format!("{days} {day_word}, {time}")
+        };
+        Ok(allocate_string(s, vm.heap)?)
     }
 
     fn py_call_attr(

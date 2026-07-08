@@ -72,10 +72,9 @@ use std::{
     mem, ops, str,
 };
 
-use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{CmpOrder, MontyIter, PyTrait, Type};
+use super::{CmpOrder, LazyHeapSet, MontyIter, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -295,7 +294,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut AHashSet<HeapId>,
+        _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }

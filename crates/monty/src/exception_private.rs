@@ -394,7 +394,15 @@ impl ExcType {
     /// `KeyError` is always raised rather than a spurious `ValueError`.
     pub(crate) fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
         let key_str = match key.py_str(vm) {
-            Ok(s) => s.into_owned(),
+            Ok(key_value) => {
+                // `key_value` is a heap `str` `Value`; extract its text and drop it.
+                defer_drop!(key_value, vm);
+                if let Ok(s) = key_value.to_str(vm) {
+                    s.to_owned()
+                } else {
+                    format!("<{}>", key.py_type_name(vm))
+                }
+            }
             Err(_) => format!("<{}>", key.py_type_name(vm)),
         };
         SimpleException::new_msg(Self::KeyError, key_str).into()
@@ -485,6 +493,34 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name} expected at most {max} argument{plural}, got {actual}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a `startswith`/`endswith` affix argument that is
+    /// neither the expected string type nor a tuple.
+    ///
+    /// Matches CPython: `{method} first arg must be {expected} or a tuple of {expected}, not {type}`
+    /// (`expected` is `str` for `str` methods, `bytes` for `bytes` methods).
+    #[must_use]
+    pub(crate) fn type_error_affix_arg(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{method} first arg must be {expected} or a tuple of {expected}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a non-string element in a `startswith`/`endswith`
+    /// affix tuple.
+    ///
+    /// Matches CPython: `tuple for {method} must only contain {expected}, not {type}`.
+    /// Raised lazily while matching — elements after a successful match are never checked.
+    #[must_use]
+    pub(crate) fn type_error_affix_tuple_item(method: &str, expected: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("tuple for {method} must only contain {expected}, not {type_name}"),
         )
         .into()
     }

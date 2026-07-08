@@ -6,7 +6,7 @@
 
 use std::mem;
 
-use super::{CallFrame, VM};
+use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
@@ -370,33 +370,47 @@ impl<T: ResourceTracker> VM<'_, T> {
     ///
     /// Returns an error for external/OS functions since those require the host to
     /// execute them and resume, which this synchronous context cannot support.
+    ///
+    /// The nested `self.run()` below recurses on the native Rust stack, so
+    /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
+    /// at entry — before `call_function`, since a class-valued `__init__` can
+    /// recurse back in without ever pushing a frame.
     pub(crate) fn evaluate_function(
         &mut self,
         ctx: &'static str,
         callable: &Value,
         args: ArgValues,
     ) -> Result<Value, RunError> {
-        match self.call_function(callable, args)? {
+        if let Err(e) = self.enter_run_reentry() {
+            // Bailing before `call_function` takes ownership of `args`, so
+            // reclaim its refcounts here.
+            args.drop_with_heap(self);
+            return Err(e.into());
+        }
+        let mut guard = RunReentryGuard::new(self);
+        let this = &mut *guard;
+
+        match this.call_function(callable, args)? {
             CallResult::Value(v) => return Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
                 // to completion.
-                let stack_depth = self.frames.len();
+                let stack_depth = this.frames.len();
                 // Mark the frame as an exit point from the `run()` loop
-                self.current_frame_mut().should_return = true;
-                match self.run()? {
+                this.current_frame_mut().should_return = true;
+                match this.run()? {
                     FrameExit::Return(v) => return Ok(v),
                     exit => {
-                        exit.drop_with_heap(self);
+                        exit.drop_with_heap(this);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
-                        while self.frames.len() >= stack_depth {
-                            self.pop_frame();
+                        while this.frames.len() >= stack_depth {
+                            this.pop_frame();
                         }
                     }
                 }
             }
-            other => other.drop_with_heap(self),
+            other => other.drop_with_heap(this),
         }
 
         Err(ExcType::not_implemented(format!(
@@ -772,13 +786,9 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Sets up the function's namespace with bound arguments, cell variables,
     /// and free variables (captured from enclosing scope for closures).
     ///
-    /// Locals are built directly on the VM stack using a [`StackGuard`] that
-    /// automatically rolls back on error. The frame's `stack_base` points to
-    /// the start of this locals region, and operands are pushed above it.
-    ///
-    /// The call position is captured from [`current_position`](Self::current_position),
-    /// which returns `None` when no frames are on the stack (e.g. host-initiated
-    /// calls via [`MontyRepl`](crate::MontyRepl)).
+    /// Locals are built in the reusable `namespace_scratch` buffer (under a
+    /// [`HeapGuard`] for cleanup on error) and moved onto the VM stack, where
+    /// `stack_base` points to the start of the locals region.
     fn call_sync_function(
         &mut self,
         func_id: FunctionId,
@@ -786,7 +796,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         defaults: &[Value],
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
-        let call_position = self.current_position();
+        let call_offset = self.current_offset();
         let stack_base = self.stack.len();
 
         let func = self.interns.get_function(func_id);
@@ -800,8 +810,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(|| size)?;
 
-        // 1. Create namespace for the frame in a temporary vec, will extend to stack later
-        let namespace = Vec::with_capacity(func.namespace_size);
+        // 1. Build the namespace in the reusable scratch buffer to avoid a
+        //    per-call allocation. On error `HeapGuard` drops the buffer, so the
+        //    pool just restarts empty next call.
+        let mut namespace = mem::take(&mut self.namespace_scratch);
+        namespace.reserve(namespace_size);
         let mut namespace_guard = HeapGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
@@ -821,11 +834,13 @@ impl<T: ResourceTracker> VM<'_, T> {
         let code = &func.code;
 
         // 6. Commit the guard (no rollback) and push the frame. The operand
-        // stack starts immediately above the locals region — any
-        // comprehensions emit their own push/pop bytecode at entry/exit, so
-        // no frame-level region is reserved here.
-        let (namespace, this) = namespace_guard.into_parts();
-        this.stack.extend(namespace);
+        // stack starts immediately above the locals region — comprehensions
+        // emit their own push/pop bytecode, so no frame-level region is
+        // reserved here. `append` empties the buffer (keeping its allocation)
+        // so it can return to the pool.
+        let (mut namespace, this) = namespace_guard.into_parts();
+        this.stack.append(&mut namespace);
+        this.namespace_scratch = namespace;
 
         let exc_stack_base = this.exception_stack.len();
         this.push_frame(CallFrame::new_function(
@@ -834,7 +849,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             locals_count,
             exc_stack_base,
             func_id,
-            call_position,
+            call_offset,
         ))?;
 
         Ok(CallResult::FramePushed)

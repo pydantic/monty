@@ -115,15 +115,24 @@ order and error wording, but with these divergences:
   internally inconsistent object. CPython either reassigns the class (for a
   compatible class) or raises `TypeError: __class__ must be set to a class, not
   '...' object`.
-- **Recursive/deep `__repr__`/`__str__` aborts the process.** A `__repr__` (or
-  `__str__`) that reprs `self`, or a deep-but-finite chain of instances whose
-  reprs nest (a ~600-deep linked list), overflows the native Rust stack and
-  aborts (`fatal runtime error: stack overflow`) *before* the Python recursion
-  limit (1000) can raise a catchable `RecursionError`. This is a pre-existing
-  `evaluate_function` re-entry limitation that user classes make far easier to
-  reach; on subprocess workers the pool recovers, but on the in-process/wasm
-  API it takes the host process down. A bounded native-recursion guard is
-  planned; until it lands, avoid unbounded/very-deep repr recursion.
+- **Recursive/deep `__repr__`/`__str__` raises `RecursionError` earlier than
+  CPython.** A `__repr__` (or `__str__`) that reprs `self`, or a deep chain of
+  instances whose reprs nest (e.g. a long linked list), re-enters the
+  interpreter on the native Rust call stack once per nesting level (unlike
+  ordinary Python-level recursion, which lives on a heap-allocated frame stack
+  and is bounded at 1000 by the normal recursion limit). To avoid a native
+  stack overflow (which would abort the process — fatal for the
+  in-process/wasm API, which shares the host process), this native re-entry is
+  capped independently at a much lower, fixed depth, raising a catchable
+  `RecursionError` once exceeded. The practical effect: infinite `__repr__`
+  recursion now raises `RecursionError` (matching CPython's outcome, though
+  not its exact depth), but a deep-but-finite chain that CPython's default
+  1000-frame limit would still successfully render may raise `RecursionError`
+  in Monty where CPython succeeds — a deliberate divergence traded for avoiding
+  native stack overflow. The same cap also applies to synchronous callback
+  evaluation such as `map()`, `filter()`, `sorted()`/`list.sort(key=...)`,
+  `min()`/`max(key=...)`, and exotic `__init__` recursion (see
+  `limitations/resource_limits.md`'s "Recursion" section).
 - **Comprehensions in the class body** can see class variables, because Monty
   inlines comprehensions into the enclosing scope. In CPython a comprehension
   has its own scope that skips the class scope, so only the *leftmost iterable*

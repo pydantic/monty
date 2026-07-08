@@ -22,6 +22,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     expressions::Identifier,
     heap::{HeapData, HeapGuard},
+    heap_traits::DropWithHeap,
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Dict, allocate_tuple},
@@ -220,20 +221,16 @@ impl Signature {
         namespace: &mut Vec<Value>,
     ) -> RunResult<()> {
         let (pos_iter, keyword_args) = args.into_parts();
-
-        // Convert kwargs to an iterator and guard it so remaining items are cleaned up
-        // on any error path
         let n_kwargs = keyword_args.len();
-        let keyword_args = keyword_args.into_iter();
-        defer_drop_mut!(keyword_args, vm);
-
         let namespace_base = namespace.len();
 
-        // Fast path for simple signatures (no defaults, no special params) and
-        // signatures with only positional-or-keyword params and defaults.
-        // This avoids the full binding algorithm overhead for common cases.
-
-        if matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) && n_kwargs == 0 {
+        // Fast path for simple signatures (no special params) and signatures
+        // with only positional-or-keyword params and defaults, when no keyword
+        // arguments are passed. Handled before building the kwargs iterator +
+        // guard below, which are pure overhead in this common positional case.
+        if n_kwargs == 0 && matches!(self.bind_mode, BindMode::Simple | BindMode::SimpleWithDefaults) {
+            // No keyword arguments to bind; the empty container holds no refs.
+            keyword_args.drop_with_heap(vm);
             match pos_iter {
                 ArgPosIter::Empty => {}
                 ArgPosIter::One(a) => {
@@ -271,7 +268,12 @@ impl Signature {
             return self.wrong_arg_count_error(actual_count, vm.interns, func_name);
         }
 
-        // Full binding algorithm for complex signatures or kwargs
+        // Full binding algorithm for complex signatures or kwargs. Convert
+        // kwargs to an iterator and guard it so remaining items are cleaned up
+        // on any error path.
+        let keyword_args = keyword_args.into_iter();
+        defer_drop_mut!(keyword_args, vm);
+
         // Extract interns before guards since HeapGuard borrows the full VM mutably
         // but we only need mutable access to the heap portion.
         let mut pos_iter_guard = HeapGuard::new(pos_iter, vm);
