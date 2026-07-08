@@ -19,7 +19,7 @@ default-members = ["crates/monty-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.18"
+version = "0.0.19-beta.1"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -47,12 +47,12 @@ lto = false
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.18" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.18" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.18" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.18" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.18" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.18" }
+monty = { path = "crates/monty", version = "0.0.19-beta.1" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.19-beta.1" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.19-beta.1" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.19-beta.1" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.19-beta.1" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19-beta.1" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.3"
 ruff_python_stdlib = "0.0.3"
