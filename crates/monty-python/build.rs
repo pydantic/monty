@@ -78,15 +78,36 @@ const RUNTIME_DIST: &str = "pydantic-monty-runtime";
 
 /// Whether `line` is the [`RUNTIME_DIST`] entry in `[project].dependencies`.
 ///
+/// The rewrite replaces the whole line, so this must recognise *only* what the
+/// rewrite can reproduce: the bare name plus an optional version specifier. A
+/// requirement carrying anything else — extras, an environment marker, a direct
+/// URL — is deliberately not matched, so the `pins == 1` assertion fires rather
+/// than the extra syntax being silently dropped.
+fn is_runtime_pin(line: &str) -> bool {
+    dependency_requirement(line)
+        .and_then(|requirement| requirement.strip_prefix(RUNTIME_DIST))
+        .is_some_and(is_version_specifier)
+}
+
+/// The PEP 508 requirement of a `[project].dependencies` array entry.
+///
 /// Matching is indentation-sensitive (exactly 4 spaces, the array style used in
 /// this file) so that the bare `pydantic-monty-runtime = { workspace = true }`
 /// entry under `[tool.uv.sources]`, which must stay unpinned, is never touched.
+/// Only a trailing comma may follow the closing quote — the last entry has none.
+fn dependency_requirement(line: &str) -> Option<&str> {
+    let entry = line.strip_prefix("    \"")?;
+    let (requirement, tail) = entry.split_once('"')?;
+    matches!(tail, "" | ",").then_some(requirement)
+}
+
+/// Whether `specifier` is what may legally follow [`RUNTIME_DIST`] in a pin we
+/// are willing to rewrite: nothing at all, or a PEP 440 version specifier.
 ///
-/// The name must end at a version specifier or the closing quote: `-` is a legal
-/// PEP 508 name character, so a prefix match alone would also claim (and clobber)
-/// a future sibling dependency such as `pydantic-monty-runtime-stubs`.
-fn is_runtime_pin(line: &str) -> bool {
-    line.strip_prefix("    \"")
-        .and_then(|entry| entry.strip_prefix(RUNTIME_DIST))
-        .is_some_and(|specifier| specifier.starts_with(['=', '<', '>', '!', '~', '"']))
+/// The leading-character check also enforces the name boundary. `-` is a legal
+/// PEP 508 name character, so accepting any suffix would claim (and clobber) a
+/// future sibling dependency such as `pydantic-monty-runtime-stubs`. `;` starts
+/// an environment marker, which the rewrite cannot preserve.
+fn is_version_specifier(specifier: &str) -> bool {
+    specifier.is_empty() || (specifier.starts_with(['=', '<', '>', '!', '~']) && !specifier.contains(';'))
 }
