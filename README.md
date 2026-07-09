@@ -16,7 +16,7 @@
 
 ---
 
-**Experimental** - This project is still in development, and not ready for the prime time.
+**Experimental** - This project is still in development, and not ready for prime time.
 
 A minimal, secure Python interpreter written in Rust for use by AI.
 

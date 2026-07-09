@@ -393,7 +393,7 @@ NOT!
 
 ### Docstrings and comments.
 
-IMPORTANT: every struct, enum and function should have an informative but concise docstring to
+IMPORTANT: every struct, enum and function should have a concise docstring to
 explain what it does and why; and any considerations or potential foot-guns of using that type.
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
@@ -401,6 +401,8 @@ The only exception is trait implementation methods where a docstring is not nece
 It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
 
 Similarly, you should add comments to code, especially if the code is complex or esoteric.
+
+Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
 
 Only add examples to docstrings of public functions and structs, examples should be <=8 lines, if the example is more, remove it.
 
@@ -415,8 +417,6 @@ Always use single back-ticks in python docstrings - they should be markdown, not
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
 
 NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
-
-Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
 
 ## Tests
 

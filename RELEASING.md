@@ -2,39 +2,28 @@
 
 ## 1. Bump Version
 
-Update version in both files:
+Edit `Cargo.toml` to bump the version (both the main `version` and the package versions)
+
+Run
 
 ```bash
-# Edit Cargo.toml - update workspace.package.version AND the internal crate
-#   versions in [workspace.dependencies] (monty, monty-macros, monty-proto,
-#   monty-pool, monty-type-checking, monty-typeshed). These must all equal
-#   workspace.package.version or `cargo publish` will fail.
-# Edit crates/monty-js/package.json - update version AND the optionalDependencies
-#   versions (they must all equal the package version; CI's
-#   create-platform-packages fails if they drift)
-
-# Update Cargo.lock
 make lint-rs
 ```
 
-`Cargo.toml` and `package.json` should have the same version (e.g., `0.0.2`).
+This will update `Cargo.lock` and sync `package.json`/`package-lock.json` (these are updated via a `crates/monty-js/build.rs`).
 
 ## 2. Commit and Push
 
 ```bash
-git add Cargo.toml Cargo.lock crates/monty-js/package.json
+git checkout -b prepare-release-X.Y.Z
+git add .
 git commit -m "Bump version to X.Y.Z"
 git push
 ```
 
 ## 3. Create Release via GitHub UI
 
-1. Go to https://github.com/pydantic/monty/releases/new
-2. Click "Choose a tag" and type the new tag name (e.g., `v0.0.2`)
-3. Select "Create new tag on publish"
-4. Set the release title (e.g., `v0.0.2`)
-5. Add release notes
-6. Click "Publish release"
+Once the PR is merged, create a release in the GitHub UI with a tag matching the version in `Cargo.toml`.
 
 ## 4. CI Handles Publishing
 

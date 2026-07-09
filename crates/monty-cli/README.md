@@ -1,4 +1,4 @@
-# pydantic-monty-cli
+# pydantic-monty-runtime
 
 The `monty` CLI binary, packaged for PyPI in the same way `uv` and `ruff`
 package theirs: installing this wheel places the compiled binary in the

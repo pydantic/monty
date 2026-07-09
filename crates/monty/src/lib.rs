@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../README.md")]
+#![doc = include_str!("../README.md")]
 // these files first because they include macros for the rest of the crate to use
 mod heap;
 mod heap_traits;
