@@ -1186,7 +1186,9 @@ jobs:
         run: |
           for dir in artifacts/monty-bin-*; do
             triple=${dir#artifacts/monty-bin-}
-            find "$dir" -name 'monty*' -exec mv {} "npm/$triple/" \;
+            # -type f: without it the artifact dir itself matches 'monty*' and
+            # gets moved wholesale, killing the find that is mid-traversal
+            find "$dir" -type f -name 'monty*' -exec mv {} "npm/$triple/" \;
           done
           chmod +x npm/*/monty npm/*/monty.exe 2>/dev/null || true
           mv artifacts/wasm/monty.wasm32-wasi.wasm npm/wasm32-wasi/
