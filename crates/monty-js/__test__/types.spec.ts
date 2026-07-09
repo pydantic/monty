@@ -1,6 +1,5 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
 
 import { setupPool } from './helpers.js'
 
@@ -305,8 +304,7 @@ test('bigint in collection', async () => {
   t.deepEqual(await run('x', { inputs: { x: [big, 42, big * 2n] } }), [big, 42, big * 2n])
 })
 
-test('number at the i64 boundary', async (ctx) => {
-  skipIfBrowser(ctx)
+test('number at the i64 boundary', async () => {
   // 2^63 is f64-representable but overflows i64, so it crosses as a float;
   // -2^63 is a valid i64 and stays an int
   t.is(await run('type(x).__name__', { inputs: { x: 2 ** 63 } }), 'float')

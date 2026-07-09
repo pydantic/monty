@@ -115,7 +115,7 @@ export class WorkerTransport {
   }
 
   resumeReturn(value: unknown, onPrint: OnPrint): Promise<NativeTurn> {
-    return this.resumeCall(extResult(1, encodeMontyObject(value)), onPrint) // ExtFunctionResult.return_value
+    return this.resumeCall(encodeExtReturn(value), onPrint)
   }
 
   resumeError(excType: string, message: string, onPrint: OnPrint): Promise<NativeTurn> {
@@ -139,12 +139,18 @@ export class WorkerTransport {
     return this.resumeCall(future.finish(), onPrint)
   }
 
-  resumeNameLookup(functionName: string | null, onPrint: OnPrint): Promise<NativeTurn> {
+  resumeNameLookup(
+    functionName: string | null,
+    value: { value: unknown } | null,
+    onPrint: OnPrint,
+  ): Promise<NativeTurn> {
     const lookup = new Writer()
-    if (functionName === null) {
-      lookup.lengthDelimited(2, EMPTY) // ResumeNameLookup.undefined = Unit
-    } else {
+    if (functionName !== null) {
       lookup.lengthDelimited(1, functionValue(functionName)) // ResumeNameLookup.value
+    } else if (value !== null) {
+      lookup.lengthDelimited(1, encodeMontyObject(value.value)) // ResumeNameLookup.value
+    } else {
+      lookup.lengthDelimited(2, EMPTY) // ResumeNameLookup.undefined = Unit
     }
     return this.turn(Req.ResumeNameLookup, lookup.finish(), onPrint)
   }
@@ -502,6 +508,15 @@ function raisedException(excType: string, message: string): Uint8Array {
   w.string(1, excType) // RaisedException.exc_type
   w.string(2, message) // RaisedException.message
   return w.finish()
+}
+
+function encodeExtReturn(value: unknown): Uint8Array {
+  try {
+    return extResult(1, encodeMontyObject(value)) // ExtFunctionResult.return_value
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return extResult(2, raisedException('TypeError', message))
+  }
 }
 
 /** A `MontyObject` holding a `Function` value, for answering a name lookup. */

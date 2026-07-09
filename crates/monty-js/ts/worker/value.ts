@@ -67,8 +67,8 @@ function writeKind(w: Writer, value: unknown): void {
   } else if (typeof value === 'boolean') {
     w.bool(Tag.Bool, value)
   } else if (typeof value === 'number') {
-    if (Number.isInteger(value)) {
-      w.sint64(Tag.Int, BigInt(value)) // any integral JS number fits in i64
+    if (Number.isInteger(value) && (Number.isSafeInteger(value) || value === Number(I64_MIN))) {
+      w.sint64(Tag.Int, BigInt(value))
     } else {
       w.double(Tag.Float, value)
     }
@@ -98,6 +98,8 @@ function writeKind(w: Writer, value: unknown): void {
       // a plain object becomes a string-keyed dict, matching convert.rs
       w.lengthDelimited(Tag.Dict, encodeDict(Object.entries(obj)))
     }
+  } else if (typeof value === 'symbol') {
+    throw new TypeError('Cannot convert JS Symbol to Monty value')
   } else {
     throw unsupported(`value of type ${typeof value}`)
   }
@@ -146,11 +148,20 @@ function encodeFunction(value: { name?: string }): Uint8Array {
 }
 
 function encodeDataclass(obj: Record<string, unknown>): Uint8Array {
+  if (typeof obj.typeId !== 'bigint') {
+    throw new TypeError(
+      `Object property 'typeId' type mismatch. Expect value to be BigInt, but received ${jsType(obj.typeId)}`,
+    )
+  }
+  if (!Array.isArray(obj.fieldNames)) {
+    throw new TypeError(
+      `Object property 'fieldNames' type mismatch. Expect value to be Array, but received ${jsType(obj.fieldNames)}`,
+    )
+  }
   const w = new Writer()
   w.string(1, String(obj.name)) // Dataclass.name
-  if (obj.typeId !== undefined) w.uint(2, obj.typeId as bigint) // Dataclass.type_id
-  const fieldNames = Array.isArray(obj.fieldNames) ? obj.fieldNames : []
-  for (const fieldName of fieldNames) w.string(3, String(fieldName)) // Dataclass.field_names
+  w.uint(2, obj.typeId) // Dataclass.type_id
+  for (const fieldName of obj.fieldNames) w.string(3, String(fieldName)) // Dataclass.field_names
   const fields = (obj.fields ?? {}) as Record<string, unknown>
   w.lengthDelimited(4, encodeDict(Object.entries(fields))) // Dataclass.attrs
   if (obj.frozen) w.bool(5, true) // Dataclass.frozen
@@ -528,4 +539,18 @@ function num(value: unknown): number {
 
 function unsupported(what: string): Error {
   return new Error(`monty wasm transport does not support ${what} (file handles are not yet ported)`)
+}
+
+function jsType(value: unknown): string {
+  if (value === undefined) {
+    return 'Undefined'
+  } else if (value === null) {
+    return 'Null'
+  } else if (Array.isArray(value)) {
+    return 'Array'
+  } else if (typeof value === 'bigint') {
+    return 'BigInt'
+  } else {
+    return typeof value === 'object' ? 'Object' : typeof value
+  }
 }
