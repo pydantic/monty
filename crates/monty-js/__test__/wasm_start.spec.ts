@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import {
   Monty,
@@ -14,14 +15,14 @@ import {
 // start() returns MontyComplete tests
 // =============================================================================
 
-test('start no external functions returns complete', (t) => {
+test('start no external functions returns complete', () => {
   const m = new Monty('1 + 2')
   const result = m.start()
   t.true(result instanceof MontyComplete)
   t.is((result as MontyComplete).output, 3)
 })
 
-test('start returns complete for various types', (t) => {
+test('start returns complete for various types', () => {
   const testCases: Array<[string, unknown]> = [
     ['1', 1],
     ['"hello"', 'hello'],
@@ -42,7 +43,7 @@ test('start returns complete for various types', (t) => {
 // start() returns MontySnapshot tests (callable names go through FunctionCall)
 // =============================================================================
 
-test('start with external function returns progress', (t) => {
+test('start with external function returns progress', () => {
   const m = new Monty('func()')
   const result = m.start()
   t.true(result instanceof MontySnapshot)
@@ -53,14 +54,14 @@ test('start with external function returns progress', (t) => {
   t.deepEqual(snapshot.kwargs, {})
 })
 
-test('start custom script name', (t) => {
+test('start custom script name', () => {
   const m = new Monty('func()', { scriptName: 'custom.py' })
   const result = m.start()
   t.true(result instanceof MontySnapshot)
   t.is((result as MontySnapshot).scriptName, 'custom.py')
 })
 
-test('start progress with args', (t) => {
+test('start progress with args', () => {
   const m = new Monty('func(1, 2, 3)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -70,7 +71,7 @@ test('start progress with args', (t) => {
   t.deepEqual(snapshot.kwargs, {})
 })
 
-test('start progress with kwargs', (t) => {
+test('start progress with kwargs', () => {
   const m = new Monty('func(a=1, b="two")')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -80,7 +81,7 @@ test('start progress with kwargs', (t) => {
   t.deepEqual(snapshot.kwargs, { a: 1, b: 'two' })
 })
 
-test('start progress kwargs cannot replace prototype', (t) => {
+test('start progress kwargs cannot replace prototype', () => {
   const m = new Monty('func(**{"__proto__": {"polluted": True}})')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -89,7 +90,7 @@ test('start progress kwargs cannot replace prototype', (t) => {
   t.deepEqual(snapshot.kwargs.__proto__, new Map([['polluted', true]]))
 })
 
-test('start progress with mixed args kwargs', (t) => {
+test('start progress with mixed args kwargs', () => {
   const m = new Monty('func(1, 2, x="hello", y=True)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -103,7 +104,7 @@ test('start progress with mixed args kwargs', (t) => {
 // start() returns MontyNameLookup tests (non-callable name resolution)
 // =============================================================================
 
-test('start with unknown name returns name lookup', (t) => {
+test('start with unknown name returns name lookup', () => {
   const m = new Monty('x = foo; x')
   const result = m.start()
   t.true(result instanceof MontyNameLookup)
@@ -112,7 +113,7 @@ test('start with unknown name returns name lookup', (t) => {
   t.is(lookup.variableName, 'foo')
 })
 
-test('name lookup resume with value completes', (t) => {
+test('name lookup resume with value completes', () => {
   const m = new Monty('x = foo; x')
   const result = m.start()
   t.true(result instanceof MontyNameLookup)
@@ -124,7 +125,7 @@ test('name lookup resume with value completes', (t) => {
   t.is((complete as MontyComplete).output, 42)
 })
 
-test('name lookup resume without value raises NameError', (t) => {
+test('name lookup resume without value raises NameError', () => {
   const m = new Monty('x = foo; x')
   const result = m.start()
   t.true(result instanceof MontyNameLookup)
@@ -137,14 +138,14 @@ test('name lookup resume without value raises NameError', (t) => {
   t.true(error.message.includes('foo'))
 })
 
-test('name lookup custom script name', (t) => {
+test('name lookup custom script name', () => {
   const m = new Monty('x = foo; x', { scriptName: 'custom.py' })
   const result = m.start()
   t.true(result instanceof MontyNameLookup)
   t.is((result as MontyNameLookup).scriptName, 'custom.py')
 })
 
-test('name lookup resume cannot be called twice', (t) => {
+test('name lookup resume cannot be called twice', () => {
   const m = new Monty('x = foo; x')
   const lookup = m.start() as MontyNameLookup
 
@@ -156,7 +157,7 @@ test('name lookup resume cannot be called twice', (t) => {
   t.true(error?.message.includes('already'))
 })
 
-test('name lookup resolves to function, then function call yields snapshot', (t) => {
+test('name lookup resolves to function, then function call yields snapshot', () => {
   // Assign an external function to x via name lookup, then call x()
   const m = new Monty('x = foobar; x()')
   const lookup = m.start()
@@ -181,7 +182,7 @@ test('name lookup resolves to function, then function call yields snapshot', (t)
 // resume() tests
 // =============================================================================
 
-test('progress resume returns complete', (t) => {
+test('progress resume returns complete', () => {
   const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -195,7 +196,7 @@ test('progress resume returns complete', (t) => {
   t.is((result as MontyComplete).output, 42)
 })
 
-test('resume with none', (t) => {
+test('resume with none', () => {
   const m = new Monty('func()')
   const snapshot = m.start() as MontySnapshot
 
@@ -204,7 +205,7 @@ test('resume with none', (t) => {
   t.is((result as MontyComplete).output, null)
 })
 
-test('resume complex return value', (t) => {
+test('resume complex return value', () => {
   const m = new Monty('func()')
   const snapshot = m.start() as MontySnapshot
 
@@ -224,7 +225,7 @@ test('resume complex return value', (t) => {
 // Multiple external function calls tests
 // =============================================================================
 
-test('multiple external calls', (t) => {
+test('multiple external calls', () => {
   const m = new Monty('a() + b()')
 
   // First call
@@ -243,7 +244,7 @@ test('multiple external calls', (t) => {
   t.is((result as MontyComplete).output, 15)
 })
 
-test('chain of external calls', (t) => {
+test('chain of external calls', () => {
   const m = new Monty('c() + c() + c()')
 
   let callCount = 0
@@ -264,7 +265,7 @@ test('chain of external calls', (t) => {
 // start() with options tests
 // =============================================================================
 
-test('start with inputs', (t) => {
+test('start with inputs', () => {
   const m = new Monty('process(x)', { inputs: ['x'] })
   const progress = m.start({ inputs: { x: 100 } })
   t.true(progress instanceof MontySnapshot)
@@ -273,7 +274,7 @@ test('start with inputs', (t) => {
   t.deepEqual(snapshot.args, [100])
 })
 
-test('start with limits', (t) => {
+test('start with limits', () => {
   const m = new Monty('1 + 2')
   const limits: ResourceLimits = { maxAllocations: 1000 }
   const result = m.start({ limits })
@@ -285,7 +286,7 @@ test('start with limits', (t) => {
 // resume() cannot be called twice tests
 // =============================================================================
 
-test('resume cannot be called twice', (t) => {
+test('resume cannot be called twice', () => {
   const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -303,7 +304,7 @@ test('resume cannot be called twice', (t) => {
 // resume() with exception tests
 // =============================================================================
 
-test('resume with exception caught', (t) => {
+test('resume with exception caught', () => {
   const code = `
 try:
     result = external_func()
@@ -322,7 +323,7 @@ caught
   t.is((result as MontyComplete).output, true)
 })
 
-test('resume exception propagates uncaught', (t) => {
+test('resume exception propagates uncaught', () => {
   const m = new Monty('external_func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -336,7 +337,7 @@ test('resume exception propagates uncaught', (t) => {
   t.true(error.message.includes('uncaught error'))
 })
 
-test('resume exception in nested try', (t) => {
+test('resume exception in nested try', () => {
   const code = `
 outer_caught = False
 finally_ran = False
@@ -368,7 +369,7 @@ except ValueError:
 // Invalid resume args tests
 // =============================================================================
 
-test('invalid resume args', (t) => {
+test('invalid resume args', () => {
   const m = new Monty('func()')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -383,7 +384,7 @@ test('invalid resume args', (t) => {
 // Monty instance reuse tests
 // =============================================================================
 
-test('start can reuse monty instance', (t) => {
+test('start can reuse monty instance', () => {
   const m = new Monty('func(x)', { inputs: ['x'] })
 
   // First run
@@ -407,14 +408,14 @@ test('start can reuse monty instance', (t) => {
 // OS call handling in start() tests
 // =============================================================================
 
-test('os.environ via start() throws RuntimeError', (t) => {
+test('os.environ via start() throws RuntimeError', () => {
   const m = new Monty('import os\nx = os.environ')
   const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
   t.is(error.exception.typeName, 'RuntimeError')
   t.is(error.exception.message, "'os.environ' is not supported in this environment")
 })
 
-test('os.getenv via start() throws RuntimeError', (t) => {
+test('os.getenv via start() throws RuntimeError', () => {
   const m = new Monty("import os\nx = os.getenv('HOME')")
   const error = t.throws(() => m.start(), { instanceOf: MontyRuntimeError })
   t.is(error.exception.typeName, 'RuntimeError')
@@ -425,7 +426,7 @@ test('os.getenv via start() throws RuntimeError', (t) => {
 // repr() tests
 // =============================================================================
 
-test('name lookup repr', (t) => {
+test('name lookup repr', () => {
   const m = new Monty('x = foo; x')
   const progress = m.start()
   t.true(progress instanceof MontyNameLookup)
@@ -434,7 +435,7 @@ test('name lookup repr', (t) => {
   t.true(repr.includes('foo'))
 })
 
-test('progress repr', (t) => {
+test('progress repr', () => {
   const m = new Monty('func(1, x=2)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -443,7 +444,7 @@ test('progress repr', (t) => {
   t.true(repr.includes('func'))
 })
 
-test('complete repr', (t) => {
+test('complete repr', () => {
   const m = new Monty('42')
   const result = m.start()
   t.true(result instanceof MontyComplete)

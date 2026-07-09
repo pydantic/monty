@@ -12,10 +12,7 @@ export default defineConfig({
   optimizeDeps: { exclude: ['@pydantic/monty'] },
   plugins: [montyBrowserIndexPlugin()],
   resolve: {
-    alias: [
-      { find: 'ava', replacement: resolve(pkg, '__test__/ava-compat.ts') },
-      { find: '@pydantic/monty-wasm32-wasi', replacement: resolve(pkg, 'monty.wasi-browser.js') },
-    ],
+    alias: [{ find: '@pydantic/monty-wasm32-wasi', replacement: resolve(pkg, 'monty.wasi-browser.js') }],
   },
   server: {
     port: 5179,

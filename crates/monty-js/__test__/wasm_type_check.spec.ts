@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty, MontyTypingError } from '../ts/wasm.js'
 
@@ -6,18 +7,18 @@ import { Monty, MontyTypingError } from '../ts/wasm.js'
 // typeCheck() tests
 // =============================================================================
 
-test('type check no errors', (t) => {
+test('type check no errors', () => {
   const m = new Monty('x = 1')
   t.notThrows(() => m.typeCheck())
 })
 
-test('type check with errors', (t) => {
+test('type check with errors', () => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   t.true(error.message.includes('unsupported-operator'))
 })
 
-test('type check function return type', (t) => {
+test('type check function return type', () => {
   const code = `
 def foo() -> int:
     return "not an int"
@@ -27,13 +28,13 @@ def foo() -> int:
   t.true(error.message.includes('invalid-return-type'))
 })
 
-test('type check undefined variable', (t) => {
+test('type check undefined variable', () => {
   const m = new Monty('print(undefined_var)')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   t.true(error.message.includes('unresolved-reference'))
 })
 
-test('type check valid function', (t) => {
+test('type check valid function', () => {
   const code = `
 def add(a: int, b: int) -> int:
     return a + b
@@ -44,7 +45,7 @@ add(1, 2)
   t.notThrows(() => m.typeCheck())
 })
 
-test('type check with prefix code', (t) => {
+test('type check with prefix code', () => {
   const m = new Monty('result = x + 1')
   // Without prefix, x is undefined
   t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
@@ -56,25 +57,25 @@ test('type check with prefix code', (t) => {
 // Constructor type_check parameter tests
 // =============================================================================
 
-test('constructor type check default false', (t) => {
+test('constructor type check default false', () => {
   // This should NOT raise during construction (typeCheck=false is default)
   const m = new Monty('"hello" + 1')
   // But we can still call typeCheck() manually later
   t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
 })
 
-test('constructor type check explicit true', (t) => {
+test('constructor type check explicit true', () => {
   t.throws(() => new Monty('"hello" + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
 })
 
-test('constructor type check explicit false', (t) => {
+test('constructor type check explicit false', () => {
   // This should NOT raise during construction
   const m = new Monty('"hello" + 1', { typeCheck: false })
   // But we can still call typeCheck() manually later
   t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
 })
 
-test('constructor default allows run with inputs', (t) => {
+test('constructor default allows run with inputs', () => {
   // Code with undefined variable - type checking would fail
   const m = new Monty('x + 1', { inputs: ['x'] })
   // But runtime works fine with the input provided
@@ -82,13 +83,13 @@ test('constructor default allows run with inputs', (t) => {
   t.is(result, 6)
 })
 
-test('constructor type check prefix code', (t) => {
+test('constructor type check prefix code', () => {
   // Without prefix, this would fail type checking (x is undefined)
   // Use assignment to define x, not just type annotation
   t.notThrows(() => new Monty('result = x + 1', { typeCheck: true, typeCheckPrefixCode: 'x = 0' }))
 })
 
-test('constructor type check prefix code with external function', (t) => {
+test('constructor type check prefix code with external function', () => {
   // Define fetch as a function that takes a string and returns a string
   const prefix = `
 def fetch(url: str) -> str:
@@ -103,7 +104,7 @@ def fetch(url: str) -> str:
   )
 })
 
-test('constructor type check prefix code invalid', (t) => {
+test('constructor type check prefix code invalid', () => {
   // Prefix defines x as str, but code tries to use it with int addition
   t.throws(
     () =>
@@ -119,27 +120,27 @@ test('constructor type check prefix code invalid', (t) => {
 // MontyTypingError tests
 // =============================================================================
 
-test('monty typing error is monty error subclass', (t) => {
+test('monty typing error is monty error subclass', () => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   t.true(error instanceof Error)
 })
 
-test('monty typing error displayDiagnostics', (t) => {
+test('monty typing error displayDiagnostics', () => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   // displayDiagnostics() returns rich diagnostics, display('msg') returns the raw message
   t.is(error.message, `TypeError: ${error.display('msg')}`)
 })
 
-test('monty typing error displayDiagnostics concise format', (t) => {
+test('monty typing error displayDiagnostics concise format', () => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   const concise = error.displayDiagnostics('concise')
   t.true(concise.includes('error[unsupported-operator]'))
 })
 
-test('monty typing error inherits base display formats', (t) => {
+test('monty typing error inherits base display formats', () => {
   const m = new Monty('"hello" + 1')
   const error = t.throws(() => m.typeCheck(), { instanceOf: MontyTypingError })
   t.is(error.display('msg'), error.exception.message)

@@ -1,8 +1,9 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { MontyRepl } from '../ts/wasm.js'
 
-test('feed preserves state without replay', (t) => {
+test('feed preserves state without replay', () => {
   const repl = new MontyRepl()
 
   repl.feed('counter = 0')
@@ -12,17 +13,17 @@ test('feed preserves state without replay', (t) => {
   t.is(repl.feed('counter'), 2)
 })
 
-test('constructor accepts scriptName option', (t) => {
+test('constructor accepts scriptName option', () => {
   const repl = new MontyRepl({ scriptName: 'test.py' })
   t.is(repl.scriptName, 'test.py')
 })
 
-test('default scriptName is main.py', (t) => {
+test('default scriptName is main.py', () => {
   const repl = new MontyRepl()
   t.is(repl.scriptName, 'main.py')
 })
 
-test('repl dump/load roundtrip', (t) => {
+test('repl dump/load roundtrip', () => {
   const repl = new MontyRepl()
   repl.feed('x = 40')
   t.is(repl.feed('x = x + 1'), null)

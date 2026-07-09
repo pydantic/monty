@@ -3,7 +3,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty, MontyCrashedError, MountDir } from '../ts/index.js'
 
@@ -11,21 +12,21 @@ import { Monty, MontyCrashedError, MountDir } from '../ts/index.js'
 // Pool lifecycle
 // =============================================================================
 
-test('checkout after close rejects', async (t) => {
+test('checkout after close rejects', async () => {
   const pool = await Monty.create()
   await pool.close()
   const error = await t.throwsAsync(() => pool.checkout())
   t.is(error.message, 'the pool is closed — create a new Monty pool')
 })
 
-test('close is idempotent', async (t) => {
+test('close is idempotent', async () => {
   const pool = await Monty.create()
   await pool.close()
   await pool.close()
   t.pass()
 })
 
-test('feed after session close rejects', async (t) => {
+test('feed after session close rejects', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   await session.close()
@@ -33,7 +34,7 @@ test('feed after session close rejects', async (t) => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test('workers are reused across checkouts', async (t) => {
+test('workers are reused across checkouts', async () => {
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid
@@ -44,7 +45,7 @@ test('workers are reused across checkouts', async (t) => {
   await second.close()
 })
 
-test('maxCheckoutsPerWorker recycles the worker', async (t) => {
+test('maxCheckoutsPerWorker recycles the worker', async () => {
   await using pool = await Monty.create({ maxCheckoutsPerWorker: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid
@@ -54,7 +55,7 @@ test('maxCheckoutsPerWorker recycles the worker', async (t) => {
   await second.close()
 })
 
-test('concurrent sessions run in distinct workers', async (t) => {
+test('concurrent sessions run in distinct workers', async () => {
   await using pool = await Monty.create()
   const a = await pool.checkout()
   const b = await pool.checkout()
@@ -69,7 +70,7 @@ test('concurrent sessions run in distinct workers', async (t) => {
   }
 })
 
-test('exhausted pool times out the checkout', async (t) => {
+test('exhausted pool times out the checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1, checkoutTimeout: 0.2 })
   const held = await pool.checkout()
   try {
@@ -80,7 +81,7 @@ test('exhausted pool times out the checkout', async (t) => {
   }
 })
 
-test('released worker is handed to a waiting checkout', async (t) => {
+test('released worker is handed to a waiting checkout', async () => {
   await using pool = await Monty.create({ maxProcesses: 1 })
   const held = await pool.checkout()
   const waiting = pool.checkout()
@@ -94,7 +95,7 @@ test('released worker is handed to a waiting checkout', async (t) => {
 // Crash isolation
 // =============================================================================
 
-test('killed worker surfaces as MontyCrashedError', async (t) => {
+test('killed worker surfaces as MontyCrashedError', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -106,7 +107,7 @@ test('killed worker surfaces as MontyCrashedError', async (t) => {
   t.is(error.exitStatus, process.platform === 'win32' ? 'exit code: 1' : 'signal: 9 (SIGKILL)')
 })
 
-test('session is unusable after a crash but the pool recovers', async (t) => {
+test('session is unusable after a crash but the pool recovers', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -120,7 +121,7 @@ test('session is unusable after a crash but the pool recovers', async (t) => {
   await fresh.close()
 })
 
-test('worker crashing while idle is replaced transparently', async (t) => {
+test('worker crashing while idle is replaced transparently', async () => {
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid!
@@ -138,7 +139,7 @@ test('worker crashing while idle is replaced transparently', async (t) => {
 // Request timeout watchdog
 // =============================================================================
 
-test('requestTimeout kills a wedged worker', async (t) => {
+test('requestTimeout kills a wedged worker', async () => {
   await using pool = await Monty.create({ requestTimeout: 0.5 })
   const session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), {
@@ -154,7 +155,7 @@ test('requestTimeout kills a wedged worker', async (t) => {
 // (remaining budget + durationLimitGrace) is the only thing that can end the
 // turn. Note no requestTimeout is configured. Unix-only (mkfifo).
 const testOnUnix = process.platform === 'win32' ? test.skip : test
-testOnUnix('duration backstop kills a worker blocked in a syscall', async (t) => {
+testOnUnix('duration backstop kills a worker blocked in a syscall', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'monty-fifo-'))
   try {
     t.is(spawnSync('mkfifo', [join(dir, 'pipe')]).status, 0)
@@ -174,7 +175,7 @@ testOnUnix('duration backstop kills a worker blocked in a syscall', async (t) =>
   }
 })
 
-test('suspension time does not consume the duration budget', async (t) => {
+test('suspension time does not consume the duration budget', async () => {
   // maxDurationSecs measures cumulative sandbox execution time; the worker
   // reports it on every turn and its clock is paused while suspended. The
   // host taking twice the entire budget to answer an external call must
@@ -201,7 +202,7 @@ test('suspension time does not consume the duration budget', async (t) => {
 // reach them. Linux-only because it observes the child via /proc (CI runs
 // the JS tests on Linux).
 const testOnLinux = process.platform === 'linux' ? test : test.skip
-testOnLinux('worker environment is empty', async (t) => {
+testOnLinux('worker environment is empty', async () => {
   t.truthy(process.env.PATH, 'test process should have PATH set')
   await using pool = await Monty.create()
   const session = await pool.checkout()

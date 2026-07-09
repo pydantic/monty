@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty } from '../ts/wasm.js'
 import { Buffer } from 'node:buffer'
@@ -7,12 +8,12 @@ import { Buffer } from 'node:buffer'
 // None tests
 // =============================================================================
 
-test('none input', (t) => {
+test('none input', () => {
   const m = new Monty('x is None', { inputs: ['x'] })
   t.is(m.run({ inputs: { x: null } }), true)
 })
 
-test('none output', (t) => {
+test('none output', () => {
   const m = new Monty('None')
   t.is(m.run(), null)
 })
@@ -21,13 +22,13 @@ test('none output', (t) => {
 // Bool tests
 // =============================================================================
 
-test('bool true', (t) => {
+test('bool true', () => {
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: true } })
   t.is(result, true)
 })
 
-test('bool false', (t) => {
+test('bool false', () => {
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: false } })
   t.is(result, false)
@@ -37,14 +38,14 @@ test('bool false', (t) => {
 // Number tests
 // =============================================================================
 
-test('int', (t) => {
+test('int', () => {
   const m = new Monty('x', { inputs: ['x'] })
   t.is(m.run({ inputs: { x: 42 } }), 42)
   t.is(m.run({ inputs: { x: -100 } }), -100)
   t.is(m.run({ inputs: { x: 0 } }), 0)
 })
 
-test('float', (t) => {
+test('float', () => {
   const m = new Monty('x', { inputs: ['x'] })
   t.is(m.run({ inputs: { x: 3.14 } }), 3.14)
   t.is(m.run({ inputs: { x: -2.5 } }), -2.5)
@@ -55,7 +56,7 @@ test('float', (t) => {
 // String tests
 // =============================================================================
 
-test('string', (t) => {
+test('string', () => {
   const m = new Monty('x', { inputs: ['x'] })
   t.is(m.run({ inputs: { x: 'hello' } }), 'hello')
   t.is(m.run({ inputs: { x: '' } }), '')
@@ -66,21 +67,21 @@ test('string', (t) => {
 // Bytes tests
 // =============================================================================
 
-test('bytes', (t) => {
+test('bytes', () => {
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: Buffer.from('hello') } })
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...result], [104, 101, 108, 108, 111])
 })
 
-test('bytes empty', (t) => {
+test('bytes empty', () => {
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: Buffer.from([]) } })
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...result], [])
 })
 
-test('bytes result', (t) => {
+test('bytes result', () => {
   const m = new Monty('b"hello"')
   const result = m.run()
   t.true(Buffer.isBuffer(result))
@@ -91,14 +92,14 @@ test('bytes result', (t) => {
 // List tests
 // =============================================================================
 
-test('list', (t) => {
+test('list', () => {
   const m = new Monty('x', { inputs: ['x'] })
   t.deepEqual(m.run({ inputs: { x: [1, 2, 3] } }), [1, 2, 3])
   t.deepEqual(m.run({ inputs: { x: [] } }), [])
   t.deepEqual(m.run({ inputs: { x: ['a', 'b'] } }), ['a', 'b'])
 })
 
-test('list output', (t) => {
+test('list output', () => {
   const m = new Monty('[1, 2, 3]')
   t.deepEqual(m.run(), [1, 2, 3])
 })
@@ -107,7 +108,7 @@ test('list output', (t) => {
 // Tuple tests
 // =============================================================================
 
-test('tuple', (t) => {
+test('tuple', () => {
   const m = new Monty('(1, 2, 3)')
   const result = m.run()
   // Tuples are returned as arrays with a __tuple__ marker property
@@ -116,7 +117,7 @@ test('tuple', (t) => {
   t.is(result.__tuple__, true)
 })
 
-test('tuple empty', (t) => {
+test('tuple empty', () => {
   const m = new Monty('()')
   const result = m.run()
   t.true(Array.isArray(result))
@@ -128,7 +129,7 @@ test('tuple empty', (t) => {
 // Dict tests
 // =============================================================================
 
-test('dict', (t) => {
+test('dict', () => {
   const m = new Monty('{"a": 1, "b": 2}')
   const result = m.run()
   // Dicts are returned as native JS Map (preserves key types and insertion order)
@@ -138,7 +139,7 @@ test('dict', (t) => {
   t.is(result.size, 2)
 })
 
-test('dict empty', (t) => {
+test('dict empty', () => {
   const m = new Monty('{}')
   const result = m.run()
   t.true(result instanceof Map)
@@ -149,13 +150,13 @@ test('dict empty', (t) => {
 // Set tests
 // =============================================================================
 
-test('set', (t) => {
+test('set', () => {
   const m = new Monty('{1, 2, 3}')
   const result = m.run()
   t.deepEqual(result, new Set([1, 2, 3]))
 })
 
-test('set empty', (t) => {
+test('set empty', () => {
   const m = new Monty('set()')
   const result = m.run()
   t.deepEqual(result, new Set())
@@ -165,7 +166,7 @@ test('set empty', (t) => {
 // Frozenset tests
 // =============================================================================
 
-test('frozenset', (t) => {
+test('frozenset', () => {
   const m = new Monty('frozenset([1, 2, 3])')
   const result = m.run()
   // FrozenSet is returned as a native JS Set (no frozen equivalent in JS)
@@ -173,7 +174,7 @@ test('frozenset', (t) => {
   t.deepEqual(result, new Set([1, 2, 3]))
 })
 
-test('frozenset empty', (t) => {
+test('frozenset empty', () => {
   const m = new Monty('frozenset()')
   const result = m.run()
   t.deepEqual(result, new Set())
@@ -183,13 +184,13 @@ test('frozenset empty', (t) => {
 // Ellipsis tests
 // =============================================================================
 
-test('ellipsis input', (t) => {
+test('ellipsis input', () => {
   // In JS we represent ellipsis as an object with __monty_type__: 'Ellipsis'
   const m = new Monty('x is ...', { inputs: ['x'] })
   t.is(m.run({ inputs: { x: { __monty_type__: 'Ellipsis' } } }), true)
 })
 
-test('ellipsis output', (t) => {
+test('ellipsis output', () => {
   const m = new Monty('...')
   const result = m.run()
   t.deepEqual(result, { __monty_type__: 'Ellipsis' })
@@ -199,7 +200,7 @@ test('ellipsis output', (t) => {
 // Nested collection tests
 // =============================================================================
 
-test('nested list', (t) => {
+test('nested list', () => {
   const m = new Monty('x', { inputs: ['x'] })
   const nested = [
     [1, 2],
@@ -211,7 +212,7 @@ test('nested list', (t) => {
   ])
 })
 
-test('nested dict', (t) => {
+test('nested dict', () => {
   const m = new Monty('{"list": [1, 2], "nested": {"a": 1}}')
   const result = m.run()
   // Dicts are returned as native JS Map
@@ -222,7 +223,7 @@ test('nested dict', (t) => {
   t.is(nested.get('a'), 1)
 })
 
-test('mixed nested', (t) => {
+test('mixed nested', () => {
   const m = new Monty('{"list": [1, 2], "tuple": (3, 4), "nested": {"set": {5, 6}}}')
   const result = m.run()
   t.true(result instanceof Map)
@@ -236,7 +237,7 @@ test('mixed nested', (t) => {
   t.true(nested.get('set') instanceof Set)
 })
 
-test('nested set in list', (t) => {
+test('nested set in list', () => {
   const m = new Monty('[{1, 2}, {3, 4}]')
   const result = m.run()
   t.true(Array.isArray(result))
@@ -247,7 +248,7 @@ test('nested set in list', (t) => {
   t.deepEqual(result[1], new Set([3, 4]))
 })
 
-test('nested bytes in dict', (t) => {
+test('nested bytes in dict', () => {
   const m = new Monty('{"data": b"abc"}')
   const result = m.run()
   t.true(result instanceof Map)
@@ -256,7 +257,7 @@ test('nested bytes in dict', (t) => {
   t.deepEqual([...data], [97, 98, 99])
 })
 
-test('tuple containing set', (t) => {
+test('tuple containing set', () => {
   const m = new Monty('({1, 2}, "hello")')
   const result = m.run()
   t.true(Array.isArray(result))
@@ -270,48 +271,48 @@ test('tuple containing set', (t) => {
 // BigInt tests
 // =============================================================================
 
-test('bigint input', (t) => {
+test('bigint input', () => {
   const big = 2n ** 100n
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: big } })
   t.is(result, big)
 })
 
-test('bigint output', (t) => {
+test('bigint output', () => {
   const m = new Monty('2**100')
   const result = m.run()
   t.is(result, 2n ** 100n)
 })
 
-test('bigint negative input', (t) => {
+test('bigint negative input', () => {
   const bigNeg = -(2n ** 100n)
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: bigNeg } })
   t.is(result, bigNeg)
 })
 
-test('int overflow to bigint', (t) => {
+test('int overflow to bigint', () => {
   const maxI64 = 9223372036854775807n
   const m = new Monty('x + 1', { inputs: ['x'] })
   const result = m.run({ inputs: { x: maxI64 } })
   t.is(result, maxI64 + 1n)
 })
 
-test('bigint arithmetic', (t) => {
+test('bigint arithmetic', () => {
   const big = 2n ** 100n
   const m = new Monty('x * 2 + y', { inputs: ['x', 'y'] })
   const result = m.run({ inputs: { x: big, y: big } })
   t.is(result, big * 2n + big)
 })
 
-test('bigint comparison', (t) => {
+test('bigint comparison', () => {
   const big = 2n ** 100n
   const m = new Monty('x > y', { inputs: ['x', 'y'] })
   t.is(m.run({ inputs: { x: big, y: 42 } }), true)
   t.is(m.run({ inputs: { x: 42, y: big } }), false)
 })
 
-test('bigint in collection', (t) => {
+test('bigint in collection', () => {
   const big = 2n ** 100n
   const m = new Monty('x', { inputs: ['x'] })
   const result = m.run({ inputs: { x: [big, 42, big * 2n] } })

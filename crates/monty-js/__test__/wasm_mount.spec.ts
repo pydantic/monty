@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
@@ -25,7 +26,7 @@ function createTestDir(): { dir: string; cleanup: () => void } {
 // MountDir validation
 // =============================================================================
 
-test('MountDir repr', (t) => {
+test('MountDir repr', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -37,7 +38,7 @@ test('MountDir repr', (t) => {
   }
 })
 
-test('MountDir invalid mode', (t) => {
+test('MountDir invalid mode', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const error = t.throws(() => new MountDir('/data', dir, { mode: 'invalid' as any }))
@@ -47,7 +48,7 @@ test('MountDir invalid mode', (t) => {
   }
 })
 
-test('MountDir attributes', (t) => {
+test('MountDir attributes', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -58,11 +59,11 @@ test('MountDir attributes', (t) => {
   }
 })
 
-test('MountDir nonexistent host path', (t) => {
+test('MountDir nonexistent host path', () => {
   t.throws(() => new MountDir('/data', '/nonexistent/path/that/does/not/exist'))
 })
 
-test('MountDir non-absolute virtual path', (t) => {
+test('MountDir non-absolute virtual path', () => {
   const { dir, cleanup } = createTestDir()
   try {
     t.throws(() => new MountDir('relative', dir))
@@ -71,7 +72,7 @@ test('MountDir non-absolute virtual path', (t) => {
   }
 })
 
-test('MountDir default mode is overlay', (t) => {
+test('MountDir default mode is overlay', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir)
@@ -81,7 +82,7 @@ test('MountDir default mode is overlay', (t) => {
   }
 })
 
-test('MountDir write_bytes_limit', (t) => {
+test('MountDir write_bytes_limit', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { writeBytesLimit: 1024 })
@@ -98,7 +99,7 @@ test('MountDir write_bytes_limit', (t) => {
 // Read operations (read-only mount)
 // =============================================================================
 
-test('read_text via mount', (t) => {
+test('read_text via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -109,7 +110,7 @@ test('read_text via mount', (t) => {
   }
 })
 
-test('mount survives an externalLookup conversion error mid-run', (t) => {
+test('mount survives an externalLookup conversion error mid-run', () => {
   // A name-lookup value that cannot cross into the sandbox aborts the run. The
   // mount table taken for that run must still be restored, so the same MountDir
   // keeps working rather than being left permanently taken from its shared slot.
@@ -127,7 +128,7 @@ test('mount survives an externalLookup conversion error mid-run', (t) => {
   }
 })
 
-test('read_bytes via mount', (t) => {
+test('read_bytes via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -138,7 +139,7 @@ test('read_bytes via mount', (t) => {
   }
 })
 
-test('path exists via mount', (t) => {
+test('path exists via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -156,7 +157,7 @@ exists_missing = Path('/data/nope.txt').exists()
   }
 })
 
-test('is_file and is_dir via mount', (t) => {
+test('is_file and is_dir via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -172,7 +173,7 @@ from pathlib import Path
   }
 })
 
-test('iterdir via mount', (t) => {
+test('iterdir via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -187,7 +188,7 @@ sorted([p.name for p in Path('/data').iterdir()])
   }
 })
 
-test('stat via mount', (t) => {
+test('stat via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -203,7 +204,7 @@ s.st_size
   }
 })
 
-test('read nested file via mount', (t) => {
+test('read nested file via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -220,7 +221,7 @@ test('read nested file via mount', (t) => {
 // Write operations
 // =============================================================================
 
-test('write blocked on read-only mount', (t) => {
+test('write blocked on read-only mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -234,7 +235,7 @@ test('write blocked on read-only mount', (t) => {
   }
 })
 
-test('write succeeds on read-write mount', (t) => {
+test('write succeeds on read-write mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-write' })
@@ -252,7 +253,7 @@ Path('/data/new.txt').read_text()
   }
 })
 
-test('overlay write does not modify host', (t) => {
+test('overlay write does not modify host', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -270,7 +271,7 @@ Path('/data/overlay_file.txt').read_text()
   }
 })
 
-test('overlay read falls through to host', (t) => {
+test('overlay read falls through to host', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -281,7 +282,7 @@ test('overlay read falls through to host', (t) => {
   }
 })
 
-test('overlay persists across runs', (t) => {
+test('overlay persists across runs', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -297,7 +298,7 @@ test('overlay persists across runs', (t) => {
 // Path operations
 // =============================================================================
 
-test('mkdir and rmdir via mount', (t) => {
+test('mkdir and rmdir via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -316,7 +317,7 @@ after = Path('/data/newdir').exists()
   }
 })
 
-test('unlink via mount', (t) => {
+test('unlink via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -334,7 +335,7 @@ Path('/data/hello.txt').exists()
   }
 })
 
-test('rename via mount', (t) => {
+test('rename via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -350,7 +351,7 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
   }
 })
 
-test('resolve via mount', (t) => {
+test('resolve via mount', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -367,7 +368,7 @@ test('resolve via mount', (t) => {
 // Security
 // =============================================================================
 
-test('path traversal blocked', (t) => {
+test('path traversal blocked', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -381,7 +382,7 @@ test('path traversal blocked', (t) => {
   }
 })
 
-test('unmounted path denied', (t) => {
+test('unmounted path denied', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -399,7 +400,7 @@ test('unmounted path denied', (t) => {
 // Non-filesystem ops (no fallback in JS - returns error)
 // =============================================================================
 
-test('non-filesystem os call without fallback', (t) => {
+test('non-filesystem os call without fallback', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -416,7 +417,7 @@ test('non-filesystem os call without fallback', (t) => {
 // Multiple mounts
 // =============================================================================
 
-test('multiple mounts with different modes', (t) => {
+test('multiple mounts with different modes', () => {
   const { dir: dir1, cleanup: cleanup1 } = createTestDir()
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test2-'))
   fs.writeFileSync(path.join(dir2, 'file2.txt'), 'from mount2')
@@ -440,7 +441,7 @@ b = Path('/rw/file2.txt').read_text()
 // Mount with start/resume
 // =============================================================================
 
-test('mount works with start/resume for external functions', (t) => {
+test('mount works with start/resume for external functions', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -469,7 +470,7 @@ result + content
 // REPL mount support
 // =============================================================================
 
-test('REPL feed with mount read', (t) => {
+test('REPL feed with mount read', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -482,7 +483,7 @@ test('REPL feed with mount read', (t) => {
   }
 })
 
-test('REPL overlay write persists across feeds', (t) => {
+test('REPL overlay write persists across feeds', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -498,7 +499,7 @@ test('REPL overlay write persists across feeds', (t) => {
   }
 })
 
-test('REPL overlay overwrite persists', (t) => {
+test('REPL overlay overwrite persists', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -515,7 +516,7 @@ test('REPL overlay overwrite persists', (t) => {
   }
 })
 
-test('REPL overlay delete persists across feeds', (t) => {
+test('REPL overlay delete persists across feeds', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -531,7 +532,7 @@ test('REPL overlay delete persists across feeds', (t) => {
   }
 })
 
-test('REPL overlay mkdir and nested write persist', (t) => {
+test('REPL overlay mkdir and nested write persist', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -547,7 +548,7 @@ test('REPL overlay mkdir and nested write persist', (t) => {
   }
 })
 
-test('REPL overlay iterdir sees overlay files', (t) => {
+test('REPL overlay iterdir sees overlay files', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -561,7 +562,7 @@ test('REPL overlay iterdir sees overlay files', (t) => {
   }
 })
 
-test('REPL overlay shared between REPL and Monty.run()', (t) => {
+test('REPL overlay shared between REPL and Monty.run()', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -577,7 +578,7 @@ test('REPL overlay shared between REPL and Monty.run()', (t) => {
   }
 })
 
-test('REPL read-write mount writes to host', (t) => {
+test('REPL read-write mount writes to host', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-write' })
@@ -593,7 +594,7 @@ test('REPL read-write mount writes to host', (t) => {
   }
 })
 
-test('REPL read-only mount blocks write', (t) => {
+test('REPL read-only mount blocks write', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })

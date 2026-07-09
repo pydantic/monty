@@ -53,8 +53,8 @@
   "scripts": {
     "build": "run-s build:napi build:ts",
     "build:debug": "run-s build:napi:debug build:ts",
-    "build:napi": "node scripts/clean-loader.mjs && napi build --platform --release --esm",
-    "build:napi:debug": "node scripts/clean-loader.mjs && napi build --platform --esm",
+    "build:napi": "node scripts/clean-loader.mjs && napi build --platform --release --esm && node scripts/patch-native-loader.mjs",
+    "build:napi:debug": "node scripts/clean-loader.mjs && napi build --platform --esm && node scripts/patch-native-loader.mjs",
     "build:wasm": "node scripts/clean-loader.mjs && napi build --platform --release --esm --target wasm32-wasip1-threads",
     "build:ts": "tsc",
     "format": "prettier . -w",

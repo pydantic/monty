@@ -1,8 +1,8 @@
-// Shared test scaffolding: one worker pool per spec file (ava runs each file
-// in its own process), with a `run` helper executing one snippet in a fresh
-// session — the moral equivalent of pydantic_monty's `monty_run` fixture.
+// Shared test scaffolding: one worker pool per spec file, with a `run` helper
+// executing one snippet in a fresh session — the moral equivalent of
+// pydantic_monty's `monty_run` fixture.
 
-import type { TestFn } from 'ava'
+import { afterAll as afterEachFile, beforeAll as beforeEachFile } from 'vitest'
 import { Monty, type CheckoutOptions, type FeedOptions } from '../ts/index.js'
 
 /** Checkout-level and feed-level options, flattened for convenience. */
@@ -19,12 +19,12 @@ export interface PoolFixture {
  * Registers before/after hooks creating and closing the spec file's shared
  * pool, and returns the `run` helper bound to it.
  */
-export function setupPool(test: TestFn): PoolFixture {
+export function setupPool(): PoolFixture {
   let pool: Monty | null = null
-  test.before(async () => {
+  beforeEachFile(async () => {
     pool = await Monty.create()
   })
-  test.after.always(async () => {
+  afterEachFile(async () => {
     await pool?.close()
   })
   const get = () => {

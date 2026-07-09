@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty, MontyRuntimeError, type ResourceLimits } from '../ts/wasm.js'
 
@@ -10,7 +11,7 @@ const testAboveU32 = process.env.NAPI_RS_FORCE_WASI ? test.skip : test
 // ResourceLimits construction tests
 // =============================================================================
 
-test('resource limits custom', (t) => {
+test('resource limits custom', () => {
   const limits: ResourceLimits = {
     maxAllocations: 100,
     maxDurationSecs: 5.0,
@@ -23,7 +24,7 @@ test('resource limits custom', (t) => {
   t.is(m.run({ limits }), 2)
 })
 
-test('run with limits', (t) => {
+test('run with limits', () => {
   const m = new Monty('1 + 1')
   const limits: ResourceLimits = { maxDurationSecs: 5.0 }
   t.is(m.run({ limits }), 2)
@@ -33,7 +34,7 @@ test('run with limits', (t) => {
 // Recursion limit tests
 // =============================================================================
 
-test('recursion limit', (t) => {
+test('recursion limit', () => {
   const code = `
 def recurse(n):
     if n <= 0:
@@ -48,7 +49,7 @@ recurse(10)
   t.true(error.message.includes('RecursionError'))
 })
 
-test('recursion limit ok', (t) => {
+test('recursion limit ok', () => {
   const code = `
 def recurse(n):
     if n <= 0:
@@ -66,7 +67,7 @@ recurse(5)
 // Allocation limit tests
 // =============================================================================
 
-test('allocation limit', (t) => {
+test('allocation limit', () => {
   // Use a more aggressive allocation pattern
   const code = `
 result = []
@@ -80,7 +81,7 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
-testAboveU32('allocation limit accepts values above u32 max', (t) => {
+testAboveU32('allocation limit accepts values above u32 max', () => {
   const m = new Monty('1 + 1')
   const limits: ResourceLimits = { maxAllocations: 2 ** 33 }
   t.is(m.run({ limits }), 2)
@@ -90,7 +91,7 @@ testAboveU32('allocation limit accepts values above u32 max', (t) => {
 // Memory limit tests
 // =============================================================================
 
-test('memory limit', (t) => {
+test('memory limit', () => {
   const code = `
 result = []
 for i in range(1000):
@@ -103,7 +104,7 @@ len(result)
   t.true(error.message.includes('MemoryError'))
 })
 
-testAboveU32('memory limit accepts values above u32 max', (t) => {
+testAboveU32('memory limit accepts values above u32 max', () => {
   const m = new Monty('1 + 1')
   const limits: ResourceLimits = { maxMemory: 2 ** 33 }
   t.is(m.run({ limits }), 2)
@@ -113,7 +114,7 @@ testAboveU32('memory limit accepts values above u32 max', (t) => {
 // Limits with inputs tests
 // =============================================================================
 
-test('limits with inputs', (t) => {
+test('limits with inputs', () => {
   const m = new Monty('x * 2', { inputs: ['x'] })
   const limits: ResourceLimits = { maxDurationSecs: 5.0 }
   t.is(m.run({ inputs: { x: 21 }, limits }), 42)
@@ -123,21 +124,21 @@ test('limits with inputs', (t) => {
 // Large operation limits tests
 // =============================================================================
 
-test('pow memory limit', (t) => {
+test('pow memory limit', () => {
   const m = new Monty('2 ** 10000000')
   const limits: ResourceLimits = { maxMemory: 1_000_000 }
   const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
   t.true(error.message.includes('MemoryError'))
 })
 
-test('lshift memory limit', (t) => {
+test('lshift memory limit', () => {
   const m = new Monty('1 << 10000000')
   const limits: ResourceLimits = { maxMemory: 1_000_000 }
   const error = t.throws(() => m.run({ limits }), { instanceOf: MontyRuntimeError })
   t.true(error.message.includes('MemoryError'))
 })
 
-test('mult memory limit', (t) => {
+test('mult memory limit', () => {
   const code = `
 big = 2 ** 4000000
 result = big * big
@@ -148,7 +149,7 @@ result = big * big
   t.true(error.message.includes('MemoryError'))
 })
 
-test('small operations within limit', (t) => {
+test('small operations within limit', () => {
   const m = new Monty('2 ** 1000')
   const limits: ResourceLimits = { maxMemory: 1_000_000 }
   const result = m.run({ limits })
@@ -159,7 +160,7 @@ test('small operations within limit', (t) => {
 // Time limit tests
 // =============================================================================
 
-test('time limit', (t) => {
+test('time limit', () => {
   // Use recursion instead of while loop
   const code = `
 def infinite(n):

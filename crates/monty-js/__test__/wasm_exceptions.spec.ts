@@ -1,6 +1,7 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
-import type { ErrorConstructor } from 'ava'
+type ErrorConstructor<T extends Error = Error> = new (...args: never[]) => T
 
 import { Monty, MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '../ts/wasm.js'
 
@@ -12,67 +13,67 @@ export const isRuntimeError = { instanceOf: MontyRuntimeError as any as ErrorCon
 // MontyRuntimeError tests
 // =============================================================================
 
-test('zero division error', (t) => {
+test('zero division error', () => {
   const m = new Monty('1 / 0')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'ZeroDivisionError: division by zero')
 })
 
-test('value error', (t) => {
+test('value error', () => {
   const m = new Monty('raise ValueError("bad value")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'ValueError: bad value')
 })
 
-test('type error', (t) => {
+test('type error', () => {
   const m = new Monty("'string' + 1")
   const error = t.throws(() => m.run(), isRuntimeError)
   t.true(error.message.includes('TypeError'))
 })
 
-test('index error', (t) => {
+test('index error', () => {
   const m = new Monty('[1, 2, 3][10]')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'IndexError: list index out of range')
 })
 
-test('key error', (t) => {
+test('key error', () => {
   const m = new Monty('{"a": 1}["b"]')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'KeyError: b')
 })
 
-test('attribute error', (t) => {
+test('attribute error', () => {
   const m = new Monty('raise AttributeError("no such attr")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'AttributeError: no such attr')
 })
 
-test('name error', (t) => {
+test('name error', () => {
   const m = new Monty('undefined_variable')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, "NameError: name 'undefined_variable' is not defined")
 })
 
-test('assertion error', (t) => {
+test('assertion error', () => {
   const m = new Monty('assert False')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.true(error.message.includes('AssertionError'))
 })
 
-test('assertion error with message', (t) => {
+test('assertion error with message', () => {
   const m = new Monty('assert False, "custom message"')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'AssertionError: custom message')
 })
 
-test('runtime error', (t) => {
+test('runtime error', () => {
   const m = new Monty('raise RuntimeError("runtime error")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'RuntimeError: runtime error')
 })
 
-test('not implemented error', (t) => {
+test('not implemented error', () => {
   const m = new Monty('raise NotImplementedError("not implemented")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'NotImplementedError: not implemented')
@@ -82,14 +83,14 @@ test('not implemented error', (t) => {
 // OS call errors (no OS callback support in JS bindings)
 // =============================================================================
 
-test('os.environ via run() raises NotImplementedError', (t) => {
+test('os.environ via run() raises NotImplementedError', () => {
   const m = new Monty('import os\nx = os.environ')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.exception.typeName, 'NotImplementedError')
   t.is(error.exception.message, "OS function 'os.environ' not implemented with standard execution")
 })
 
-test('os.getenv via run() raises NotImplementedError', (t) => {
+test('os.getenv via run() raises NotImplementedError', () => {
   const m = new Monty("import os\nx = os.getenv('HOME')")
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.exception.typeName, 'NotImplementedError')
@@ -100,17 +101,17 @@ test('os.getenv via run() raises NotImplementedError', (t) => {
 // MontySyntaxError tests
 // =============================================================================
 
-test('syntax error on init', (t) => {
+test('syntax error on init', () => {
   const error = t.throws(() => new Monty('def'), { instanceOf: MontySyntaxError })
   t.true(error.message.includes('SyntaxError'))
 })
 
-test('syntax error unclosed paren', (t) => {
+test('syntax error unclosed paren', () => {
   const error = t.throws(() => new Monty('print(1'), { instanceOf: MontySyntaxError })
   t.true(error.message.includes('SyntaxError'))
 })
 
-test('syntax error invalid syntax', (t) => {
+test('syntax error invalid syntax', () => {
   const error = t.throws(() => new Monty('x = = 1'), { instanceOf: MontySyntaxError })
   t.true(error.message.includes('SyntaxError'))
 })
@@ -119,7 +120,7 @@ test('syntax error invalid syntax', (t) => {
 // Catching with base class tests
 // =============================================================================
 
-test('catch with base class', (t) => {
+test('catch with base class', () => {
   const m = new Monty('1 / 0')
   try {
     m.run()
@@ -129,7 +130,7 @@ test('catch with base class', (t) => {
   }
 })
 
-test('catch syntax error with base class', (t) => {
+test('catch syntax error with base class', () => {
   try {
     new Monty('def')
   } catch (e) {
@@ -141,7 +142,7 @@ test('catch syntax error with base class', (t) => {
 // Exception handling within Monty tests
 // =============================================================================
 
-test('raise caught exception', (t) => {
+test('raise caught exception', () => {
   const code = `
 try:
     1 / 0
@@ -153,7 +154,7 @@ result
   t.is(m.run(), 'caught')
 })
 
-test('exception in function', (t) => {
+test('exception in function', () => {
   const code = `
 def fail():
     raise ValueError('from function')
@@ -169,7 +170,7 @@ fail()
 // Display and str methods tests
 // =============================================================================
 
-test('display traceback', (t) => {
+test('display traceback', () => {
   const m = new Monty('1 / 0')
   const error = t.throws(() => m.run(), isRuntimeError)
   const display = error.display('traceback')
@@ -177,13 +178,13 @@ test('display traceback', (t) => {
   t.true(display.includes('ZeroDivisionError'))
 })
 
-test('display type msg', (t) => {
+test('display type msg', () => {
   const m = new Monty('raise ValueError("test message")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.display('type-msg'), 'ValueError: test message')
 })
 
-test('runtime display', (t) => {
+test('runtime display', () => {
   const m = new Monty('raise ValueError("test message")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.display('msg'), 'test message')
@@ -196,13 +197,13 @@ test('runtime display', (t) => {
   t.true(traceback.includes('ValueError: test message'))
 })
 
-test('str returns type msg', (t) => {
+test('str returns type msg', () => {
   const m = new Monty('raise ValueError("test message")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, 'ValueError: test message')
 })
 
-test('syntax error display', (t) => {
+test('syntax error display', () => {
   const error = t.throws(() => new Monty('def'), { instanceOf: MontySyntaxError })
   t.true(error.display().includes('Expected an identifier'))
   t.true(error.display('type-msg').includes('SyntaxError'))
@@ -212,7 +213,7 @@ test('syntax error display', (t) => {
 // Traceback tests
 // =============================================================================
 
-test('traceback frames', (t) => {
+test('traceback frames', () => {
   const code = `def inner():
     raise ValueError('error')
 
@@ -231,7 +232,7 @@ outer()
   t.true(display.includes('ValueError: error'))
 })
 
-test('traceback() on deep recursion with long preview line is memory-bounded', (t) => {
+test('traceback() on deep recursion with long preview line is memory-bounded', () => {
   // Frames produced by a single traceback() call that resolve to the same
   // source line must share one V8 string allocation. Without sharing, a 1 MiB
   // preview line on a recursive call site with depth=200 would put ~200 MiB
@@ -265,26 +266,26 @@ test('traceback() on deep recursion with long preview line is memory-bounded', (
 // MontyError base class tests
 // =============================================================================
 
-test('MontyError extends Error', (t) => {
+test('MontyError extends Error', () => {
   const err = new MontyError('ValueError', 'test message')
   t.true(err instanceof Error)
   t.true(err instanceof MontyError)
   t.is(err.name, 'MontyError')
 })
 
-test('MontyError constructor and properties', (t) => {
+test('MontyError constructor and properties', () => {
   const err = new MontyError('ValueError', 'test message')
   t.deepEqual(err.exception, { typeName: 'ValueError', message: 'test message' })
   t.is(err.message, 'ValueError: test message')
 })
 
-test('MontyError display()', (t) => {
+test('MontyError display()', () => {
   const err = new MontyError('ValueError', 'test message')
   t.is(err.display('msg'), 'test message')
   t.is(err.display('type-msg'), 'ValueError: test message')
 })
 
-test('MontyError with empty message', (t) => {
+test('MontyError with empty message', () => {
   const err = new MontyError('TypeError', '')
   t.is(err.display('type-msg'), 'TypeError')
 })
@@ -293,7 +294,7 @@ test('MontyError with empty message', (t) => {
 // MontySyntaxError class tests
 // =============================================================================
 
-test('MontySyntaxError extends MontyError and Error', (t) => {
+test('MontySyntaxError extends MontyError and Error', () => {
   const err = new MontySyntaxError('invalid syntax')
   t.true(err instanceof Error)
   t.true(err instanceof MontyError)
@@ -301,13 +302,13 @@ test('MontySyntaxError extends MontyError and Error', (t) => {
   t.is(err.name, 'MontySyntaxError')
 })
 
-test('MontySyntaxError constructor and properties', (t) => {
+test('MontySyntaxError constructor and properties', () => {
   const err = new MontySyntaxError('invalid syntax')
   t.deepEqual(err.exception, { typeName: 'SyntaxError', message: 'invalid syntax' })
   t.is(err.message, 'SyntaxError: invalid syntax')
 })
 
-test('MontySyntaxError display()', (t) => {
+test('MontySyntaxError display()', () => {
   const err = new MontySyntaxError('unexpected token')
   t.is(err.display(), 'unexpected token')
   t.is(err.display('msg'), 'unexpected token')
@@ -318,7 +319,7 @@ test('MontySyntaxError display()', (t) => {
 // MontyRuntimeError class tests
 // =============================================================================
 
-test('MontyRuntimeError display()', (t) => {
+test('MontyRuntimeError display()', () => {
   const m = new Monty('1 / 0')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.true(error instanceof MontyError)
@@ -334,7 +335,7 @@ test('MontyRuntimeError display()', (t) => {
   t.is(error.display('msg'), 'division by zero')
 })
 
-test('MontyRuntimeError can be caught with instanceof', (t) => {
+test('MontyRuntimeError can be caught with instanceof', () => {
   const m = new Monty('1 / 0')
   try {
     m.run()
@@ -350,7 +351,7 @@ test('MontyRuntimeError can be caught with instanceof', (t) => {
 // MontyTypingError class tests
 // =============================================================================
 
-test('MontyTypingError extends MontyError and Error', (t) => {
+test('MontyTypingError extends MontyError and Error', () => {
   const err = new MontyTypingError('type mismatch')
   t.true(err instanceof Error)
   t.true(err instanceof MontyError)
@@ -358,7 +359,7 @@ test('MontyTypingError extends MontyError and Error', (t) => {
   t.is(err.name, 'MontyTypingError')
 })
 
-test('MontyTypingError is thrown on type check failure', (t) => {
+test('MontyTypingError is thrown on type check failure', () => {
   const code = `
 x: int = "not an int"
 `
@@ -371,7 +372,7 @@ x: int = "not an int"
 // Error catching hierarchy tests
 // =============================================================================
 
-test('MontyError catches all Monty exceptions', (t) => {
+test('MontyError catches all Monty exceptions', () => {
   // Syntax error
   try {
     new Monty('def')
@@ -394,7 +395,7 @@ test('MontyError catches all Monty exceptions', (t) => {
   }
 })
 
-test('can distinguish error types with instanceof', (t) => {
+test('can distinguish error types with instanceof', () => {
   // Test syntax error
   try {
     new Monty('def')
@@ -427,14 +428,14 @@ test('can distinguish error types with instanceof', (t) => {
 // Exception info accessors tests
 // =============================================================================
 
-test('exception getter returns correct info for runtime error', (t) => {
+test('exception getter returns correct info for runtime error', () => {
   const m = new Monty('raise ValueError("test")')
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.exception.typeName, 'ValueError')
   t.is(error.exception.message, 'test')
 })
 
-test('exception getter returns correct info for syntax error', (t) => {
+test('exception getter returns correct info for syntax error', () => {
   const error = t.throws(() => new Monty('def'), { instanceOf: MontySyntaxError })
   t.is(error.exception.typeName, 'SyntaxError')
 })
@@ -443,7 +444,7 @@ test('exception getter returns correct info for syntax error', (t) => {
 // Polymorphic display() tests
 // =============================================================================
 
-test('display() works polymorphically on MontyTypingError', (t) => {
+test('display() works polymorphically on MontyTypingError', () => {
   try {
     new Monty('x: int = "str"', { typeCheck: true })
     t.fail('Should have thrown')

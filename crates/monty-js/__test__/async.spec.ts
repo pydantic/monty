@@ -4,18 +4,19 @@
 // promise registered as a sandbox future and delivered automatically — plain
 // `run(...)` covers everything the old in-process `runMontyAsync` helper did.
 
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { MontyRuntimeError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool(test)
+const { run } = setupPool()
 
 // =============================================================================
 // Basic async external function tests
 // =============================================================================
 
-test('run with sync external function', async (t) => {
+test('run with sync external function', async () => {
   const result = await run('get_value()', {
     externalLookup: {
       get_value: () => 42,
@@ -25,7 +26,7 @@ test('run with sync external function', async (t) => {
   t.is(result, 42)
 })
 
-test('run with async external function', async (t) => {
+test('run with async external function', async () => {
   const result = await run('await fetch_data()', {
     externalLookup: {
       fetch_data: async () => {
@@ -39,7 +40,7 @@ test('run with async external function', async (t) => {
   t.is(result, 'async result')
 })
 
-test('run with multiple async calls', async (t) => {
+test('run with multiple async calls', async () => {
   const code = `
 a = await fetch_a()
 b = await fetch_b()
@@ -61,7 +62,7 @@ a + b
   t.is(result, 30)
 })
 
-test('run async external function with inputs', async (t) => {
+test('run async external function with inputs', async () => {
   const result = await run('await multiply(x)', {
     inputs: { x: 5 },
     externalLookup: {
@@ -72,7 +73,7 @@ test('run async external function with inputs', async (t) => {
   t.is(result, 10)
 })
 
-test('run async external function with args and kwargs', async (t) => {
+test('run async external function with args and kwargs', async () => {
   const result = await run('await process(1, 2, name="test")', {
     externalLookup: {
       process: async (a: number, b: number, kwargs: { name: string }) => {
@@ -88,7 +89,7 @@ test('run async external function with args and kwargs', async (t) => {
 // Error handling tests
 // =============================================================================
 
-test('sync external function throws exception', async (t) => {
+test('sync external function throws exception', async () => {
   class ValueError extends Error {
     override name = 'ValueError'
   }
@@ -108,7 +109,7 @@ test('sync external function throws exception', async (t) => {
   t.is(error.message, 'ValueError: sync error')
 })
 
-test('async external function throws exception', async (t) => {
+test('async external function throws exception', async () => {
   class ValueError extends Error {
     override name = 'ValueError'
   }
@@ -129,7 +130,7 @@ test('async external function throws exception', async (t) => {
   t.is(error.message, 'ValueError: async error')
 })
 
-test('async external function exception caught in try/except', async (t) => {
+test('async external function exception caught in try/except', async () => {
   const code = `
 try:
     await might_fail()
@@ -152,7 +153,7 @@ result
   t.is(result, 'caught')
 })
 
-test('missing external function raises NameError', async (t) => {
+test('missing external function raises NameError', async () => {
   const error = await t.throwsAsync(() => run('missing_func()', { externalLookup: {} }), {
     instanceOf: MontyRuntimeError,
   })
@@ -160,7 +161,7 @@ test('missing external function raises NameError', async (t) => {
   t.is(error.message, "NameError: name 'missing_func' is not defined")
 })
 
-test('missing external function caught in try/except', async (t) => {
+test('missing external function caught in try/except', async () => {
   const code = `
 try:
     missing()
@@ -175,7 +176,7 @@ result
 // Complex type tests
 // =============================================================================
 
-test('async external function returns complex types', async (t) => {
+test('async external function returns complex types', async () => {
   const result = (await run('await get_data()', {
     externalLookup: {
       get_data: async () => {
@@ -191,7 +192,7 @@ test('async external function returns complex types', async (t) => {
   t.is(result[2].get('key'), 'value')
 })
 
-test('async external function with list input', async (t) => {
+test('async external function with list input', async () => {
   const result = await run('await sum_list(items)', {
     inputs: { items: [1, 2, 3, 4, 5] },
     externalLookup: {
@@ -208,7 +209,7 @@ test('async external function with list input', async (t) => {
 // Mixed sync/async tests
 // =============================================================================
 
-test('mixed sync and async external functions', async (t) => {
+test('mixed sync and async external functions', async () => {
   const code = `
 sync_result = sync_func()
 async_result = await async_func()
@@ -227,7 +228,7 @@ sync_result + async_result
   t.is(result, 300)
 })
 
-test('chained async external calls', async (t) => {
+test('chained async external calls', async () => {
   const code = `
 first = await get_first()
 second = await process(first)
@@ -248,11 +249,11 @@ await finalize(second)
 // No external functions tests
 // =============================================================================
 
-test('run without external functions', async (t) => {
+test('run without external functions', async () => {
   t.is(await run('1 + 2', {}), 3)
 })
 
-test('run pure computation', async (t) => {
+test('run pure computation', async () => {
   const code = `
 def factorial(n):
     if n <= 1:
@@ -267,7 +268,7 @@ factorial(5)
 // printCallback tests
 // =============================================================================
 
-test('run with printCallback', async (t) => {
+test('run with printCallback', async () => {
   const output: string[] = []
 
   const result = await run('print("hello from async")', {
@@ -282,7 +283,7 @@ test('run with printCallback', async (t) => {
   t.is(output.join(''), 'hello from async\n')
 })
 
-test('printCallback with external functions', async (t) => {
+test('printCallback with external functions', async () => {
   const output: string[] = []
 
   const result = await run('x = get_value()\nprint(f"got {x}")\nx', {
@@ -299,7 +300,7 @@ test('printCallback with external functions', async (t) => {
   t.is(output.join(''), 'got 42\n')
 })
 
-test('printCallback with multiple prints', async (t) => {
+test('printCallback with multiple prints', async () => {
   const output: string[] = []
 
   await run('print("a")\nprint("b")\nprint("c")', {

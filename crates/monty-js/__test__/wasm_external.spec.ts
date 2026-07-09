@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty } from '../ts/wasm.js'
 import { isRuntimeError } from './wasm_exceptions.spec'
@@ -7,7 +8,7 @@ import { isRuntimeError } from './wasm_exceptions.spec'
 // Basic external function tests
 // =============================================================================
 
-test('external function no args', (t) => {
+test('external function no args', () => {
   const m = new Monty('noop()')
 
   const noop = (...args: unknown[]) => {
@@ -19,7 +20,7 @@ test('external function no args', (t) => {
   t.is(result, 'called')
 })
 
-test('external function positional args', (t) => {
+test('external function positional args', () => {
   const m = new Monty('func(1, 2, 3)')
 
   const func = (...args: unknown[]) => {
@@ -30,7 +31,7 @@ test('external function positional args', (t) => {
   t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
-test('external function kwargs only', (t) => {
+test('external function kwargs only', () => {
   const m = new Monty('func(a=1, b="two")')
 
   const func = (...args: unknown[]) => {
@@ -42,7 +43,7 @@ test('external function kwargs only', (t) => {
   t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
-test('external function kwargs cannot replace prototype', (t) => {
+test('external function kwargs cannot replace prototype', () => {
   const m = new Monty('func(**{"__proto__": {"polluted": True}})')
 
   const func = (...args: unknown[]) => {
@@ -55,7 +56,7 @@ test('external function kwargs cannot replace prototype', (t) => {
   t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
-test('external function mixed args kwargs', (t) => {
+test('external function mixed args kwargs', () => {
   const m = new Monty('func(1, 2, x="hello", y=True)')
 
   const func = (...args: unknown[]) => {
@@ -67,7 +68,7 @@ test('external function mixed args kwargs', (t) => {
   t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
-test('external function complex types', (t) => {
+test('external function complex types', () => {
   const m = new Monty('func([1, 2], {"key": "value"})')
 
   const func = (...args: unknown[]) => {
@@ -81,7 +82,7 @@ test('external function complex types', (t) => {
   t.is(m.run({ externalLookup: { func } }), 'ok')
 })
 
-test('external function returns none', (t) => {
+test('external function returns none', () => {
   const m = new Monty('do_nothing()')
 
   const do_nothing = () => {
@@ -91,7 +92,7 @@ test('external function returns none', (t) => {
   t.is(m.run({ externalLookup: { do_nothing } }), null)
 })
 
-test('external function returns complex type', (t) => {
+test('external function returns complex type', () => {
   const m = new Monty('get_data()')
 
   const get_data = () => {
@@ -111,7 +112,7 @@ test('external function returns complex type', (t) => {
 // Multiple external functions tests
 // =============================================================================
 
-test('multiple external functions', (t) => {
+test('multiple external functions', () => {
   const m = new Monty('add(1, 2) + mul(3, 4)')
 
   const add = (a: number, b: number) => {
@@ -130,7 +131,7 @@ test('multiple external functions', (t) => {
   t.is(result, 15) // 3 + 12
 })
 
-test('external function called multiple times', (t) => {
+test('external function called multiple times', () => {
   const m = new Monty('counter() + counter() + counter()')
 
   let callCount = 0
@@ -145,7 +146,7 @@ test('external function called multiple times', (t) => {
   t.is(callCount, 3)
 })
 
-test('external function with input', (t) => {
+test('external function with input', () => {
   const m = new Monty('process(x)', { inputs: ['x'] })
 
   const process = (x: number) => {
@@ -160,21 +161,21 @@ test('external function with input', (t) => {
 // Error handling tests
 // =============================================================================
 
-test('undeclared external function raises name error', (t) => {
+test('undeclared external function raises name error', () => {
   const m = new Monty('missing()')
 
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, "NameError: name 'missing' is not defined")
 })
 
-test('undeclared function raises name error', (t) => {
+test('undeclared function raises name error', () => {
   const m = new Monty('unknown_func()')
 
   const error = t.throws(() => m.run(), isRuntimeError)
   t.is(error.message, "NameError: name 'unknown_func' is not defined")
 })
 
-test('external function raises exception', (t) => {
+test('external function raises exception', () => {
   const m = new Monty('fail()')
 
   const fail = () => {
@@ -188,7 +189,7 @@ test('external function raises exception', (t) => {
   t.true(error.message.includes('intentional error'))
 })
 
-test('external function wrong name raises name error', (t) => {
+test('external function wrong name raises name error', () => {
   // When 'foo' is called but only 'bar' is provided in externalLookup, foo is a
   // NameError since the lookup has no own 'foo' key.
   const m = new Monty('foo()')
@@ -199,7 +200,7 @@ test('external function wrong name raises name error', (t) => {
   t.is(error.message, "NameError: name 'foo' is not defined")
 })
 
-test('external function exception caught by try except', (t) => {
+test('external function exception caught by try except', () => {
   const code = `
 try:
     fail()
@@ -218,7 +219,7 @@ caught
   t.is(m.run({ externalLookup: { fail } }), true)
 })
 
-test('external function exception type preserved', (t) => {
+test('external function exception type preserved', () => {
   const m = new Monty('fail()')
 
   const fail = () => {
@@ -254,7 +255,7 @@ const exceptionTypes = [
 ]
 
 for (const exceptionType of exceptionTypes) {
-  test(`external function exception hierarchy - ${exceptionType}`, (t) => {
+  test(`external function exception hierarchy - ${exceptionType}`, () => {
     const m = new Monty('fail()')
 
     const fail = () => {
@@ -282,7 +283,7 @@ const parentChildPairs: Array<[string, string]> = [
 ]
 
 for (const [childType, parentType] of parentChildPairs) {
-  test(`external function exception caught by parent - ${childType} caught by ${parentType}`, (t) => {
+  test(`external function exception caught by parent - ${childType} caught by ${parentType}`, () => {
     const code = `
 try:
     fail()
@@ -309,7 +310,7 @@ caught
 // Exception in various contexts
 // =============================================================================
 
-test('external function exception in expression', (t) => {
+test('external function exception in expression', () => {
   const m = new Monty('1 + fail() + 2')
 
   const fail = () => {
@@ -323,7 +324,7 @@ test('external function exception in expression', (t) => {
   t.true(error.message.includes('mid-expression error'))
 })
 
-test('external function exception after successful call', (t) => {
+test('external function exception after successful call', () => {
   const code = `
 a = success()
 b = fail()
@@ -344,7 +345,7 @@ a + b
   t.true(error.message.includes('second call fails'))
 })
 
-test('external function exception with finally', (t) => {
+test('external function exception with finally', () => {
   const code = `
 finally_ran = False
 try:
@@ -370,23 +371,23 @@ finally_ran
 // externalLookup value resolution (non-callable entries)
 // =============================================================================
 
-test('externalLookup resolves a bare name to a value', (t) => {
+test('externalLookup resolves a bare name to a value', () => {
   const m = new Monty('x + 1')
   t.is(m.run({ externalLookup: { x: 41 } }), 42)
 })
 
-test('externalLookup resolves a falsy value', (t) => {
+test('externalLookup resolves a falsy value', () => {
   // 0 is falsy but a present own key, so it must resolve rather than raise.
   const m = new Monty('n + 1')
   t.is(m.run({ externalLookup: { n: 0 } }), 1)
 })
 
-test('externalLookup resolves null and undefined values to None', (t) => {
+test('externalLookup resolves null and undefined values to None', () => {
   t.is(new Monty('x is None').run({ externalLookup: { x: null } }), true)
   t.is(new Monty('y is None').run({ externalLookup: { y: undefined } }), true)
 })
 
-test('calling a proxy whose entry is now non-callable raises TypeError', (t) => {
+test('calling a proxy whose entry is now non-callable raises TypeError', () => {
   // Calls dispatch by name against the *current* lookup on every call: the
   // first call replaces the entry with a plain value, so the second raises
   // what CPython would for calling that value.
@@ -401,7 +402,7 @@ test('calling a proxy whose entry is now non-callable raises TypeError', (t) => 
   t.is(error.message, "TypeError: 'int' object is not callable")
 })
 
-test('non-callable TypeError names tuple-marked and __monty_type__ values', (t) => {
+test('non-callable TypeError names tuple-marked and __monty_type__ values', () => {
   // The in-process path converts the entry (js_to_monty) and names the type of
   // the result, so it must agree with the pool path's `pyTypeName`. A valid
   // datetime (all fields present) names `'datetime'`; a bare `{ __monty_type__:
@@ -435,19 +436,19 @@ test('non-callable TypeError names tuple-marked and __monty_type__ values', (t) 
   t.is(dateError.message, "TypeError: 'datetime' object is not callable")
 })
 
-test('externalLookup mixes a function and a value', (t) => {
+test('externalLookup mixes a function and a value', () => {
   const m = new Monty('double(n)')
   const double = (x: number) => x * 2
   t.is(m.run({ externalLookup: { double, n: 21 } }), 42)
 })
 
-test('externalLookup absent name raises name error', (t) => {
+test('externalLookup absent name raises name error', () => {
   const m = new Monty('missing')
   const error = t.throws(() => m.run({ externalLookup: { present: 1 } }), isRuntimeError)
   t.is(error.message, "NameError: name 'missing' is not defined")
 })
 
-test('inherited property name is not resolved as a host value', (t) => {
+test('inherited property name is not resolved as a host value', () => {
   // toString lives on Object.prototype, not as an own key, so it must raise
   // NameError rather than leaking the inherited function.
   const m = new Monty('toString')

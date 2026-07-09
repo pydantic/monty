@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty, MontySnapshot, MontyNameLookup, MontyComplete, type ResourceLimits } from '../ts/wasm.js'
 import { Buffer } from 'node:buffer'
@@ -7,7 +8,7 @@ import { Buffer } from 'node:buffer'
 // Monty dump/load tests
 // =============================================================================
 
-test('monty dump load roundtrip', (t) => {
+test('monty dump load roundtrip', () => {
   const m = new Monty('x + 1', { inputs: ['x'] })
   const data = m.dump()
 
@@ -18,7 +19,7 @@ test('monty dump load roundtrip', (t) => {
   t.is(m2.run({ inputs: { x: 41 } }), 42)
 })
 
-test('monty dump load preserves script name', (t) => {
+test('monty dump load preserves script name', () => {
   const m = new Monty('1', { scriptName: 'custom.py' })
   const data = m.dump()
 
@@ -26,7 +27,7 @@ test('monty dump load preserves script name', (t) => {
   t.is(m2.scriptName, 'custom.py')
 })
 
-test('monty dump load preserves inputs', (t) => {
+test('monty dump load preserves inputs', () => {
   const m = new Monty('x + y', { inputs: ['x', 'y'] })
   const data = m.dump()
 
@@ -35,7 +36,7 @@ test('monty dump load preserves inputs', (t) => {
   t.is(m2.run({ inputs: { x: 1, y: 2 } }), 3)
 })
 
-test('monty dump load preserves code execution', (t) => {
+test('monty dump load preserves code execution', () => {
   const m = new Monty('func()')
   const data = m.dump()
 
@@ -45,14 +46,14 @@ test('monty dump load preserves code execution', (t) => {
   t.is((progress as MontySnapshot).functionName, 'func')
 })
 
-test('monty dump produces same result on multiple calls', (t) => {
+test('monty dump produces same result on multiple calls', () => {
   const m = new Monty('1 + 2')
   const bytes1 = m.dump()
   const bytes2 = m.dump()
   t.deepEqual(bytes1, bytes2)
 })
 
-test('monty dump load various outputs', (t) => {
+test('monty dump load various outputs', () => {
   const testCases: Array<[string, unknown]> = [
     ['1 + 1', 2],
     ['"hello"', 'hello'],
@@ -73,7 +74,7 @@ test('monty dump load various outputs', (t) => {
 // MontySnapshot dump/load tests
 // =============================================================================
 
-test('snapshot dump load roundtrip', (t) => {
+test('snapshot dump load roundtrip', () => {
   const m = new Monty('func(1, 2)')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -97,7 +98,7 @@ test('snapshot dump load roundtrip', (t) => {
   t.is((result as MontyComplete).output, 100)
 })
 
-test('snapshot dump load preserves script name', (t) => {
+test('snapshot dump load preserves script name', () => {
   const m = new Monty('func()', { scriptName: 'test.py' })
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -107,7 +108,7 @@ test('snapshot dump load preserves script name', (t) => {
   t.is(progress2.scriptName, 'test.py')
 })
 
-test('snapshot dump load with kwargs', (t) => {
+test('snapshot dump load with kwargs', () => {
   const m = new Monty('func(a=1, b="hello")')
   const progress = m.start()
   t.true(progress instanceof MontySnapshot)
@@ -119,7 +120,7 @@ test('snapshot dump load with kwargs', (t) => {
   t.deepEqual(progress2.kwargs, { a: 1, b: 'hello' })
 })
 
-test('snapshot dump after resume fails', (t) => {
+test('snapshot dump after resume fails', () => {
   const m = new Monty('func()')
   const snapshot = m.start() as MontySnapshot
 
@@ -129,7 +130,7 @@ test('snapshot dump after resume fails', (t) => {
   t.true(error?.message.includes('already been resumed'))
 })
 
-test('snapshot dump load multiple calls', (t) => {
+test('snapshot dump load multiple calls', () => {
   const m = new Monty('a() + b()')
 
   // First call: a()
@@ -158,7 +159,7 @@ test('snapshot dump load multiple calls', (t) => {
   t.is((result as MontyComplete).output, 15)
 })
 
-test('snapshot dump load with limits', (t) => {
+test('snapshot dump load with limits', () => {
   const m = new Monty('func()')
   const limits: ResourceLimits = { maxAllocations: 1000 }
   const progress = m.start({ limits })
@@ -176,7 +177,7 @@ test('snapshot dump load with limits', (t) => {
 // MontyNameLookup dump/load tests
 // =============================================================================
 
-test('name lookup dump load roundtrip', (t) => {
+test('name lookup dump load roundtrip', () => {
   const m = new Monty('x = foo; x')
   const lookup = m.start()
   t.true(lookup instanceof MontyNameLookup)
@@ -194,7 +195,7 @@ test('name lookup dump load roundtrip', (t) => {
   t.is((result as MontyComplete).output, 42)
 })
 
-test('name lookup dump after resume fails', (t) => {
+test('name lookup dump after resume fails', () => {
   const m = new Monty('x = foo; x')
   const lookup = m.start() as MontyNameLookup
 

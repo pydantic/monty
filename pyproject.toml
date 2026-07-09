@@ -185,7 +185,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
