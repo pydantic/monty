@@ -1080,10 +1080,7 @@ jobs:
       # only the in-process (wasm_*) specs: the subprocess pool cannot exist
       # on wasm, so the pool specs are native-only
       - name: Test bindings
-        run: npx ava "__test__/wasm_*.spec.ts"
-        env:
-          NAPI_RS_FORCE_WASI: true
-        working-directory: crates/monty-js
+        run: make test-wasm
 
   test-browser:
     name: test browser wasm
@@ -1117,7 +1114,7 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Test browser bindings
-        run: npx playwright test
+        run: npm run test:browser
         working-directory: crates/monty-js
 
   release-js:
