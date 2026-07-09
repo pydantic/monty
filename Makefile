@@ -67,10 +67,6 @@ test-wasm: ## Test the wasm worker pool/transport (requires a prior build-wasm)
 test-browser: build-js build-wasm ## Browser (Playwright) test of the wasm worker path in a real headless browser
 	cd crates/monty-js && npx playwright install chromium && npx playwright test
 
-.PHONY: test-browser
-test-browser: install-js ## Browser (Playwright) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npx playwright test
-
 # OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
 MONTY_CPYTHON_IMAGE ?= monty-cpython
