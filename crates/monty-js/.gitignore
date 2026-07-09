@@ -131,8 +131,8 @@ Cargo.lock
 
 # napi generated js files
 browser.js
-index.js
-index.d.ts
+native-addon.js
+native-addon.generated.d.ts
 monty.wasi.cjs
 monty.wasi-browser.js
 wasi-worker.mjs

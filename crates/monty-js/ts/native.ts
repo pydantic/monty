@@ -1,5 +1,5 @@
 // Hand-written typings for the turn objects produced by the native
-// `NativeSession` methods (src/pool.rs). The napi-generated `index.d.ts`
+// `NativeSession` methods (src/pool.rs). The napi-generated native-addon d.ts
 // types each turn as a plain `object`; these interfaces are the contract the
 // Rust side upholds — every turn-producing method resolves to exactly one of
 // the `NativeTurn` variants below.

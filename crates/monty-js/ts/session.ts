@@ -9,7 +9,7 @@
 // external future so other sandbox tasks keep executing, and results are
 // delivered when the worker reports everything is blocked (`resolveFutures`).
 
-import type { NativeSession } from '../index.js'
+import type { NativeSession } from '../native-addon.js'
 import {
   MontyCrashedError,
   MontyError,

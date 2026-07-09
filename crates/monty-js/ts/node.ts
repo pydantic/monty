@@ -38,4 +38,4 @@ export {
   type MontyTimeZone,
 } from './types.js'
 export { findMontyBinary } from './binary.js'
-export { MAX_VALUE_DEPTH } from '../index.js'
+export { MAX_VALUE_DEPTH } from '../native-addon.js'

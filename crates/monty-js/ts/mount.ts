@@ -3,7 +3,7 @@
 // worker, so the host path must be valid on the machine the worker runs on.
 // OS calls the mounts do not cover bubble up to the `os` callback.
 
-import type { NativeMount } from '../index.js'
+import type { NativeMount } from '../native-addon.js'
 
 /** Sandbox access mode for a mounted directory. */
 export type MountDirMode = 'read-only' | 'read-write' | 'overlay'

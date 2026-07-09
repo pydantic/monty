@@ -38,4 +38,4 @@ export {
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'
-export { MAX_VALUE_DEPTH } from '../index.js'
+export { MAX_VALUE_DEPTH } from '../native-addon.js'

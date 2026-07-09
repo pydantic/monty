@@ -1103,7 +1103,7 @@ jobs:
         run: npm install
         working-directory: crates/monty-js
 
-      # generates the loader (index.js/index.d.ts) and dist/; the host .node
+      # generates the native addon loader and dist/; the host .node
       # it also builds is not shipped (platform packages carry the .nodes)
       - name: Build
         run: npm run build
