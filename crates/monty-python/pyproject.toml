@@ -34,7 +34,7 @@ dependencies = [
     # ships the `monty` binary spawned as worker subprocesses;
     # kept as a loose pin because the subprocess protocol is version-negotiated
     # in the Hello handshake (a mismatch fails fast with a clear error)
-    "pydantic-monty-cli>=0.0.18",
+    "pydantic-monty-runtime>=0.0.18",
 ]
 dynamic = ["license", "version"]
 
@@ -48,9 +48,9 @@ module-name = "pydantic_monty._monty"
 features = ["pyo3/extension-module"]
 
 [tool.uv.sources]
-# during development the cli package is built from this workspace rather than
-# fetched from PyPI
-pydantic-monty-cli = { workspace = true }
+# during development the runtime package is built from this workspace rather
+# than fetched from PyPI
+pydantic-monty-runtime = { workspace = true }
 
 [dependency-groups]
 dev = [

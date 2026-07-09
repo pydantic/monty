@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "ahash",
  "chrono",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cli"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "clap",
  "monty",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "monty-cpython"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "ahash",
  "clap",
@@ -2069,7 +2069,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "ahash",
  "chrono",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "monty",
  "monty-pool",
@@ -2107,7 +2107,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "monty",
  "monty-proto",
@@ -2128,7 +2128,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "monty",
  "num-bigint",
@@ -2139,7 +2139,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2712,7 +2712,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.19-beta.1"
+version = "0.0.19-beta.2"
 dependencies = [
  "ahash",
  "monty",

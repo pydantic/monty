@@ -301,7 +301,7 @@ class Monty:
         Arguments:
             binary_path: Path to the `monty` CLI binary. When omitted it is
                 resolved from the `MONTY_BIN` environment variable, the
-                environment's scripts directory (where the `pydantic-monty-cli`
+                environment's scripts directory (where the `pydantic-monty-runtime`
                 dependency installs it), or `PATH`.
             min_processes: Workers spawned eagerly and kept warm.
             max_processes: Cap on live workers (defaults to the CPU count);

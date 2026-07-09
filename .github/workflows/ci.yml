@@ -185,7 +185,7 @@ jobs:
         # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      # pydantic-monty depends on pydantic-monty-cli; install it from the
+      # pydantic-monty depends on pydantic-monty-runtime; install it from the
       # workspace so `maturin develop` can resolve it (plain build, outside
       # the llvm-cov env, so the worker binary is not instrumented)
       - run: uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
@@ -554,7 +554,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      # the pydantic-monty-cli wheel ships the `monty` worker binary
+      # the pydantic-monty-runtime wheel ships the `monty` worker binary
       # (bin bindings, one py3-none wheel per platform). `-i` is required so
       # maturin can find a Python to read pyproject.toml — the produced wheel
       # is `py3-none-<plat>` and doesn't depend on a specific Python version.
@@ -687,7 +687,7 @@ jobs:
             python3 -m venv venv
             source venv/bin/activate
             python3 -m pip install typing_extensions
-            python3 -m pip install pydantic-monty pydantic-monty-cli --no-index --no-deps --find-links /dist --force-reinstall
+            python3 -m pip install pydantic-monty pydantic-monty-runtime --no-index --no-deps --find-links /dist --force-reinstall
             python3 - <<'EOF'
             from pydantic_monty import Monty
 
@@ -734,7 +734,7 @@ jobs:
       - run: python -c "import pydantic_monty; print(pydantic_monty.__version__)"
 
       # the cli wheel built for this platform must serve the worker pools
-      - run: pip install pydantic-monty-cli --no-index --no-deps --find-links dist --force-reinstall
+      - run: pip install pydantic-monty-runtime --no-index --no-deps --find-links dist --force-reinstall
       - name: smoke test worker pools
         shell: bash
         run: |

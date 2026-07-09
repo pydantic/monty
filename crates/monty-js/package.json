@@ -1,6 +1,6 @@
 {
   "name": "@pydantic/monty",
-  "version": "0.0.19-beta.1",
+  "version": "0.0.19-beta.2",
   "type": "module",
   "description": "Sandboxed Python interpreter running in crash-isolated subprocess workers",
   "main": "dist/index.js",
@@ -102,11 +102,11 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "0.0.19-beta.1",
-    "@pydantic/monty-darwin-arm64": "0.0.19-beta.1",
-    "@pydantic/monty-linux-x64-gnu": "0.0.19-beta.1",
-    "@pydantic/monty-linux-arm64-gnu": "0.0.19-beta.1",
-    "@pydantic/monty-win32-x64-msvc": "0.0.19-beta.1",
-    "@pydantic/monty-wasm32-wasi": "0.0.19-beta.1"
+    "@pydantic/monty-darwin-x64": "0.0.19-beta.2",
+    "@pydantic/monty-darwin-arm64": "0.0.19-beta.2",
+    "@pydantic/monty-linux-x64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-linux-arm64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-win32-x64-msvc": "0.0.19-beta.2",
+    "@pydantic/monty-wasm32-wasi": "0.0.19-beta.2"
   }
 }

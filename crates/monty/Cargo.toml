@@ -1,6 +1,6 @@
 [package]
 name = "monty"
-readme = "../../README.md"
+readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
