@@ -31,7 +31,9 @@ use crate::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
-        long_int::{bigint_cmp_f64, check_bits_str_digits_limit, i64_cmp_f64},
+        long_int::{
+            bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
+        },
         path,
         slice::slice_collect_iterator,
         str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, string_repr_fmt},
@@ -235,17 +237,38 @@ impl<'h> PyTrait<'h> for Value {
             // Int/float ordering is exact (no rounding of either operand).
             (Self::Int(s), Self::Float(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*s, *o))),
             (Self::Float(s), Self::Int(o)) => Ok(CmpOrder::from_numeric(i64_cmp_f64(*o, *s).map(Ordering::reverse))),
+            (Self::Int(a), Self::InternLongInt(b)) => Ok(CmpOrder::Ordered(
+                bigint_cmp_i64(interns.get_long_int(*b), *a).reverse(),
+            )),
+            (Self::InternLongInt(a), Self::Int(b)) => {
+                Ok(CmpOrder::Ordered(bigint_cmp_i64(interns.get_long_int(*a), *b)))
+            }
+            (Self::Float(a), Self::InternLongInt(b)) => Ok(CmpOrder::from_numeric(
+                bigint_cmp_f64(interns.get_long_int(*b), *a).map(Ordering::reverse),
+            )),
+            (Self::InternLongInt(a), Self::Float(b)) => {
+                Ok(CmpOrder::from_numeric(bigint_cmp_f64(interns.get_long_int(*a), *b)))
+            }
+            (Self::InternLongInt(a), Self::InternLongInt(b)) => Ok(CmpOrder::Ordered(
+                interns.get_long_int(*a).cmp(interns.get_long_int(*b)),
+            )),
             // Bool promotion: convert to Int and re-dispatch. Recursion is bounded
             // to at most 2 levels (Bool→Int, then Int matches directly above).
             (Self::Bool(s), _) => Self::Int(i64::from(*s)).py_cmp(other, vm),
             (_, Self::Bool(s)) => self.py_cmp(&Self::Int(i64::from(*s)), vm),
             // Int vs LongInt comparison
             (Self::Int(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(BigInt::from(*a).cmp(li.inner())))
+                Ok(CmpOrder::Ordered(bigint_cmp_i64(li.inner(), *a).reverse()))
+            }
+            (Self::InternLongInt(a), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(CmpOrder::Ordered(interns.get_long_int(*a).cmp(li.inner())))
             }
             // LongInt vs Int comparison
             (Self::Ref(id), Self::Int(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-                Ok(CmpOrder::Ordered(li.inner().cmp(&BigInt::from(*b))))
+                Ok(CmpOrder::Ordered(bigint_cmp_i64(li.inner(), *b)))
+            }
+            (Self::Ref(id), Self::InternLongInt(b)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
+                Ok(CmpOrder::Ordered(li.inner().cmp(interns.get_long_int(*b))))
             }
             // Float vs LongInt comparison (exact, no precision loss)
             (Self::Float(s), Self::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => Ok(
@@ -2218,7 +2241,8 @@ pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -
         Value::Int(b) => Some(a == *b),
         Value::Bool(b) => Some(a == i64::from(*b)),
         Value::Float(f) => Some(i64_cmp_f64(a, *f) == Some(Ordering::Equal)),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(*li.inner() == BigInt::from(a)),
+        Value::InternLongInt(id) => Some(bigint_eq_i64(vm.interns.get_long_int(*id), a)),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(bigint_eq_i64(li.inner(), a)),
         _ => None,
     }
 }
@@ -2229,9 +2253,8 @@ pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -
         Value::Float(o) => Some(f == *o),
         Value::Int(o) => Some(i64_cmp_f64(*o, f) == Some(Ordering::Equal)),
         Value::Bool(o) => Some(i64_cmp_f64(i64::from(*o), f) == Some(Ordering::Equal)),
-        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
-            Some(li.partial_cmp_f64(f) == Some(Ordering::Equal))
-        }
+        Value::InternLongInt(id) => Some(bigint_eq_f64(vm.interns.get_long_int(*id), f)),
+        Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(bigint_eq_f64(li.inner(), f)),
         _ => None,
     }
 }
@@ -2241,9 +2264,10 @@ pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -
 /// an `Int`/`Bool` — but comparing exactly keeps the logic uniform.
 pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
-        Value::Int(o) => Some(*b == BigInt::from(*o)),
-        Value::Bool(o) => Some(*b == BigInt::from(i64::from(*o))),
-        Value::Float(f) => Some(bigint_cmp_f64(b, *f) == Some(Ordering::Equal)),
+        Value::Int(o) => Some(bigint_eq_i64(b, *o)),
+        Value::Bool(o) => Some(bigint_eq_i64(b, i64::from(*o))),
+        Value::Float(f) => Some(bigint_eq_f64(b, *f)),
+        Value::InternLongInt(id) => Some(b == vm.interns.get_long_int(*id)),
         Value::Ref(id) if let HeapData::LongInt(li) = vm.heap.get(*id) => Some(b == li.inner()),
         _ => None,
     }

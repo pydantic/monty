@@ -11,7 +11,7 @@ use ahash::AHashSet;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta};
 use indexmap::IndexMap;
 use num_bigint::BigInt;
-use num_traits::Zero;
+use num_traits::{ToPrimitive, Zero};
 
 use crate::{
     builtins::{Builtins, BuiltinsFunctions},
@@ -1471,8 +1471,8 @@ impl PartialEq for MontyObject {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::BigInt(a), Self::BigInt(b)) => a == b,
-            // Cross-compare Int and BigInt
-            (Self::Int(a), Self::BigInt(b)) | (Self::BigInt(b), Self::Int(a)) => BigInt::from(*a) == *b,
+            // Cross-compare Int and BigInt without allocating a temporary BigInt.
+            (Self::Int(a), Self::BigInt(b)) | (Self::BigInt(b), Self::Int(a)) => b.to_i64() == Some(*a),
             // Use to_bits() for float comparison to be consistent with Hash
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::String(a), Self::String(b)) => a == b,
