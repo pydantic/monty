@@ -34,7 +34,8 @@ PLATFORM_DIR=npm/$TRIPLE
 # Ship both artifacts: the napi shared library (built to the package root by
 # `npm run build`) and the monty worker binary.
 cp "monty.$TRIPLE.node" "$PLATFORM_DIR/"
-cp "$WORKSPACE_DIR/target/debug/$EXE" "$PLATFORM_DIR/"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE_DIR/target}"
+cp "$CARGO_TARGET_DIR/debug/$EXE" "$PLATFORM_DIR/"
 
 echo "=== Creating tgz files ==="
 cd "$PLATFORM_DIR"
