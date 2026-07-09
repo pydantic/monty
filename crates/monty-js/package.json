@@ -69,11 +69,10 @@
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
     "@napi-rs/wasm-runtime": "^1.1.5",
-    "@oxc-node/core": "^0.0.35",
     "@playwright/test": "^1.49.1",
-    "@vitest/browser": "^3.2.4",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
+    "@vitest/browser": "^3.2.4",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
@@ -89,11 +88,11 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "0.0.19-beta.2",
     "@pydantic/monty-darwin-arm64": "0.0.19-beta.2",
-    "@pydantic/monty-linux-x64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-darwin-x64": "0.0.19-beta.2",
     "@pydantic/monty-linux-arm64-gnu": "0.0.19-beta.2",
-    "@pydantic/monty-win32-x64-msvc": "0.0.19-beta.2",
-    "@pydantic/monty-wasm32-wasi": "0.0.19-beta.2"
+    "@pydantic/monty-linux-x64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-wasm32-wasi": "0.0.19-beta.2",
+    "@pydantic/monty-win32-x64-msvc": "0.0.19-beta.2"
   }
 }
