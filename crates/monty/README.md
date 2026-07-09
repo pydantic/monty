@@ -6,7 +6,7 @@
 
 The core interpreter crate of [Monty](https://github.com/pydantic/monty) — a minimal, secure Python interpreter written in Rust for use by AI.
 
-**Experimental** — this project is still in development, and not ready for the prime time.
+**Experimental** — this project is still in development, and not ready for prime time.
 
 Monty lets you safely run Python code written by an LLM inside your own process, without the cost, latency and complexity of a container based sandbox. It parses Python with [Ruff](https://github.com/astral-sh/ruff)'s parser and executes it on its own bytecode VM — no CPython, no FFI, no C dependencies. Startup takes microseconds, not hundreds of milliseconds.
 
