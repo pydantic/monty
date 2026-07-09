@@ -57,7 +57,14 @@ export class Monty {
 }
 
 export { WorkerPool, inProcessFactory } from './pool.js'
-export { MontyComplete, MontySession, NOT_HANDLED } from '../session.js'
+export {
+  FunctionSnapshot,
+  FutureSnapshot,
+  MontyComplete,
+  MontySession,
+  NameLookupSnapshot,
+  NOT_HANDLED,
+} from '../session.js'
 export type {
   ExternalFunction,
   FeedOptions,

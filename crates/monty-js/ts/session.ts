@@ -250,7 +250,7 @@ export class MontySession {
   async load(state: Uint8Array): Promise<void> {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
-    const turn = (await this.native.restore(Buffer.from(state), [], printTarget.write.bind(printTarget))) as
+    const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
       | NativeTurn
       | LoadedTurn
     switch (turn.kind) {
@@ -280,7 +280,7 @@ export class MontySession {
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
     const driver = this.newDriver(options)
-    const turn = (await this.native.restore(Buffer.from(state), mountsToNative(options.mount), driver.onPrint)) as
+    const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
       | NativeTurn
       | LoadedTurn
     if (turn.kind === 'loaded') {
@@ -336,7 +336,7 @@ export class MontySession {
    */
   async dump(): Promise<Buffer> {
     this.ensureUsable()
-    return Buffer.from(await this.native.dump())
+    return bufferFrom(await this.native.dump())
   }
 
   /**
@@ -726,7 +726,7 @@ class SnapshotDriver {
   }
 
   async dump(): Promise<Buffer> {
-    return Buffer.from(await this.native.dump())
+    return bufferFrom(await this.native.dump())
   }
 }
 
@@ -953,4 +953,12 @@ function jsErrorParts(err: unknown): { excType: string; message: string } {
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { then?: unknown }).then === 'function'
+}
+
+function bytesForNative(bytes: Uint8Array): Buffer {
+  return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
+}
+
+function bufferFrom(bytes: Uint8Array): Buffer {
+  return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
 }

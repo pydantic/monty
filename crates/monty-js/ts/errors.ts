@@ -125,10 +125,34 @@ export class MontyRuntimeError extends MontyError {
    */
   override display(format: 'traceback' | 'type-msg' | 'msg' = 'traceback'): string {
     if (format === 'traceback') {
-      return this.tracebackText || super.display('type-msg')
+      return this.tracebackText || renderTraceback(this.frames, super.display('type-msg'))
     }
     return super.display(format)
   }
+}
+
+function renderTraceback(frames: NativeFrame[], summary: string): string {
+  if (frames.length === 0) {
+    return summary
+  }
+  const lines = ['Traceback (most recent call last):']
+  for (const frame of frames) {
+    const name = frame.frameName ?? '<module>'
+    lines.push(`  File "${frame.filename}", line ${frame.line}, in ${name}`)
+    if (frame.previewLine !== undefined) {
+      const leading = frame.previewLine.length - frame.previewLine.trimStart().length
+      const preview = frame.previewLine.trimStart()
+      lines.push(`    ${preview}`)
+      if (!preview.startsWith('raise') && frame.column > 0 && frame.endColumn > frame.column) {
+        const column = Math.max(1, frame.column - leading)
+        const width = Math.max(1, frame.endColumn - frame.column)
+        const indent = ' '.repeat(column - 1)
+        lines.push(`    ${indent}${'~'.repeat(width)}`)
+      }
+    }
+  }
+  lines.push(summary)
+  return lines.join('\n')
 }
 
 /**

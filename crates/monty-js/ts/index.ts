@@ -5,8 +5,11 @@
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {
+  FunctionSnapshot,
+  FutureSnapshot,
   MontyComplete,
   MontySession,
+  NameLookupSnapshot,
   NOT_HANDLED,
   type ExternalFunction,
   type FeedOptions,

@@ -25,6 +25,7 @@ export default defineConfig({
   test: {
     include: ['__test__/*.spec.ts'],
     testTimeout: 60_000,
+    hookTimeout: 60_000,
     browser: {
       enabled: true,
       provider: 'playwright',

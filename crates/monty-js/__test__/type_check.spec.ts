@@ -1,6 +1,5 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
 
 import { MontyError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
@@ -82,8 +81,7 @@ test('default allows run with inputs', async () => {
 // Accumulated type-check context and stubs
 // =============================================================================
 
-test('earlier feeds join the type-check context', async (ctx) => {
-  skipIfBrowser(ctx)
+test('earlier feeds join the type-check context', async () => {
   // In a fresh session x is undefined ...
   await t.throwsAsync(() => run('result = x + 1', { typeCheck: true }), { instanceOf: MontyTypingError })
   // ... but a snippet fed earlier in the same session defines it.
@@ -118,8 +116,7 @@ test('type check stubs invalid', async () => {
   t.is(error.message, 'TypeError: error[unsupported-operator]: Unsupported `+` operation')
 })
 
-test('failing snippet does not execute and session survives', async (ctx) => {
-  skipIfBrowser(ctx)
+test('failing snippet does not execute and session survives', async () => {
   const session = await pool().checkout({ typeCheck: true })
   try {
     await session.feedRun('x = 1')

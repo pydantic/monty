@@ -40,7 +40,16 @@ export interface WorkerSessionConfig {
 // ParentRequest oneof field numbers (see proto/monty/v1/monty.proto). Note
 // field 2 is InstallDependencies (CPython-only) and field 8 is Load, neither of
 // which the wasm transport sends — hence the gaps.
-const Req = { ReplCreate: 1, ReplFeed: 3, ResumeCall: 4, ResumeNameLookup: 5, ResumeFutures: 6, Dump: 7, Reset: 9 }
+const Req = {
+  ReplCreate: 1,
+  ReplFeed: 3,
+  ResumeCall: 4,
+  ResumeNameLookup: 5,
+  ResumeFutures: 6,
+  Dump: 7,
+  Load: 8,
+  Reset: 9,
+}
 // ChildEvent oneof field numbers.
 const Ev = {
   Print: 1,
@@ -155,6 +164,21 @@ export class WorkerTransport {
     return this.turn(Req.ResumeNameLookup, lookup.finish(), onPrint)
   }
 
+  async installDependencies(requirements: string[], _onPrint: OnPrint): Promise<NativeTurn | { kind: 'ok' }> {
+    if (requirements.length === 0) {
+      return { kind: 'ok' }
+    }
+    return {
+      kind: 'error',
+      exception: {
+        excType: 'RuntimeError',
+        message: 'dependency installation is only supported by the CPython worker',
+        traceback: '',
+        frames: [],
+      },
+    }
+  }
+
   resolveFutures(results: NativeFutureResult[], onPrint: OnPrint): Promise<NativeTurn> {
     const futures = new Writer()
     for (const r of results) {
@@ -177,6 +201,22 @@ export class WorkerTransport {
       if (f.field === 1) return f.bytes // DumpResult.state
     }
     throw new Error('DumpResult carried no state')
+  }
+
+  async restore(
+    state: Uint8Array,
+    mounts: readonly unknown[],
+    onPrint: OnPrint,
+  ): Promise<NativeTurn | { kind: 'loaded' }> {
+    if (mounts.length > 0) {
+      throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+    }
+    const load = new Writer()
+    load.bytes(1, state) // Load.state
+    const event = await this.run(Req.Load, load.finish(), onPrint)
+    if (!event) return crashed('worker exited without a turn-ending event')
+    if (event.kind === Ev.Ok) return { kind: 'loaded' }
+    return this.toTurn(event)
   }
 
   /**
