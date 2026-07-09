@@ -21,7 +21,7 @@ clap = { workspace = true }
 monty = { workspace = true }
 monty-proto = { workspace = true }
 monty-type-checking = { workspace = true }
-monty-worker = { path = "../monty-worker" }
+monty-worker = { workspace = true }
 rustyline = "15"
 
 [dev-dependencies]
