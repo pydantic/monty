@@ -1,6 +1,5 @@
 [package]
 name = "monty-fuzz"
-readme = "README.md"
 publish = false
 version = { workspace = true }
 edition = { workspace = true }

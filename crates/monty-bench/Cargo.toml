@@ -1,6 +1,5 @@
 [package]
 name = "monty-bench"
-readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
