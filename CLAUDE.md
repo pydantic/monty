@@ -29,7 +29,7 @@ Key rules:
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
 - Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
   OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
+- CI runs `cargo nextest run -p monty --features memory-model-checks` on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -443,7 +443,7 @@ cargo test -p monty
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test TEST str__ops
+cargo nextest run -p monty --test TEST str__ops
 cargo run -p monty-datatest str__ops
 
 # Run the interpreter on a Python file
