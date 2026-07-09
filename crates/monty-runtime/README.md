@@ -33,12 +33,22 @@ requests on stdin, framed events on stdout (see the
 runs Monty with crash isolation. It is meant to be driven by a parent
 process, not by hand.
 
-## PyPI packaging (`pydantic-monty-cli`)
+## PyPI packaging (`pydantic-monty-runtime`)
 
 The binary is also packaged for PyPI as
-[`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/), the same
+[`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/), the same
 way `uv` and `ruff` package theirs: installing the wheel places the compiled
 binary in the environment's scripts directory. It exists so that
 `pydantic-monty` can find a `monty` binary without any manual setup, and is
 installed automatically as a dependency of that package — you normally don't
 install it directly.
+
+## Monty crates
+
+- [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.
+- [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode. **this crate**
+- [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
+- [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
+- [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.

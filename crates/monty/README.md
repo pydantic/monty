@@ -16,7 +16,7 @@ This crate is the pure-Rust core. Most users want one of the bindings built on t
 
 - **Python**: [`pydantic-monty`](https://pypi.org/project/pydantic-monty/)
 - **JavaScript/TypeScript**: [`@pydantic/monty`](https://www.npmjs.com/package/@pydantic/monty)
-- **CLI**: the `monty` binary from the [`monty-cli`](https://crates.io/crates/monty-cli) crate
+- **CLI**: the `monty` binary from the [`monty-runtime`](https://crates.io/crates/monty-runtime) crate
 
 See the [project README](https://github.com/pydantic/monty) for the full feature matrix, motivation, and supported Python subset.
 
@@ -109,14 +109,15 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 - `fs` module — mount real host directories into the sandbox at virtual paths (read-write, read-only, or copy-on-write in-memory overlay), with path resolution hardened against escapes.
 - `RunProgress::OsCall` — filesystem and other `os`-level operations the host can intercept or delegate.
 
-## Related crates
+## Monty crates
 
-| Crate | Purpose |
-| --- | --- |
-| [`monty-cli`](https://crates.io/crates/monty-cli) | the `monty` binary: run files, REPL, and the subprocess worker mode |
-| [`monty-pool`](https://crates.io/crates/monty-pool) | elastic pool of crash-isolated `monty` worker subprocesses |
-| [`monty-proto`](https://crates.io/crates/monty-proto) | wire protocol between pool and workers |
-| [`monty-type-checking`](https://crates.io/crates/monty-type-checking) | optional type checking powered by [ty](https://docs.astral.sh/ty/) |
+- [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox. **this crate**
+- [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
+- [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
+- [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
+- [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing.
 
 ## License
 

@@ -1,8 +1,9 @@
 # monty-macros
 
-Procedural macros used by the [`monty`](../monty/) crate. Not a public crate
-— consumers get the macros re-exported (`monty::args::FromArgs` /
-`monty::args::ToArgs`) and should not depend on `monty-macros` directly.
+Procedural macros used by the [`monty`](https://crates.io/crates/monty) crate.
+Not a public crate — consumers get the macros re-exported
+(`monty::args::FromArgs` / `monty::args::ToArgs`) and should not depend on
+`monty-macros` directly.
 
 ## `#[derive(FromArgs)]`
 
@@ -120,3 +121,13 @@ directions. Field types must implement `monty::args::ToMontyObject`.
 Generated code emits `crate::...` paths and only compiles inside `monty`.
 Cross-crate use would need `proc-macro-crate` plus switching to
 `::monty::...` paths.
+
+## Monty crates
+
+- [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.
+- [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
+- [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.
+- [`monty-proto`](https://crates.io/crates/monty-proto) — the protobuf wire protocol spoken between pool parents and workers.
+- [`monty-type-checking`](https://crates.io/crates/monty-type-checking) — type checking of sandboxed code, powered by [ty](https://docs.astral.sh/ty/).
+- [`monty-typeshed`](https://crates.io/crates/monty-typeshed) — the trimmed typeshed stubs describing the stdlib subset Monty implements.
+- [`monty-macros`](https://crates.io/crates/monty-macros) — the proc macros behind `monty`'s argument parsing. **this crate**
