@@ -34,7 +34,7 @@ dependencies = [
     # ships the `monty` binary spawned as worker subprocesses;
     # kept as a loose pin because the subprocess protocol is version-negotiated
     # in the Hello handshake (a mismatch fails fast with a clear error)
-    "pydantic-monty-runtime>=0.0.18",
+    "pydantic-monty-runtime>=0.0.19",
 ]
 dynamic = ["license", "version"]
 
