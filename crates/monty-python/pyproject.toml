@@ -31,10 +31,10 @@ classifiers = [
 ]
 dependencies = [
     "typing_extensions>=4.5",
-    # ships the `monty` binary spawned as worker subprocesses;
-    # kept as a loose pin because the subprocess protocol is version-negotiated
-    # in the Hello handshake (a mismatch fails fast with a clear error)
-    "pydantic-monty-runtime>=0.0.19",
+    # ships the `monty` binary spawned as worker subprocesses; released in
+    # lockstep with this package, so the pin is exact and kept in sync with the
+    # workspace version by build.rs — don't edit it by hand
+    "pydantic-monty-runtime==0.0.19b.2",
 ]
 dynamic = ["license", "version"]
 

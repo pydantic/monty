@@ -10,7 +10,8 @@ Run
 make lint-rs
 ```
 
-This will update `Cargo.lock` and sync `package.json`/`package-lock.json` (these are updated via a `crates/monty-js/build.rs`).
+This will update `Cargo.lock`, sync `package.json`/`package-lock.json` (via `crates/monty-js/build.rs`),
+and sync `pydantic-monty`'s exact pin on `pydantic-monty-runtime` (via `crates/monty-python/build.rs`).
 
 ## 2. Commit and Push
 
