@@ -78,6 +78,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
         MontyObject::DateTime(datetime) => create_js_datetime(datetime, env)?,
         MontyObject::TimeDelta(delta) => create_js_timedelta(delta, env)?,
         MontyObject::TimeZone(timezone) => create_js_timezone(timezone, env)?,
+        MontyObject::Decimal(s) => create_js_decimal_marker(s, env)?,
         MontyObject::Type(t) => create_js_type_marker(&t.to_string(), env)?,
         MontyObject::BuiltinFunction(f) => create_js_builtin_function_marker(&f.to_string(), env)?,
         MontyObject::Dataclass {
@@ -301,6 +302,16 @@ fn create_js_datetime<'e>(datetime: &MontyDateTime, env: &'e Env) -> Result<Unkn
     if let Some(timezone_name) = &datetime.timezone_name {
         obj.set_named_property("timezoneName", timezone_name.clone())?;
     }
+    obj.into_unknown(env)
+}
+
+/// Creates a JS object representing a Decimal: `{ __monty_type__: 'Decimal',
+/// value: '1.23' }` — JS has no decimal type, so it crosses as its canonical
+/// string (round-trips through `Decimal(str)` back in the sandbox).
+fn create_js_decimal_marker<'e>(decimal_str: &str, env: &'e Env) -> Result<Unknown<'e>> {
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("__monty_type__", "Decimal")?;
+    obj.set_named_property("value", decimal_str)?;
     obj.into_unknown(env)
 }
 
@@ -624,6 +635,12 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             offset_seconds: obj.get_named_property::<i32>("offsetSeconds")?,
             name: obj.get_named_property::<Option<String>>("name")?,
         })),
+        "Decimal" => {
+            // Round-trips losslessly: the canonical string parses back to the
+            // same Decimal in the sandbox.
+            let value: String = obj.get_named_property("value")?;
+            Ok(MontyObject::Decimal(value))
+        }
         "Type" => {
             // Type objects can't be fully round-tripped; return as Repr
             let value: String = obj.get_named_property("value")?;

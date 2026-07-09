@@ -38,7 +38,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     rhs.py_type_name(this),
                 ))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 
@@ -81,7 +81,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     rhs.py_type_name(this),
                 ))
             }
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         }
     }
 

@@ -20,7 +20,7 @@ use crate::{
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
-        Set, Slice, Str, Tuple, Type, date, datetime,
+        Set, Slice, Str, Tuple, Type, date, datetime, decimal,
         str::{allocate_string, concat_allocate_str},
         timedelta, timezone,
     },
@@ -153,6 +153,12 @@ pub(crate) enum HeapData {
     TimeDelta(timedelta::TimeDelta),
     /// A fixed-offset `datetime.timezone` value.
     TimeZone(timezone::TimeZone),
+    /// A `decimal.Decimal` value: sign + `BigInt` coefficient + exponent.
+    ///
+    /// Inline (not boxed): the struct is 48 bytes, well under the largest
+    /// variants, so it does not grow `size_of::<HeapData>()`.
+    /// Leaf type: no heap references, not GC-tracked.
+    Decimal(decimal::Decimal),
 }
 
 impl HeapData {
@@ -237,6 +243,7 @@ impl HeapData {
             Self::DateTime(_) => Type::DateTime,
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
+            Self::Decimal(_) => Type::Decimal,
         }
     }
 
@@ -278,6 +285,7 @@ impl HeapData {
             Self::DateTime(d) => d.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
+            Self::Decimal(d) => d.py_estimate_size(),
         }
     }
 }
@@ -489,6 +497,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
             Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
+            Self::Decimal(d) => d.py_bool(vm),
         }
     }
 
@@ -521,6 +530,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::TimeDelta(td) => Ok(td.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Date(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DateTime(dt) => Ok(dt.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::Decimal(d) => Ok(d.py_call_attr(self_id, vm, attr, args)?),
             // Types without methods — return AttributeError
             _ => {
                 args.drop_with_heap(vm);
@@ -607,6 +617,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_type(vm),
             Self::TimeDelta(d) => d.py_type(vm),
             Self::TimeZone(d) => d.py_type(vm),
+            Self::Decimal(d) => d.py_type(vm),
         }
     }
 
@@ -674,6 +685,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::DateTime(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::TimeDelta(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::TimeZone(a) => a.py_eq_impl(other, vm),
+            // `Decimal` compares exactly against the numeric tower.
+            HeapReadOutput::Decimal(a) => a.py_eq_impl(other, vm),
             // Identity-only types: equality is pure identity (handled before the
             // heap read in `Value::py_eq_impl`), so they never define `==` themselves.
             HeapReadOutput::Cell(_)
@@ -716,6 +729,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_hash(self_id, vm),
             Self::TimeDelta(d) => d.py_hash(self_id, vm),
             Self::TimeZone(d) => d.py_hash(self_id, vm),
+            Self::Decimal(d) => d.py_hash(self_id, vm),
             // Closure / FunctionDefaults: hash by function ID. Two equal
             // closures share the same `func_id`, so this is sufficient.
             Self::Closure(c) => {
@@ -801,6 +815,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeZone(d) => d.py_repr_fmt(f, vm, heap_ids),
+            Self::Decimal(d) => d.py_repr_fmt(f, vm, heap_ids),
         }
     }
 
@@ -823,16 +838,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(d) => d.py_str(vm),
             Self::TimeDelta(d) => d.py_str(vm),
             Self::TimeZone(d) => d.py_str(vm),
+            // Decimal's str differs from its repr (`1.20` vs `Decimal('1.20')`)
+            Self::Decimal(d) => d.py_str(vm),
             // All other types use repr
             _ => self.py_repr(vm),
         }
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
                 a.get(vm.heap).as_str(),
@@ -858,13 +871,13 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::Date(d)) => {
                 let d = *d.get(vm.heap);
                 let td = *td.get(vm.heap);
-                date::py_add(d, td, vm.heap)
+                Ok(date::py_add(d, td, vm.heap)?)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td))
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::DateTime(dt)) => {
                 let dt = dt.get(vm.heap).clone();
                 let td = *td.get(vm.heap);
-                datetime::py_add(&dt, &td, vm.heap)
+                Ok(datetime::py_add(&dt, &td, vm.heap)?)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
                 let total = timedelta::total_microseconds(a.get(vm.heap))
@@ -879,11 +892,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_sub(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::ResourceError> {
+    fn py_sub(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
@@ -893,12 +902,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                 let a = *a.get(vm.heap);
                 let b = *b.get(vm.heap);
-                date::py_sub_date(a, b, vm.heap)
+                Ok(date::py_sub_date(a, b, vm.heap)?)
             }
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
                 let a = a.get(vm.heap).clone();
                 let b = b.get(vm.heap).clone();
-                datetime::py_sub_datetime(&a, &b, vm.heap)
+                Ok(datetime::py_sub_datetime(&a, &b, vm.heap)?)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
                 let total = timedelta::total_microseconds(a.get(vm.heap))
@@ -913,12 +922,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td)) => {
                 let d = *d.get(vm.heap);
                 let td = *td.get(vm.heap);
-                date::py_sub_timedelta(d, td, vm.heap)
+                Ok(date::py_sub_timedelta(d, td, vm.heap)?)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td)) => {
                 let dt = dt.get(vm.heap).clone();
                 let td = *td.get(vm.heap);
-                datetime::py_sub_timedelta(&dt, &td, vm.heap)
+                Ok(datetime::py_sub_timedelta(&dt, &td, vm.heap)?)
             }
             _ => Ok(None),
         }

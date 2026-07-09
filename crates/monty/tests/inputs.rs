@@ -84,6 +84,67 @@ fn input_bytes() {
     assert_eq!(result, MontyObject::Bytes(vec![1, 2, 3]));
 }
 
+// === Decimal Input Tests ===
+
+#[test]
+fn input_decimal() {
+    // A host `Decimal` crosses in as its canonical string and back unchanged
+    // (the scale `1.20` is preserved, not normalised to `1.2`).
+    let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let result = ex.run_no_limits(vec![MontyObject::Decimal("1.20".to_owned())]).unwrap();
+    assert_eq!(result, MontyObject::Decimal("1.20".to_owned()));
+}
+
+#[test]
+fn input_decimal_arithmetic() {
+    let ex = MontyRun::new("x * 2".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let result = ex.run_no_limits(vec![MontyObject::Decimal("1.5".to_owned())]).unwrap();
+    assert_eq!(result, MontyObject::Decimal("3.0".to_owned()));
+}
+
+#[test]
+fn input_decimal_oversized_rejected() {
+    // A host `Decimal` is untrusted boundary input: a coefficient past the
+    // sandbox digit cap (4300 digits — `DECIMAL_MAX_DIGITS`) must be rejected
+    // crossing *into* the sandbox, exactly as in-sandbox construction rejects
+    // the same literal.
+    let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Decimal("1".repeat(4301))])
+        .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message(), Some("invalid input type: Decimal"));
+}
+
+#[test]
+fn input_decimal_malformed_rejected() {
+    // A string that is not a decimal literal at all must also be rejected at
+    // the boundary, not degrade to a NaN or a corrupt value.
+    let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Decimal("not-a-number".to_owned())])
+        .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::RuntimeError);
+    assert_eq!(err.message(), Some("invalid input type: Decimal"));
+}
+
+#[test]
+fn input_decimal_extremes_accepted() {
+    // Values anywhere in the C-module literal range cross losslessly —
+    // including huge exponents and specials with payloads.
+    for literal in ["1E-32768", "1E+425000000", "0E-10", "-sNaN123", "-0"] {
+        let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+        let result = ex
+            .run_no_limits(vec![MontyObject::Decimal(literal.to_owned())])
+            .unwrap();
+        assert_eq!(
+            result,
+            MontyObject::Decimal(literal.to_owned()),
+            "{literal} should round-trip"
+        );
+    }
+}
+
 #[test]
 fn input_list() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();

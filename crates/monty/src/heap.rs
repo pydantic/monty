@@ -21,7 +21,7 @@ use crate::{
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, date, datetime, timedelta, timezone,
+        TimeZone, Tuple, date, datetime, decimal, timedelta, timezone,
     },
     value::Value,
 };
@@ -238,6 +238,7 @@ pub enum HeapReadOutput<'a> {
     DateTime(HeapRead<'a, datetime::DateTime>),
     TimeDelta(HeapRead<'a, timedelta::TimeDelta>),
     TimeZone(HeapRead<'a, timezone::TimeZone>),
+    Decimal(HeapRead<'a, decimal::Decimal>),
 }
 
 pub struct HeapRead<'a, T: ?Sized> {
@@ -631,6 +632,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
             HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),
             HeapData::TimeZone(d) => HeapReadOutput::TimeZone(heap_read(base, d, readers)),
+            HeapData::Decimal(d) => HeapReadOutput::Decimal(heap_read(base, d, readers)),
         }
     }
 }

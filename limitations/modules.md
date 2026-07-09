@@ -10,6 +10,7 @@ and no way for sandboxed code to load additional modules.
 | ---------- | ------------------------------------ |
 | `asyncio`  | [asyncio.md](asyncio.md)             |
 | `datetime` | [datetime.md](datetime.md)           |
+| `decimal`  | [decimal.md](decimal.md)             |
 | `json`     | [json.md](json.md)                   |
 | `math`     | [math.md](math.md)                   |
 | `os`       | [os.md](os.md)                       |
@@ -29,7 +30,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `defaultdict`, `Counter`, `OrderedDict`, `deque`; `namedtuple` is exposed
 as a builtin, not via `collections`), `contextlib`, `copy`, `csv`,
 `ctypes`, `dataclasses` (the `@dataclass` decorator is built in; the
-module is not importable), `decimal`, `enum`, `fractions`, `functools`,
+module is not importable), `enum`, `fractions`, `functools`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`, `itertools`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,

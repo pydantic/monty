@@ -553,6 +553,38 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
                 exceptions::PyRuntimeError::new_err(msg)
             }
         }
+        // Reconstruct the host `decimal` exceptions by name; fall back to their
+        // common `ArithmeticError` parent if the `decimal` module can't be reached.
+        ExcType::DecimalException => decimal_exc(py, "DecimalException", msg),
+        ExcType::DecimalInvalidOperation => decimal_exc(py, "InvalidOperation", msg),
+        ExcType::DecimalDivisionByZero => decimal_exc(py, "DivisionByZero", msg),
+        ExcType::DecimalOverflow => decimal_exc(py, "Overflow", msg),
+        ExcType::DecimalInexact => decimal_exc(py, "Inexact", msg),
+        ExcType::DecimalRounded => decimal_exc(py, "Rounded", msg),
+        ExcType::DecimalSubnormal => decimal_exc(py, "Subnormal", msg),
+        ExcType::DecimalClamped => decimal_exc(py, "Clamped", msg),
+        ExcType::DecimalUnderflow => decimal_exc(py, "Underflow", msg),
+        ExcType::DecimalFloatOperation => decimal_exc(py, "FloatOperation", msg),
+        // `InvalidOperation` condition subtypes. Monty raises plain
+        // `InvalidOperation` rather than these, but the variants exist for the
+        // hierarchy, so reconstruct them by name (they resolve under `decimal`).
+        ExcType::DecimalConversionSyntax => decimal_exc(py, "ConversionSyntax", msg),
+        ExcType::DecimalDivisionImpossible => decimal_exc(py, "DivisionImpossible", msg),
+        ExcType::DecimalDivisionUndefined => decimal_exc(py, "DivisionUndefined", msg),
+        ExcType::DecimalInvalidContext => decimal_exc(py, "InvalidContext", msg),
+    }
+}
+
+/// Reconstructs a host `decimal.<name>` exception with `msg`, falling back to
+/// `ArithmeticError` (its common parent in Monty's `is_subclass_of`) if the
+/// `decimal` module can't be reached.
+fn decimal_exc(py: Python<'_>, name: &str, msg: String) -> PyErr {
+    if let Ok(cls) = py.import("decimal").and_then(|m| m.getattr(name))
+        && let Ok(exc_instance) = cls.call1((PyString::new(py, &msg),))
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        exceptions::PyArithmeticError::new_err(msg)
     }
 }
 

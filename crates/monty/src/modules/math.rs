@@ -36,7 +36,7 @@ use crate::{
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
-    types::{LongInt, Module, allocate_tuple},
+    types::{LongInt, Module, allocate_tuple, decimal},
     value::Value,
 };
 
@@ -353,6 +353,11 @@ fn math_floor(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         Value::Float(f) => float_to_int_checked(f.floor(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        // `Decimal` defines `__floor__`; NaN/∞ raise the int() conversion errors.
+        Value::Ref(id) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+            let d = d.clone();
+            decimal::floor_to_int(&d, vm)
+        }
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)
@@ -372,6 +377,11 @@ fn math_ceil(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResul
         Value::Float(f) => float_to_int_checked(f.ceil(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        // `Decimal` defines `__ceil__`; NaN/∞ raise the int() conversion errors.
+        Value::Ref(id) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+            let d = d.clone();
+            decimal::ceil_to_int(&d, vm)
+        }
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)
@@ -390,6 +400,11 @@ fn math_trunc(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
         Value::Float(f) => float_to_int_checked(f.trunc(), *f, vm.heap),
         Value::Int(n) => Ok(Value::Int(*n)),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        // `Decimal` defines `__trunc__` (identical to `int()`).
+        Value::Ref(id) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+            let d = d.clone();
+            decimal::trunc_to_int(&d, vm)
+        }
         _ => Err(ExcType::type_error(format!(
             "type {} doesn't define __trunc__ method",
             value.py_type_name(vm)
@@ -1360,6 +1375,10 @@ fn value_to_float(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult
         Value::Float(f) => Ok(*f),
         Value::Int(n) => Ok(*n as f64),
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+        // `Decimal` defines `__float__`, so every float-consuming math
+        // function (`sqrt`, `isnan`, `log`, …) accepts it, as in CPython —
+        // including CPython's `ValueError` for a signaling NaN.
+        Value::Ref(id) if let HeapData::Decimal(d) = vm.heap.get(*id) => decimal::to_float(d),
         _ => Err(ExcType::type_error(format!(
             "must be real number, not {}",
             value.py_type_name(vm)

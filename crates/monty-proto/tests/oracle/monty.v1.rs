@@ -22,7 +22,7 @@ pub struct Unit {}
 pub struct MontyObject {
     #[prost(
         oneof = "monty_object::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29"
     )]
     pub kind: ::core::option::Option<monty_object::Kind>,
 }
@@ -101,6 +101,11 @@ pub mod monty_object {
         /// reconstructed from a name).
         #[prost(string, tag = "28")]
         InstanceType(::prost::alloc::string::String),
+        /// A decimal.Decimal value, carried losslessly as its canonical string
+        /// (e.g. "1.20", "1E+5", "NaN") — the same string Python's `str(Decimal)`
+        /// produces, so it round-trips exactly through `Decimal(str)`.
+        #[prost(string, tag = "29")]
+        Decimal(::prost::alloc::string::String),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

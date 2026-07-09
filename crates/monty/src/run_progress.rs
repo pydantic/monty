@@ -21,6 +21,7 @@ use crate::{
     os::OsFunctionCall,
     resource::ResourceTracker,
     run::Executor,
+    value::from_snapshot_bytes,
 };
 
 // ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
     /// # Errors
     /// Returns an error if deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        from_snapshot_bytes(bytes)
     }
 }
 

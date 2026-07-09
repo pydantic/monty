@@ -484,7 +484,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
         let id = vm.heap.allocate(HeapData::List(List::new(items)))?;

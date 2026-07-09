@@ -35,6 +35,24 @@ fn json_output_primitives() {
 }
 
 #[test]
+fn json_output_decimal() {
+    // A Decimal crosses the boundary as its canonical string under the derived
+    // externally-tagged serde (`{"Decimal":"<str>"}`), round-tripping exactly.
+    assert_snapshot!(
+        to_json(&eval("from decimal import Decimal\nDecimal('1.20')")),
+        @r#"{"Decimal":"1.20"}"#
+    );
+    assert_snapshot!(
+        to_json(&eval("from decimal import Decimal\nDecimal('1E+5')")),
+        @r#"{"Decimal":"1E+5"}"#
+    );
+    assert_snapshot!(
+        to_json(&eval("from decimal import Decimal\nDecimal(1) / Decimal(3)")),
+        @r#"{"Decimal":"0.3333333333333333333333333333"}"#
+    );
+}
+
+#[test]
 fn json_output_list() {
     assert_snapshot!(
         to_json(&eval("[1, 'two', 3.0]")),

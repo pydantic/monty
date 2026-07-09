@@ -275,6 +275,7 @@ mod tag {
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
     pub const INSTANCE_TYPE: u32 = 28;
+    pub const DECIMAL: u32 = 29;
 }
 
 // ============================================================================
@@ -391,6 +392,7 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
             encode_opt_str(2, docstring.as_deref(), buf);
         }
         MontyObject::Repr(r) => encoding::string::encode(tag::REPR, r, buf),
+        MontyObject::Decimal(s) => encoding::string::encode(tag::DECIMAL, s, buf),
         MontyObject::Cycle(identity, placeholder) => {
             let identity = *identity as u64;
             encode_message_key(tag::CYCLE, uint64_len(1, identity) + str_len(2, placeholder), buf);
@@ -451,6 +453,7 @@ fn object_len(obj: &MontyObject) -> usize {
             submessage_len(tag::FUNCTION, str_len(1, name) + opt_str_len(2, docstring.as_deref()))
         }
         MontyObject::Repr(r) => encoding::string::encoded_len(tag::REPR, r),
+        MontyObject::Decimal(s) => encoding::string::encoded_len(tag::DECIMAL, s),
         MontyObject::Cycle(identity, placeholder) => {
             submessage_len(tag::CYCLE, uint64_len(1, *identity as u64) + str_len(2, placeholder))
         }
@@ -798,6 +801,9 @@ fn decode_field(
             }
         }
         tag::REPR => MontyObject::Repr(merge_string(wire_type, buf, ctx)?),
+        // The string's *decimal* validity is checked when it crosses into the
+        // sandbox (`MontyObject::to_value`); here we only need valid UTF-8.
+        tag::DECIMAL => MontyObject::Decimal(merge_string(wire_type, buf, ctx)?),
         tag::CYCLE => {
             let c: pb::Cycle = merge_message(wire_type, buf, ctx)?;
             let identity = usize::try_from(c.identity).map_err(|_| {

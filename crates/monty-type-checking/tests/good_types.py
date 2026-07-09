@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import decimal
 import json
 import os
 import re
@@ -589,3 +590,57 @@ assert_type(tz, datetime.timezone)
 
 assert_type(json.loads('null'), Any)
 assert_type(json.dumps(None), str)
+
+# === decimal module ===
+
+# construction from str / int / float / Decimal
+dec = decimal.Decimal('1.5')
+assert_type(dec, decimal.Decimal)
+dec_i = decimal.Decimal(10)
+dec_f = decimal.Decimal(0.1)
+dec_copy = decimal.Decimal(dec)
+
+# str / repr / bool
+check_str(str(dec))
+check_str(repr(dec))
+check_bool(bool(dec))
+
+# arithmetic with Decimal and int operands
+assert_type(dec + dec_i, decimal.Decimal)
+assert_type(dec - 1, decimal.Decimal)
+assert_type(dec * 2, decimal.Decimal)
+assert_type(dec / dec_i, decimal.Decimal)
+assert_type(dec % 2, decimal.Decimal)
+assert_type(dec**2, decimal.Decimal)
+assert_type(-dec, decimal.Decimal)
+abs(dec)  # `abs()` routes through `__abs__`; Monty's builtins stub infers Unknown
+
+# comparisons
+check_bool(dec == dec_i)
+check_bool(dec < dec_i)
+check_bool(dec >= 1)
+
+# conversions
+check_int(int(dec))
+check_float(float(dec))
+
+# methods (including the per-call `rounding=` argument)
+assert_type(dec.sqrt(), decimal.Decimal)
+assert_type(dec.quantize(decimal.Decimal('0.01')), decimal.Decimal)
+assert_type(dec.quantize(decimal.Decimal('0.01'), rounding=decimal.ROUND_HALF_UP), decimal.Decimal)
+assert_type(dec.normalize(), decimal.Decimal)
+assert_type(dec.to_integral_value(rounding=decimal.ROUND_FLOOR), decimal.Decimal)
+check_bool(dec.is_nan())
+dec_tuple = dec.as_tuple()
+check_int(dec_tuple.sign)
+
+# rounding-mode constants
+check_str(decimal.ROUND_HALF_EVEN)
+
+# exceptions are catchable arithmetic errors
+try:
+    dec.sqrt()
+except decimal.InvalidOperation:
+    pass
+except decimal.DecimalException:
+    pass

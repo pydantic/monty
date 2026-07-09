@@ -5,7 +5,9 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    heap::HeapData,
     resource::ResourceTracker,
+    types::decimal,
     value::Value,
 };
 
@@ -34,6 +36,16 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
         Some(Value::Int(n)) => Some(*n),
         Some(Value::Bool(b)) => Some(i64::from(*b)),
         Some(v) => {
+            // `round(Decimal, huge_int)`: CPython converts `ndigits` to a C
+            // ssize_t and raises `OverflowError`. Other number types keep the
+            // generic message (their `ndigits` handling pre-dates `Decimal`).
+            if let Value::Ref(id) = v
+                && matches!(vm.heap.get(*id), HeapData::LongInt(_))
+                && let Value::Ref(num_id) = number
+                && matches!(vm.heap.get(*num_id), HeapData::Decimal(_))
+            {
+                return Err(ExcType::int_too_large_for_ssize_t());
+            }
             let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
@@ -80,6 +92,14 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
                 } else {
                     Ok(Value::Int(f64_to_i64(bankers_round(*f))))
                 }
+            }
+        }
+        // round(Decimal) -> int (HALF_EVEN); round(Decimal, n) -> Decimal.
+        Value::Ref(id) if let HeapData::Decimal(d) = vm.heap.get(*id) => {
+            let d = d.clone();
+            match digits {
+                Some(ndigits) => decimal::round_with_digits(d, ndigits, vm),
+                None => decimal::round_to_int(d, vm),
             }
         }
         _ => {

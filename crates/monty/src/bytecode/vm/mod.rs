@@ -21,6 +21,8 @@ pub(crate) use call::CallResult;
 pub(crate) use recursion::{ContainsVM, DropWithVM, RecursionToken, VmGuard};
 use scheduler::Scheduler;
 
+#[cfg(feature = "memory-model-checks")]
+use crate::value::RefDropPanicSuppressor;
 use crate::{
     MontyObject,
     args::ArgValues,
@@ -41,7 +43,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        Dict, LongInt, MontyIter, PyTrait,
+        Dict, LongInt, MontyIter, PyTrait, decimal,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
@@ -628,6 +630,32 @@ pub struct VMSnapshot {
     pending_file_effect: Option<PendingFileEffect>,
 }
 
+/// Neutralises a snapshot's `Value::Ref`s when it is dropped without being
+/// resumed — a legitimate embedder flow (`dump()` then discard the live
+/// progress) and the fate of a freshly-`load`ed snapshot that is never run. A
+/// `VMSnapshot` is self-contained: its refs point into the heap serialized
+/// alongside it (`Snapshot` in `run_progress`, or the REPL's snapshot types),
+/// which is discarded with it, so no live refcount is corrupted — but there is
+/// no heap borrow here to route the refs through, so the drop can only be
+/// *silenced*, not booked. This only affects the `memory-model-checks` guard
+/// in [`Value`]'s `Drop`; production builds have no `Value::Drop` and discard
+/// the values harmlessly. `VM::restore` empties the snapshot via `mem::take`
+/// before this runs, so a resumed snapshot's refs move into the live VM and
+/// are torn down properly there instead.
+#[cfg(feature = "memory-model-checks")]
+impl Drop for VMSnapshot {
+    fn drop(&mut self) {
+        let _suppress = RefDropPanicSuppressor::new();
+        // Drop every Value-bearing field while the guard is active (`frames`
+        // holds no `Value`s, so it drops harmlessly after this body).
+        self.stack = Vec::new();
+        self.globals = Vec::new();
+        self.exception_stack = Vec::new();
+        self.scheduler = Scheduler::default();
+        self.pending_file_effect = None;
+    }
+}
+
 // ============================================================================
 // Virtual Machine
 // ============================================================================
@@ -789,15 +817,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
     pub fn restore(
-        snapshot: VMSnapshot,
+        mut snapshot: VMSnapshot,
         module_code: &'h Code,
         heap: &'h mut HeapReader<'h, T>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
     ) -> Self {
-        // Reconstruct call frames from serialized form
-        let frames: Vec<CallFrame<'_>> = snapshot
-            .frames
+        // Move the Value-bearing fields out via `mem::take` rather than by
+        // value: `VMSnapshot`'s `Drop` (under `memory-model-checks`) forbids
+        // moving fields out, and the emptied snapshot must drop harmlessly
+        // once its real contents have transferred into this live VM.
+        // Reconstruct call frames from serialized form.
+        let frames: Vec<CallFrame<'_>> = mem::take(&mut snapshot.frames)
             .into_iter()
             .map(|sf| {
                 let code = match sf.function_id {
@@ -824,19 +855,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let current_frame_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to depth
 
         Self {
-            stack: snapshot.stack,
-            globals: snapshot.globals,
+            stack: mem::take(&mut snapshot.stack),
+            globals: mem::take(&mut snapshot.globals),
             frames,
             heap,
             interns,
             print_writer,
-            exception_stack: snapshot.exception_stack,
+            exception_stack: mem::take(&mut snapshot.exception_stack),
             instruction_ip: snapshot.instruction_ip,
-            scheduler: snapshot.scheduler,
+            scheduler: mem::take(&mut snapshot.scheduler),
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_file_effect: snapshot.pending_file_effect,
+            pending_file_effect: snapshot.pending_file_effect.take(),
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
@@ -1185,6 +1216,15 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                     Err(e) => catch_sync!(self, cached_frame, e),
                                 }
                             }
+                            HeapData::Decimal(dec) => {
+                                // `-decimal` rounds to the working precision, like every op.
+                                let d = dec.clone();
+                                value.drop_with_heap(self);
+                                match decimal::neg(d, self) {
+                                    Ok(v) => self.push(v),
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
                             _ => {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
@@ -1204,16 +1244,25 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     match value {
                         Value::Int(_) | Value::Float(_) => self.push(value),
                         Value::Bool(b) => self.push(Value::Int(i64::from(b))),
-                        Value::Ref(id) => {
-                            if matches!(self.heap.get(id), HeapData::LongInt(_)) {
-                                // LongInt - return as-is (value already has correct refcount)
-                                self.push(value);
-                            } else {
+                        Value::Ref(id) => match self.heap.get(id) {
+                            // LongInt - return as-is (value already has correct refcount)
+                            HeapData::LongInt(_) => self.push(value),
+                            HeapData::Decimal(dec) => {
+                                // `+decimal` is value-preserving but still rounds to
+                                // the working precision (e.g. `+Decimal(0.1)`).
+                                let d = dec.clone();
+                                value.drop_with_heap(self);
+                                match decimal::pos(d, self) {
+                                    Ok(v) => self.push(v),
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
+                            _ => {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with_heap(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                             }
-                        }
+                        },
                         _ => {
                             let value_type = value.py_type_name(self);
                             value.drop_with_heap(self);

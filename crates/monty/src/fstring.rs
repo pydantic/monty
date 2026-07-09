@@ -16,7 +16,7 @@ use crate::{
     heap::HeapData,
     intern::StringId,
     resource::{ResourceTracker, check_repeat_size},
-    types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
+    types::{LongInt, PyTrait, Type, decimal, long_int::check_bits_str_digits_limit},
     value::Value,
 };
 
@@ -664,9 +664,16 @@ pub fn format_with_spec(
         let numeric_finite = match value {
             Value::Int(_) => true,
             Value::Float(f) => f.is_finite(),
-            // A big integer formatted as a float is first converted to `f64`,
-            // so an attacker-chosen precision applies to it too — guard it.
-            Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
+            // A big integer formatted as a float is first converted to `f64`, and
+            // a finite `Decimal`'s `e`/`f`/`%` renderer pads its native digit
+            // string up to the precision — so an attacker-chosen precision
+            // applies to both and must be guarded. (Non-finite decimals ignore
+            // precision, like non-finite floats.)
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::LongInt(_) => true,
+                HeapData::Decimal(d) => d.is_finite(),
+                _ => false,
+            },
             _ => false,
         };
         if numeric_finite {
@@ -676,6 +683,21 @@ pub fn format_with_spec(
             let separators = if spec.frac_grouping.is_some() { precision / 3 } else { 0 };
             check_repeat_size(precision.saturating_add(separators), 1, vm.heap.tracker())?;
         }
+    }
+
+    // `Decimal` has a self-contained formatter mirroring CPython's
+    // `Decimal.__format__`: it validates the spec itself (raising the single
+    // `invalid format string` CPython uses for every unsupported combination —
+    // an integer/string presentation code, or grouping with `n`) and renders
+    // from the value's native digits. Dispatch here, *after* the precision guard
+    // above but *before* the int/float validation below, whose error messages
+    // and presentation rules diverge from `Decimal`'s.
+    if let Value::Ref(id) = value
+        && let HeapData::Decimal(d) = vm.heap.get(*id)
+    {
+        // `__format__` rounds under the active context's rounding mode, matching
+        // CPython (its precision still comes from the spec, not the context).
+        return decimal::format_decimal(d, spec, vm.heap.tracker());
     }
 
     // A `str` value is formatted entirely through the string mini-language:
@@ -923,7 +945,7 @@ fn validate_grouping(grouping: Grouping, type_char: Option<TypeChar>, value_type
 /// value (it falls back to `str()`).
 fn type_valid_for_value(type_char: Option<TypeChar>, value_type: Type) -> bool {
     let is_int = matches!(value_type, Type::Int | Type::Bool);
-    let is_num = is_int || value_type == Type::Float;
+    let is_num = is_int || matches!(value_type, Type::Float);
     match type_char {
         None => true,
         Some(TypeChar::D | TypeChar::B | TypeChar::O | TypeChar::X | TypeChar::XUpper | TypeChar::C) => is_int,
@@ -1791,7 +1813,7 @@ fn positive_sign_prefix(sign: Option<Sign>) -> &'static str {
 /// [`is_rounded_zero`]. `z` is only ever set for float presentations (it is
 /// rejected for integer/string ones in `format_with_spec`), so the integer
 /// callers get the plain sign behaviour.
-fn numeric_sign(is_negative: bool, abs_str: &str, spec: &ParsedFormatSpec) -> &'static str {
+pub(crate) fn numeric_sign(is_negative: bool, abs_str: &str, spec: &ParsedFormatSpec) -> &'static str {
     if is_negative && !(spec.z && is_rounded_zero(abs_str)) {
         "-"
     } else {
@@ -1862,7 +1884,7 @@ fn maybe_alternate_point(abs_str: String, abs_val: f64, spec: &ParsedFormatSpec)
 /// integer digits before padding — see [`pad_signed_grouped`]. When
 /// `spec.frac_grouping` is set, the fractional digits are grouped first (a
 /// no-op for values with no fractional part, e.g. integers).
-fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
+pub(crate) fn pad_signed_numeric(sign: &str, prefix: &str, abs_str: &str, spec: &ParsedFormatSpec) -> String {
     // Fractional grouping is applied up front so the integer-grouping/padding
     // below treats the grouped fraction as an opaque suffix.
     let frac_grouped;
