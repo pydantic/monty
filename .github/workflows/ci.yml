@@ -106,10 +106,6 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - uses: taiki-e/install-action@1ed3272338f573e042a2e6bca3893aa19f43b47a # v2.71.3
-        with:
-          tool: nextest
-
       # this means pyo3 will use Python 3.14 in tests
       - name: set up python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -121,21 +117,21 @@ jobs:
       - run: cargo llvm-cov clean --workspace
 
       # coverage for `make test-no-features`
-      - run: cargo llvm-cov --no-report nextest -p monty
+      - run: cargo llvm-cov --no-report -p monty
       - run: cargo llvm-cov run --no-report -p monty-datatest
       # coverage for `make test-memory-model-checks`
-      - run: cargo llvm-cov --no-report nextest -p monty --features memory-model-checks
+      - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
       - run: cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
       # coverage for `make test-ref-count-return`
-      - run: cargo llvm-cov --no-report nextest -p monty --features ref-count-return
+      - run: cargo llvm-cov --no-report -p monty --features ref-count-return
       - run: cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
       # coverage for `make test-type-checking`
-      - run: cargo llvm-cov --no-report nextest -p monty-type-checking -p monty-typeshed
+      - run: cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
       # subprocess protocol + child mode + worker pool. The pool tests spawn a
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
       - run: cargo build -p monty-runtime
-      - run: cargo llvm-cov --no-report nextest -p monty-proto -p monty-runtime -p monty-pool
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       # Generating text report:

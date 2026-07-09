@@ -10,6 +10,10 @@ endif
 .cargo: ## Check that cargo is installed
 	@cargo --version || echo 'Please install cargo: https://github.com/rust-lang/cargo'
 
+.PHONY: .nextest
+.nextest: ## Check that cargo-nextest is installed
+	@cargo nextest --version || echo 'Please install cargo-nextest: https://nexte.st/docs/installation/pre-built-binaries/'
+
 .PHONY: .uv
 .uv: ## Check that uv is installed
 	@uv --version || echo 'Please install uv: https://docs.astral.sh/uv/getting-started/installation/'
@@ -124,17 +128,17 @@ format-lint-rs: format-rs lint-rs ## Format and lint Rust code with fmt and clip
 format-lint-py: format-py lint-py ## Format and lint Python code with ruff
 
 .PHONY: test-no-features
-test-no-features: ## Run rust tests without any features enabled
+test-no-features: .nextest ## Run rust tests without any features enabled
 	cargo nextest run -p monty
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks
-test-memory-model-checks: ## Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
+test-memory-model-checks: .nextest ## Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 	cargo nextest run -p monty --features "memory-model-checks test-hooks"
 	cargo run -p monty-datatest --features memory-model-checks
 
 .PHONY: test-ref-count-return
-test-ref-count-return: ## Run rust tests with ref-count-return enabled
+test-ref-count-return: .nextest ## Run rust tests with ref-count-return enabled
 	cargo nextest run -p monty --features ref-count-return
 	cargo run -p monty-datatest --features ref-count-return
 
@@ -151,11 +155,11 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest -- run_test_cases_monty
 
 .PHONY: test-type-checking
-test-type-checking: ## Run rust tests on monty-type-checking
+test-type-checking: .nextest ## Run rust tests on monty-type-checking
 	cargo nextest run -p monty-type-checking -p monty-typeshed
 
 .PHONY: test-subprocess
-test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+test-subprocess: .nextest ## Run subprocess protocol, child-mode, and worker-pool tests
 	cargo build -p monty-runtime
 	cargo nextest run -p monty-proto -p monty-runtime -p monty-pool
 
@@ -177,19 +181,18 @@ test: test-memory-model-checks test-ref-count-return test-no-features test-type-
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	@cargo llvm-cov --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-llvm-cov`'
-	@cargo nextest --version > /dev/null 2>&1 || echo 'Please run: `cargo install cargo-nextest --locked`'
 	cargo llvm-cov clean --workspace
 	echo "coverage for `make test-no-features`"
-	cargo llvm-cov --no-report nextest -p monty
+	cargo llvm-cov --no-report -p monty
 	cargo llvm-cov run --no-report -p monty-datatest
 	echo "coverage for `make test-memory-model-checks`"
-	cargo llvm-cov --no-report nextest -p monty --features memory-model-checks
+	cargo llvm-cov --no-report -p monty --features memory-model-checks
 	cargo llvm-cov run --no-report -p monty-datatest --features memory-model-checks
 	echo "coverage for `make test-ref-count-return`"
-	cargo llvm-cov --no-report nextest -p monty --features ref-count-return
+	cargo llvm-cov --no-report -p monty --features ref-count-return
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
 	echo "coverage for `make test-type-checking`"
-	cargo llvm-cov --no-report nextest -p monty-type-checking -p monty-typeshed
+	cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
 	echo "Generating reports:"
 	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
