@@ -1,6 +1,6 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
+import { skipIfBrowser, skipIfNode } from './env.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -29,6 +29,16 @@ function createTestDir(): { dir: string; cleanup: () => void } {
 // =============================================================================
 // MountDir validation
 // =============================================================================
+
+test('browser wasm reports mounts as unsupported', async (ctx) => {
+  skipIfNode(ctx)
+  await using session = await pool().checkout()
+
+  const error = await t.throwsAsync(() =>
+    session.feedRun("open('/mnt/data/file.txt').read()", { mount: [{}] as never }),
+  )
+  t.is(error.message, 'the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+})
 
 test('MountDir repr', (ctx) => {
   skipIfBrowser(ctx)
