@@ -40,9 +40,18 @@ fn sync_runtime_pin() {
 
     let mut result = String::with_capacity(contents.len());
     let mut changed = false;
+    let mut pins = 0usize;
 
     for line in contents.lines() {
-        let synced = sync_line(line, &pin_version);
+        let synced = if is_runtime_pin(line) {
+            pins += 1;
+            // Preserve the presence/absence of the trailing comma (the last
+            // entry in the dependencies array has none).
+            let comma = if line.ends_with(',') { "," } else { "" };
+            Cow::Owned(format!("    \"{RUNTIME_DIST}=={pin_version}\"{comma}"))
+        } else {
+            Cow::Borrowed(line)
+        };
         if synced != line {
             changed = true;
         }
@@ -50,25 +59,34 @@ fn sync_runtime_pin() {
         result.push('\n');
     }
 
+    // Anything that stops the pin from being recognised — renaming it, adding
+    // extras or an environment marker, dropping it — must fail the build rather
+    // than silently ship a stale or absent pin.
+    assert_eq!(
+        pins, 1,
+        "expected exactly one `{RUNTIME_DIST}` pin in [project].dependencies of pyproject.toml, found {pins}"
+    );
+
     if changed {
-        eprintln!("Updating pydantic-monty-runtime pin in pyproject.toml to {pin_version}");
+        eprintln!("Updating {RUNTIME_DIST} pin in pyproject.toml to {pin_version}");
         fs::write(pyproject_path, &result).expect("failed to write pyproject.toml");
     }
 }
 
-/// Rewrite `line` with `version` if it is the `pydantic-monty-runtime` pin in
-/// `[project].dependencies`. All other lines pass through unchanged.
+/// The PyPI distribution this package pins exactly; see [`sync_runtime_pin`].
+const RUNTIME_DIST: &str = "pydantic-monty-runtime";
+
+/// Whether `line` is the [`RUNTIME_DIST`] entry in `[project].dependencies`.
 ///
 /// Matching is indentation-sensitive (exactly 4 spaces, the array style used in
 /// this file) so that the bare `pydantic-monty-runtime = { workspace = true }`
 /// entry under `[tool.uv.sources]`, which must stay unpinned, is never touched.
-fn sync_line<'a>(line: &'a str, version: &str) -> Cow<'a, str> {
-    if line.starts_with("    \"pydantic-monty-runtime") {
-        // Preserve the presence/absence of the trailing comma (the last entry
-        // in the dependencies array has none).
-        let comma = if line.ends_with(',') { "," } else { "" };
-        Cow::Owned(format!("    \"pydantic-monty-runtime=={version}\"{comma}"))
-    } else {
-        Cow::Borrowed(line)
-    }
+///
+/// The name must end at a version specifier or the closing quote: `-` is a legal
+/// PEP 508 name character, so a prefix match alone would also claim (and clobber)
+/// a future sibling dependency such as `pydantic-monty-runtime-stubs`.
+fn is_runtime_pin(line: &str) -> bool {
+    line.strip_prefix("    \"")
+        .and_then(|entry| entry.strip_prefix(RUNTIME_DIST))
+        .is_some_and(|specifier| specifier.starts_with(['=', '<', '>', '!', '~', '"']))
 }
