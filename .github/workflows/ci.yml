@@ -114,8 +114,6 @@ jobs:
 
       - run: rustc --version --verbose
       - run: python3 -V
-        # don't use .venv python in CI
-      - run: rm .cargo/config.toml
       - run: cargo llvm-cov clean --workspace
 
       # coverage for `make test-no-features`
@@ -182,8 +180,6 @@ jobs:
       - run: rustc --version --verbose
       - run: python3 -V
       - run: uv sync --all-packages --only-dev
-        # don't use .venv python in CI
-      - run: rm .cargo/config.toml
 
       # pydantic-monty depends on pydantic-monty-runtime; install it from the
       # workspace so `maturin develop` can resolve it (plain build, outside
@@ -320,14 +316,6 @@ jobs:
         with:
           python-version: '3.14'
 
-      # don't use .venv python in CI
-      - name: Remove cargo config (Unix)
-        if: runner.os != 'Windows'
-        run: rm .cargo/config.toml
-      - name: Remove cargo config (Windows)
-        if: runner.os == 'Windows'
-        run: Remove-Item .cargo/config.toml
-
       - run: cargo test -p monty --features memory-model-checks
       - run: cargo run -p monty-datatest --features memory-model-checks
       - run: cargo build -p monty-cli
@@ -365,9 +353,6 @@ jobs:
         with:
           python-version: '3.14'
 
-      # don't use .venv python in CI
-      - run: rm .cargo/config.toml
-
       - run: make dev-bench
 
   miri:
@@ -388,9 +373,6 @@ jobs:
         with:
           lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-on-failure: true
-
-      # don't use .venv python in CI
-      - run: rm .cargo/config.toml
 
       - name: Run miri tests
         run: make miri
@@ -427,9 +409,6 @@ jobs:
 
       - if: steps.cache-rust.outputs.cache-hit != 'true'
         run: cargo install cargo-fuzz
-
-      # don't use .venv python in CI
-      - run: rm .cargo/config.toml
 
       - name: Run ${{ matrix.target }} fuzzer
         run: |
@@ -1021,9 +1000,6 @@ jobs:
             .cargo-cache
             target/
           key: wasm32-wasip1-threads-cargo-ubuntu-latest
-
-      # don't use .venv python in CI
-      - run: rm .cargo/config.toml
 
       - name: Install dependencies
         run: npm install
