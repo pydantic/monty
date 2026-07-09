@@ -1,7 +1,7 @@
 // Loads the lean wasip1 worker module under a single-threaded WASI shim and
 // runs it one protocol turn at a time.
 //
-// The module (`crates/monty-wasm-worker`) is a WASI reactor exporting
+// The module (`crates/monty-wasm-runtime`) is a WASI reactor exporting
 // `monty_dispatch_turn`: it reads one framed request from stdin and writes the
 // turn's framed events to stdout. This host owns the instance (so session state
 // persists across turns) and swaps the stdin/stdout buffers around each call.
@@ -20,6 +20,7 @@ export const TurnStatus = {
 
 interface WasmExports {
   monty_dispatch_turn(): number
+  monty_decode_child_events(): number
 }
 
 /**
@@ -28,7 +29,9 @@ interface WasmExports {
  * in-process [`WasmHost`] (see [`inProcessDispatcher`]) and over a Web Worker
  * `postMessage` channel.
  */
-export type Dispatcher = (requestFrame: Uint8Array) => Promise<{ reply: Uint8Array; status: number }>
+export type Dispatcher = (
+  requestFrame: Uint8Array,
+) => Promise<{ reply: Uint8Array; status: number; events?: DecodedChildEvent[] }>
 
 /** Adapts a synchronous in-process [`WasmHost`] to the async [`Dispatcher`]. */
 export function inProcessDispatcher(host: WasmHost): Dispatcher {
@@ -56,13 +59,33 @@ export class WasmHost {
    * Runs one turn: feeds `requestFrame` on stdin, returns the concatenated
    * framed reply events from stdout and the turn's status code.
    */
-  dispatch(requestFrame: Uint8Array): { reply: Uint8Array; status: number } {
-    this.wasi.fds[0] = new OpenFile(new File(Array.from(requestFrame)))
+  dispatch(requestFrame: Uint8Array): { reply: Uint8Array; status: number; events: DecodedChildEvent[] } {
+    const { output: reply, status } = this.callWithStdio(requestFrame, () => this.exports.monty_dispatch_turn())
+    const events = status === TurnStatus.IoError ? [] : this.decodeChildEvents(reply)
+    return { reply, status, events }
+  }
+
+  /** Decodes framed `ChildEvent`s with the worker module's Rust protobuf code. */
+  decodeChildEvents(reply: Uint8Array): DecodedChildEvent[] {
+    const { output, status } = this.callWithStdio(reply, () => this.exports.monty_decode_child_events())
+    if (status !== TurnStatus.Continue) {
+      throw new Error('failed to decode wasm worker reply')
+    }
+    return JSON.parse(new TextDecoder().decode(output)) as DecodedChildEvent[]
+  }
+
+  private callWithStdio(input: Uint8Array, call: () => number): { output: Uint8Array; status: number } {
+    this.wasi.fds[0] = new OpenFile(new File(Array.from(input)))
     const out = new File([])
     this.wasi.fds[1] = new OpenFile(out)
-    const status = this.exports.monty_dispatch_turn()
-    return { reply: out.data, status }
+    const status = call()
+    return { output: out.data, status }
   }
+}
+
+export interface DecodedChildEvent {
+  kind: number
+  bytes: number[]
 }
 
 function stdio(): OpenFile {

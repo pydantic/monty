@@ -57,7 +57,7 @@
     "build:debug": "run-s build:napi:debug build:ts",
     "build:napi": "napi build --platform --release --esm",
     "build:napi:debug": "napi build --platform --esm",
-    "build:wasm": "cargo build -p monty-wasm-worker --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
+    "build:wasm": "cargo build -p monty-wasm-runtime --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
     "build:ts": "tsc",
     "format": "prettier . -w",
     "lint": "oxlint .",

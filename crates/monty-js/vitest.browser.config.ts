@@ -11,7 +11,7 @@ export default defineConfig({
   },
   plugins: [
     {
-      name: 'browser-test-node-builtins',
+      name: 'monty-browser-node-builtins',
       enforce: 'pre',
       resolveId(id) {
         return id.startsWith('node:') ? nodeBuiltinsStub : null

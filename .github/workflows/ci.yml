@@ -1029,7 +1029,7 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
-          path: crates/monty-js/dist/worker/monty_wasm_worker.wasm
+          path: crates/monty-js/dist/worker/monty_wasm_runtime.wasm
           if-no-files-found: error
     env:
       CARGO_INCREMENTAL: '1'

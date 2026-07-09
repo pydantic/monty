@@ -11,7 +11,7 @@
 //   # npm/<triple>/ and `npm publish` each directory
 //
 // The browser/wasm path no longer ships a napi platform package: it runs the
-// lean `crates/monty-wasm-worker` module in a Web Worker, not a napi binding.
+// lean `crates/monty-wasm-runtime` module in a Web Worker, not a napi binding.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'

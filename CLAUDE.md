@@ -763,7 +763,7 @@ Worker** instead of a subprocess, exposed under the `/wasm` subpath. The same
 pool → checkout → session → `feedRun` model and drive loop are used; only the
 transport differs. The pieces:
 
-- `crates/monty-wasm-worker` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
+- `crates/monty-wasm-runtime` — a lean `wasm32-wasip1` module: a WASI reactor wrapping
   the transport-agnostic `monty-worker` `Child` state machine, exporting one
   `monty_dispatch_turn` (read a framed request from stdin, run one turn, write
   framed events to stdout). No napi, no threads, no `SharedArrayBuffer`.

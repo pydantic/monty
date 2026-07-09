@@ -8,7 +8,7 @@
 // and rejects every in-flight request when the worker dies or is killed (so the
 // transport sees a crash and the pool replaces it).
 
-import type { Dispatcher } from './host.js'
+import type { DecodedChildEvent, Dispatcher } from './host.js'
 import type { PooledWorker } from './pool.js'
 
 /** A request sent to the worker: a turn's framed `ParentRequest`. */
@@ -22,6 +22,7 @@ export interface DispatchReply {
   id: number
   reply: Uint8Array
   status: number
+  events?: DecodedChildEvent[]
 }
 
 /**
@@ -42,7 +43,7 @@ export interface WorkerChannelOptions {
 }
 
 interface Pending {
-  resolve(value: { reply: Uint8Array; status: number }): void
+  resolve(value: { reply: Uint8Array; status: number; events?: DecodedChildEvent[] }): void
   reject(err: Error): void
   timer: ReturnType<typeof setTimeout> | null
 }

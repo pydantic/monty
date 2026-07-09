@@ -20,7 +20,7 @@ export async function serveDispatch(
 ): Promise<void> {
   const host = await WasmHost.create(module)
   subscribe((request) => {
-    const { reply, status } = host.dispatch(request.frame)
-    post({ id: request.id, reply, status })
+    const { reply, status, events } = host.dispatch(request.frame)
+    post({ id: request.id, reply, status, events })
   })
 }

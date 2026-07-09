@@ -15,7 +15,7 @@
 
 import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn } from '../native.js'
 import type { Dispatcher } from './host.js'
-import { Reader, Writer, deframe, frame } from './proto.js'
+import { Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
@@ -228,16 +228,18 @@ export class WorkerTransport {
     const request = new Writer()
     request.lengthDelimited(field, payload) // ParentRequest oneof
     let reply: Uint8Array
+    let decodedEvents: ChildEventFrame[] | undefined
     try {
-      ;({ reply } = await this.dispatcher(frame(request.finish())))
+      const dispatched = await this.dispatcher(frame(request.finish()))
+      reply = dispatched.reply
+      decodedEvents = dispatched.events?.map((event) => ({ kind: event.kind, bytes: Uint8Array.from(event.bytes) }))
     } catch {
       // the dispatcher rejects when the worker died or the channel broke; the
       // caller treats a missing terminating event as a crash
       return null
     }
     let terminating: ChildEventFrame | null = null
-    for (const frameBytes of deframe(reply)) {
-      const event = readChildEvent(frameBytes)
+    for (const event of decodedEvents ?? decodeChildEvents(reply)) {
       if (event.kind === Ev.Print) {
         if (onPrint) {
           const [stream, text] = decodePrint(event.bytes)
@@ -303,6 +305,10 @@ export class WorkerTransport {
 interface ChildEventFrame {
   readonly kind: number
   readonly bytes: Uint8Array
+}
+
+function decodeChildEvents(reply: Uint8Array): ChildEventFrame[] {
+  return [...deframe(reply)].map(readChildEvent)
 }
 
 /** Extracts the single oneof kind (1..=11) from a `ChildEvent`, ignoring timing. */
@@ -389,7 +395,12 @@ function decodeResolveFutures(bytes: Uint8Array): number[] {
   const ids: number[] = []
   while (!reader.done) {
     const f = reader.next()
-    if (f.field === 1) ids.push(Number(f.value)) // ResolveFutures.pending_call_ids
+    if (f.field === 1 && f.wire === Wire.Varint) {
+      ids.push(Number(f.value)) // ResolveFutures.pending_call_ids
+    } else if (f.field === 1 && f.wire === Wire.LengthDelimited) {
+      const packed = new Reader(f.bytes)
+      while (!packed.done) ids.push(Number(packed.nextVarint()))
+    }
   }
   return ids
 }

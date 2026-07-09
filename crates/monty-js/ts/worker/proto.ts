@@ -115,6 +115,10 @@ export class Reader {
     return this.pos >= this.end
   }
 
+  nextVarint(): bigint {
+    return this.varint()
+  }
+
   private varint(): bigint {
     let shift = 0n
     let result = 0n

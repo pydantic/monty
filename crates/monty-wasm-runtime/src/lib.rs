@@ -33,7 +33,11 @@ use std::{
     io::{self, Read, Write},
 };
 
+use monty_proto::{decode_frame, pb};
 use monty_worker::{Child, HandleOutcome, dispatch_frame};
+use pb::child_event::Kind;
+use prost::Message;
+use serde::Serialize;
 
 thread_local! {
     /// The session worker, created on first use and reused across turns. wasip1
@@ -79,5 +83,74 @@ pub extern "C" fn monty_dispatch_turn() -> i32 {
         // a fatal child error (e.g. version skew) terminates the worker just
         // like a clean shutdown; the emitted FatalError frame carries the cause
         HandleOutcome::Shutdown | HandleOutcome::Fatal => turn_status::SHUTDOWN,
+    }
+}
+
+/// Decodes framed `ChildEvent` messages from stdin using the Rust protobuf
+/// implementation and writes a compact JSON event list to stdout.
+#[unsafe(export_name = "monty_decode_child_events")]
+#[must_use]
+pub extern "C" fn monty_decode_child_events() -> i32 {
+    let mut input = Vec::new();
+    if io::stdin().read_to_end(&mut input).is_err() {
+        return turn_status::IO_ERROR;
+    }
+
+    let mut events = Vec::new();
+    let mut offset = 0;
+    while offset < input.len() {
+        let Some(frame) = next_frame(&input, &mut offset) else {
+            return turn_status::IO_ERROR;
+        };
+        let Ok(event) = decode_frame::<pb::ChildEvent>(frame) else {
+            return turn_status::IO_ERROR;
+        };
+        let Some(decoded) = DecodedChildEvent::from_event(event) else {
+            return turn_status::IO_ERROR;
+        };
+        events.push(decoded);
+    }
+
+    let Ok(output) = serde_json::to_vec(&events) else {
+        return turn_status::IO_ERROR;
+    };
+    let mut stdout = io::stdout();
+    if stdout.write_all(&output).and_then(|()| stdout.flush()).is_err() {
+        return turn_status::IO_ERROR;
+    }
+    turn_status::CONTINUE
+}
+
+#[derive(Serialize)]
+struct DecodedChildEvent {
+    kind: u8,
+    bytes: Vec<u8>,
+}
+
+fn next_frame<'a>(input: &'a [u8], offset: &mut usize) -> Option<&'a [u8]> {
+    let header = input.get(*offset..*offset + 4)?;
+    let len = u32::from_le_bytes(header.try_into().ok()?) as usize;
+    *offset += 4;
+    let frame = input.get(*offset..*offset + len)?;
+    *offset += len;
+    Some(frame)
+}
+
+impl DecodedChildEvent {
+    fn from_event(event: pb::ChildEvent) -> Option<Self> {
+        let (kind, bytes) = match event.kind? {
+            Kind::Print(value) => (1, value.encode_to_vec()),
+            Kind::FunctionCall(value) => (2, value.encode_to_vec()),
+            Kind::OsCall(value) => (3, value.encode_to_vec()),
+            Kind::NameLookup(value) => (4, value.encode_to_vec()),
+            Kind::ResolveFutures(value) => (5, value.encode_to_vec()),
+            Kind::Complete(value) => (6, value.encode_to_vec()),
+            Kind::Error(value) => (7, value.encode_to_vec()),
+            Kind::TypingError(value) => (8, value.encode_to_vec()),
+            Kind::DumpResult(value) => (9, value.encode_to_vec()),
+            Kind::Ok(value) => (10, value.encode_to_vec()),
+            Kind::FatalError(value) => (11, value.encode_to_vec()),
+        };
+        Some(Self { kind, bytes })
     }
 }

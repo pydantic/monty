@@ -146,11 +146,8 @@ wrapper.js.map
 .claude/settings.local.json
 plans
 prompts
-# lean worker module copied next to the loaders by scripts/copy-wasm.mjs
-ts/worker/monty_wasm_worker.wasm
-
-# Playwright browser test
+# Browser test artifacts
 test-results
 playwright-report
 .playwright
-browser-test/dist
+__test__/__screenshots__

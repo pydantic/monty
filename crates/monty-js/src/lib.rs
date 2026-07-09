@@ -5,7 +5,7 @@
 //! # Rust binding internals
 //!
 //! This crate is native-only. Browsers (where subprocesses do not exist) run
-//! the sandbox in a Web Worker via the lean `monty-wasm-worker` module and the
+//! the sandbox in a Web Worker via the lean `monty-wasm-runtime` module and the
 //! TypeScript pool in `ts/worker/`, not through napi — so there is no longer an
 //! in-process napi surface or a wasm napi build.
 

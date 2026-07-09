@@ -6,7 +6,7 @@ members = [
     "crates/monty-proto",
     "crates/monty-pool",
     "crates/monty-worker",
-    "crates/monty-wasm-worker",
+    "crates/monty-wasm-runtime",
     "crates/monty-python",
     "crates/monty-cpython",
     "crates/monty-js",

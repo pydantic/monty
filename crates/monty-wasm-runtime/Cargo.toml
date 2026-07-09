@@ -1,5 +1,5 @@
 [package]
-name = "monty-wasm-worker"
+name = "monty-wasm-runtime"
 version = { workspace = true }
 license = { workspace = true }
 rust-version = { workspace = true }
@@ -18,7 +18,11 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
+monty-proto = { workspace = true }
 monty-worker = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

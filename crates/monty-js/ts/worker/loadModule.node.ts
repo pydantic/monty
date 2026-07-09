@@ -9,6 +9,6 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 export async function loadModule(): Promise<WebAssembly.Module> {
-  const path = fileURLToPath(new URL('./monty_wasm_worker.wasm', import.meta.url))
+  const path = fileURLToPath(new URL('./monty_wasm_runtime.wasm', import.meta.url))
   return WebAssembly.compile(await readFile(path))
 }
