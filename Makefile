@@ -63,11 +63,11 @@ build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-t
 
 .PHONY: test-wasm
 test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
-	cd crates/monty-js && NAPI_RS_FORCE_WASI=true npx ava "__test__/wasm_*.spec.ts"
+	cd crates/monty-js && NAPI_RS_FORCE_WASI=true npx vitest run "__test__/wasm_*.spec.ts"
 
 .PHONY: test-browser
-test-browser: install-js ## Browser (Playwright) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npx playwright test
+test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
+	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npm run test:browser
 
 # OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.

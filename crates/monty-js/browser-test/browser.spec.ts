@@ -1,34 +1,23 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'vitest'
 
-test('Monty wasm runs in a browser', async ({ page }) => {
-  const messages: string[] = []
-  page.on('console', (message) => messages.push(message.text()))
-  page.on('pageerror', (error) => messages.push(error.stack ?? error.message))
+import { Monty, MontyRepl } from '../ts/wasm.ts'
 
-  await page.goto('/')
-  await page
-    .waitForFunction(() => window.__results !== undefined || window.__error !== undefined, null, {
-      timeout: 30_000,
-    })
-    .catch((error: unknown) => {
-      throw new Error(`${String(error)}\n${messages.join('\n')}`)
-    })
+test('Monty wasm runs in a browser', () => {
+  const add = new Monty('1 + 2')
+  const ext = new Monty('add_ints(2, 3)')
+  const repl = new MontyRepl()
 
-  const error = await page.evaluate(() => window.__error)
-  expect(error, error).toBeUndefined()
+  repl.feed('x = 2')
 
-  const results = await page.evaluate(() => window.__results)
-  expect(results).toMatchObject({
+  expect({
+    add: add.run(),
+    ext: ext.run({ externalLookup: { add_ints: (a: number, b: number) => a + b } }),
+    repl: repl.feed('x + 2'),
+    crossOriginIsolated: globalThis.crossOriginIsolated,
+  }).toMatchObject({
     add: 3,
     ext: 5,
     repl: 4,
     crossOriginIsolated: true,
   })
 })
-
-declare global {
-  interface Window {
-    __results?: Record<string, unknown>
-    __error?: string
-  }
-}
