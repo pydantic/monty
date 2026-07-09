@@ -49,8 +49,8 @@
   "scripts": {
     "build": "run-s build:napi build:ts",
     "build:debug": "run-s build:napi:debug build:ts",
-    "build:napi": "napi build --platform --release --esm",
-    "build:napi:debug": "napi build --platform --esm",
+    "build:napi": "node scripts/clean-loader.mjs && napi build --platform --release --esm",
+    "build:napi:debug": "node scripts/clean-loader.mjs && napi build --platform --esm",
     "build:wasm": "cargo build -p monty-wasm-worker --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
     "build:ts": "tsc",
     "format": "prettier . -w",
@@ -61,13 +61,13 @@
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
   "devDependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.1",
     "@emnapi/core": "^1.5.0",
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
     "@napi-rs/wasm-runtime": "^1.1.5",
     "@oxc-node/core": "^0.0.35",
     "@playwright/test": "^1.49.1",
-    "vite": "^6.3.5",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
     "ava": "^6.4.1",
@@ -75,7 +75,7 @@
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2",
-    "@bjorn3/browser_wasi_shim": "^0.4.1"
+    "vite": "^6.3.5"
   },
   "ava": {
     "files": [

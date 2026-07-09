@@ -1,25 +1,29 @@
-// Playwright test: loads the Vite-bundled harness in a real headless browser
-// and asserts the worker path works end to end. Run via `make test-browser`
-// (or `npx playwright test`), which starts the Vite server automatically.
-
 import { expect, test } from '@playwright/test'
 
 test('createMonty runs feeds in a browser Web Worker', async ({ page }) => {
+  const messages: string[] = []
+  page.on('console', (message) => messages.push(message.text()))
+  page.on('pageerror', (error) => messages.push(error.stack ?? error.message))
+
   await page.goto('/')
-  await page.waitForFunction(() => window.__results !== undefined || window.__error !== undefined, null, {
-    timeout: 30_000,
-  })
+  await page
+    .waitForFunction(() => window.__results !== undefined || window.__error !== undefined, null, {
+      timeout: 30_000,
+    })
+    .catch((error: unknown) => {
+      throw new Error(`${String(error)}\n${messages.join('\n')}`)
+    })
 
   const error = await page.evaluate(() => window.__error)
   expect(error, error).toBeUndefined()
 
   const results = await page.evaluate(() => window.__results)
   expect(results).toMatchObject({
-    add: 3, // basic feed via the worker
-    ext: 5, // external function round-trip over postMessage
-    watchdog: 'MontyCrashedError', // Worker.terminate() hard-killed the runaway turn
-    recovered: 4, // the pool replaced the killed worker
-    crossOriginIsolated: false, // no SharedArrayBuffer / COOP+COEP required
+    add: 3,
+    ext: 5,
+    watchdog: 'MontyCrashedError',
+    recovered: 4,
+    crossOriginIsolated: false,
   })
 })
 

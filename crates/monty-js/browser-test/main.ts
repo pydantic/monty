@@ -16,10 +16,8 @@ declare global {
 
 async function main(): Promise<void> {
   const results: Record<string, unknown> = {}
-  // proves we did NOT require COOP/COEP (the old napi-threads build did)
   results.crossOriginIsolated = globalThis.crossOriginIsolated
 
-  // auto-loads the bundled wasm and runs in a real Web Worker
   const pool = await createMonty({ requestTimeoutMs: 2000 })
 
   const session = await pool.checkout()
@@ -29,7 +27,6 @@ async function main(): Promise<void> {
   })
   await session.close()
 
-  // the watchdog hard-kills a runaway turn via Worker.terminate()
   const runaway = await pool.checkout()
   try {
     await runaway.feedRun('while True:\n    pass')
@@ -39,7 +36,6 @@ async function main(): Promise<void> {
   }
   await runaway.close()
 
-  // the pool recovers and keeps serving
   const recovered = await pool.checkout()
   results.recovered = await recovered.feedRun('2 + 2')
   await recovered.close()
@@ -50,6 +46,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  window.__error = String(err instanceof Error ? err.stack : err)
+  window.__error = String(err instanceof Error ? (err.stack ?? err.message) : err)
   document.getElementById('status')!.textContent = 'error'
 })

@@ -449,6 +449,7 @@ jobs:
       - test-rust-os
       - test-python
       - test-js
+      - test-browser
       - bench-test
       - fuzz
     runs-on: ubuntu-latest

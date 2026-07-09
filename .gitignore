@@ -17,6 +17,7 @@
 /.playwright-mcp/
 /crates/fuzz/artifacts/
 /crates/fuzz/corpus/
+/crates/monty-js/test-results/
 /.worktrees/
 /.zed/
 /scripts/json_files/

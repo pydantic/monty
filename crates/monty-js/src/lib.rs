@@ -1,5 +1,5 @@
 // napi macros generate code that triggers some clippy lints
-#![allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
+#![expect(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
 
 //! Node.js bindings for the Monty sandboxed Python interpreter: the subprocess
 //! pool ([`NativePool`]/[`NativeSession`]), which runs crash-isolated execution
