@@ -255,7 +255,7 @@ impl<C: ContainsHeap> DropWithContext<C> for ArgValues {
 ///
 /// Supports iterating over `ArgValues::One/Two` without converting to Vec.
 /// This iterator must be fully consumed OR explicitly dropped with
-/// `drop_remaining_with_heap()` to maintain correct reference counts.
+/// `drop_with()` to maintain correct reference counts.
 ///
 /// The iterator yields values by ownership transfer. Once a value is yielded,
 /// the caller is responsible for either using it or calling `drop_with()` on it.
