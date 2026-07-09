@@ -1,7 +1,8 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '../ts/index.js'
+import { MontyError, MontySyntaxError, MontyRuntimeError, MontyTypingError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -166,7 +167,8 @@ fail()
 // Display and str methods tests
 // =============================================================================
 
-test('display traceback', async () => {
+test('display traceback', async (ctx) => {
+  skipIfBrowser(ctx)
   const error = await t.throwsAsync(() => run('1 / 0'), isRuntimeError)
   t.is(
     error.display('traceback'),
@@ -183,7 +185,8 @@ test('display type msg', async () => {
   t.is(error.display('type-msg'), 'ValueError: test message')
 })
 
-test('runtime display', async () => {
+test('runtime display', async (ctx) => {
+  skipIfBrowser(ctx)
   const error = await t.throwsAsync(() => run('raise ValueError("test message")'), isRuntimeError)
   t.is(error.display('msg'), 'test message')
   t.is(error.display('type-msg'), 'ValueError: test message')
@@ -211,7 +214,8 @@ test('syntax error display', async () => {
 // Traceback tests
 // =============================================================================
 
-test('traceback frames', async () => {
+test('traceback frames', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `def inner():
     raise ValueError('error')
 
@@ -334,7 +338,8 @@ test('MontySyntaxError display()', () => {
 // MontyRuntimeError class tests
 // =============================================================================
 
-test('MontyRuntimeError display()', async () => {
+test('MontyRuntimeError display()', async (ctx) => {
+  skipIfBrowser(ctx)
   const error = await t.throwsAsync(() => run('1 / 0'), isRuntimeError)
   t.true(error instanceof MontyError)
   t.true(error instanceof Error)

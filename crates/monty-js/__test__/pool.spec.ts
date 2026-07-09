@@ -1,32 +1,36 @@
+import { test } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { Monty, MontyCrashedError, MountDir } from '../ts/index.js'
+import { Monty, MontyCrashedError, MountDir } from '@pydantic/monty/node'
 
 // =============================================================================
 // Pool lifecycle
 // =============================================================================
 
-test('checkout after close rejects', async () => {
+test('checkout after close rejects', async (ctx) => {
+  skipIfBrowser(ctx)
   const pool = await Monty.create()
   await pool.close()
   const error = await t.throwsAsync(() => pool.checkout())
   t.is(error.message, 'the pool is closed — create a new Monty pool')
 })
 
-test('close is idempotent', async () => {
+test('close is idempotent', async (ctx) => {
+  skipIfBrowser(ctx)
   const pool = await Monty.create()
   await pool.close()
   await pool.close()
   t.pass()
 })
 
-test('feed after session close rejects', async () => {
+test('feed after session close rejects', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   await session.close()
@@ -34,7 +38,8 @@ test('feed after session close rejects', async () => {
   t.is(error.message, 'the session is closed — check out a new one')
 })
 
-test('workers are reused across checkouts', async () => {
+test('workers are reused across checkouts', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid
@@ -45,7 +50,8 @@ test('workers are reused across checkouts', async () => {
   await second.close()
 })
 
-test('maxCheckoutsPerWorker recycles the worker', async () => {
+test('maxCheckoutsPerWorker recycles the worker', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ maxCheckoutsPerWorker: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid
@@ -55,7 +61,8 @@ test('maxCheckoutsPerWorker recycles the worker', async () => {
   await second.close()
 })
 
-test('concurrent sessions run in distinct workers', async () => {
+test('concurrent sessions run in distinct workers', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create()
   const a = await pool.checkout()
   const b = await pool.checkout()
@@ -70,7 +77,8 @@ test('concurrent sessions run in distinct workers', async () => {
   }
 })
 
-test('exhausted pool times out the checkout', async () => {
+test('exhausted pool times out the checkout', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ maxProcesses: 1, checkoutTimeout: 0.2 })
   const held = await pool.checkout()
   try {
@@ -81,7 +89,8 @@ test('exhausted pool times out the checkout', async () => {
   }
 })
 
-test('released worker is handed to a waiting checkout', async () => {
+test('released worker is handed to a waiting checkout', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ maxProcesses: 1 })
   const held = await pool.checkout()
   const waiting = pool.checkout()
@@ -95,7 +104,8 @@ test('released worker is handed to a waiting checkout', async () => {
 // Crash isolation
 // =============================================================================
 
-test('killed worker surfaces as MontyCrashedError', async () => {
+test('killed worker surfaces as MontyCrashedError', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -107,7 +117,8 @@ test('killed worker surfaces as MontyCrashedError', async () => {
   t.is(error.exitStatus, process.platform === 'win32' ? 'exit code: 1' : 'signal: 9 (SIGKILL)')
 })
 
-test('session is unusable after a crash but the pool recovers', async () => {
+test('session is unusable after a crash but the pool recovers', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create()
   const session = await pool.checkout()
   process.kill(session.workerPid!, 'SIGKILL')
@@ -121,7 +132,8 @@ test('session is unusable after a crash but the pool recovers', async () => {
   await fresh.close()
 })
 
-test('worker crashing while idle is replaced transparently', async () => {
+test('worker crashing while idle is replaced transparently', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ maxProcesses: 1 })
   const first = await pool.checkout()
   const pid = first.workerPid!
@@ -139,7 +151,8 @@ test('worker crashing while idle is replaced transparently', async () => {
 // Request timeout watchdog
 // =============================================================================
 
-test('requestTimeout kills a wedged worker', async () => {
+test('requestTimeout kills a wedged worker', async (ctx) => {
+  skipIfBrowser(ctx)
   await using pool = await Monty.create({ requestTimeout: 0.5 })
   const session = await pool.checkout()
   const error = await t.throwsAsync(() => session.feedRun('while True:\n    pass'), {
@@ -154,8 +167,11 @@ test('requestTimeout kills a wedged worker', async () => {
 // periodic time check can never run — the host-side maxDurationSecs backstop
 // (remaining budget + durationLimitGrace) is the only thing that can end the
 // turn. Note no requestTimeout is configured. Unix-only (mkfifo).
-const testOnUnix = process.platform === 'win32' ? test.skip : test
-testOnUnix('duration backstop kills a worker blocked in a syscall', async () => {
+test('duration backstop kills a worker blocked in a syscall', async (ctx) => {
+  skipIfBrowser(ctx)
+  if (process.platform === 'win32') {
+    ctx.skip()
+  }
   const dir = await mkdtemp(join(tmpdir(), 'monty-fifo-'))
   try {
     t.is(spawnSync('mkfifo', [join(dir, 'pipe')]).status, 0)
@@ -175,7 +191,8 @@ testOnUnix('duration backstop kills a worker blocked in a syscall', async () => 
   }
 })
 
-test('suspension time does not consume the duration budget', async () => {
+test('suspension time does not consume the duration budget', async (ctx) => {
+  skipIfBrowser(ctx)
   // maxDurationSecs measures cumulative sandbox execution time; the worker
   // reports it on every turn and its clock is paused while suspended. The
   // host taking twice the entire budget to answer an external call must
@@ -184,7 +201,8 @@ test('suspension time does not consume the duration budget', async () => {
   await using session = await pool.checkout({ limits: { maxDurationSecs: 0.3 } })
   const result = await session.feedRun("await fetch_data('u') + '!'", {
     externalLookup: {
-      fetch_data: async () => {
+      fetch_data: async (ctx) => {
+        skipIfBrowser(ctx)
         await new Promise((resolve) => setTimeout(resolve, 600))
         return 'body'
       },
@@ -201,8 +219,11 @@ test('suspension time does not consume the duration budget', async () => {
 // be in a worker's memory, where a sandbox escape or memory disclosure could
 // reach them. Linux-only because it observes the child via /proc (CI runs
 // the JS tests on Linux).
-const testOnLinux = process.platform === 'linux' ? test : test.skip
-testOnLinux('worker environment is empty', async () => {
+test('worker environment is empty', async (ctx) => {
+  skipIfBrowser(ctx)
+  if (process.platform !== 'linux') {
+    ctx.skip()
+  }
   t.truthy(process.env.PATH, 'test process should have PATH set')
   await using pool = await Monty.create()
   const session = await pool.checkout()

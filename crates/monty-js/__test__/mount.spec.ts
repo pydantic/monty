@@ -1,10 +1,11 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { MontyRuntimeError, MountDir } from '../ts/index.js'
+import { MontyRuntimeError, MountDir } from '@pydantic/monty/node'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -29,7 +30,8 @@ function createTestDir(): { dir: string; cleanup: () => void } {
 // MountDir validation
 // =============================================================================
 
-test('MountDir repr', () => {
+test('MountDir repr', (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -39,7 +41,8 @@ test('MountDir repr', () => {
   }
 })
 
-test('MountDir invalid mode', () => {
+test('MountDir invalid mode', (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const error = t.throws(() => new MountDir('/data', dir, { mode: 'invalid' as never }))
@@ -49,7 +52,8 @@ test('MountDir invalid mode', () => {
   }
 })
 
-test('MountDir attributes', () => {
+test('MountDir attributes', (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -61,7 +65,8 @@ test('MountDir attributes', () => {
   }
 })
 
-test('MountDir nonexistent host path', async () => {
+test('MountDir nonexistent host path', async (ctx) => {
+  skipIfBrowser(ctx)
   // Host paths are validated inside the worker, so the feed (not the
   // constructor) rejects. The OS-error suffix is platform specific.
   const md = new MountDir('/data', '/nonexistent/path/that/does/not/exist')
@@ -73,7 +78,8 @@ test('MountDir nonexistent host path', async () => {
   )
 })
 
-test('MountDir non-absolute virtual path', async () => {
+test('MountDir non-absolute virtual path', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('relative', dir)
@@ -87,7 +93,8 @@ test('MountDir non-absolute virtual path', async () => {
   }
 })
 
-test('MountDir default mode is overlay', () => {
+test('MountDir default mode is overlay', (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir)
@@ -97,7 +104,8 @@ test('MountDir default mode is overlay', () => {
   }
 })
 
-test('MountDir write_bytes_limit', () => {
+test('MountDir write_bytes_limit', (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { writeBytesLimit: 1024 })
@@ -114,7 +122,8 @@ test('MountDir write_bytes_limit', () => {
 // Read operations (read-only mount)
 // =============================================================================
 
-test('read_text via mount', async () => {
+test('read_text via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -125,7 +134,8 @@ test('read_text via mount', async () => {
   }
 })
 
-test('read_bytes via mount', async () => {
+test('read_bytes via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -136,7 +146,8 @@ test('read_bytes via mount', async () => {
   }
 })
 
-test('path exists via mount', async () => {
+test('path exists via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -153,7 +164,8 @@ exists_missing = Path('/data/nope.txt').exists()
   }
 })
 
-test('is_file and is_dir via mount', async () => {
+test('is_file and is_dir via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -168,7 +180,8 @@ from pathlib import Path
   }
 })
 
-test('iterdir via mount', async () => {
+test('iterdir via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -182,7 +195,8 @@ sorted([p.name for p in Path('/data').iterdir()])
   }
 })
 
-test('stat via mount', async () => {
+test('stat via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -197,7 +211,8 @@ s.st_size
   }
 })
 
-test('read nested file via mount', async () => {
+test('read nested file via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -212,7 +227,8 @@ test('read nested file via mount', async () => {
 // Write operations
 // =============================================================================
 
-test('write blocked on read-only mount', async () => {
+test('write blocked on read-only mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -226,7 +242,8 @@ test('write blocked on read-only mount', async () => {
   }
 })
 
-test('write succeeds on read-write mount', async () => {
+test('write succeeds on read-write mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-write' })
@@ -243,7 +260,8 @@ Path('/data/new.txt').read_text()
   }
 })
 
-test('overlay write does not modify host', async () => {
+test('overlay write does not modify host', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -260,7 +278,8 @@ Path('/data/overlay_file.txt').read_text()
   }
 })
 
-test('overlay read falls through to host', async () => {
+test('overlay read falls through to host', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -271,7 +290,8 @@ test('overlay read falls through to host', async () => {
   }
 })
 
-test('overlay writes do not persist across runs', async () => {
+test('overlay writes do not persist across runs', async (ctx) => {
+  skipIfBrowser(ctx)
   // Overlay state lives inside the worker for one feed, so unlike the old
   // in-process API it does NOT persist across runs sharing the same MountDir.
   const { dir, cleanup } = createTestDir()
@@ -292,7 +312,8 @@ test('overlay writes do not persist across runs', async () => {
 // Path operations
 // =============================================================================
 
-test('mkdir and rmdir via mount', async () => {
+test('mkdir and rmdir via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -310,7 +331,8 @@ after = Path('/data/newdir').exists()
   }
 })
 
-test('unlink via mount', async () => {
+test('unlink via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -327,7 +349,8 @@ Path('/data/hello.txt').exists()
   }
 })
 
-test('rename via mount', async () => {
+test('rename via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -342,7 +365,8 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
   }
 })
 
-test('resolve via mount', async () => {
+test('resolve via mount', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -359,7 +383,8 @@ test('resolve via mount', async () => {
 // Security
 // =============================================================================
 
-test('path traversal blocked', async () => {
+test('path traversal blocked', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -373,7 +398,8 @@ test('path traversal blocked', async () => {
   }
 })
 
-test('unmounted path denied', async () => {
+test('unmounted path denied', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -391,7 +417,8 @@ test('unmounted path denied', async () => {
 // Non-filesystem ops (no `os` callback - returns error)
 // =============================================================================
 
-test('non-filesystem os call without fallback', async () => {
+test('non-filesystem os call without fallback', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -408,7 +435,8 @@ test('non-filesystem os call without fallback', async () => {
 // Multiple mounts
 // =============================================================================
 
-test('multiple mounts with different modes', async () => {
+test('multiple mounts with different modes', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir: dir1, cleanup: cleanup1 } = createTestDir()
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test2-'))
   fs.writeFileSync(path.join(dir2, 'file2.txt'), 'from mount2')
@@ -431,7 +459,8 @@ b = Path('/rw/file2.txt').read_text()
 // Mount with external functions
 // =============================================================================
 
-test('mount works with external functions', async () => {
+test('mount works with external functions', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -452,7 +481,8 @@ result + content
 // Session (REPL) mount support
 // =============================================================================
 
-test('session feed with mount read', async () => {
+test('session feed with mount read', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -470,7 +500,8 @@ test('session feed with mount read', async () => {
 // one feed and are discarded when it ends, unlike the old in-process API
 // where overlay state persisted on the MountDir object.
 
-test('session overlay write is discarded between feeds', async () => {
+test('session overlay write is discarded between feeds', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -489,7 +520,8 @@ test('session overlay write is discarded between feeds', async () => {
   }
 })
 
-test('session overlay overwrite reverts between feeds', async () => {
+test('session overlay overwrite reverts between feeds', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -506,7 +538,8 @@ test('session overlay overwrite reverts between feeds', async () => {
   }
 })
 
-test('session overlay delete reverts between feeds', async () => {
+test('session overlay delete reverts between feeds', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -522,7 +555,8 @@ test('session overlay delete reverts between feeds', async () => {
   }
 })
 
-test('overlay mkdir and nested write within one feed', async () => {
+test('overlay mkdir and nested write within one feed', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -539,7 +573,8 @@ Path('/data/mydir/file.txt').read_text()
   }
 })
 
-test('overlay iterdir sees overlay files', async () => {
+test('overlay iterdir sees overlay files', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -554,7 +589,8 @@ sorted([p.name for p in Path('/data').iterdir()])
   }
 })
 
-test('session read-write mount writes to host', async () => {
+test('session read-write mount writes to host', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -570,7 +606,8 @@ test('session read-write mount writes to host', async () => {
   }
 })
 
-test('session read-only mount blocks write', async () => {
+test('session read-only mount blocks write', async (ctx) => {
+  skipIfBrowser(ctx)
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {

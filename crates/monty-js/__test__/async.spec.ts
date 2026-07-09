@@ -6,8 +6,9 @@
 
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { MontyRuntimeError } from '../ts/index.js'
+import { MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -40,7 +41,8 @@ test('run with async external function', async () => {
   t.is(result, 'async result')
 })
 
-test('run with multiple async calls', async () => {
+test('run with multiple async calls', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `
 a = await fetch_a()
 b = await fetch_b()
@@ -209,7 +211,8 @@ test('async external function with list input', async () => {
 // Mixed sync/async tests
 // =============================================================================
 
-test('mixed sync and async external functions', async () => {
+test('mixed sync and async external functions', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `
 sync_result = sync_func()
 async_result = await async_func()
@@ -228,7 +231,8 @@ sync_result + async_result
   t.is(result, 300)
 })
 
-test('chained async external calls', async () => {
+test('chained async external calls', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `
 first = await get_first()
 second = await process(first)

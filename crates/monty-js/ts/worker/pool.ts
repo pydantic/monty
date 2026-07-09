@@ -133,6 +133,10 @@ export class WorkerPool {
     }
   }
 
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close()
+  }
+
   /** Live worker count, for tests/diagnostics. */
   get size(): number {
     return this.total

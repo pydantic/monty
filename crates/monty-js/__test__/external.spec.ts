@@ -1,7 +1,8 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { MontyRuntimeError } from '../ts/index.js'
+import { MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -350,7 +351,8 @@ finally_ran
 
 // A return value the wire cannot represent must surface as a catchable
 // in-sandbox error — never desynchronize the protocol or wedge the session.
-test('external function returning a malformed marker object', async () => {
+test('external function returning a malformed marker object', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `
 try:
     bad()
@@ -366,7 +368,8 @@ caught
   )
 })
 
-test('external function returning a symbol', async () => {
+test('external function returning a symbol', async (ctx) => {
+  skipIfBrowser(ctx)
   const error = await t.throwsAsync(() => run('bad()', { externalLookup: { bad: () => Symbol('nope') } }), {
     instanceOf: MontyRuntimeError,
   })
@@ -377,22 +380,26 @@ test('external function returning a symbol', async () => {
 // externalLookup value resolution (non-callable entries)
 // =============================================================================
 
-test('externalLookup resolves a bare name to a value', async () => {
+test('externalLookup resolves a bare name to a value', async (ctx) => {
+  skipIfBrowser(ctx)
   t.is(await run('x + 1', { externalLookup: { x: 41 } }), 42)
 })
 
-test('externalLookup resolves a container value', async () => {
+test('externalLookup resolves a container value', async (ctx) => {
+  skipIfBrowser(ctx)
   const result = (await run('data', { externalLookup: { data: { a: 1, b: 2 } } })) as Map<string, unknown>
   t.is(result.get('a'), 1)
   t.is(result.get('b'), 2)
 })
 
-test('externalLookup mixes a function and a value', async () => {
+test('externalLookup mixes a function and a value', async (ctx) => {
+  skipIfBrowser(ctx)
   const double = (n: number) => n * 2
   t.is(await run('double(n)', { externalLookup: { double, n: 21 } }), 42)
 })
 
-test('externalLookup caches a resolved value within a feed', async () => {
+test('externalLookup caches a resolved value within a feed', async (ctx) => {
+  skipIfBrowser(ctx)
   // the monty worker caches a resolved name in its namespace slot, so the
   // second reference must not re-read the lookup — a getter observes the reads
   let reads = 0
@@ -406,7 +413,8 @@ test('externalLookup caches a resolved value within a feed', async () => {
   t.is(reads, 1)
 })
 
-test('externalLookup resolves null and undefined values to None', async () => {
+test('externalLookup resolves null and undefined values to None', async (ctx) => {
+  skipIfBrowser(ctx)
   // null/undefined are present own keys, so they resolve to Python None
   // rather than falling into the absent-name NameError path
   t.is(await run('x is None', { externalLookup: { x: null } }), true)
@@ -493,7 +501,8 @@ test('stale proxy TypeError survives a throwing getter on the entry', async () =
   }
 })
 
-test('externalLookup unconvertible value rejects the turn', async () => {
+test('externalLookup unconvertible value rejects the turn', async (ctx) => {
+  skipIfBrowser(ctx)
   // a non-callable value that cannot cross the wire surfaces as a conversion
   // error (not a misleading NameError); the worker never observed the name
   const error = await t.throwsAsync(() => run('x', { externalLookup: { x: Symbol('nope') } }))

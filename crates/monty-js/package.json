@@ -8,13 +8,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "node": "./dist/index.js",
       "browser": "./dist/worker/index.browser.js",
-      "default": "./dist/index.js"
+      "node": "./dist/node.js",
+      "default": "./dist/node.js"
     },
     "./node": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
     },
     "./wasm": {
       "types": "./dist/worker/index.d.ts",

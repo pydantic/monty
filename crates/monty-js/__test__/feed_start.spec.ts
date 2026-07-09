@@ -5,10 +5,11 @@ import {
   FunctionSnapshot,
   FutureSnapshot,
   MontyComplete,
-  NameLookupSnapshot,
   MontyRuntimeError,
   MountDir,
-} from '../ts/index.js'
+  NameLookupSnapshot,
+} from '@pydantic/monty/node'
+import { skipIfBrowser } from './env.js'
 import { setupPool } from './helpers.js'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -16,7 +17,8 @@ import { join } from 'node:path'
 
 const { pool } = setupPool()
 
-test('feedStart suspends at a function call, then completes', async () => {
+test('feedStart suspends at a function call, then completes', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = await session.feedStart('x = add(2, 3)\nx * 10')
@@ -33,7 +35,8 @@ test('feedStart suspends at a function call, then completes', async () => {
   }
 })
 
-test('feedStart surfaces a name lookup', async () => {
+test('feedStart surfaces a name lookup', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = await session.feedStart('missing + 1')
@@ -44,7 +47,8 @@ test('feedStart surfaces a name lookup', async () => {
   }
 })
 
-test('a snapshot resumes at most once', async () => {
+test('a snapshot resumes at most once', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('f()')) as FunctionSnapshot
@@ -55,7 +59,8 @@ test('a snapshot resumes at most once', async () => {
   }
 })
 
-test('os handler is auto-dispatched between snapshots', async () => {
+test('os handler is auto-dispatched between snapshots', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = await session.feedStart("from pathlib import Path\nPath('/data/x').read_text()", {
@@ -71,7 +76,8 @@ test('os handler is auto-dispatched between snapshots', async () => {
   }
 })
 
-test('the sandbox future mechanism is caller-driven', async () => {
+test('the sandbox future mechanism is caller-driven', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
@@ -88,7 +94,8 @@ test('the sandbox future mechanism is caller-driven', async () => {
   }
 })
 
-test('dump at a suspension, then loadSnapshot and resume', async () => {
+test('dump at a suspension, then loadSnapshot and resume', async (ctx) => {
+  skipIfBrowser(ctx)
   let blob: Buffer
   {
     const session = await pool().checkout()
@@ -107,7 +114,8 @@ test('dump at a suspension, then loadSnapshot and resume', async () => {
   }
 })
 
-test('load restores an idle session', async () => {
+test('load restores an idle session', async (ctx) => {
+  skipIfBrowser(ctx)
   let blob: Buffer
   {
     const session = await pool().checkout()
@@ -124,7 +132,8 @@ test('load restores an idle session', async () => {
   }
 })
 
-test('load and loadSnapshot reject the wrong dump kind', async () => {
+test('load and loadSnapshot reject the wrong dump kind', async (ctx) => {
+  skipIfBrowser(ctx)
   let idle: Buffer
   let suspended: Buffer
   {
@@ -157,7 +166,8 @@ test('load and loadSnapshot reject the wrong dump kind', async () => {
   }
 })
 
-test('load after a feed is rejected', async () => {
+test('load after a feed is rejected', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const blob = await session.dump()
@@ -171,7 +181,8 @@ test('load after a feed is rejected', async () => {
   }
 })
 
-test('mounts are re-supplied to loadSnapshot and validated', async () => {
+test('mounts are re-supplied to loadSnapshot and validated', async (ctx) => {
+  skipIfBrowser(ctx)
   const dir = await mkdtemp(join(tmpdir(), 'monty-js-snap-'))
   await writeFile(join(dir, 'hello.txt'), 'hi')
   const mount = new MountDir('/data', dir, { mode: 'read-only' })
@@ -207,7 +218,8 @@ test('mounts are re-supplied to loadSnapshot and validated', async () => {
 // resumeAuto: answer each suspension from the captured externalLookup / os
 // =============================================================================
 
-test('resumeAuto answers a function call from externalLookup', async () => {
+test('resumeAuto answers a function call from externalLookup', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('add(2, 3) * 10', {
@@ -221,7 +233,8 @@ test('resumeAuto answers a function call from externalLookup', async () => {
   }
 })
 
-test('resumeAuto drives a snippet to completion', async () => {
+test('resumeAuto drives a snippet to completion', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     // mixes a name lookup (`base`) and two external calls (`add`)
@@ -240,7 +253,8 @@ test('resumeAuto drives a snippet to completion', async () => {
   }
 })
 
-test('resumeAuto resolves a name lookup to a value', async () => {
+test('resumeAuto resolves a name lookup to a value', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('missing + 1', { externalLookup: { missing: 41 } })) as NameLookupSnapshot
@@ -251,7 +265,8 @@ test('resumeAuto resolves a name lookup to a value', async () => {
   }
 })
 
-test('resumeAuto resolves a name lookup to a function', async () => {
+test('resumeAuto resolves a name lookup to a function', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     // `greet` is read as a value (name lookup), then the bound name is called
@@ -267,7 +282,8 @@ test('resumeAuto resolves a name lookup to a function', async () => {
   }
 })
 
-test('resumeAuto with a missing name raises NameError', async () => {
+test('resumeAuto with a missing name raises NameError', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('missing + 1', { externalLookup: {} })) as NameLookupSnapshot
@@ -278,7 +294,8 @@ test('resumeAuto with a missing name raises NameError', async () => {
   }
 })
 
-test('resumeAuto with a function absent from the lookup raises NameError', async () => {
+test('resumeAuto with a function absent from the lookup raises NameError', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('add(2, 3)', { externalLookup: {} })) as FunctionSnapshot
@@ -289,7 +306,8 @@ test('resumeAuto with a function absent from the lookup raises NameError', async
   }
 })
 
-test('resumeAuto answers an OS call with the default unhandled error', async () => {
+test('resumeAuto answers an OS call with the default unhandled error', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     // no os handler was captured, so resumeAuto answers with monty's default
@@ -312,7 +330,8 @@ test('resumeAuto answers an OS call with the default unhandled error', async () 
   }
 })
 
-test('resumeAuto spawns a promise external and settles it via a FutureSnapshot', async () => {
+test('resumeAuto spawns a promise external and settles it via a FutureSnapshot', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())'
@@ -327,7 +346,8 @@ test('resumeAuto spawns a promise external and settles it via a FutureSnapshot',
   }
 })
 
-test('resumeAuto drives multiple pending promises via gather', async () => {
+test('resumeAuto drives multiple pending promises via gather', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const code = 'import asyncio\nasync def main():\n    return await asyncio.gather(go(1), go(2))\nasyncio.run(main())'
@@ -341,7 +361,8 @@ test('resumeAuto drives multiple pending promises via gather', async () => {
   }
 })
 
-test('resumeAuto and manual resume share the captured lookup', async () => {
+test('resumeAuto and manual resume share the captured lookup', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const code = 'a = first()\nb = second()\na + b'
@@ -356,7 +377,8 @@ test('resumeAuto and manual resume share the captured lookup', async () => {
   }
 })
 
-test('resumeAuto resumes at most once', async () => {
+test('resumeAuto resumes at most once', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     const snap = (await session.feedStart('add(1, 2)', {
@@ -369,7 +391,8 @@ test('resumeAuto resumes at most once', async () => {
   }
 })
 
-test('loadSnapshot captures externalLookup for resumeAuto', async () => {
+test('loadSnapshot captures externalLookup for resumeAuto', async (ctx) => {
+  skipIfBrowser(ctx)
   let blob: Buffer
   {
     const session = await pool().checkout()

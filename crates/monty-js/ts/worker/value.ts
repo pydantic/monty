@@ -261,7 +261,7 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
     case Tag.Repr:
       return decodeString(f.bytes)
     case Tag.Bytes:
-      return Buffer.from(f.bytes)
+      return typeof Buffer === 'undefined' ? f.bytes : Buffer.from(f.bytes)
     case Tag.List:
       return decodeList(f.bytes)
     case Tag.Tuple:

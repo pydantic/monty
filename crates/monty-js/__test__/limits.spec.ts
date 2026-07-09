@@ -1,7 +1,8 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { MontyRuntimeError, type ResourceLimits } from '../ts/index.js'
+import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -81,7 +82,8 @@ test('allocation limit accepts values above u32 max', async () => {
 // Memory limit tests
 // =============================================================================
 
-test('memory limit', async () => {
+test('memory limit', async (ctx) => {
+  skipIfBrowser(ctx)
   const code = `
 result = []
 for i in range(1000):

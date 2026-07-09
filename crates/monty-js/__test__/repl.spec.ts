@@ -1,7 +1,8 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { skipIfBrowser } from './env.js'
 
-import { MontyRuntimeError } from '../ts/index.js'
+import { MontyRuntimeError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { pool } = setupPool()
@@ -19,7 +20,8 @@ test('feed preserves state without replay', async () => {
   }
 })
 
-test('runtime error does not kill the session', async () => {
+test('runtime error does not kill the session', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     await session.feedRun('x = 1')
@@ -42,7 +44,8 @@ test('runtime error does not kill the session', async () => {
   }
 })
 
-test('session dump returns opaque state', async () => {
+test('session dump returns opaque state', async (ctx) => {
+  skipIfBrowser(ctx)
   const session = await pool().checkout()
   try {
     await session.feedRun('x = 40')

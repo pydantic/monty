@@ -1,7 +1,7 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import { MontySyntaxError } from '../ts/index.js'
+import { MontySyntaxError } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()

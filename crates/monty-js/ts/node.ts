@@ -1,12 +1,13 @@
-// Shared public API of @pydantic/monty. Node resolves this package to the
-// native subprocess backend; browser bundlers resolve it to the wasm Worker
-// backend. Environment-specific APIs live under @pydantic/monty/node and
-// @pydantic/monty/wasm.
+// Node/native API of @pydantic/monty/node: the subprocess-backed pool,
+// filesystem mounts, native-only helpers, and the shared error/value types.
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {
+  FunctionSnapshot,
+  FutureSnapshot,
   MontyComplete,
   MontySession,
+  NameLookupSnapshot,
   NOT_HANDLED,
   type ExternalFunction,
   type FeedOptions,
@@ -17,6 +18,7 @@ export {
   type PrintCallback,
   type Snapshot,
 } from './session.js'
+export { MountDir, type MountDirMode, type MountDirOptions } from './mount.js'
 export {
   MontyCrashedError,
   MontyError,
@@ -35,4 +37,5 @@ export {
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'
+export { findMontyBinary } from './binary.js'
 export { MAX_VALUE_DEPTH } from '../index.js'

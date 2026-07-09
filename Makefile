@@ -61,7 +61,7 @@ build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32
 
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npm run test:browser
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 # OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
