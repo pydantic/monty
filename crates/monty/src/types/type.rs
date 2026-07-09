@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapId},
+    heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
@@ -163,7 +163,7 @@ impl Type {
     /// the primary way to render a `Type` in error messages and reprs. The
     /// result borrows only `interns` (never the heap — heap-owned dynamic
     /// class names are cloned into `Cow::Owned`), so it can be captured
-    /// before heap-mutating cleanup (`drop_with_heap`) at error sites and
+    /// before heap-mutating cleanup (`drop_with`) at error sites and
     /// formatted after.
     pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
         match self {
@@ -360,7 +360,7 @@ impl Type {
             }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
-                args.drop_with_heap(vm.heap);
+                args.drop_with(vm.heap);
                 Err(ExcType::attribute_error(self, method_name))
             }
         }

@@ -115,7 +115,7 @@ fn call_normalize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
   `static_string = "ExistingVariant"` at an existing one.
 - `Value` / `StrArg` / `Option<Value>` fields hold heap references: bind
   them with `defer_drop!` in the body, or otherwise guarantee
-  `drop_with_heap` on every path.
+  `drop_with` on every path.
 - `varargs` fields must be `Vec<Value>`; convert elements in the body.
 
 ### 4. Tests and docs

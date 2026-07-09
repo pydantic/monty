@@ -73,7 +73,7 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     os::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs},
     resource::ResourceTracker,
@@ -558,7 +558,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
                 attr.as_str(vm.interns),
@@ -578,7 +578,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
             StaticStrings::Writable => self.writable(vm, args),
             StaticStrings::Seekable => self.seekable(vm, args),
             _ => {
-                args.drop_with_heap(vm);
+                args.drop_with(vm);
                 Err(ExcType::attribute_error(
                     self.py_type(vm).name(vm.heap, vm.interns),
                     attr.as_str(vm.interns),
@@ -599,7 +599,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         // Return the file itself. Bumping the refcount here gives the new
         // Value::Ref its own count — constructing a fresh Value::Ref without
         // an inc_ref would let the Drop impl panic when an in-flight value
-        // is later discarded without a matching drop_with_heap.
+        // is later discarded without a matching drop_with.
         vm.heap.inc_ref(self_id);
         Ok(CallResult::Value(Value::Ref(self_id)))
     }
@@ -812,18 +812,18 @@ impl<'h> HeapRead<'h, OpenFile> {
         let data = args.get_one_arg("write", vm.heap)?;
         let binary = self.get(vm.heap).mode.is_binary();
         if let Err(err) = validate_write_data(&data, binary, vm) {
-            data.drop_with_heap(vm);
+            data.drop_with(vm);
             return Err(err);
         }
         if let Err(err) = self.get(vm.heap).ensure_open() {
-            data.drop_with_heap(vm);
+            data.drop_with(vm);
             return Err(err);
         }
         let (path, append, binary) = {
             let file = self.get_mut(vm.heap);
             if !file.mode.writable() {
                 let message = if file.mode.is_binary() { "write" } else { "not writable" };
-                data.drop_with_heap(vm);
+                data.drop_with(vm);
                 return Err(unsupported_operation(message));
             }
             let append = file.mode.is_append() || file.first_write_done;
@@ -840,7 +840,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         let path = MontyPath::new(path);
         let call = if binary {
             let bytes = extract_bytes_payload(&data, vm).expect("validate_write_data accepted a bytes-shaped value");
-            data.drop_with_heap(vm);
+            data.drop_with(vm);
             let args = PathBytesDataArgs { path, data: bytes };
             if append {
                 OsFunctionCall::AppendBytes(args)
@@ -849,7 +849,7 @@ impl<'h> HeapRead<'h, OpenFile> {
             }
         } else {
             let text = extract_str_payload(&data, vm).expect("validate_write_data accepted a str-shaped value");
-            data.drop_with_heap(vm);
+            data.drop_with(vm);
             let args = PathStringDataArgs { path, data: text };
             if append {
                 OsFunctionCall::AppendText(args)
@@ -983,9 +983,9 @@ fn inc_ref_for_pending_oscall(vm: &VM<'_, impl ResourceTracker>, file_id: HeapId
 /// heap-resident `Str` / `Bytes`, so interned variants are reallocated
 /// onto the heap here.
 ///
-/// `result` is fully consumed: every path runs `drop_with_heap` exactly
+/// `result` is fully consumed: every path runs `drop_with` exactly
 /// once. The two `Value::Ref`-producing arms `inc_ref` the entry they
-/// hand back so the upcoming `drop_with_heap`'s dec_ref balances out and
+/// hand back so the upcoming `drop_with`'s dec_ref balances out and
 /// the returned `HeapId` keeps the refcount it would have had without
 /// the dance. This avoids `mem::forget`, which clippy flags on the
 /// no-Drop release configuration.
@@ -1000,7 +1000,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker
         Value::InternString(string_id) => {
             let s = vm.interns.get_str(*string_id).to_owned();
             // `allocate_string_no_interning` returns `Value::Ref` with
-            // refcount 1; inc_ref+drop_with_heap below nets to zero and
+            // refcount 1; inc_ref+drop_with below nets to zero and
             // lets us drop the temporary Value cleanly.
             let v = allocate_string_no_interning(s, vm.heap)?;
             let Value::Ref(new_id) = &v else {
@@ -1008,7 +1008,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker
             };
             let new_id = *new_id;
             vm.heap.inc_ref(new_id);
-            v.drop_with_heap(vm);
+            v.drop_with(vm);
             new_id
         }
         Value::InternBytes(bytes_id) => {
@@ -1016,13 +1016,13 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker
             vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?
         }
         _ => {
-            result.drop_with_heap(vm);
+            result.drop_with(vm);
             return Err(RunError::internal(
                 "os_read_result_to_heap_id: OS result must be a string or bytes value",
             ));
         }
     };
-    result.drop_with_heap(vm);
+    result.drop_with(vm);
     Ok(id)
 }
 
@@ -1043,7 +1043,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker
 ///
 /// The file owns one inc_ref on `result` for its `buffer` slot. The caller's
 /// inc_ref on `file_id` (held by the in-flight OS call) is released here
-/// via the RAII [`HeapGuard`] on `Value::Ref(file_id)`, so every error path
+/// via the RAII [`DropGuard`] on `Value::Ref(file_id)`, so every error path
 /// drops the pin without explicit `dec_ref` boilerplate.
 ///
 /// **Error handling**: `pending_read` is taken up-front so every subsequent
@@ -1056,14 +1056,14 @@ pub(crate) fn apply_buffer_store(
 ) -> RunResult<Value> {
     // The pin's dec_ref happens automatically on every path via the guard's
     // Drop, so the early-return branches do not need explicit `dec_ref`s.
-    let mut pin = HeapGuard::new(Value::Ref(file_id), vm);
+    let mut pin = DropGuard::new(Value::Ref(file_id), vm);
 
     // Stage 1: drain `pending_read` from the file. `result_guard` keeps the
     // host-returned value alive across early-return branches; on the success
     // path we hand ownership back via `into_inner`.
     let (result, spec) = {
         let (_, vm) = pin.as_parts_mut();
-        let mut result_guard = HeapGuard::new(result, vm);
+        let mut result_guard = DropGuard::new(result, vm);
         let (_, vm) = result_guard.as_parts_mut();
 
         let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
@@ -1126,16 +1126,16 @@ pub(crate) fn apply_buffer_store(
 /// values returned by Monty's filesystem backends and CPython's `write()`.
 ///
 /// As with [`apply_buffer_store`], the pending-file-effect pin on `file_id`
-/// is released via the RAII [`HeapGuard`] regardless of which path the
+/// is released via the RAII [`DropGuard`] regardless of which path the
 /// function takes.
 pub(crate) fn apply_write_position(
     file_id: HeapId,
     result: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let mut pin = HeapGuard::new(Value::Ref(file_id), vm);
+    let mut pin = DropGuard::new(Value::Ref(file_id), vm);
     let (_, vm) = pin.as_parts_mut();
-    let mut result_guard = HeapGuard::new(result, vm);
+    let mut result_guard = DropGuard::new(result, vm);
     let (result_ref, vm) = result_guard.as_parts_mut();
 
     let written = result_ref.as_int(vm)?;
@@ -1597,7 +1597,7 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_, impl ResourceTra
             Err(err) => Err(err),
         },
     };
-    size.drop_with_heap(vm);
+    size.drop_with(vm);
     spec
 }
 

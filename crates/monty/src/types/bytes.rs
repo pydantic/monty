@@ -82,7 +82,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::{
@@ -307,7 +307,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Bytes, attr.as_str(vm.interns)));
         };
 
@@ -338,7 +338,7 @@ pub fn call_bytes_method(
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let Some(method) = StaticStrings::from_string_id(method_id) else {
-        args.drop_with_heap(vm);
+        args.drop_with(vm);
         return Err(ExcType::attribute_error(Type::Bytes, vm.interns.get_str(method_id)));
     };
     call_bytes_method_impl(&vm.heap.protect(bytes), method, args, vm)
@@ -448,7 +448,7 @@ fn call_bytes_method_impl<'h>(
         // fromhex is a classmethod but also accessible on instances
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
-            args.drop_with_heap(vm.heap);
+            args.drop_with(vm.heap);
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
@@ -1518,7 +1518,7 @@ fn bytes_splitlines<'h>(
     let keepends = parse_bytes_splitlines_args(args, vm)?;
 
     let lines = Vec::new();
-    let mut lines_guard = HeapGuard::new(lines, vm);
+    let mut lines_guard = DropGuard::new(lines, vm);
     let (lines, vm) = lines_guard.as_parts_mut();
     let mut start = 0;
     let bytes = bytes.get(vm.heap);
@@ -1574,7 +1574,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTra
         None => false,
         Some(v) => {
             let r = v.py_bool(vm);
-            v.drop_with_heap(vm.heap);
+            v.drop_with(vm.heap);
             r
         }
     };

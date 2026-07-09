@@ -13,7 +13,7 @@ use ahash::AHashMap;
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
     resource::{ResourceError, ResourceTracker},
     value::Value,
@@ -50,12 +50,12 @@ pub(crate) enum TaskState {
     Failed(RunError),
 }
 
-impl DropWithHeap for TaskState {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for TaskState {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Ready | Self::Failed(_) => {}
             Self::Blocked(id) => heap.heap_mut().dec_ref(id),
-            Self::Completed(value) => value.drop_with_heap(heap),
+            Self::Completed(value) => value.drop_with(heap),
         }
     }
 }
@@ -95,15 +95,15 @@ pub(crate) struct Task {
     pub state: TaskState,
 }
 
-impl DropWithHeap for Task {
-    fn drop_with_heap<H: ContainsHeap>(mut self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for Task {
+    fn drop_with(mut self, heap: &mut C) {
         for value in self.stack.drain(..) {
-            value.drop_with_heap(heap);
+            value.drop_with(heap);
         }
         for value in self.exception_stack.drain(..) {
-            value.drop_with_heap(heap);
+            value.drop_with(heap);
         }
-        self.state.drop_with_heap(heap);
+        self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);
         }
@@ -397,7 +397,7 @@ impl Scheduler {
     pub fn set_state(&mut self, task_id: TaskId, new_state: TaskState, heap: &mut Heap<impl ResourceTracker>) {
         let task = self.get_task_mut(task_id);
         let old_state = mem::replace(&mut task.state, new_state);
-        old_state.drop_with_heap(heap);
+        old_state.drop_with(heap);
     }
 
     /// Adds a task back to the ready queue.
@@ -436,7 +436,7 @@ impl Scheduler {
     /// result, and tears down any inner gather it was blocked on. After this
     /// call the task no longer exists in `Scheduler::tasks`; its owning
     /// references to its coroutine and (outer) gather are released by the
-    /// `Task::drop_with_heap` call at the end.
+    /// `Task::drop_with` call at the end.
     pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
@@ -495,7 +495,7 @@ impl Scheduler {
             }
         }
 
-        task.drop_with_heap(heap);
+        task.drop_with(heap);
     }
 
     /// Records a host-side failure for `call_id` and returns the awaiter the

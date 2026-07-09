@@ -5,7 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
@@ -38,12 +38,12 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         iterators.push(MontyIter::new(iterable, vm)?);
     }
 
-    let mut result_guard = HeapGuard::new(Vec::new(), vm);
+    let mut result_guard = DropGuard::new(Vec::new(), vm);
     let (result, vm) = result_guard.as_parts_mut();
 
     // Zip until shortest iterator is exhausted
     'outer: loop {
-        let mut items_guard = HeapGuard::new(TupleVec::with_capacity(iterators.len()), vm);
+        let mut items_guard = DropGuard::new(TupleVec::with_capacity(iterators.len()), vm);
         let (tuple_items, vm) = items_guard.as_parts_mut();
 
         for (i, iter) in iterators.iter_mut().enumerate() {
@@ -65,7 +65,7 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
                     // so j gives the count for the error message.
                     for (j, remaining) in iterators.iter_mut().enumerate().skip(1) {
                         if let Some(extra) = remaining.for_next(vm)? {
-                            extra.drop_with_heap(vm);
+                            extra.drop_with(vm);
                             return Err(strict_length_error(j + 1, j, "longer"));
                         }
                     }

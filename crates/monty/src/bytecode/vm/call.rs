@@ -15,7 +15,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
     function::Function,
-    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
     os::OsFunctionCall,
@@ -78,17 +78,17 @@ pub(crate) enum CallResult {
     OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
 }
 
-impl DropWithHeap for CallResult {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for CallResult {
+    fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Value(value) | Self::AwaitValue(value) => value.drop_with_heap(heap),
+            Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
             Self::External(_, args) | Self::MethodCall(_, args) => {
-                args.drop_with_heap(heap);
+                args.drop_with(heap);
             }
-            Self::OsCall(call) => call.drop_with_heap(heap),
+            Self::OsCall(call) => call.drop_with(heap),
             Self::FramePushed => {}
             Self::OsCallStoreBuffer { call, file_id } => {
-                call.drop_with_heap(heap);
+                call.drop_with(heap);
                 // Single pin (see `inc_ref_for_pending_oscall`): release one ref
                 // if the call is discarded before dispatch routes it to a
                 // `pending_file_effect`.
@@ -357,7 +357,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             _ => {
                 // Non-heap values without method support
                 let type_name = obj.py_type_name(this);
-                args.drop_with_heap(this);
+                args.drop_with(this);
                 Err(ExcType::attribute_error(type_name, this.interns.get_str(name_id)))
             }
         }
@@ -384,7 +384,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         if let Err(e) = self.enter_run_reentry() {
             // Bailing before `call_function` takes ownership of `args`, so
             // reclaim its refcounts here.
-            args.drop_with_heap(self);
+            args.drop_with(self);
             return Err(e.into());
         }
         let mut guard = RunReentryGuard::new(self);
@@ -401,7 +401,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 match this.run()? {
                     FrameExit::Return(v) => return Ok(v),
                     exit => {
-                        exit.drop_with_heap(this);
+                        exit.drop_with(this);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
                         while this.frames.len() >= stack_depth {
@@ -410,7 +410,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
             }
-            other => other.drop_with_heap(this),
+            other => other.drop_with(this),
         }
 
         Err(ExcType::not_implemented(format!(
@@ -444,7 +444,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 self.call_heap_callable(*heap_id, args)
             }
             _ => {
-                args.drop_with_heap(self);
+                args.drop_with(self);
                 let ty = callable.py_type_name(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
             }
@@ -482,7 +482,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
-                args.drop_with_heap(self);
+                args.drop_with(self);
                 let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
                 return Err(ExcType::type_error_not_callable_object(&type_name));
             }
@@ -723,7 +723,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // 1. Create namespace for the coroutine with bound arguments and captured cells.
         let namespace = Vec::with_capacity(func.namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
@@ -787,7 +787,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// and free variables (captured from enclosing scope for closures).
     ///
     /// Locals are built in the reusable `namespace_scratch` buffer (under a
-    /// [`HeapGuard`] for cleanup on error) and moved onto the VM stack, where
+    /// [`DropGuard`] for cleanup on error) and moved onto the VM stack, where
     /// `stack_base` points to the start of the locals region.
     fn call_sync_function(
         &mut self,
@@ -811,11 +811,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         // 1. Build the namespace in the reusable scratch buffer to avoid a
-        //    per-call allocation. On error `HeapGuard` drops the buffer, so the
+        //    per-call allocation. On error `DropGuard` drops the buffer, so the
         //    pool just restarts empty next call.
         let mut namespace = mem::take(&mut self.namespace_scratch);
         namespace.reserve(namespace_size);
-        let mut namespace_guard = HeapGuard::new(namespace, self);
+        let mut namespace_guard = DropGuard::new(namespace, self);
         let (namespace, this) = namespace_guard.as_parts_mut();
 
         // 2. Bind arguments to parameters
@@ -886,7 +886,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         {
             Ok(id) => id,
             Err(e) => {
-                args.drop_with_heap(self);
+                args.drop_with(self);
                 return Err(e.into());
             }
         };
@@ -907,9 +907,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                 if matches!(args, ArgValues::Empty) {
                     Ok(CallResult::Value(Value::Ref(instance_id)))
                 } else {
-                    args.drop_with_heap(self);
+                    args.drop_with(self);
                     let name = class_name(class_id, self.heap, self.interns);
-                    Value::Ref(instance_id).drop_with_heap(self);
+                    Value::Ref(instance_id).drop_with(self);
                     Err(ExcType::type_error(format!("{name}() takes no arguments")))
                 }
             }
@@ -942,8 +942,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         other => {
                             // Defensive: `is_plain_sync_function` guarantees a frame push.
-                            other.drop_with_heap(this);
-                            this.pop().drop_with_heap(this);
+                            other.drop_with(this);
+                            this.pop().drop_with(this);
                             Err(ExcType::type_error("__init__() must be a regular function"))
                         }
                     }
@@ -955,12 +955,12 @@ impl<T: ResourceTracker> VM<'_, T> {
                         Ok(Value::None) => Ok(CallResult::Value(Value::Ref(instance_id))),
                         Ok(result) => {
                             let type_name = result.py_type_name(this);
-                            result.drop_with_heap(this);
-                            Value::Ref(instance_id).drop_with_heap(this);
+                            result.drop_with(this);
+                            Value::Ref(instance_id).drop_with(this);
                             Err(ExcType::type_error_init_return(type_name))
                         }
                         Err(e) => {
-                            Value::Ref(instance_id).drop_with_heap(this);
+                            Value::Ref(instance_id).drop_with(this);
                             Err(e)
                         }
                     }

@@ -1,15 +1,16 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { MontyRuntimeError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { run, pool } = setupPool(test)
+const { run, pool } = setupPool()
 
 // =============================================================================
 // Basic external function tests
 // =============================================================================
 
-test('external function no args', async (t) => {
+test('external function no args', async () => {
   const noop = (...args: unknown[]) => {
     t.deepEqual(args, [])
     return 'called'
@@ -18,7 +19,7 @@ test('external function no args', async (t) => {
   t.is(await run('noop()', { externalLookup: { noop } }), 'called')
 })
 
-test('external function positional args', async (t) => {
+test('external function positional args', async () => {
   const func = (...args: unknown[]) => {
     t.deepEqual(args, [1, 2, 3])
     return 'ok'
@@ -27,7 +28,7 @@ test('external function positional args', async (t) => {
   t.is(await run('func(1, 2, 3)', { externalLookup: { func } }), 'ok')
 })
 
-test('external function kwargs only', async (t) => {
+test('external function kwargs only', async () => {
   const func = (...args: unknown[]) => {
     // kwargs are passed as the last argument as an object
     t.deepEqual(args, [{ a: 1, b: 'two' }])
@@ -37,7 +38,7 @@ test('external function kwargs only', async (t) => {
   t.is(await run('func(a=1, b="two")', { externalLookup: { func } }), 'ok')
 })
 
-test('external function mixed args kwargs', async (t) => {
+test('external function mixed args kwargs', async () => {
   const func = (...args: unknown[]) => {
     // positional args followed by kwargs object
     t.deepEqual(args, [1, 2, { x: 'hello', y: true }])
@@ -47,7 +48,7 @@ test('external function mixed args kwargs', async (t) => {
   t.is(await run('func(1, 2, x="hello", y=True)', { externalLookup: { func } }), 'ok')
 })
 
-test('external function complex types', async (t) => {
+test('external function complex types', async () => {
   const func = (...args: unknown[]) => {
     t.deepEqual(args[0], [1, 2])
     // Dicts are returned as Maps
@@ -59,7 +60,7 @@ test('external function complex types', async (t) => {
   t.is(await run('func([1, 2], {"key": "value"})', { externalLookup: { func } }), 'ok')
 })
 
-test('external function returns none', async (t) => {
+test('external function returns none', async () => {
   const do_nothing = () => {
     // returns undefined which becomes None
   }
@@ -67,7 +68,7 @@ test('external function returns none', async (t) => {
   t.is(await run('do_nothing()', { externalLookup: { do_nothing } }), null)
 })
 
-test('external function returns complex type', async (t) => {
+test('external function returns complex type', async () => {
   const get_data = () => {
     return { a: [1, 2, 3], b: { nested: true } }
   }
@@ -85,7 +86,7 @@ test('external function returns complex type', async (t) => {
 // Multiple external functions tests
 // =============================================================================
 
-test('multiple external functions', async (t) => {
+test('multiple external functions', async () => {
   const add = (a: number, b: number) => {
     t.is(a, 1)
     t.is(b, 2)
@@ -102,7 +103,7 @@ test('multiple external functions', async (t) => {
   t.is(result, 15) // 3 + 12
 })
 
-test('external function called multiple times', async (t) => {
+test('external function called multiple times', async () => {
   let callCount = 0
 
   const counter = () => {
@@ -115,7 +116,7 @@ test('external function called multiple times', async (t) => {
   t.is(callCount, 3)
 })
 
-test('external function with input', async (t) => {
+test('external function with input', async () => {
   const process = (x: number) => {
     t.is(x, 5)
     return x * 10
@@ -128,17 +129,17 @@ test('external function with input', async (t) => {
 // Error handling tests
 // =============================================================================
 
-test('undeclared external function raises name error', async (t) => {
+test('undeclared external function raises name error', async () => {
   const error = await t.throwsAsync(() => run('missing()'), { instanceOf: MontyRuntimeError })
   t.is(error.message, "NameError: name 'missing' is not defined")
 })
 
-test('undeclared function raises name error', async (t) => {
+test('undeclared function raises name error', async () => {
   const error = await t.throwsAsync(() => run('unknown_func()'), { instanceOf: MontyRuntimeError })
   t.is(error.message, "NameError: name 'unknown_func' is not defined")
 })
 
-test('inherited property name is not resolved as a host value', async (t) => {
+test('inherited property name is not resolved as a host value', async () => {
   // `toString` lives on Object.prototype, not as an own key, so referencing it
   // must raise NameError rather than leaking the inherited function.
   const error = await t.throwsAsync(() => run('toString', { externalLookup: { present: 1 } }), {
@@ -147,7 +148,7 @@ test('inherited property name is not resolved as a host value', async (t) => {
   t.is(error.message, "NameError: name 'toString' is not defined")
 })
 
-test('inherited property name is not dispatched as a host function', async (t) => {
+test('inherited property name is not dispatched as a host function', async () => {
   // A call to an inherited callable (e.g. Object.prototype.hasOwnProperty) must
   // be treated as "no such function" and raise NameError, not invoked.
   const error = await t.throwsAsync(() => run('hasOwnProperty()', { externalLookup: { present: 1 } }), {
@@ -156,7 +157,7 @@ test('inherited property name is not dispatched as a host function', async (t) =
   t.is(error.message, "NameError: name 'hasOwnProperty' is not defined")
 })
 
-test('external function raises exception', async (t) => {
+test('external function raises exception', async () => {
   const fail = () => {
     const error = new Error('intentional error')
     error.name = 'ValueError'
@@ -169,7 +170,7 @@ test('external function raises exception', async (t) => {
   t.is(error.message, 'ValueError: intentional error')
 })
 
-test('external function wrong name raises name error', async (t) => {
+test('external function wrong name raises name error', async () => {
   // When 'foo' is called but only 'bar' is provided, foo is a NameError
   const bar = () => 1
 
@@ -179,7 +180,7 @@ test('external function wrong name raises name error', async (t) => {
   t.is(error.message, "NameError: name 'foo' is not defined")
 })
 
-test('external function exception caught by try except', async (t) => {
+test('external function exception caught by try except', async () => {
   const code = `
 try:
     fail()
@@ -196,7 +197,7 @@ caught
   t.is(await run(code, { externalLookup: { fail } }), true)
 })
 
-test('external function exception type preserved', async (t) => {
+test('external function exception type preserved', async () => {
   const fail = () => {
     const error = new Error('type error message')
     error.name = 'TypeError'
@@ -236,7 +237,7 @@ const exceptionTypes: Array<[string, string]> = [
 ]
 
 for (const [jsName, pythonType] of exceptionTypes) {
-  test(`external function exception hierarchy - ${jsName}`, async (t) => {
+  test(`external function exception hierarchy - ${jsName}`, async () => {
     const fail = () => {
       const error = new Error('test message')
       error.name = jsName
@@ -265,7 +266,7 @@ const parentChildPairs: Array<[string, string]> = [
 ]
 
 for (const [childType, parentType] of parentChildPairs) {
-  test(`external function exception caught by parent - ${childType} caught by ${parentType}`, async (t) => {
+  test(`external function exception caught by parent - ${childType} caught by ${parentType}`, async () => {
     const code = `
 try:
     fail()
@@ -290,7 +291,7 @@ caught
 // Exception in various contexts
 // =============================================================================
 
-test('external function exception in expression', async (t) => {
+test('external function exception in expression', async () => {
   const fail = () => {
     const error = new Error('mid-expression error')
     error.name = 'RuntimeError'
@@ -303,7 +304,7 @@ test('external function exception in expression', async (t) => {
   t.is(error.message, 'RuntimeError: mid-expression error')
 })
 
-test('external function exception after successful call', async (t) => {
+test('external function exception after successful call', async () => {
   const code = `
 a = success()
 b = fail()
@@ -323,7 +324,7 @@ a + b
   t.is(error.message, 'ValueError: second call fails')
 })
 
-test('external function exception with finally', async (t) => {
+test('external function exception with finally', async () => {
   const code = `
 finally_ran = False
 try:
@@ -349,7 +350,7 @@ finally_ran
 
 // A return value the wire cannot represent must surface as a catchable
 // in-sandbox error — never desynchronize the protocol or wedge the session.
-test('external function returning a malformed marker object', async (t) => {
+test('external function returning a malformed marker object', async () => {
   const code = `
 try:
     bad()
@@ -365,7 +366,7 @@ caught
   )
 })
 
-test('external function returning a symbol', async (t) => {
+test('external function returning a symbol', async () => {
   const error = await t.throwsAsync(() => run('bad()', { externalLookup: { bad: () => Symbol('nope') } }), {
     instanceOf: MontyRuntimeError,
   })
@@ -376,22 +377,22 @@ test('external function returning a symbol', async (t) => {
 // externalLookup value resolution (non-callable entries)
 // =============================================================================
 
-test('externalLookup resolves a bare name to a value', async (t) => {
+test('externalLookup resolves a bare name to a value', async () => {
   t.is(await run('x + 1', { externalLookup: { x: 41 } }), 42)
 })
 
-test('externalLookup resolves a container value', async (t) => {
+test('externalLookup resolves a container value', async () => {
   const result = (await run('data', { externalLookup: { data: { a: 1, b: 2 } } })) as Map<string, unknown>
   t.is(result.get('a'), 1)
   t.is(result.get('b'), 2)
 })
 
-test('externalLookup mixes a function and a value', async (t) => {
+test('externalLookup mixes a function and a value', async () => {
   const double = (n: number) => n * 2
   t.is(await run('double(n)', { externalLookup: { double, n: 21 } }), 42)
 })
 
-test('externalLookup caches a resolved value within a feed', async (t) => {
+test('externalLookup caches a resolved value within a feed', async () => {
   // the monty worker caches a resolved name in its namespace slot, so the
   // second reference must not re-read the lookup — a getter observes the reads
   let reads = 0
@@ -405,21 +406,21 @@ test('externalLookup caches a resolved value within a feed', async (t) => {
   t.is(reads, 1)
 })
 
-test('externalLookup resolves null and undefined values to None', async (t) => {
+test('externalLookup resolves null and undefined values to None', async () => {
   // null/undefined are present own keys, so they resolve to Python None
   // rather than falling into the absent-name NameError path
   t.is(await run('x is None', { externalLookup: { x: null } }), true)
   t.is(await run('y is None', { externalLookup: { y: undefined } }), true)
 })
 
-test('externalLookup absent name raises name error', async (t) => {
+test('externalLookup absent name raises name error', async () => {
   const error = await t.throwsAsync(() => run('missing', { externalLookup: { present: 1 } }), {
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, "NameError: name 'missing' is not defined")
 })
 
-test('calling a stale proxy whose entry is now non-callable raises TypeError', async (t) => {
+test('calling a stale proxy whose entry is now non-callable raises TypeError', async () => {
   // A function proxy cached in feed 1 dispatches by name against the *current*
   // dict on each call: with the entry replaced by a plain value, calling it
   // raises what CPython would for calling that value (as the Python binding
@@ -436,7 +437,7 @@ test('calling a stale proxy whose entry is now non-callable raises TypeError', a
   }
 })
 
-test('stale proxy TypeError names tuple-marked and __monty_type__ values', async (t) => {
+test('stale proxy TypeError names tuple-marked and __monty_type__ values', async () => {
   // The type in the message follows the js->monty conversion, honoring the
   // `__tuple__` array marker and `__monty_type__` object markers. The marked
   // payload must be a *valid* value for that type (a bare `{ __monty_type__:
@@ -469,7 +470,7 @@ test('stale proxy TypeError names tuple-marked and __monty_type__ values', async
   }
 })
 
-test('stale proxy TypeError survives a throwing getter on the entry', async (t) => {
+test('stale proxy TypeError survives a throwing getter on the entry', async () => {
   // Naming the type reads `__monty_type__`/`__tuple__` off the entry *while
   // formatting the error*; a host value whose getter (or Proxy trap) throws must
   // still yield a clean sandbox TypeError, not escalate into a broken session.
@@ -492,7 +493,7 @@ test('stale proxy TypeError survives a throwing getter on the entry', async (t) 
   }
 })
 
-test('externalLookup unconvertible value rejects the turn', async (t) => {
+test('externalLookup unconvertible value rejects the turn', async () => {
   // a non-callable value that cannot cross the wire surfaces as a conversion
   // error (not a misleading NameError); the worker never observed the name
   const error = await t.throwsAsync(() => run('x', { externalLookup: { x: Symbol('nope') } }))

@@ -339,8 +339,8 @@ impl Signature {
     fn render(&self) -> TokenStream {
         let struct_ident = &self.struct_ident;
         // Dedicated owning-slots struct: holds the raw `Bound` returned by the
-        // runtime binder plus one typed `Option` per named field. A `HeapGuard`
-        // around it centralises error-path cleanup in one `DropWithHeap` impl,
+        // runtime binder plus one typed `Option` per named field. A `DropGuard`
+        // around it centralises error-path cleanup in one `DropWithContext` impl,
         // so every conversion site is a plain `?`.
         let slots_struct_ident = format_ident!("__{}Slots", struct_ident);
 
@@ -355,8 +355,8 @@ impl Signature {
 
         quote! {
             /// Owning slots for the corresponding `from_args`: the raw bound
-            /// arguments plus each converted field. Its `DropWithHeap` impl
-            /// releases both, so a `HeapGuard` around it keeps refcounts
+            /// arguments plus each converted field. Its `DropWithContext` impl
+            /// releases both, so a `DropGuard` around it keeps refcounts
             /// balanced on every conversion error path.
             struct #slots_struct_ident {
                 raw: crate::args::Bound<#n_slots>,
@@ -364,9 +364,9 @@ impl Signature {
             }
 
             #[automatically_derived]
-            impl crate::heap::DropWithHeap for #slots_struct_ident {
-                fn drop_with_heap<H: crate::heap::ContainsHeap>(self, heap: &mut H) {
-                    crate::heap::DropWithHeap::drop_with_heap(self.raw, heap);
+            impl<__C: crate::heap::ContainsHeap> crate::heap::DropWithContext<__C> for #slots_struct_ident {
+                fn drop_with(self, heap: &mut __C) {
+                    crate::heap::DropWithContext::drop_with(self.raw, heap);
                     #(
                         if let ::std::option::Option::Some(__v) = self.#slot_idents {
                             <#slot_tys as crate::args::FromValue>::drop_extracted(__v, heap);
@@ -381,7 +381,7 @@ impl Signature {
                 /// kwargs, cleanup) happens in `crate::args::bind`; this body
                 /// only converts each raw slot in declaration order. On any
                 /// error path every remaining value is dropped via the slots
-                /// struct's `DropWithHeap` impl (driven by a `HeapGuard`).
+                /// struct's `DropWithContext` impl (driven by a `DropGuard`).
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
@@ -392,7 +392,7 @@ impl Signature {
                     // inside `bind`, which fills the slots in place. On the
                     // success path every slot is drained by the build below,
                     // so the guard's drop at scope exit is a cheap no-op.
-                    let mut __guard = crate::heap::HeapGuard::new(
+                    let mut __guard = crate::heap::DropGuard::new(
                         #slots_struct_ident {
                             raw: crate::args::Bound::new(&__SPEC),
                             #(#slot_idents: ::std::option::Option::None,)*

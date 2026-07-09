@@ -51,7 +51,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             // Unreachable in well-formed bytecode (BeforeWith would have rejected
             // a non-Ref ctx), but guard rather than panic so a corrupt VM
             // surfaces a clear internal error instead of an uncontrolled drop.
-            ctx.drop_with_heap(this);
+            ctx.drop_with(this);
             return Err(RunError::internal("WithExit: expected context-manager ref on stack"));
         };
         // Drop the ctx reference on every exit path of this function — whether

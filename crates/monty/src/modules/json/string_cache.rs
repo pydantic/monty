@@ -102,7 +102,7 @@ impl JsonStringCache {
         if let Some(inner) = &mut self.inner {
             for entry in inner.entries.iter_mut() {
                 if let Some((_, _, value)) = entry.take() {
-                    value.drop_with_heap(heap);
+                    value.drop_with(heap);
                 }
             }
         }

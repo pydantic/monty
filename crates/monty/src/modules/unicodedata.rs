@@ -134,7 +134,7 @@ fn uni_name(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
         Ok(c) => c,
         Err(e) => {
             if let Some(d) = default_val {
-                d.drop_with_heap(vm);
+                d.drop_with(vm);
             }
             return Err(e);
         }
@@ -143,7 +143,7 @@ fn uni_name(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
     match unicode_names2::name(c) {
         Some(name) => {
             if let Some(d) = default_val {
-                d.drop_with_heap(vm);
+                d.drop_with(vm);
             }
             Ok(allocate_string(name.to_string(), vm.heap)?)
         }

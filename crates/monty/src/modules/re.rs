@@ -40,7 +40,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapId},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker},
@@ -526,7 +526,7 @@ pub(crate) enum PatternArg {
     /// A `str` pattern, copied out because compilation stores it.
     Str(String),
     /// An already-compiled `re.Pattern` heap value (ownership transferred in;
-    /// dropped by [`resolve_pattern`]'s error path, `drop_with_heap`, or the
+    /// dropped by [`resolve_pattern`]'s error path, `drop_with`, or the
     /// eventual consumer).
     Compiled(Value),
 }
@@ -537,21 +537,21 @@ impl PatternArg {
     fn extract(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Some(either) = value.as_either_str(vm.heap) {
             let pattern = either.into_string(vm.interns);
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             Ok(Self::Str(pattern))
         } else if value.py_type_heap(vm.heap) == Type::RePattern {
             Ok(Self::Compiled(value))
         } else {
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             Err(ExcType::type_error("first argument must be string or compiled pattern"))
         }
     }
 }
 
-impl DropWithHeap for PatternArg {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for PatternArg {
+    fn drop_with(self, heap: &mut C) {
         if let Self::Compiled(value) = self {
-            value.drop_with_heap(heap);
+            value.drop_with(heap);
         }
     }
 }
@@ -583,7 +583,7 @@ impl ReFlags {
                 "int",
             )),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 }
@@ -624,10 +624,10 @@ impl ResolvedPattern {
     }
 }
 
-impl DropWithHeap for ResolvedPattern {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for ResolvedPattern {
+    fn drop_with(self, heap: &mut C) {
         if let Self::Heap(value) = self {
-            value.drop_with_heap(heap);
+            value.drop_with(heap);
         }
         // `Cached` holds only an `Rc<RePattern>` (no heap references); it drops here.
     }
@@ -733,14 +733,14 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTr
     let pattern = match PatternArg::extract(pattern, vm) {
         Ok(pattern) => pattern,
         Err(e) => {
-            flags.drop_with_heap(vm);
+            flags.drop_with(vm);
             return Err(e);
         }
     };
     let flags = match ReFlags::extract(flags, vm) {
         Ok(flags) => flags,
         Err(e) => {
-            pattern.drop_with_heap(vm);
+            pattern.drop_with(vm);
             return Err(e);
         }
     };
@@ -752,7 +752,7 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTr
             if flags.get() == 0 {
                 Ok(ResolvedPattern::Heap(value))
             } else {
-                value.drop_with_heap(vm);
+                value.drop_with(vm);
                 Err(ExcType::value_error(
                     "cannot process flags argument with a compiled pattern",
                 ))

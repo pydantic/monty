@@ -1,35 +1,25 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from 'vitest'
 
-test('createMonty runs feeds in a browser Web Worker', async ({ page }) => {
-  const messages: string[] = []
-  page.on('console', (message) => messages.push(message.text()))
-  page.on('pageerror', (error) => messages.push(error.stack ?? error.message))
+import { Monty } from '@pydantic/monty'
 
-  await page.goto('/')
-  await page
-    .waitForFunction(() => window.__results !== undefined || window.__error !== undefined, null, {
-      timeout: 30_000,
-    })
-    .catch((error: unknown) => {
-      throw new Error(`${String(error)}\n${messages.join('\n')}`)
-    })
+test('Monty.create runs feeds in a browser Web Worker', async () => {
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
 
-  const error = await page.evaluate(() => window.__error)
-  expect(error, error).toBeUndefined()
+  await session.feedRun('x = 2')
+  const result = await session.feedRun('x + 3')
 
-  const results = await page.evaluate(() => window.__results)
-  expect(results).toMatchObject({
-    add: 3,
-    ext: 5,
-    watchdog: 'MontyCrashedError',
-    recovered: 4,
+  expect({ result, crossOriginIsolated: globalThis.crossOriginIsolated }).toMatchObject({
+    result: 5,
     crossOriginIsolated: false,
   })
 })
 
-declare global {
-  interface Window {
-    __results?: Record<string, unknown>
-    __error?: string
-  }
-}
+test('browser wasm reports mounts as unsupported', async () => {
+  await using pool = await Monty.create()
+  await using session = await pool.checkout()
+
+  await expect(session.feedRun("open('/mnt/data/file.txt').read()", { mount: [{}] as never })).rejects.toThrow(
+    'the wasm worker does not support filesystem mounts',
+  )
+})

@@ -371,7 +371,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
                 let GroupdictArgs { default } = GroupdictArgs::from_args(args, vm)?;
                 let default = default.unwrap_or(Value::None);
                 let result = self.get_groupdict(&default, vm)?;
-                default.drop_with_heap(vm);
+                default.drop_with(vm);
                 result
             }
             Some(StaticStrings::Start) => {
@@ -458,7 +458,7 @@ fn call_group<'h>(
         ArgValues::Empty => m.get(vm.heap).get_group(0, vm.heap),
         ArgValues::One(v) => {
             let result = resolve_group_arg(m.get(vm.heap), &v, vm);
-            v.drop_with_heap(vm);
+            v.drop_with(vm);
             result
         }
         other => {
@@ -470,7 +470,7 @@ fn call_group<'h>(
                 if result.is_err() {
                     // Drop already-allocated elements
                     for elem in elements {
-                        Value::drop_with_heap(elem, vm);
+                        Value::drop_with(elem, vm);
                     }
                     return result;
                 }
@@ -520,7 +520,7 @@ fn extract_optional_group_arg(
         Some(Value::Bool(b)) => Ok(i64::from(b)),
         // String group names are not valid for start/end/span — they take integers only
         Some(other) => {
-            other.drop_with_heap(heap);
+            other.drop_with(heap);
             Err(ExcType::re_match_group_index_error())
         }
     }

@@ -41,9 +41,9 @@ fn monty_binary() -> PathBuf {
     BUILD.call_once(|| {
         if !path.exists() {
             let status = Command::new(env!("CARGO"))
-                .args(["build", "-p", "monty-cli"])
+                .args(["build", "-p", "monty-runtime"])
                 .status()
-                .expect("failed to run cargo build -p monty-cli");
+                .expect("failed to run cargo build -p monty-runtime");
             assert!(status.success(), "building the monty binary failed");
         }
     });

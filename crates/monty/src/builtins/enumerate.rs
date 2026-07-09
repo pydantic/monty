@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{HeapData, HeapGuard},
+    heap::{DropGuard, HeapData},
     resource::ResourceTracker,
     types::{List, MontyIter, allocate_tuple},
     value::Value,
@@ -39,7 +39,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     };
 
     let result: Vec<Value> = Vec::new();
-    let mut result_guard = HeapGuard::new(result, vm);
+    let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
 
     while let Some(item) = iter.for_next(vm)? {

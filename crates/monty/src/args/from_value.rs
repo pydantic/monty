@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, HeapData},
+    heap::{ContainsHeap, DropWithContext, HeapData},
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -73,7 +73,7 @@ pub(crate) enum FromValueFail {
 /// errors such as missing arguments or unexpected kwargs.
 ///
 /// Implementations *must* consume the input on every path: either drop it
-/// (`drop_with_heap`) once any needed data has been read out, or transfer
+/// (`drop_with`) once any needed data has been read out, or transfer
 /// ownership into `Self` (the identity `Value` impl, [`StrArg`]) — in which
 /// case [`drop_extracted`](Self::drop_extracted) must release it.
 pub(crate) trait FromValue: Sized {
@@ -95,7 +95,7 @@ pub(crate) trait FromValue: Sized {
     /// been dropped before returning.
     ///
     /// Takes `&mut VM` so impls can both inspect the heap (for type coercion)
-    /// and call `drop_with_heap` on the input; this also lets `LaxBool` route
+    /// and call `drop_with` on the input; this also lets `LaxBool` route
     /// through `PyTrait::py_bool`.
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail>;
 
@@ -188,7 +188,7 @@ impl FromValue for Value {
     }
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
-        self.drop_with_heap(heap);
+        self.drop_with(heap);
     }
 }
 
@@ -212,7 +212,7 @@ impl FromValue for i32 {
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
             _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 
@@ -231,7 +231,7 @@ impl FromValue for i64 {
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_long())),
             _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 
@@ -261,7 +261,7 @@ impl FromValue for bool {
             Value::Bool(b) => Ok(b),
             _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 
@@ -291,13 +291,13 @@ impl FromValue for StrArg {
         if value.is_str(vm.heap) {
             Ok(Self(value))
         } else {
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             Err(FromValueFail::WrongType)
         }
     }
 
     fn drop_extracted(self, heap: &mut impl ContainsHeap) {
-        self.0.drop_with_heap(heap);
+        self.0.drop_with(heap);
     }
 }
 
@@ -312,9 +312,9 @@ impl StrArg {
     }
 }
 
-impl DropWithHeap for StrArg {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.0.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for StrArg {
+    fn drop_with(self, ctx: &mut C) {
+        self.0.drop_with(ctx);
     }
 }
 
@@ -367,7 +367,7 @@ pub(crate) struct LaxBool(bool);
 impl FromValue for LaxBool {
     fn from_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Self, FromValueFail> {
         let result = value.py_bool(vm);
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         Ok(Self(result))
     }
 }

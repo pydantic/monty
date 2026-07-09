@@ -577,7 +577,8 @@ pub(crate) fn extract_maxsplit(val: Option<Value>, vm: &mut VM<'_, impl Resource
         Some(Value::Bool(b)) => Ok(i64::from(b)),
         Some(other) => {
             let t = other.py_type_name(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
+
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"
             )))
@@ -602,7 +603,8 @@ pub(crate) fn extract_count(val: Option<Value>, vm: &mut VM<'_, impl ResourceTra
         Some(Value::Int(_)) => Ok(None),
         Some(other) => {
             let t = other.py_type_name(vm);
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
+
             Err(ExcType::type_error(format!(
                 "'{t}' object cannot be interpreted as an integer"
             )))

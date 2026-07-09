@@ -21,7 +21,19 @@ import { browserWorkerFactory } from './browserFactory.js'
 import { type WorkerFactory, WorkerPool, type WorkerPoolOptions, inProcessFactory } from './pool.js'
 
 export interface WasmPoolOptions extends WorkerPoolOptions {
-  /** Hard per-turn deadline; on expiry the worker is terminated (Worker backend). */
+  /** Native-compatible alias for `minWorkers`. */
+  minProcesses?: number
+  /** Native-compatible alias for `maxWorkers`. */
+  maxProcesses?: number
+  /** Accepted for parity with the native API; wasm currently waits forever. */
+  checkoutTimeout?: number
+  /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
+  requestTimeout?: number
+  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  durationLimitGrace?: number | null
+  /** Accepted for parity with the native API; wasm always loads the bundled asset. */
+  binaryPath?: string
+  /** Hard per-turn deadline in milliseconds; on expiry the worker is terminated. */
   requestTimeoutMs?: number
   /** Overrides the worker entry URL used by the browser backend. */
   workerUrl?: string | URL
@@ -32,11 +44,17 @@ export type ModuleLoader = () => Promise<WebAssembly.Module>
 
 /** Creates a pool over the best backend for this environment. */
 export async function createWorkerPool(module: WebAssembly.Module, options: WasmPoolOptions = {}): Promise<WorkerPool> {
+  const requestTimeoutMs =
+    options.requestTimeoutMs ?? (options.requestTimeout === undefined ? undefined : options.requestTimeout * 1000)
   const factory: WorkerFactory =
     'Worker' in globalThis
-      ? browserWorkerFactory(module, { requestTimeoutMs: options.requestTimeoutMs }, options.workerUrl)
+      ? browserWorkerFactory(module, { requestTimeoutMs }, options.workerUrl)
       : inProcessFactory(module)
-  return WorkerPool.create(factory, options)
+  return WorkerPool.create(factory, {
+    minWorkers: options.minWorkers ?? options.minProcesses,
+    maxWorkers: options.maxWorkers ?? options.maxProcesses,
+    maxCheckoutsPerWorker: options.maxCheckoutsPerWorker,
+  })
 }
 
 /** Builds a turnkey `createMonty` over an environment-specific module loader. */
@@ -50,6 +68,13 @@ export function makeCreateMonty(loadModule: ModuleLoader) {
  * loader. In an unrecognized environment, load the module yourself and call
  * `createWorkerPool`.
  */
+export class Monty {
+  /** Loads the bundled wasm module and creates a browser/worker-backed pool. */
+  static async create(options: WasmPoolOptions = {}): Promise<WorkerPool> {
+    return createMonty(options)
+  }
+}
+
 export const createMonty = makeCreateMonty(() =>
   Promise.reject(
     new Error(

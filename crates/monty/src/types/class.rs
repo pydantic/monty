@@ -7,7 +7,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{BorrowedHeapReadMut, DropWithHeap, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    heap::{BorrowedHeapReadMut, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
     resource::ResourceTracker,
     types::str::allocate_string,
     value::{EitherStr, Value},
@@ -142,7 +142,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
             let name_val = match allocate_string(name, vm.heap) {
                 Ok(v) => v,
                 Err(e) => {
-                    args.drop_with_heap(vm);
+                    args.drop_with(vm);
                     return Err(e.into());
                 }
             };
@@ -160,7 +160,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
             defer_drop!(member, vm);
             vm.call_function(member, args)
         } else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             Err(ExcType::attribute_error_type(
                 self.get(vm.heap).name.as_str(vm.interns),
                 attr_str,

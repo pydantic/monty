@@ -21,7 +21,7 @@ use crate::{
     bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
     resource::ResourceTracker,
     run_progress::ExtFunctionResult,
@@ -105,8 +105,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         mut gather: HeapRead<'h, GatherFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
-        let mut awaiter_guard = HeapGuard::new(awaiter, self);
-        let this = awaiter_guard.heap();
+        let mut awaiter_guard = DropGuard::new(awaiter, self);
+        let this = awaiter_guard.ctx();
         match &gather.get(this.heap).state {
             GatherState::Pending => {}
             GatherState::Completed(value) => {
@@ -138,7 +138,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         let mut pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>> = AHashMap::new();
         let results: Vec<Option<Value>> = (0..item_count).map(|_| None).collect();
-        let mut results_guard = HeapGuard::new(results, this);
+        let mut results_guard = DropGuard::new(results, this);
         let (results, this) = results_guard.as_parts_mut();
 
         // Roll back already-committed siblings if a later child fails during
@@ -178,8 +178,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // results) and the committed children own resources that need
             // releasing. Cache the failure so a re-await replays it.
             gather.get_mut(this.heap).state = GatherState::Failed(err.clone());
-            awaiter.drop_with_heap(this.heap);
-            results.drop_with_heap(this.heap);
+            awaiter.drop_with(this.heap);
+            results.drop_with(this.heap);
             drop_committed_children(pending_children, &mut this.scheduler, this.heap, &err);
             return Err(err);
         }
@@ -275,8 +275,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         fut: &mut HeapRead<'h, ExternalFuture>,
         awaiter: Awaiter,
     ) -> Result<Poll<Value>, RunError> {
-        let mut awaiter_guard = HeapGuard::new(awaiter, self);
-        let this = awaiter_guard.heap();
+        let mut awaiter_guard = DropGuard::new(awaiter, self);
+        let this = awaiter_guard.ctx();
         match &fut.get(this.heap).state {
             ExternalFutureState::Resolved(value) => {
                 let value = value.clone_with_heap(this);
@@ -716,7 +716,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let call_id = CallId::new(call_id);
 
         let Some(future_id) = self.scheduler.take_pending_external(call_id) else {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Ok(());
         };
 
@@ -725,7 +725,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let this = self;
         defer_drop!(fut_val, this);
 
-        let mut value_guard = HeapGuard::new(value, this);
+        let mut value_guard = DropGuard::new(value, this);
         let (value, this) = value_guard.as_parts_mut();
 
         let HeapReadOutput::ExternalFuture(mut fut) = this.heap.read(future_id) else {
@@ -761,7 +761,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// accounting.
     fn deliver_value_to_task(&mut self, task_id: TaskId, value: Value) -> RunResult<()> {
         if !self.scheduler.has_task(task_id) || self.scheduler.is_task_failed(task_id) {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Ok(());
         }
 
@@ -770,7 +770,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             self.stack.push(value);
         } else {
             if let Err(err) = self.heap.track_growth(mem::size_of::<Value>()) {
-                value.drop_with_heap(self);
+                value.drop_with(self);
                 return Err(err.into());
             }
             self.scheduler.get_task_mut(task_id).stack.push(value);
@@ -1054,7 +1054,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
             }
             results[*last] = Some(value);
         } else {
-            value.drop_with_heap(vm.heap);
+            value.drop_with(vm.heap);
         }
 
         // Restore results and check completion.
@@ -1123,7 +1123,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
         heap.track_shrink(old_size.saturating_sub(new_size));
 
         // Drop fanned-out result Values that won't reach the waiter.
-        results.drop_with_heap(heap);
+        results.drop_with(heap);
 
         // Skip nested gathers that already failed while propagating this same
         // error up the awaiter chain.
@@ -1156,13 +1156,13 @@ fn drop_committed_children(
                 if let ExternalFutureState::Pending { awaiter } = &mut fut.get_mut(heap).state
                     && let Some(old) = awaiter.take()
                 {
-                    old.drop_with_heap(heap);
+                    old.drop_with(heap);
                 }
             }
             HeapReadOutput::GatherFuture(mut nested) => {
                 if matches!(nested.get(heap).state, GatherState::Awaited(_)) {
                     let nested_awaiter = nested.fail(scheduler, heap, error);
-                    nested_awaiter.drop_with_heap(heap);
+                    nested_awaiter.drop_with(heap);
                 }
                 // Terminal or never-committed nested gathers have no active
                 // children left for this parent to tear down.

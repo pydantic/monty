@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { Monty, MontyRuntimeError } from '../ts/index.js'
 
@@ -8,7 +9,7 @@ import { Monty, MontyRuntimeError } from '../ts/index.js'
 
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 
-test('installDependencies is rejected by the sandbox worker, session survives', async (t) => {
+test('installDependencies is rejected by the sandbox worker, session survives', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   const error = await t.throwsAsync(() => session.installDependencies(['httpx>=0.27']), isRuntimeError)
@@ -17,7 +18,7 @@ test('installDependencies is rejected by the sandbox worker, session survives', 
   t.is(await session.feedRun('1 + 1'), 2)
 })
 
-test('installDependencies with an empty list is a no-op', async (t) => {
+test('installDependencies with an empty list is a no-op', async () => {
   await using pool = await Monty.create()
   const session = await pool.checkout()
   t.is(await session.installDependencies([]), undefined)

@@ -20,7 +20,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
@@ -55,8 +55,8 @@ impl MontyIter {
         if let Some(s) = sentinel {
             // Two-argument form: iter(callable, sentinel)
             // This is the sentinel iteration protocol, not yet supported
-            iterable.drop_with_heap(vm);
-            s.drop_with_heap(vm);
+            iterable.drop_with(vm);
+            s.drop_with(vm);
             return Err(ExcType::type_error("iter(callable, sentinel) is not yet supported"));
         }
 
@@ -86,7 +86,7 @@ impl MontyIter {
             // GC issues (the Range isn't in any namespace slot, so GC wouldn't see it).
             // Same for IterStr which copies the string content.
             if matches!(iter_value, IterValue::Range { .. } | IterValue::IterStr { .. }) {
-                value.drop_with_heap(vm);
+                value.drop_with(vm);
                 value = Value::None;
             }
             Ok(Self {
@@ -96,14 +96,15 @@ impl MontyIter {
             })
         } else {
             let err = ExcType::type_error_not_iterable(&value.py_type_name(vm));
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
+
             Err(err)
         }
     }
 
     /// Drops the iterator and its held value properly.
-    pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
-        self.value.drop_with_heap(heap);
+    pub fn drop_with(self, heap: &mut impl ContainsHeap) {
+        self.value.drop_with(heap);
     }
 
     /// Collects HeapIds from this iterator for reference counting cleanup.
@@ -265,7 +266,7 @@ impl MontyIter {
     /// deliberately does not implement [`Iterator`] so callers cannot bypass
     /// this check with a plain `.collect()`.
     pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<T> {
-        let mut guard = HeapGuard::new(self, vm);
+        let mut guard = DropGuard::new(self, vm);
         let (this, vm) = guard.as_parts_mut();
         HeapedMontyIter {
             iter: this,
@@ -314,7 +315,7 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, T> {
                 match check_estimated_size(estimated, self.vm.heap.tracker()) {
                     Ok(()) => Some(Ok(value)),
                     // Over budget mid-collection. The partially built buffer is
-                    // dropped without `drop_with_heap`, leaking the refcounts of
+                    // dropped without `drop_with`, leaking the refcounts of
                     // `value` and the already-collected items. This is the
                     // existing, explicitly sanctioned behaviour for resource
                     // errors (terminal; heap state is discarded — see CLAUDE.md
@@ -517,8 +518,8 @@ pub fn iterator_next(
     default: Option<Value>,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let mut default_guard = HeapGuard::new(default, vm);
-    let vm = default_guard.heap();
+    let mut default_guard = DropGuard::new(default, vm);
+    let vm = default_guard.ctx();
 
     let Value::Ref(iter_id) = iter_value else {
         return Err(ExcType::type_error_not_iterable(&iter_value.py_type_name(vm)));
@@ -695,10 +696,10 @@ impl IterValue {
     }
 }
 
-impl DropWithHeap for MontyIter {
+impl<C: ContainsHeap> DropWithContext<C> for MontyIter {
     #[inline]
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        Self::drop_with_heap(self, heap);
+    fn drop_with(self, heap: &mut C) {
+        Self::drop_with(self, heap);
     }
 }
 

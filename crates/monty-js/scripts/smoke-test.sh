@@ -14,7 +14,7 @@ echo "=== Building package ==="
 npm run build:debug
 
 echo "=== Building the monty binary ==="
-cargo build -p monty-cli --manifest-path "$WORKSPACE_DIR/Cargo.toml"
+cargo build -p monty-runtime --manifest-path "$WORKSPACE_DIR/Cargo.toml"
 
 echo "=== Creating platform package ==="
 rm -rf npm/
@@ -34,7 +34,8 @@ PLATFORM_DIR=npm/$TRIPLE
 # Ship both artifacts: the napi shared library (built to the package root by
 # `npm run build`) and the monty worker binary.
 cp "monty.$TRIPLE.node" "$PLATFORM_DIR/"
-cp "$WORKSPACE_DIR/target/debug/$EXE" "$PLATFORM_DIR/"
+CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE_DIR/target}"
+cp "$CARGO_TARGET_DIR/debug/$EXE" "$PLATFORM_DIR/"
 
 echo "=== Creating tgz files ==="
 cd "$PLATFORM_DIR"

@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        BorrowedHeapReadMut, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -159,7 +159,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         }
 
         // 4. No such attribute.
-        args.drop_with_heap(vm);
+        args.drop_with(vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
             attr_str,
@@ -406,7 +406,7 @@ fn instance_call_str_dunder(
             "{dunder} returned non-string (type {})",
             result.py_type_name(vm)
         ));
-        result.drop_with_heap(vm);
+        result.drop_with(vm);
         Err(exc)
     }
 }

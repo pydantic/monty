@@ -1,20 +1,10 @@
-//! `monty-cpython`: a Monty wire-protocol child worker that runs fed code in
-//! embedded CPython.
+#![doc = include_str!("../README.md")]
+
+//! # Crate layout
 //!
-//! It speaks the same protocol as `monty subprocess` (so the existing
-//! `monty-pool` can drive it) but, instead of running Monty, executes each
-//! snippet in a real CPython interpreter and routes every undefined name back to
-//! the parent as a `FunctionCall` — the Rust port of the `proto_child.py`
-//! reference client. See [`pyexec`] for the `dict.__missing__` mechanism.
-//!
-//! Transports are pluggable ([`Transport`]) and chosen by subcommand: the
-//! `subprocess` subcommand uses stdio framed like the Monty child, while
-//! `websocket` dials a relay (or a parent-as-server) as a WebSocket client.
-//!
-//! SECURITY: full CPython is **not** a sandbox. This worker runs untrusted code
-//! with no isolation of its own — that is the deployment's responsibility (a
-//! locked-down container, or a relay-provisioned sandbox). See this crate's
-//! `README.md`.
+//! Transports are pluggable ([`Transport`]) and chosen by subcommand; see
+//! [`pyexec`] for the `dict.__missing__` mechanism that routes undefined
+//! names back to the parent.
 
 mod events;
 mod install;

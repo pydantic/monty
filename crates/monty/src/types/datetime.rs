@@ -20,7 +20,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     object::MontyObject,
     os::OsFunctionCall,
@@ -286,48 +286,51 @@ fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     for (index, arg) in pos.by_ref().enumerate() {
         if index == 0 {
             if let Err(e) = validate_tz_arg(&arg, heap, interns) {
-                arg.drop_with_heap(heap);
-                pos.drop_with_heap(heap);
-                kwargs_iter.drop_with_heap(heap);
+                arg.drop_with(heap);
+                pos.drop_with(heap);
+                kwargs_iter.drop_with(heap);
+
                 return Err(e);
             }
             tz_value = arg;
             seen_tz = true;
         } else {
-            arg.drop_with_heap(heap);
-            pos.drop_with_heap(heap);
-            kwargs_iter.drop_with_heap(heap);
-            tz_value.drop_with_heap(heap);
+            arg.drop_with(heap);
+            pos.drop_with(heap);
+            kwargs_iter.drop_with(heap);
+            tz_value.drop_with(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, index + 1));
         }
     }
 
     while let Some((key, value)) = kwargs_iter.next() {
         let key_name = key.as_either_str(heap);
-        key.drop_with_heap(heap);
+        key.drop_with(heap);
 
         let Some(key_name) = key_name else {
-            value.drop_with_heap(heap);
-            kwargs_iter.drop_with_heap(heap);
-            tz_value.drop_with_heap(heap);
+            value.drop_with(heap);
+            kwargs_iter.drop_with(heap);
+            tz_value.drop_with(heap);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         if key_name.string_id() != Some(StaticStrings::Tz.into()) {
-            value.drop_with_heap(heap);
-            kwargs_iter.drop_with_heap(heap);
-            tz_value.drop_with_heap(heap);
+            value.drop_with(heap);
+            kwargs_iter.drop_with(heap);
+            tz_value.drop_with(heap);
             return Err(ExcType::type_error_unexpected_keyword("now", key_name.as_str(interns)));
         }
         if seen_tz {
-            value.drop_with_heap(heap);
-            kwargs_iter.drop_with_heap(heap);
-            tz_value.drop_with_heap(heap);
+            value.drop_with(heap);
+            kwargs_iter.drop_with(heap);
+            tz_value.drop_with(heap);
             return Err(ExcType::type_error_method_at_most("now", 1, 2));
         }
+
         if let Err(e) = validate_tz_arg(&value, heap, interns) {
-            value.drop_with_heap(heap);
-            kwargs_iter.drop_with_heap(heap);
-            tz_value.drop_with_heap(heap);
+            value.drop_with(heap);
+            kwargs_iter.drop_with(heap);
+            tz_value.drop_with(heap);
+
             return Err(e);
         }
         tz_value = value;
@@ -350,8 +353,8 @@ pub(crate) fn class_strptime(
 
     let date_string = date::extract_str_arg(&date_string_val, "strptime", heap, interns);
     let fmt = date::extract_str_arg(&format_val, "strptime", heap, interns);
-    date_string_val.drop_with_heap(heap);
-    format_val.drop_with_heap(heap);
+    date_string_val.drop_with(heap);
+    format_val.drop_with(heap);
     let date_string = date_string?;
     let fmt = fmt?;
 
@@ -394,7 +397,7 @@ pub(crate) fn class_fromisoformat(
 ) -> RunResult<Value> {
     let value = args.get_one_arg("datetime.fromisoformat", heap)?;
     let s = date::extract_str_arg(&value, "fromisoformat", heap, interns);
-    value.drop_with_heap(heap);
+    value.drop_with(heap);
     let s = s?;
 
     let dt = parse_iso_datetime(&s, heap)

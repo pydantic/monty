@@ -5,10 +5,10 @@ use smallvec::SmallVec;
 use super::{CmpOrder, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
-    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
-    defer_drop, defer_drop_mut, defer_drop_vm_mut,
+    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
@@ -221,7 +221,7 @@ impl<'h> HeapRead<'h, List> {
         let b_len = other.get(vm.heap).items.len();
         let min_len = a_len.min(b_len);
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, av)) = iter.next_with_index(vm)? {
             if i >= min_len {
                 break;
@@ -281,12 +281,12 @@ impl<'h> HeapRead<'h, List> {
 /// item in its `current` slot (using [`Value::Undefined`] as the empty
 /// sentinel) and drops the previous item at the start of each `next` call.
 /// The held item is also dropped when the iterator itself is released via
-/// [`DropWithVM`]. This means call sites do **not** need a per-item
+/// [`DropWithContext`]. This means call sites do **not** need a per-item
 /// `defer_drop!`; the iter manages every item it hands out.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
-/// [`defer_drop_vm_mut!`] so the token (and any in-flight item) is released on
+/// releases it via [`DropWithContext`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight item) is released on
 /// every exit path (success, early `return`, error via `?`). The token is
 /// intentionally non-optional — every iteration of a Python container can
 /// transitively trigger `py_eq` / `py_hash` / `py_repr` / `py_cmp` /
@@ -329,7 +329,7 @@ impl<'a, 'h> ListIter<'a, 'h> {
     /// Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
-        mem::replace(&mut self.current, Value::Undefined).drop_with_heap(vm.heap);
+        mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
         if self.index >= self.list.get(vm.heap).len() {
             return Ok(None);
@@ -356,10 +356,10 @@ impl<'a, 'h> ListIter<'a, 'h> {
     }
 }
 
-impl<'h> DropWithVM<'h> for ListIter<'_, 'h> {
-    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
-        self.current.drop_with_heap(container);
-        self.token.drop_with_vm(container);
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for ListIter<'_, 'h> {
+    fn drop_with(self, container: &mut C) {
+        self.current.drop_with(container);
+        self.token.drop_with(container);
     }
 }
 
@@ -459,7 +459,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             return Ok(Some(false));
         }
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
@@ -542,7 +542,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         }
 
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::List, attr.as_str(vm.interns)));
         };
 
@@ -614,7 +614,7 @@ fn call_list_method<'h>(
         }
         // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
         _ => {
-            args.drop_with_heap(heap);
+            args.drop_with(heap);
             Err(ExcType::attribute_error(Type::List, method.into()))
         }
     }
@@ -628,8 +628,8 @@ fn list_insert<'h>(
 ) -> RunResult<Value> {
     let (index_obj, item) = args.get_two_args("insert", vm.heap)?;
     defer_drop!(index_obj, vm);
-    let mut item_guard = HeapGuard::new(item, vm);
-    let vm = item_guard.heap();
+    let mut item_guard = DropGuard::new(item, vm);
+    let vm = item_guard.ctx();
     // Python's insert() handles negative indices by adding len
     // If still negative after adding len, clamps to 0
     // If >= len, appends to end
@@ -664,7 +664,7 @@ fn list_pop<'h>(
     // Python raises TypeError for bad index type even on empty list.
     let index_i64 = if let Some(v) = index_arg {
         let result = v.as_int(vm);
-        v.drop_with_heap(vm);
+        v.drop_with(vm);
         result?
     } else {
         -1
@@ -704,7 +704,7 @@ fn list_remove<'h>(
     let mut found_idx = None;
     {
         let iter = list.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, item)) = iter.next_with_index(vm)? {
             if value.py_eq(item, vm)? {
                 found_idx = Some(i);
@@ -717,7 +717,7 @@ fn list_remove<'h>(
         Some(idx) => {
             // Remove the element and drop its refcount
             let removed = list.get_mut(vm.heap).items.remove(idx);
-            removed.drop_with_heap(vm.heap);
+            removed.drop_with(vm.heap);
             Ok(Value::None)
         }
         None => Err(ExcType::value_error_remove_not_in_list()),
@@ -728,7 +728,7 @@ fn list_remove<'h>(
 ///
 /// Removes all items from the list.
 fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, impl ResourceTracker>) {
-    mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
+    mem::take(&mut list.get_mut(vm.heap).items).drop_with(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
@@ -793,7 +793,7 @@ fn list_index<'h>(
 
     // Search for the value in the specified range
     let iter = list.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     while let Some((idx, item)) = iter.next_with_index(vm)? {
         if idx >= end {
             // No further matches possible inside [start, end).
@@ -820,7 +820,7 @@ fn list_count<'h>(
 
     let mut count: usize = 0;
     let iter = list.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     while let Some(item) = iter.next(vm)? {
         if value.py_eq(item, vm)? {
             count += 1;
@@ -984,7 +984,7 @@ mod tests {
         assert!(matches!(list.as_slice()[1], Value::Int(99)));
 
         // Clean up
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        Value::Ref(list_id).drop_with(&mut heap);
     }
 
     /// Tests py_setitem with a negative LongInt index that fits in i64.
@@ -1016,7 +1016,7 @@ mod tests {
         };
         assert!(matches!(list.as_slice()[2], Value::Int(99)));
 
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        Value::Ref(list_id).drop_with(&mut heap);
     }
 
     /// Tests py_setitem with i64::MAX as a LongInt index.
@@ -1040,6 +1040,6 @@ mod tests {
 
         assert!(result.is_err());
 
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        Value::Ref(list_id).drop_with(&mut heap);
     }
 }

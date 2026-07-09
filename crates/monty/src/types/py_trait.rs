@@ -19,7 +19,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, HeapId},
+    heap::{DropWithContext, HeapId},
     intern::StringId,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
@@ -372,7 +372,8 @@ pub(crate) trait PyTrait<'h> {
         // do not recognize the attribute still need to release those values before
         // reporting `AttributeError`, otherwise method calls on unsupported types leak
         // references on the error path (caught by `memory-model-checks`).
-        args.drop_with_heap(vm);
+
+        args.drop_with(vm);
         Err(ExcType::attribute_error(
             self.py_type(vm).name(vm.heap, vm.interns),
             attr.as_str(vm.interns),
@@ -478,8 +479,8 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// Default implementation returns TypeError.
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        key.drop_with_heap(vm);
-        value.drop_with_heap(vm);
+        key.drop_with(vm);
+        value.drop_with(vm);
         Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!(

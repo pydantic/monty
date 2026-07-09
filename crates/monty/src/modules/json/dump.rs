@@ -11,9 +11,9 @@ use std::{
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{ContainsVM, VM},
-    defer_drop_mut, defer_drop_vm, defer_drop_vm_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
@@ -98,8 +98,8 @@ impl JsonDumpsConfig {
 
         // Keep `obj` alive across kwarg processing — early errors below must
         // not leak the heap reference.
-        let mut obj_guard = HeapGuard::new(obj, vm);
-        let vm = obj_guard.heap();
+        let mut obj_guard = DropGuard::new(obj, vm);
+        let vm = obj_guard.ctx();
 
         let mut config = Self::default();
 
@@ -143,7 +143,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     let macro_args = JsonDumpsArgs::from_args(args, vm)?;
     let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
 
-    let mut obj_guard = HeapGuard::new(obj, vm);
+    let mut obj_guard = DropGuard::new(obj, vm);
     let mut output = String::new();
     let mut active_containers = Vec::new();
     {
@@ -158,7 +158,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     }
 
     let (obj, vm) = obj_guard.into_parts();
-    obj.drop_with_heap(vm);
+    obj.drop_with(vm);
     Ok(allocate_string(output, vm.heap)?)
 }
 
@@ -197,7 +197,7 @@ struct JsonDumpsArgs {
 /// boolean-style flag is handled with a single line.
 fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> u8 {
     let new_flags = if value.py_bool(vm) { flags | bit } else { flags & !bit };
-    value.drop_with_heap(vm);
+    value.drop_with(vm);
     new_flags
 }
 
@@ -208,7 +208,7 @@ fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl Resour
 /// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
 fn parse_indent_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<String>> {
-    let mut value_guard = HeapGuard::new(value, vm);
+    let mut value_guard = DropGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
     match value {
@@ -247,7 +247,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 /// `None` leaves the default separators intact. Otherwise the value must be a
 /// two-item list or tuple of strings representing the item and key separators.
 fn parse_separators_value(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<(String, String)>> {
-    let mut value_guard = HeapGuard::new(value, vm);
+    let mut value_guard = DropGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
     if matches!(value, Value::None) {
@@ -349,7 +349,7 @@ struct Encoder<'a, 'h, R: ResourceTracker> {
     vm: &'a mut VM<'h, R>,
 }
 
-/// Lets the encoder participate in the [`HeapGuard`] / [`defer_drop_mut!`]
+/// Lets the encoder participate in the [`DropGuard`] / [`defer_drop_mut!`]
 /// pattern: passing the encoder as the "heap" argument re-borrows the whole
 /// encoder (including its `vm`) into the guard, which is exactly what we need
 /// so the rebound iter and the rebound encoder share a lifetime.
@@ -366,7 +366,7 @@ impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
 }
 
 /// Lets a [`RecursionToken`](crate::bytecode::RecursionToken) (and the container
-/// iterators that hold one) be released through the encoder via `defer_drop_vm!`,
+/// iterators that hold one) be released through the encoder via `defer_drop!`,
 /// reaching the VM-side recursion counter while the encoder itself stays borrowable.
 impl<'h, R: ResourceTracker> ContainsVM<'h> for Encoder<'_, 'h, R> {
     type Tracker = R;
@@ -426,7 +426,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                 }
                 HeapReadOutput::List(list) => self.with_entered_container(*heap_id, |enc| {
                     let iter = list.iter(enc.vm)?;
-                    defer_drop_vm_mut!(iter, enc);
+                    defer_drop_mut!(iter, enc);
                     enc.serialize_array(depth, |enc, depth| {
                         if let Some(item) = iter.next(enc.vm)? {
                             enc.serialize_value(item, depth)?;
@@ -438,7 +438,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                 }),
                 HeapReadOutput::Tuple(tuple) => self.with_entered_container(*heap_id, |enc| {
                     let iter = tuple.iter(enc.vm)?;
-                    defer_drop_vm_mut!(iter, enc);
+                    defer_drop_mut!(iter, enc);
                     enc.serialize_array(depth, |enc, depth| {
                         if let Some(item) = iter.next(enc.vm)? {
                             enc.serialize_value(item, depth)?;
@@ -458,7 +458,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
                     // Need to explicitly acquire a recursion token for the dict as we don't go
                     // via the default dict iterator.
                     let token = this.vm.recursion_token()?;
-                    defer_drop_vm!(token, this);
+                    defer_drop!(token, this);
                     this.with_entered_container(*heap_id, |enc| enc.serialize_dict(entries, depth))
                 }
                 _ => Err(ExcType::json_not_serializable_error(&value.py_type_name(self.vm))),
@@ -602,7 +602,7 @@ impl<'h, R: ResourceTracker> Encoder<'_, 'h, R> {
 fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
     let mut indices: Vec<usize> = (0..entries.len()).collect();
     let compare_values: Vec<Value> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
-    let mut compare_values_guard = HeapGuard::new(compare_values, vm);
+    let mut compare_values_guard = DropGuard::new(compare_values, vm);
     let (compare_values, vm) = compare_values_guard.as_parts_mut();
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
     apply_permutation(entries.as_mut_slice(), &mut indices);
@@ -614,7 +614,7 @@ fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl Res
 /// `skipkeys=True` must drop invalid entries without disturbing the relative
 /// order of the retained pairs. A two-pointer compaction avoids the repeated
 /// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
-/// references with `drop_with_heap`.
+/// references with `drop_with`.
 fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, impl ResourceTracker>) {
     let mut write = 0;
     for read in 0..entries.len() {
@@ -627,8 +627,8 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_, 
     }
 
     for (key, value) in entries.drain(write..) {
-        key.drop_with_heap(vm);
-        value.drop_with_heap(vm);
+        key.drop_with(vm);
+        value.drop_with(vm);
     }
 }
 

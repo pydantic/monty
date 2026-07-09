@@ -1,12 +1,18 @@
 {
   "name": "@pydantic/monty",
-  "version": "0.0.18",
+  "version": "0.0.19-beta.2",
   "type": "module",
   "description": "Sandboxed Python interpreter running in crash-isolated subprocess workers",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/index.js",
+      "browser": "./dist/worker/index.browser.js",
+      "default": "./dist/index.js"
+    },
+    "./node": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
@@ -49,14 +55,14 @@
   "scripts": {
     "build": "run-s build:napi build:ts",
     "build:debug": "run-s build:napi:debug build:ts",
-    "build:napi": "node scripts/clean-loader.mjs && napi build --platform --release --esm",
-    "build:napi:debug": "node scripts/clean-loader.mjs && napi build --platform --esm",
+    "build:napi": "node scripts/clean-loader.mjs && napi build --platform --release --esm && node scripts/patch-native-loader.mjs",
+    "build:napi:debug": "node scripts/clean-loader.mjs && napi build --platform --esm && node scripts/patch-native-loader.mjs",
     "build:wasm": "cargo build -p monty-wasm-worker --target wasm32-wasip1 --release && node scripts/copy-wasm.mjs",
     "build:ts": "tsc",
     "format": "prettier . -w",
     "lint": "oxlint .",
-    "test": "ava",
-    "test:browser": "playwright test",
+    "test": "vitest run",
+    "test:browser": "vitest --config vitest.browser.config.ts run",
     "smoke-test": "bash scripts/smoke-test.sh",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"
   },
@@ -66,30 +72,16 @@
     "@emnapi/runtime": "^1.5.0",
     "@napi-rs/cli": "^3.2.0",
     "@napi-rs/wasm-runtime": "^1.1.5",
-    "@oxc-node/core": "^0.0.35",
     "@playwright/test": "^1.49.1",
     "@tybys/wasm-util": "^0.10.0",
     "@types/node": "^25.0.9",
-    "ava": "^6.4.1",
+    "@vitest/browser": "^3.2.4",
     "npm-run-all2": "^8.0.4",
     "oxlint": "^1.14.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.2",
-    "vite": "^6.3.5"
-  },
-  "ava": {
-    "files": [
-      "__test__/*.spec.ts"
-    ],
-    "extensions": {
-      "ts": "module"
-    },
-    "timeout": "2m",
-    "workerThreads": false,
-    "nodeArguments": [
-      "--import",
-      "@oxc-node/core/register"
-    ]
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
   },
   "prettier": {
     "printWidth": 120,
@@ -99,10 +91,10 @@
     "arrowParens": "always"
   },
   "optionalDependencies": {
-    "@pydantic/monty-darwin-x64": "0.0.18",
-    "@pydantic/monty-darwin-arm64": "0.0.18",
-    "@pydantic/monty-linux-x64-gnu": "0.0.18",
-    "@pydantic/monty-linux-arm64-gnu": "0.0.18",
-    "@pydantic/monty-win32-x64-msvc": "0.0.18"
+    "@pydantic/monty-darwin-x64": "0.0.19-beta.2",
+    "@pydantic/monty-darwin-arm64": "0.0.19-beta.2",
+    "@pydantic/monty-linux-x64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-linux-arm64-gnu": "0.0.19-beta.2",
+    "@pydantic/monty-win32-x64-msvc": "0.0.19-beta.2"
   }
 }

@@ -1,19 +1,20 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 import { Buffer } from 'node:buffer'
 
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool(test)
+const { run } = setupPool()
 
 // =============================================================================
 // None tests
 // =============================================================================
 
-test('none input', async (t) => {
+test('none input', async () => {
   t.is(await run('x is None', { inputs: { x: null } }), true)
 })
 
-test('none output', async (t) => {
+test('none output', async () => {
   t.is(await run('None'), null)
 })
 
@@ -21,11 +22,11 @@ test('none output', async (t) => {
 // Bool tests
 // =============================================================================
 
-test('bool true', async (t) => {
+test('bool true', async () => {
   t.is(await run('x', { inputs: { x: true } }), true)
 })
 
-test('bool false', async (t) => {
+test('bool false', async () => {
   t.is(await run('x', { inputs: { x: false } }), false)
 })
 
@@ -33,13 +34,13 @@ test('bool false', async (t) => {
 // Number tests
 // =============================================================================
 
-test('int', async (t) => {
+test('int', async () => {
   t.is(await run('x', { inputs: { x: 42 } }), 42)
   t.is(await run('x', { inputs: { x: -100 } }), -100)
   t.is(await run('x', { inputs: { x: 0 } }), 0)
 })
 
-test('float', async (t) => {
+test('float', async () => {
   t.is(await run('x', { inputs: { x: 3.14 } }), 3.14)
   t.is(await run('x', { inputs: { x: -2.5 } }), -2.5)
   t.is(await run('x', { inputs: { x: 0.0 } }), 0.0)
@@ -49,7 +50,7 @@ test('float', async (t) => {
 // String tests
 // =============================================================================
 
-test('string', async (t) => {
+test('string', async () => {
   t.is(await run('x', { inputs: { x: 'hello' } }), 'hello')
   t.is(await run('x', { inputs: { x: '' } }), '')
   t.is(await run('x', { inputs: { x: 'unicode: éè' } }), 'unicode: éè')
@@ -59,19 +60,19 @@ test('string', async (t) => {
 // Bytes tests
 // =============================================================================
 
-test('bytes', async (t) => {
+test('bytes', async () => {
   const result = await run('x', { inputs: { x: Buffer.from('hello') } })
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...(result as Buffer)], [104, 101, 108, 108, 111])
 })
 
-test('bytes empty', async (t) => {
+test('bytes empty', async () => {
   const result = await run('x', { inputs: { x: Buffer.from([]) } })
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...(result as Buffer)], [])
 })
 
-test('bytes result', async (t) => {
+test('bytes result', async () => {
   const result = await run('b"hello"')
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...(result as Buffer)], [104, 101, 108, 108, 111])
@@ -81,18 +82,18 @@ test('bytes result', async (t) => {
 // str.encode('ascii') / bytes.decode('ascii') tests
 // =============================================================================
 
-test('str encode ascii ignore then bytes decode ascii round-trips', async (t) => {
+test('str encode ascii ignore then bytes decode ascii round-trips', async () => {
   const result = await run('"café — 日本語 test".encode("ascii", "ignore").decode("ascii")')
   t.is(result, 'caf   test')
 })
 
-test('str encode ascii replace', async (t) => {
+test('str encode ascii replace', async () => {
   const result = await run('"héllo".encode("ascii", "replace")')
   t.true(Buffer.isBuffer(result))
   t.deepEqual([...(result as Buffer)], [...Buffer.from('h?llo')])
 })
 
-test('bytes decode ascii backslashreplace', async (t) => {
+test('bytes decode ascii backslashreplace', async () => {
   const result = await run('b"h\\xe9llo".decode("ascii", "backslashreplace")')
   t.is(result, 'h\\xe9llo')
 })
@@ -101,13 +102,13 @@ test('bytes decode ascii backslashreplace', async (t) => {
 // List tests
 // =============================================================================
 
-test('list', async (t) => {
+test('list', async () => {
   t.deepEqual(await run('x', { inputs: { x: [1, 2, 3] } }), [1, 2, 3])
   t.deepEqual(await run('x', { inputs: { x: [] } }), [])
   t.deepEqual(await run('x', { inputs: { x: ['a', 'b'] } }), ['a', 'b'])
 })
 
-test('list output', async (t) => {
+test('list output', async () => {
   t.deepEqual(await run('[1, 2, 3]'), [1, 2, 3])
 })
 
@@ -115,7 +116,7 @@ test('list output', async (t) => {
 // Tuple tests
 // =============================================================================
 
-test('tuple', async (t) => {
+test('tuple', async () => {
   const result = await run('(1, 2, 3)')
   // Tuples are returned as arrays with a non-enumerable __tuple__ marker property
   t.true(Array.isArray(result))
@@ -123,7 +124,7 @@ test('tuple', async (t) => {
   t.is((result as any).__tuple__, true)
 })
 
-test('tuple empty', async (t) => {
+test('tuple empty', async () => {
   const result = await run('()')
   t.true(Array.isArray(result))
   t.deepEqual(result, [])
@@ -134,7 +135,7 @@ test('tuple empty', async (t) => {
 // Dict tests
 // =============================================================================
 
-test('dict', async (t) => {
+test('dict', async () => {
   const result = await run('{"a": 1, "b": 2}')
   // Dicts are returned as native JS Map (preserves key types and insertion order)
   t.true(result instanceof Map)
@@ -144,7 +145,7 @@ test('dict', async (t) => {
   t.is(map.size, 2)
 })
 
-test('dict empty', async (t) => {
+test('dict empty', async () => {
   const result = await run('{}')
   t.true(result instanceof Map)
   t.is((result as Map<unknown, unknown>).size, 0)
@@ -154,11 +155,11 @@ test('dict empty', async (t) => {
 // Set tests
 // =============================================================================
 
-test('set', async (t) => {
+test('set', async () => {
   t.deepEqual(await run('{1, 2, 3}'), new Set([1, 2, 3]))
 })
 
-test('set empty', async (t) => {
+test('set empty', async () => {
   t.deepEqual(await run('set()'), new Set())
 })
 
@@ -166,14 +167,14 @@ test('set empty', async (t) => {
 // Frozenset tests
 // =============================================================================
 
-test('frozenset', async (t) => {
+test('frozenset', async () => {
   const result = await run('frozenset([1, 2, 3])')
   // FrozenSet is returned as a native JS Set (no frozen equivalent in JS)
   t.true(result instanceof Set)
   t.deepEqual(result, new Set([1, 2, 3]))
 })
 
-test('frozenset empty', async (t) => {
+test('frozenset empty', async () => {
   t.deepEqual(await run('frozenset()'), new Set())
 })
 
@@ -181,12 +182,12 @@ test('frozenset empty', async (t) => {
 // Ellipsis tests
 // =============================================================================
 
-test('ellipsis input', async (t) => {
+test('ellipsis input', async () => {
   // In JS we represent ellipsis as an object with __monty_type__: 'Ellipsis'
   t.is(await run('x is ...', { inputs: { x: { __monty_type__: 'Ellipsis' } } }), true)
 })
 
-test('ellipsis output', async (t) => {
+test('ellipsis output', async () => {
   t.deepEqual(await run('...'), { __monty_type__: 'Ellipsis' })
 })
 
@@ -194,7 +195,7 @@ test('ellipsis output', async (t) => {
 // Nested collection tests
 // =============================================================================
 
-test('nested list', async (t) => {
+test('nested list', async () => {
   const nested = [
     [1, 2],
     [3, [4, 5]],
@@ -205,7 +206,7 @@ test('nested list', async (t) => {
   ])
 })
 
-test('nested dict', async (t) => {
+test('nested dict', async () => {
   const result = await run('{"list": [1, 2], "nested": {"a": 1}}')
   // Dicts are returned as native JS Map
   t.true(result instanceof Map)
@@ -216,7 +217,7 @@ test('nested dict', async (t) => {
   t.is((nested as Map<string, number>).get('a'), 1)
 })
 
-test('mixed nested', async (t) => {
+test('mixed nested', async () => {
   const result = await run('{"list": [1, 2], "tuple": (3, 4), "nested": {"set": {5, 6}}}')
   t.true(result instanceof Map)
   const map = result as Map<string, unknown>
@@ -230,7 +231,7 @@ test('mixed nested', async (t) => {
   t.true((nested as Map<string, unknown>).get('set') instanceof Set)
 })
 
-test('nested set in list', async (t) => {
+test('nested set in list', async () => {
   const result = await run('[{1, 2}, {3, 4}]')
   t.true(Array.isArray(result))
   const list = result as unknown[]
@@ -241,7 +242,7 @@ test('nested set in list', async (t) => {
   t.deepEqual(list[1], new Set([3, 4]))
 })
 
-test('nested bytes in dict', async (t) => {
+test('nested bytes in dict', async () => {
   const result = await run('{"data": b"abc"}')
   t.true(result instanceof Map)
   const data = (result as Map<string, unknown>).get('data')
@@ -249,7 +250,7 @@ test('nested bytes in dict', async (t) => {
   t.deepEqual([...(data as Buffer)], [97, 98, 99])
 })
 
-test('tuple containing set', async (t) => {
+test('tuple containing set', async () => {
   const result = await run('({1, 2}, "hello")')
   t.true(Array.isArray(result))
   t.is((result as any).__tuple__, true)
@@ -263,42 +264,42 @@ test('tuple containing set', async (t) => {
 // BigInt tests
 // =============================================================================
 
-test('bigint input', async (t) => {
+test('bigint input', async () => {
   const big = 2n ** 100n
   t.is(await run('x', { inputs: { x: big } }), big)
 })
 
-test('bigint output', async (t) => {
+test('bigint output', async () => {
   t.is(await run('2**100'), 2n ** 100n)
 })
 
-test('bigint negative input', async (t) => {
+test('bigint negative input', async () => {
   const bigNeg = -(2n ** 100n)
   t.is(await run('x', { inputs: { x: bigNeg } }), bigNeg)
 })
 
-test('int overflow to bigint', async (t) => {
+test('int overflow to bigint', async () => {
   const maxI64 = 9223372036854775807n
   t.is(await run('x + 1', { inputs: { x: maxI64 } }), maxI64 + 1n)
 })
 
-test('bigint arithmetic', async (t) => {
+test('bigint arithmetic', async () => {
   const big = 2n ** 100n
   t.is(await run('x * 2 + y', { inputs: { x: big, y: big } }), big * 2n + big)
 })
 
-test('bigint comparison', async (t) => {
+test('bigint comparison', async () => {
   const big = 2n ** 100n
   t.is(await run('x > y', { inputs: { x: big, y: 42 } }), true)
   t.is(await run('x > y', { inputs: { x: 42, y: big } }), false)
 })
 
-test('bigint in collection', async (t) => {
+test('bigint in collection', async () => {
   const big = 2n ** 100n
   t.deepEqual(await run('x', { inputs: { x: [big, 42, big * 2n] } }), [big, 42, big * 2n])
 })
 
-test('number at the i64 boundary', async (t) => {
+test('number at the i64 boundary', async () => {
   // 2^63 is f64-representable but overflows i64, so it crosses as a float;
   // -2^63 is a valid i64 and stays an int
   t.is(await run('type(x).__name__', { inputs: { x: 2 ** 63 } }), 'float')

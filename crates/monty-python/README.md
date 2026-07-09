@@ -15,7 +15,7 @@ pip install pydantic-monty
 ```
 
 This installs the `monty` worker binary via the
-[`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/)
+[`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/)
 dependency (the same way `uv` and `ruff` ship their binaries).
 
 ## Usage

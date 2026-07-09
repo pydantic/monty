@@ -1,10 +1,8 @@
 // napi macros generate code that triggers some clippy lints
 #![expect(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
+#![doc = include_str!("../README.md")]
 
-//! Node.js bindings for the Monty sandboxed Python interpreter: the subprocess
-//! pool ([`NativePool`]/[`NativeSession`]), which runs crash-isolated execution
-//! in `monty subprocess` workers via the `monty-pool` crate. `ts/` wraps it
-//! into the public `Monty`/`MontySession` classes.
+//! # Rust binding internals
 //!
 //! This crate is native-only. Browsers (where subprocesses do not exist) run
 //! the sandbox in a Web Worker via the lean `monty-wasm-worker` module and the

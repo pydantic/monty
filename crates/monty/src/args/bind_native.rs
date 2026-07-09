@@ -38,7 +38,7 @@ use crate::{
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{ContainsHeap, DropWithHeap, HeapGuard},
+    heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::{Interns, StringId},
     value::{EitherStr, Value},
 };
@@ -49,7 +49,7 @@ use crate::{
 ///
 /// Fills in place rather than returning a `Bound` so the (potentially large)
 /// slot struct is never moved by value: the generated code allocates it once
-/// inside its `HeapGuard`-protected slots struct, and that caller guard also
+/// inside its `DropGuard`-protected slots struct, and that caller guard also
 /// owns cleanup of everything bound so far — on error, `bind` guarantees each
 /// argument was either stored in `bound` or dropped with the heap, never
 /// leaked in between.
@@ -110,7 +110,7 @@ fn bind_slow<const N: usize>(
     // values already moved into `bound` are covered by the *caller's* guard
     // around the slots struct, so no error arm needs manual drops beyond
     // values it has already pulled out of an iterator.
-    let mut guard = HeapGuard::new(state, vm);
+    let mut guard = DropGuard::new(state, vm);
     let (state, vm) = guard.as_parts_mut();
 
     if spec.kwargs_not_supported_yet && state.kwargs.len() > 0 {
@@ -160,18 +160,18 @@ fn bind_slow<const N: usize>(
 
     for (key, value) in state.kwargs.by_ref() {
         let Some(key_str) = key.as_either_str(vm.heap) else {
-            (key, value).drop_with_heap(vm);
+            (key, value).drop_with(vm);
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         match find_param(spec, &key_str, vm.interns) {
             Some((_, param)) if matches!(param.kind, ParamKind::PosOnly) => {
-                (key, value).drop_with_heap(vm);
+                (key, value).drop_with(vm);
                 return Err(ExcType::type_error_positional_only(spec.func_name, param.name));
             }
             Some((idx, param)) => {
-                key.drop_with_heap(vm);
+                key.drop_with(vm);
                 if bound.slots[idx].is_some() {
-                    value.drop_with_heap(vm);
+                    value.drop_with(vm);
                     match duplicate_error(spec, idx, param) {
                         DuplicateOutcome::Raise(err) => return Err(err),
                         // C families treat a kwarg naming an already-positional
@@ -200,7 +200,7 @@ fn bind_slow<const N: usize>(
             None if spec.family.defers_unknown_kwarg() => {
                 // C families raise unknown-kwarg *last* (after every missing,
                 // conversion, and conflict error); stash the first for `finish`.
-                value.drop_with_heap(vm);
+                value.drop_with(vm);
                 if bound.deferred.as_ref().is_none_or(|d| d.unknown.is_none()) {
                     let err = match spec.family {
                         ErrorFamily::C { .. } => ExcType::type_error_c_unexpected_keyword(key_str.as_str(vm.interns)),
@@ -208,12 +208,12 @@ fn bind_slow<const N: usize>(
                     };
                     bound.deferred_mut().unknown = Some(err);
                 }
-                key.drop_with_heap(vm);
+                key.drop_with(vm);
             }
             None => {
-                value.drop_with_heap(vm);
+                value.drop_with(vm);
                 let name = key_str.as_str(vm.interns).to_owned();
-                key.drop_with_heap(vm);
+                key.drop_with(vm);
                 let err_name = spec.kwarg_error_name.unwrap_or(spec.func_name);
                 return Err(ExcType::type_error_unexpected_keyword(err_name, &name));
             }
@@ -503,15 +503,15 @@ impl<const N: usize> Bound<N> {
     }
 }
 
-impl<const N: usize> DropWithHeap for Bound<N> {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
+    fn drop_with(self, heap: &mut C) {
         for slot in self.slots {
-            slot.drop_with_heap(heap);
+            slot.drop_with(heap);
         }
-        self.varargs.drop_with_heap(heap);
+        self.varargs.drop_with(heap);
         for (k, v) in self.varkwargs {
-            k.drop_with_heap(heap);
-            v.drop_with_heap(heap);
+            k.drop_with(heap);
+            v.drop_with(heap);
         }
     }
 }
@@ -524,10 +524,10 @@ struct IterState {
     kwargs: KwargsValuesIter,
 }
 
-impl DropWithHeap for IterState {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.pos.drop_with_heap(heap);
-        self.kwargs.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for IterState {
+    fn drop_with(self, heap: &mut C) {
+        self.pos.drop_with(heap);
+        self.kwargs.drop_with(heap);
     }
 }
 

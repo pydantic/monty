@@ -3,7 +3,7 @@ requires = ["maturin>=1.9.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pydantic-monty-cli"
+name = "pydantic-monty-runtime"
 description = "The monty CLI binary — spawned as worker subprocesses by pydantic-monty"
 readme = "README.md"
 requires-python = ">=3.10"

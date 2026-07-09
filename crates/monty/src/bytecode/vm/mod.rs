@@ -18,7 +18,7 @@ mod scheduler;
 use std::{cmp::Ordering, mem};
 
 pub(crate) use call::CallResult;
-pub(crate) use recursion::{ContainsVM, DropWithVM, RecursionToken, VmGuard};
+pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
 use crate::{
@@ -31,7 +31,7 @@ use crate::{
         op::Opcode,
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
@@ -303,14 +303,14 @@ pub enum FrameExit {
     },
 }
 
-impl DropWithHeap for FrameExit {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for FrameExit {
+    fn drop_with(self, heap: &mut C) {
         match self {
-            Self::Return(value) => value.drop_with_heap(heap),
+            Self::Return(value) => value.drop_with(heap),
             Self::ExternalCall { args, .. } | Self::MethodCall { args, .. } => {
-                args.drop_with_heap(heap);
+                args.drop_with(heap);
             }
-            Self::OsCall { function_call, .. } => function_call.drop_with_heap(heap),
+            Self::OsCall { function_call, .. } => function_call.drop_with(heap),
             Self::ResolveFutures(_) | Self::NameLookup { .. } => {}
         }
     }
@@ -908,7 +908,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     ///
     /// Used by the REPL to reclaim globals after VM execution completes.
     /// Must be called before the VM is dropped, since `Drop` will clean up
-    /// any remaining globals with `drop_with_heap`.
+    /// any remaining globals with `drop_with`.
     pub fn take_globals(&mut self) -> Vec<Value> {
         mem::take(&mut self.globals)
     }
@@ -989,7 +989,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // ============================================================
                 Opcode::Pop => {
                     let value = self.pop();
-                    value.drop_with_heap(self);
+                    value.drop_with(self);
                 }
                 Opcode::Dup => {
                     let value = self.peek().clone_with_heap(self);
@@ -1143,7 +1143,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::UnaryNot => {
                     let value = self.pop();
                     let result = !value.py_bool(self);
-                    value.drop_with_heap(self);
+                    value.drop_with(self);
                     self.push(Value::Bool(result));
                 }
                 Opcode::UnaryNeg => {
@@ -1168,7 +1168,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         Value::Ref(id) => match self.heap.get(id) {
                             HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 match negated.into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
@@ -1176,7 +1176,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             }
                             HeapData::TimeDelta(td) => {
                                 let negated = timedelta::from_total_microseconds(-timedelta::total_microseconds(td));
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 match negated {
                                     Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
                                         Ok(id) => self.push(Value::Ref(id)),
@@ -1187,13 +1187,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             }
                             _ => {
                                 let value_type = value.py_type_name(self);
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                             }
                         },
                         _ => {
                             let value_type = value.py_type_name(self);
-                            value.drop_with_heap(self);
+                            value.drop_with(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("-", &value_type));
                         }
                     }
@@ -1210,13 +1210,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 self.push(value);
                             } else {
                                 let value_type = value.py_type_name(self);
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type_name(self);
-                            value.drop_with_heap(self);
+                            value.drop_with(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("+", &value_type));
                         }
                     }
@@ -1231,20 +1231,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             if let HeapData::LongInt(li) = self.heap.get(id) {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 match LongInt::new(inverted).into_value(self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
                                 let value_type = value.py_type_name(self);
-                                value.drop_with_heap(self);
+                                value.drop_with(self);
                                 catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                             }
                         }
                         _ => {
                             let value_type = value.py_type_name(self);
-                            value.drop_with_heap(self);
+                            value.drop_with(self);
                             catch_sync!(self, cached_frame, ExcType::unary_type_error("~", &value_type));
                         }
                     }
@@ -1340,8 +1340,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let index = self.pop();
                     let obj = self.pop();
                     let result = obj.py_getitem(&index, self);
-                    obj.drop_with_heap(self);
-                    index.drop_with_heap(self);
+                    obj.drop_with(self);
+                    index.drop_with(self);
                     match result {
                         Ok(v) => self.push(v),
                         Err(e) => catch_sync!(self, cached_frame, e),
@@ -1353,7 +1353,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let mut obj = self.pop();
                     let value = self.pop();
                     let result = obj.py_setitem(index, value, self);
-                    obj.drop_with_heap(self);
+                    obj.drop_with(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);
                     }
@@ -1384,7 +1384,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     if cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
                     }
-                    cond.drop_with_heap(self);
+                    cond.drop_with(self);
                 }
                 Opcode::JumpIfFalse => {
                     let offset = cached_frame.fetch_i16();
@@ -1392,7 +1392,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     if !cond.py_bool(self) {
                         jump_relative!(cached_frame.ip, offset);
                     }
-                    cond.drop_with_heap(self);
+                    cond.drop_with(self);
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = cached_frame.fetch_i16();
@@ -1401,14 +1401,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         self.push(value);
                         jump_relative!(cached_frame.ip, offset);
                     } else {
-                        value.drop_with_heap(self);
+                        value.drop_with(self);
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
                     if value.py_bool(self) {
-                        value.drop_with_heap(self);
+                        value.drop_with(self);
                     } else {
                         self.push(value);
                         jump_relative!(cached_frame.ip, offset);
@@ -1443,7 +1443,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             drop(iter);
                             // Iterator exhausted - pop it and jump to end
                             let iter = self.pop();
-                            iter.drop_with_heap(self);
+                            iter.drop_with(self);
                             jump_relative!(cached_frame.ip, offset);
                         }
                         Err(e) => {
@@ -1451,7 +1451,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             drop(iter);
                             // Error during iteration (e.g., dict size changed)
                             let iter = self.pop();
-                            iter.drop_with_heap(self);
+                            iter.drop_with(self);
                             catch_sync!(self, cached_frame, e);
                         }
                     }
@@ -1593,7 +1593,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                                 // Keep the reference - the Closure will own the HeapId
                                 cells.push(*heap_id);
                                 // Mark the Value as dereferenced since Closure takes ownership
-                                // of the reference count (we don't call drop_with_heap because
+                                // of the reference count (we don't call drop_with because
                                 // we're not decrementing the refcount, just transferring it)
                                 #[cfg(feature = "memory-model-checks")]
                                 cell_val.dec_ref_forget();
@@ -1646,7 +1646,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     // Pop the current exception from the stack
                     // This restores the previous exception context (if any)
                     if let Some(exc) = self.exception_stack.pop() {
-                        exc.drop_with_heap(self);
+                        exc.drop_with(self);
                     }
                 }
                 Opcode::CheckExcMatch => {
@@ -1654,7 +1654,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let exc_type = self.pop();
                     let exception = self.peek();
                     let result = self.check_exc_match(exception, &exc_type);
-                    exc_type.drop_with_heap(self);
+                    exc_type.drop_with(self);
                     match result {
                         Ok(matched) => self.push(Value::Bool(matched)),
                         // An invalid `except` type (e.g. `except 123:` or a
@@ -1709,7 +1709,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                             // initializer frame is already popped, so the traceback
                             // matches (no `__init__` frame).
                             let type_name = value.py_type_name(self);
-                            value.drop_with_heap(self);
+                            value.drop_with(self);
                             let err = ExcType::type_error_init_return(type_name);
                             if stop {
                                 // The initializer was driven by `evaluate_function`
@@ -1727,7 +1727,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         // `__init__` returned None — discard it. The instance was
                         // pushed onto the caller's stack before this frame ran and
                         // is the real result of `Foo(...)`.
-                        value.drop_with_heap(self);
+                        value.drop_with(self);
                         if stop {
                             let instance = self.pop();
                             return Ok(FrameExit::Return(instance));
@@ -2003,7 +2003,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // drain naturally covers them).
         self.stack
             .drain(frame.stack_base..)
-            .for_each(|value| value.drop_with_heap(&mut *self.heap));
+            .for_each(|value| value.drop_with(&mut *self.heap));
 
         // Track freed memory for the locals region. Matches the `on_allocate`
         // at each frame-entry site (sync function, module, sync coroutine,
@@ -2017,10 +2017,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Cleans up all frames and stack values for the current task.
     ///
     /// Used when a task completes or fails and we need to switch to another task.
-    /// Drains the stack with proper `drop_with_heap` for each value (since locals
+    /// Drains the stack with proper `drop_with` for each value (since locals
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
-        self.stack.drain(..).drop_with_heap(self.heap);
+        self.stack.drain(..).drop_with(self.heap);
         self.frames.clear();
     }
 
@@ -2209,14 +2209,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         let value = self.pop();
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = mem::replace(target, value);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, cached_frame: &CachedFrame<'h>, slot: u16) {
         let target = &mut self.stack[cached_frame.stack_base + slot as usize];
         let old_value = mem::replace(target, Value::Undefined);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Loads a global variable and pushes it onto the stack.
@@ -2271,7 +2271,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
     }
 
     /// Deletes a global variable (sets it to `Undefined`).
@@ -2285,7 +2285,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Err(self.name_error(slot, name));
         }
         let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
-        old_value.drop_with_heap(self);
+        old_value.drop_with(self);
         Ok(())
     }
 
@@ -2303,7 +2303,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         // Check for undefined value - raise NameError for unbound free variable
         if matches!(value, Value::Undefined) {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             let name = cached_frame.code.local_name(slot);
             return Err(self.free_var_error(name));
         }
@@ -2337,7 +2337,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
         let value = self.pop();
         // The guard will clean up the new value if we panic, or the old value if we swap
-        let mut guard = HeapGuard::new(value, self);
+        let mut guard = DropGuard::new(value, self);
         let (value, this) = guard.as_parts_mut();
 
         let cell_id = this.cell_id_from_local(cached_frame, slot);
@@ -2375,10 +2375,10 @@ impl<T: ResourceTracker> Drop for VM<'_, T> {
             };
             self.heap.dec_ref(file_id);
         }
-        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();
         self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with_heap(self.heap);
+        self.globals.drain(..).drop_with(self.heap);
         self.json_string_cache.drop_all(self.heap);
     }
 }

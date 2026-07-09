@@ -15,7 +15,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_replace_size},
     string_builder::StringBuilder,
@@ -278,7 +278,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Str, attr.as_str(vm.interns)));
         };
 
@@ -308,7 +308,7 @@ pub fn call_str_method(
     args: ArgValues,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let args_guard = HeapGuard::new(args, vm.heap);
+    let args_guard = DropGuard::new(args, vm.heap);
     let Some(method) = StaticStrings::from_string_id(method_id) else {
         return Err(ExcType::attribute_error(Type::Str, vm.interns.get_str(method_id)));
     };
@@ -447,7 +447,7 @@ fn call_str_method_impl<'h>(
             str_join(s, iterable, vm)
         }
         _ => {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             Err(ExcType::attribute_error(Type::Str, method.into()))
         }
     }
@@ -1595,7 +1595,7 @@ fn str_splitlines<'h>(
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
     let SplitlinesArgs { keepends } = SplitlinesArgs::from_args(args, vm)?;
     let result = keepends.as_ref().is_some_and(value_is_truthy);
-    keepends.drop_with_heap(vm.heap);
+    keepends.drop_with(vm.heap);
     Ok(result)
 }
 
@@ -1922,7 +1922,7 @@ fn str_expandtabs<'h>(
         None => 8,
         Some(val) => {
             let result_int = extract_int_arg(&val, vm)?;
-            val.drop_with_heap(vm.heap);
+            val.drop_with(vm.heap);
             if result_int < 0 {
                 0
             } else {

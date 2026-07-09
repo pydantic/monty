@@ -94,7 +94,7 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
-- `monty subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+- `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.
@@ -177,7 +177,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
 ### Reference Count Safety
 
-All types that implement `DropWithHeap` hold heap references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with_heap` on any branch leaks reference counts. There are three mechanisms for ensuring this, listed in order of preference:
+All types that implement `DropWithContext<C>` hold heap (and possibly VM-side) references and **must** be cleaned up correctly on every code path — not just the happy path, but also early returns via `?`, `continue`, conditional branches, etc. A missed `drop_with` on any branch leaks reference counts.
+
+`DropWithContext<C>` is generic over the *cleanup context* `C` — whatever borrow the caller has on hand: a `Heap`, a `HeapReader`, the `VM`, or the json `Encoder`. The bound on each impl states the capability the value needs: heap-only values bound `C` by `ContainsHeap` (one impl then covers all four contexts), while values holding a `RecursionToken` (the container iterators) bound `C` by `ContainsVM` — satisfied only by `VM`/`Encoder`, since the recursion counter is unreachable through a bare heap. The same `drop_with` / `DropGuard` / `defer_drop!` machinery serves both. There are three mechanisms for ensuring cleanup, listed in order of preference:
 
 #### 1. `defer_drop!` macro (preferred)
 
@@ -189,7 +191,7 @@ defer_drop!(value, heap);          // value is now &Value, heap is now &mut Heap
 let result = value.py_repr(heap)?; // guard handles cleanup on all paths
 ```
 
-Beyond safety, `defer_drop!` is often much more concise than inserting `drop_with_heap` calls in every branch of complex control flow.
+Beyond safety, `defer_drop!` is often much more concise than inserting `drop_with` calls in every branch of complex control flow.
 
 `defer_drop!` gives you an immutable reference to the value. Use `defer_drop_mut!` when you need a mutable reference (e.g. iterators, values you may swap):
 
@@ -199,16 +201,16 @@ defer_drop_mut!(iter, vm);
 while let Some(item) = iter.for_next(vm)? { ... }
 ```
 
-**Limitation:** because the macro rebinds the heap, it cannot be used inside `&mut self` methods on the VM where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
+**Limitation:** because the macro rebinds the context, it cannot be used inside `&mut self` methods on the VM where `self` owns the heap — first assign `let this = self;` and pass `this` instead.
 
-#### 2. `HeapGuard` (when you need control over the value's fate)
+#### 2. `DropGuard` (when you need control over the value's fate)
 
-Use `HeapGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `HeapGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths:
+Use `DropGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `DropGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths:
 
 ```rust
-// HeapGuard needed here because on success we push lhs back onto the stack
+// DropGuard needed here because on success we push lhs back onto the stack
 // instead of dropping it
-let mut lhs_guard = HeapGuard::new(self.pop(), self);
+let mut lhs_guard = DropGuard::new(self.pop(), self);
 let (lhs, this) = lhs_guard.as_parts_mut();
 
 if lhs.py_iadd(rhs, this.heap)? {
@@ -219,16 +221,16 @@ if lhs.py_iadd(rhs, this.heap)? {
 // otherwise lhs_guard drops lhs automatically at scope exit
 ```
 
-#### 3. Manual `drop_with_heap` (for trivially simple cases)
+#### 3. Manual `drop_with` (for trivially simple cases)
 
-For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with_heap` call is fine:
+For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with` call is fine:
 
 ```rust
 let iter = self.pop();
-iter.drop_with_heap(self); // single path, no branching
+iter.drop_with(self); // single path, no branching
 ```
 
-Avoid manual `drop_with_heap` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `HeapGuard` prevent leaks by guaranteeing cleanup on every path.
+Avoid manual `drop_with` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `DropGuard` prevent leaks by guaranteeing cleanup on every path.
 
 ### Resource-tracked string construction (`StringBuilder`)
 
@@ -391,7 +393,7 @@ NOT!
 
 ### Docstrings and comments.
 
-IMPORTANT: every struct, enum and function should have an informative but concise docstring to
+IMPORTANT: every struct, enum and function should have a concise docstring to
 explain what it does and why; and any considerations or potential foot-guns of using that type.
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
@@ -399,6 +401,8 @@ The only exception is trait implementation methods where a docstring is not nece
 It's important that docstrings cover the motivation and primary usage patterns of code, not just the simple "what it does".
 
 Similarly, you should add comments to code, especially if the code is complex or esoteric.
+
+Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
 
 Only add examples to docstrings of public functions and structs, examples should be <=8 lines, if the example is more, remove it.
 
@@ -413,8 +417,6 @@ Always use single back-ticks in python docstrings - they should be markdown, not
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
 
 NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
-
-Comments and field docstrings should almost never be more than 3 lines, mostly 1 line. Function and struct docstrings should be concise, generally <= 5 lines.
 
 ## Tests
 
@@ -659,7 +661,7 @@ assert exc_info.value.args[0] == snapshot('stopped at 3')
 Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 
 - **Cloning**: Use `clone_with_heap(heap)` which increments refcounts for `Ref` variants.
-- **Dropping**: Call `drop_with_heap(heap)` when discarding an `Value` that may be a `Ref`.
+- **Dropping**: Call `drop_with(ctx)` (the [`DropWithContext`] method) when discarding a `Value` that may be a `Ref`.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
@@ -667,7 +669,7 @@ Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
 
 - `clone_with_heap` takes `&impl ContainsHeap` (immutable). The refcount field lives behind interior mutability, so `inc_ref` is `&self` on `Heap`. This means you can call `clone_with_heap` while other immutable borrows of the heap (e.g. a `HeapRead` handle obtained via `.get(heap)`) are still live.
 - `Heap::allocate` is also `&self` for the same reason — entry storage and the allocation tracker are behind interior mutability. New heap entries can be created without a `&mut Heap`.
-- `drop_with_heap` takes `&mut impl ContainsHeap`, because dropping may free entries and run destructors, which mutates the heap.
+- `drop_with` takes `&mut C` (the cleanup context — `Heap` / `HeapReader` / `VM` / `Encoder`), because dropping may free entries and run destructors, which mutates the heap.
 
 If you find yourself fighting the borrow checker around `clone_with_heap` or `allocate`, the fix is almost never `&mut` — it is more likely that you are passing the wrong receiver (e.g. `vm` instead of `vm.heap`) or holding a `&mut` borrow elsewhere that should be `&`.
 

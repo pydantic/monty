@@ -108,7 +108,7 @@ A parent can install third-party packages into a session before (or between)
 feeds with the `InstallDependencies` request, carrying a list of PEP 508
 requirement strings. The child shells out to:
 
-```
+```bash
 uv pip install --python .venv/bin/python <requirements...>
 ```
 

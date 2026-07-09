@@ -199,13 +199,45 @@ pub fn bigint_cmp_f64(b: &BigInt, f: f64) -> Option<Ordering> {
         // fractional remainder `f - trunc` in (-1, 1). `trunc` is integral and
         // finite, so it converts to `BigInt` without loss.
         let trunc = f.trunc();
-        let f_int = BigInt::from_f64(trunc).expect("finite f64 converts to BigInt");
-        match b.cmp(&f_int) {
+        let ord = if let Some(f_int) = trunc.to_i64() {
+            bigint_cmp_i64(b, f_int)
+        } else {
+            let f_int = BigInt::from_f64(trunc).expect("finite f64 converts to BigInt");
+            b.cmp(&f_int)
+        };
+        match ord {
             // Integer parts match: the sign of `f`'s fractional part breaks the
             // tie. A positive fraction makes `f` larger, so `b < f`.
             Ordering::Equal => (f - trunc).partial_cmp(&0.0).map(Ordering::reverse),
             ord => Some(ord),
         }
+    }
+}
+
+/// Checks bigint/float equality exactly, avoiding allocation for common floats.
+pub fn bigint_eq_f64(b: &BigInt, f: f64) -> bool {
+    f.is_finite()
+        && f.fract() == 0.0
+        && if let Some(i) = f.to_i64() {
+            bigint_eq_i64(b, i)
+        } else {
+            bigint_cmp_f64(b, f) == Some(Ordering::Equal)
+        }
+}
+
+/// Compares a borrowed bigint with an i64 without allocating a temporary bigint.
+pub(crate) fn bigint_eq_i64(b: &BigInt, i: i64) -> bool {
+    b.to_i64() == Some(i)
+}
+
+/// Orders a borrowed bigint against an i64 without allocating a temporary bigint.
+pub(crate) fn bigint_cmp_i64(b: &BigInt, i: i64) -> Ordering {
+    if let Some(value) = b.to_i64() {
+        value.cmp(&i)
+    } else if b.sign() == num_bigint::Sign::Minus {
+        Ordering::Less
+    } else {
+        Ordering::Greater
     }
 }
 

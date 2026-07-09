@@ -1,4 +1,5 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -6,7 +7,7 @@ import * as path from 'node:path'
 import { MontyRuntimeError, MountDir } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { run, pool } = setupPool(test)
+const { run, pool } = setupPool()
 
 // =============================================================================
 // Helper: create a temporary directory with test files
@@ -28,7 +29,7 @@ function createTestDir(): { dir: string; cleanup: () => void } {
 // MountDir validation
 // =============================================================================
 
-test('MountDir repr', (t) => {
+test('MountDir repr', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -38,7 +39,7 @@ test('MountDir repr', (t) => {
   }
 })
 
-test('MountDir invalid mode', (t) => {
+test('MountDir invalid mode', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const error = t.throws(() => new MountDir('/data', dir, { mode: 'invalid' as never }))
@@ -48,7 +49,7 @@ test('MountDir invalid mode', (t) => {
   }
 })
 
-test('MountDir attributes', (t) => {
+test('MountDir attributes', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -60,7 +61,7 @@ test('MountDir attributes', (t) => {
   }
 })
 
-test('MountDir nonexistent host path', async (t) => {
+test('MountDir nonexistent host path', async () => {
   // Host paths are validated inside the worker, so the feed (not the
   // constructor) rejects. The OS-error suffix is platform specific.
   const md = new MountDir('/data', '/nonexistent/path/that/does/not/exist')
@@ -72,7 +73,7 @@ test('MountDir nonexistent host path', async (t) => {
   )
 })
 
-test('MountDir non-absolute virtual path', async (t) => {
+test('MountDir non-absolute virtual path', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('relative', dir)
@@ -86,7 +87,7 @@ test('MountDir non-absolute virtual path', async (t) => {
   }
 })
 
-test('MountDir default mode is overlay', (t) => {
+test('MountDir default mode is overlay', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir)
@@ -96,7 +97,7 @@ test('MountDir default mode is overlay', (t) => {
   }
 })
 
-test('MountDir write_bytes_limit', (t) => {
+test('MountDir write_bytes_limit', () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { writeBytesLimit: 1024 })
@@ -113,7 +114,7 @@ test('MountDir write_bytes_limit', (t) => {
 // Read operations (read-only mount)
 // =============================================================================
 
-test('read_text via mount', async (t) => {
+test('read_text via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -124,7 +125,7 @@ test('read_text via mount', async (t) => {
   }
 })
 
-test('read_bytes via mount', async (t) => {
+test('read_bytes via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -135,7 +136,7 @@ test('read_bytes via mount', async (t) => {
   }
 })
 
-test('path exists via mount', async (t) => {
+test('path exists via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -152,7 +153,7 @@ exists_missing = Path('/data/nope.txt').exists()
   }
 })
 
-test('is_file and is_dir via mount', async (t) => {
+test('is_file and is_dir via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -167,7 +168,7 @@ from pathlib import Path
   }
 })
 
-test('iterdir via mount', async (t) => {
+test('iterdir via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -181,7 +182,7 @@ sorted([p.name for p in Path('/data').iterdir()])
   }
 })
 
-test('stat via mount', async (t) => {
+test('stat via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -196,7 +197,7 @@ s.st_size
   }
 })
 
-test('read nested file via mount', async (t) => {
+test('read nested file via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -211,7 +212,7 @@ test('read nested file via mount', async (t) => {
 // Write operations
 // =============================================================================
 
-test('write blocked on read-only mount', async (t) => {
+test('write blocked on read-only mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -225,7 +226,7 @@ test('write blocked on read-only mount', async (t) => {
   }
 })
 
-test('write succeeds on read-write mount', async (t) => {
+test('write succeeds on read-write mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-write' })
@@ -242,7 +243,7 @@ Path('/data/new.txt').read_text()
   }
 })
 
-test('overlay write does not modify host', async (t) => {
+test('overlay write does not modify host', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -259,7 +260,7 @@ Path('/data/overlay_file.txt').read_text()
   }
 })
 
-test('overlay read falls through to host', async (t) => {
+test('overlay read falls through to host', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -270,7 +271,7 @@ test('overlay read falls through to host', async (t) => {
   }
 })
 
-test('overlay writes do not persist across runs', async (t) => {
+test('overlay writes do not persist across runs', async () => {
   // Overlay state lives inside the worker for one feed, so unlike the old
   // in-process API it does NOT persist across runs sharing the same MountDir.
   const { dir, cleanup } = createTestDir()
@@ -291,7 +292,7 @@ test('overlay writes do not persist across runs', async (t) => {
 // Path operations
 // =============================================================================
 
-test('mkdir and rmdir via mount', async (t) => {
+test('mkdir and rmdir via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -309,7 +310,7 @@ after = Path('/data/newdir').exists()
   }
 })
 
-test('unlink via mount', async (t) => {
+test('unlink via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -326,7 +327,7 @@ Path('/data/hello.txt').exists()
   }
 })
 
-test('rename via mount', async (t) => {
+test('rename via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -341,7 +342,7 @@ Path('/data/hello.txt').rename('/data/renamed.txt')
   }
 })
 
-test('resolve via mount', async (t) => {
+test('resolve via mount', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -358,7 +359,7 @@ test('resolve via mount', async (t) => {
 // Security
 // =============================================================================
 
-test('path traversal blocked', async (t) => {
+test('path traversal blocked', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -372,7 +373,7 @@ test('path traversal blocked', async (t) => {
   }
 })
 
-test('unmounted path denied', async (t) => {
+test('unmounted path denied', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -390,7 +391,7 @@ test('unmounted path denied', async (t) => {
 // Non-filesystem ops (no `os` callback - returns error)
 // =============================================================================
 
-test('non-filesystem os call without fallback', async (t) => {
+test('non-filesystem os call without fallback', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -407,7 +408,7 @@ test('non-filesystem os call without fallback', async (t) => {
 // Multiple mounts
 // =============================================================================
 
-test('multiple mounts with different modes', async (t) => {
+test('multiple mounts with different modes', async () => {
   const { dir: dir1, cleanup: cleanup1 } = createTestDir()
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'monty-mount-test2-'))
   fs.writeFileSync(path.join(dir2, 'file2.txt'), 'from mount2')
@@ -430,7 +431,7 @@ b = Path('/rw/file2.txt').read_text()
 // Mount with external functions
 // =============================================================================
 
-test('mount works with external functions', async (t) => {
+test('mount works with external functions', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'read-only' })
@@ -451,7 +452,7 @@ result + content
 // Session (REPL) mount support
 // =============================================================================
 
-test('session feed with mount read', async (t) => {
+test('session feed with mount read', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -469,7 +470,7 @@ test('session feed with mount read', async (t) => {
 // one feed and are discarded when it ends, unlike the old in-process API
 // where overlay state persisted on the MountDir object.
 
-test('session overlay write is discarded between feeds', async (t) => {
+test('session overlay write is discarded between feeds', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -488,7 +489,7 @@ test('session overlay write is discarded between feeds', async (t) => {
   }
 })
 
-test('session overlay overwrite reverts between feeds', async (t) => {
+test('session overlay overwrite reverts between feeds', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -505,7 +506,7 @@ test('session overlay overwrite reverts between feeds', async (t) => {
   }
 })
 
-test('session overlay delete reverts between feeds', async (t) => {
+test('session overlay delete reverts between feeds', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -521,7 +522,7 @@ test('session overlay delete reverts between feeds', async (t) => {
   }
 })
 
-test('overlay mkdir and nested write within one feed', async (t) => {
+test('overlay mkdir and nested write within one feed', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -538,7 +539,7 @@ Path('/data/mydir/file.txt').read_text()
   }
 })
 
-test('overlay iterdir sees overlay files', async (t) => {
+test('overlay iterdir sees overlay files', async () => {
   const { dir, cleanup } = createTestDir()
   try {
     const md = new MountDir('/data', dir, { mode: 'overlay' })
@@ -553,7 +554,7 @@ sorted([p.name for p in Path('/data').iterdir()])
   }
 })
 
-test('session read-write mount writes to host', async (t) => {
+test('session read-write mount writes to host', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {
@@ -569,7 +570,7 @@ test('session read-write mount writes to host', async (t) => {
   }
 })
 
-test('session read-only mount blocks write', async (t) => {
+test('session read-only mount blocks write', async () => {
   const { dir, cleanup } = createTestDir()
   const session = await pool().checkout()
   try {

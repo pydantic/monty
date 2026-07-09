@@ -9,10 +9,10 @@ use std::{
 
 use serde::ser::SerializeStruct;
 
-// Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
+// Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem};
+pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
 use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,

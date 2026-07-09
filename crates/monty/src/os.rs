@@ -25,7 +25,7 @@ use crate::{
     args::{ArgValues, FromArgs, LaxBool, ToArgs, ToMontyObject},
     bytecode::VM,
     exception_private::RunResult,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::{file::FileMode, str::StringRepr},
@@ -271,10 +271,10 @@ impl fmt::Display for OsFunctionCall {
     }
 }
 
-impl DropWithHeap for OsFunctionCall {
+impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
     // Owned args (String/Vec<u8>/bool/MontyPath/MontyObject) hold no live
     // heap references, so a plain drop is correct.
-    fn drop_with_heap<H: ContainsHeap>(self, _heap: &mut H) {
+    fn drop_with(self, _heap: &mut C) {
         drop(self);
     }
 }
@@ -476,7 +476,7 @@ pub(crate) fn build_path_os_call(
             // Unreachable in practice — callers gate on `is_path_os_method`.
             // Drop the owned inputs anyway so a stray call doesn't leak refs.
             let _ = path;
-            args.drop_with_heap(vm.heap);
+            args.drop_with(vm.heap);
             return Ok(None);
         }
     };
@@ -494,8 +494,10 @@ fn extract_str_data(
 ) -> RunResult<PathStringDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     let data_str = value_to_owned_string(&data, heap, interns);
+
     let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with_heap(heap);
+    data.drop_with(heap);
+
     match data_str {
         Some(data) => Ok(PathStringDataArgs { path, data }),
         None => Err(ExcType::type_error(format!("data must be str, not {py_type}"))),
@@ -513,8 +515,10 @@ fn extract_bytes_data(
 ) -> RunResult<PathBytesDataArgs> {
     let data = arg_or_missing_data(method, args, heap)?;
     let bytes = value_to_owned_bytes(&data, heap, interns);
+
     let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with_heap(heap);
+    data.drop_with(heap);
+
     match bytes {
         Some(data) => Ok(PathBytesDataArgs { path, data }),
         None => Err(ExcType::type_error(format!(
@@ -574,7 +578,7 @@ fn extract_rename_args(
 ) -> RunResult<RenameCallArgs> {
     let target = args.get_one_arg("rename", heap)?;
     let dst_str = value_to_owned_string(&target, heap, interns);
-    target.drop_with_heap(heap);
+    target.drop_with(heap);
     match dst_str {
         Some(dst) => Ok(RenameCallArgs {
             src,

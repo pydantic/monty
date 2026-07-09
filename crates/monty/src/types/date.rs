@@ -156,7 +156,7 @@ pub(crate) fn class_fromisoformat(
 ) -> RunResult<Value> {
     let value = args.get_one_arg("date.fromisoformat", heap)?;
     let s = extract_str_arg(&value, "fromisoformat", heap, interns);
-    value.drop_with_heap(heap);
+    value.drop_with(heap);
     let s = s?;
 
     let date = parse_iso_date(&s)

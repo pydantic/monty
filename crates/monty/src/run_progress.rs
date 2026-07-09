@@ -367,7 +367,7 @@ impl<T: ResourceTracker> NameLookup<T> {
                             &mut vm.stack[stack_base + slot_idx]
                         };
                         let old = mem::replace(slot, cloned);
-                        old.drop_with_heap(&mut vm);
+                        old.drop_with(&mut vm);
 
                         vm.push(value);
                         vm.run_external()

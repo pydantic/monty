@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{HeapData, HeapGuard, HeapReadOutput},
+    heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
     types::{Dict, List, Set, Slice, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
@@ -42,7 +42,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             // A duplicate literal key (`{k: 1, k: 2}`) replaces the earlier
             // value, which must be dropped or its refcount leaks.
             if let Some(old_value) = dict.set(key, value, self)? {
-                old_value.drop_with_heap(self);
+                old_value.drop_with(self);
             }
         }
         let heap_id = self.heap.allocate(HeapData::Dict(dict))?;
@@ -94,15 +94,15 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Raises `TypeError("Value after * must be an iterable, not {type}")` for non-iterables,
     /// matching CPython's message for list/tuple literal unpacking (`[*x]`, `(*x,)`).
     ///
-    /// Uses `HeapGuard` for `list_ref` because it is pushed back on success,
+    /// Uses `DropGuard` for `list_ref` because it is pushed back on success,
     /// and `defer_drop!` for `iterable` because it is always dropped.
     pub(super) fn list_extend(&mut self) -> Result<(), RunError> {
         let this = self;
 
         let iterable = this.pop();
         defer_drop!(iterable, this);
-        // HeapGuard for list_ref: pushed back on success via into_parts, dropped on error
-        let mut list_ref_guard = HeapGuard::new(this.pop(), this);
+        // DropGuard for list_ref: pushed back on success via into_parts, dropped on error
+        let mut list_ref_guard = DropGuard::new(this.pop(), this);
         let (list_ref, this) = list_ref_guard.as_parts();
 
         let copied_items: Vec<Value> = match iterable {
@@ -193,7 +193,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Stack: [dict, mapping] -> [dict]
     /// Validates that mapping is a dict and that keys are strings.
     ///
-    /// Uses `defer_drop!` for `mapping` (always dropped) and `HeapGuard` for
+    /// Uses `defer_drop!` for `mapping` (always dropped) and `DropGuard` for
     /// `dict_ref` (pushed back on success, dropped on error).
     pub(super) fn dict_merge(&mut self, func_name_id: u16) -> Result<(), RunError> {
         let func_name = func_name_for_dict_merge(func_name_id, self);
@@ -224,8 +224,8 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let mapping = this.pop();
         defer_drop!(mapping, this);
-        // HeapGuard for dict_ref: pushed back on success via into_parts, dropped on error
-        let mut dict_ref_guard = HeapGuard::new(this.pop(), this);
+        // DropGuard for dict_ref: pushed back on success via into_parts, dropped on error
+        let mut dict_ref_guard = DropGuard::new(this.pop(), this);
         let (dict_ref, this) = dict_ref_guard.as_parts();
 
         // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
@@ -258,8 +258,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 _ => false,
             };
             if !is_string {
-                key.drop_with_heap(this);
-                value.drop_with_heap(this);
+                key.drop_with(this);
+                value.drop_with(this);
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             }
 
@@ -281,7 +281,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             };
 
             if let Some(old_value) = dict.set(key, value, this)? {
-                old_value.drop_with_heap(this);
+                old_value.drop_with(this);
                 return Err(ExcType::type_error_multiple_values(func_name, &key_str));
             }
         }
@@ -345,7 +345,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             let old = dict.set(key, value, this)?;
             // Silently drop any old value — PEP 448 dict literals allow duplicate keys
             if let Some(old_val) = old {
-                old_val.drop_with_heap(this);
+                old_val.drop_with(this);
             }
         }
 
@@ -439,12 +439,12 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // Get the list reference
         let Value::Ref(list_id) = self.stack[list_pos] else {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list ref on stack"));
         };
 
         let HeapReadOutput::List(mut list) = self.heap.read(list_id) else {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Err(RunError::internal("ListAppend: expected list on heap"));
         };
         list.append(self, value)?;
@@ -463,12 +463,12 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // Get the set reference
         let Value::Ref(set_id) = self.stack[set_pos] else {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set ref on stack"));
         };
 
         let HeapReadOutput::Set(mut set) = self.heap.read(set_id) else {
-            value.drop_with_heap(self);
+            value.drop_with(self);
             return Err(RunError::internal("SetAdd: expected set on heap"));
         };
         set.add(value, self)?;
@@ -489,21 +489,21 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // Get the dict reference
         let Value::Ref(dict_id) = self.stack[dict_pos] else {
-            key.drop_with_heap(self);
-            value.drop_with_heap(self);
+            key.drop_with(self);
+            value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict ref on stack"));
         };
 
         let HeapReadOutput::Dict(mut dict) = self.heap.read(dict_id) else {
-            key.drop_with_heap(self);
-            value.drop_with_heap(self);
+            key.drop_with(self);
+            value.drop_with(self);
             return Err(RunError::internal("DictSetItem: expected dict on heap"));
         };
         let old_value = dict.set(key, value, self)?;
 
         // Drop old value if key already existed
         if let Some(old) = old_value {
-            old.drop_with_heap(self);
+            old.drop_with(self);
         }
 
         Ok(())

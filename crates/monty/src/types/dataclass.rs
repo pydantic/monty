@@ -141,8 +141,8 @@ impl<'h> HeapRead<'h, Dataclass> {
                 format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
             // Drop the values we were given ownership of
-            name.drop_with_heap(vm);
-            value.drop_with_heap(vm);
+            name.drop_with(vm);
+            value.drop_with(vm);
             return Err(exc.into());
         }
         self.attrs_mut().set(name, value, vm)

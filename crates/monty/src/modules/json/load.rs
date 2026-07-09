@@ -12,7 +12,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{ContainsHeap, HeapData, HeapGuard, HeapReader},
+    heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
     resource::{ResourceError, ResourceTracker},
     types::{
         Dict, List, LongInt,
@@ -71,7 +71,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// and will raise `TypeError` if passed.
 pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
-    let mut data_guard = HeapGuard::new(s, vm);
+    let mut data_guard = DropGuard::new(s, vm);
     let (data, vm) = data_guard.as_parts_mut();
     parse_json_input(data, vm)
 }
@@ -129,10 +129,10 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, impl ResourceTracker>) -> RunR
             .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),
         JsonLoadError::Run(error) => error,
     })?;
-    // The successfully parsed `value` must be dropped via `drop_with_heap` if
+    // The successfully parsed `value` must be dropped via `drop_with` if
     // `finish()` detects trailing data — a plain `?` would leak its refcount.
     if let Err(error) = jiter.finish() {
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         return Err(json_error_to_run_error(&error, &jiter, bytes));
     }
     Ok(value)
@@ -242,7 +242,7 @@ fn parse_json_array(
     };
 
     let values = Vec::new();
-    let mut values_guard = HeapGuard::new(values, vm);
+    let mut values_guard = DropGuard::new(values, vm);
     {
         let (values, vm) = values_guard.as_parts_mut();
         loop {
@@ -284,14 +284,14 @@ fn parse_json_object(
         return Ok(Value::Ref(dict_id));
     };
 
-    let mut dict_guard = HeapGuard::new(Dict::new(), vm);
+    let mut dict_guard = DropGuard::new(Dict::new(), vm);
     {
         let (dict, vm) = dict_guard.as_parts_mut();
         loop {
             let key_value = allocate_cached_string(key, cache, vm.heap)?;
             let value = parse_json_value(jiter, depth + 1, cache, vm)?;
             if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
 
             let Some(next_key) = parse_next_object_key(jiter)? else {

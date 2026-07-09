@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use std::sync::LazyLock;
 
 use ruff_db::vendored::VendoredFileSystem;

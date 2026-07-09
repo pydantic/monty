@@ -7,7 +7,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::HeapGuard,
+    heap::DropGuard,
     resource::ResourceTracker,
     types::{CmpOrder, MontyIter, PyTrait},
     value::Value,
@@ -56,7 +56,7 @@ fn run_min_max(
     // skip the call entirely.
     let key_fn = match key {
         Value::None => {
-            key.drop_with_heap(vm);
+            key.drop_with(vm);
             None
         }
         _ => Some(key),
@@ -64,15 +64,15 @@ fn run_min_max(
     defer_drop!(key_fn, vm);
 
     // `default_value` is `Option<Value>` — we may consume it on the "empty
-    // iterable" path, or drop it on error paths. `HeapGuard` ensures cleanup
+    // iterable" path, or drop it on error paths. `DropGuard` ensures cleanup
     // on every `?`-style early return.
-    let mut default_guard = HeapGuard::new(default, vm);
+    let mut default_guard = DropGuard::new(default, vm);
     let (default_value, vm) = default_guard.as_parts_mut();
 
     // Wrap the remaining positional args in a guard so any unconsumed items
     // are released on early error returns (e.g. the user-supplied `key`
     // function raising mid-iteration).
-    let mut args_guard = HeapGuard::new(args, vm);
+    let mut args_guard = DropGuard::new(args, vm);
     let (args, vm) = args_guard.as_parts_mut();
 
     if args.is_empty() {
@@ -102,11 +102,11 @@ fn run_min_max(
         };
 
         if let Some(key_fn) = key_fn {
-            let mut result_guard = HeapGuard::new(result, vm);
+            let mut result_guard = DropGuard::new(result, vm);
             {
                 let (result, vm) = result_guard.as_parts_mut();
                 let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, key_context, vm)?;
-                let mut result_key_guard = HeapGuard::new(result_key, vm);
+                let mut result_key_guard = DropGuard::new(result_key, vm);
                 {
                     let (result_key, vm) = result_key_guard.as_parts_mut();
 
@@ -123,11 +123,11 @@ fn run_min_max(
                 }
 
                 let result_key = result_key_guard.into_inner();
-                result_key.drop_with_heap(vm);
+                result_key.drop_with(vm);
             }
             Ok(result_guard.into_inner())
         } else {
-            let mut result_guard = HeapGuard::new(result, vm);
+            let mut result_guard = DropGuard::new(result, vm);
             let (result, vm) = result_guard.as_parts_mut();
 
             while let Some(item) = iter.for_next(vm)? {
@@ -143,7 +143,7 @@ fn run_min_max(
     } else {
         // Multiple arguments: compare them directly
         if default_value.is_some() {
-            first_arg.drop_with_heap(vm);
+            first_arg.drop_with(vm);
             // `default_value` and `args` are owned by their respective guards
             // — their Drop impls release the held values when the function
             // returns.
@@ -151,11 +151,11 @@ fn run_min_max(
         }
 
         if let Some(key_fn) = key_fn {
-            let mut result_guard = HeapGuard::new(first_arg, vm);
+            let mut result_guard = DropGuard::new(first_arg, vm);
             {
                 let (result, vm) = result_guard.as_parts_mut();
                 let result_key = evaluate_key(result.clone_with_heap(vm), key_fn, key_context, vm)?;
-                let mut result_key_guard = HeapGuard::new(result_key, vm);
+                let mut result_key_guard = DropGuard::new(result_key, vm);
                 {
                     let (result_key, vm) = result_key_guard.as_parts_mut();
 
@@ -172,11 +172,11 @@ fn run_min_max(
                 }
 
                 let result_key = result_key_guard.into_inner();
-                result_key.drop_with_heap(vm);
+                result_key.drop_with(vm);
             }
             Ok(result_guard.into_inner())
         } else {
-            let mut result_guard = HeapGuard::new(first_arg, vm);
+            let mut result_guard = DropGuard::new(first_arg, vm);
             let (result, vm) = result_guard.as_parts_mut();
 
             for item in args.drain(..) {

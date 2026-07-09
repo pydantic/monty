@@ -1,11 +1,12 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { MontyRuntimeError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { pool } = setupPool(test)
+const { pool } = setupPool()
 
-test('feed preserves state without replay', async (t) => {
+test('feed preserves state without replay', async () => {
   const session = await pool().checkout()
   try {
     await session.feedRun('counter = 0')
@@ -18,7 +19,7 @@ test('feed preserves state without replay', async (t) => {
   }
 })
 
-test('runtime error does not kill the session', async (t) => {
+test('runtime error does not kill the session', async () => {
   const session = await pool().checkout()
   try {
     await session.feedRun('x = 1')
@@ -41,7 +42,7 @@ test('runtime error does not kill the session', async (t) => {
   }
 })
 
-test('session dump returns opaque state', async (t) => {
+test('session dump returns opaque state', async () => {
   const session = await pool().checkout()
   try {
     await session.feedRun('x = 40')

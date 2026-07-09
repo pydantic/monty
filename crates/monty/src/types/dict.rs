@@ -12,10 +12,10 @@ use smallvec::{SmallVec, smallvec};
 use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, MontyIter, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
-    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
-    defer_drop, defer_drop_mut, defer_drop_vm_mut,
+    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
@@ -118,11 +118,11 @@ impl Dict {
         let pairs_iter = pairs.into_iter();
         defer_drop_mut!(pairs_iter, vm);
         let dict = Self::with_capacity(pairs_iter.len());
-        let mut dict_guard = HeapGuard::new(dict, vm);
+        let mut dict_guard = DropGuard::new(dict, vm);
         let (dict, vm) = dict_guard.as_parts_mut();
         for (key, value) in pairs_iter {
             if let Some(old_value) = dict.set(key, value, vm)? {
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
         }
         Ok(dict_guard.into_inner())
@@ -156,7 +156,7 @@ impl Dict {
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {
             let old_entry = mem::replace(&mut self.entries[index], entry);
-            old_entry.key.drop_with_heap(vm);
+            old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
             vm.heap.track_growth(2 * VALUE_SIZE)?;
@@ -232,7 +232,7 @@ impl<'h> HeapRead<'h, Dict> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((key, value)) = iter.next(vm)? {
             let Some(other_value) = other.dict_get(key, vm)? else {
                 return Ok(false);
@@ -328,8 +328,8 @@ impl<'h> HeapRead<'h, Dict> {
             Ok(result) => result,
             Err(e) => {
                 // Drop the key and value before returning the error
-                key.drop_with_heap(vm);
-                value.drop_with_heap(vm);
+                key.drop_with(vm);
+                value.drop_with(vm);
                 return Err(e);
             }
         };
@@ -340,7 +340,7 @@ impl<'h> HeapRead<'h, Dict> {
             let old_entry = mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
 
             // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with_heap(vm);
+            old_entry.key.drop_with(vm);
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
@@ -441,16 +441,16 @@ impl Dict {
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
         let DictInitArgs { source, extras } = DictInitArgs::from_args(args, vm)?;
         let dict = Self::new();
-        let mut dict_guard = HeapGuard::new(dict, vm);
+        let mut dict_guard = DropGuard::new(dict, vm);
 
         {
             let (dict, vm) = dict_guard.as_parts_mut();
-            let mut kwargs_guard = HeapGuard::new(extras, vm);
+            let mut kwargs_guard = DropGuard::new(extras, vm);
 
             if let Some(other_value) = source {
-                let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+                let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
                 let other_value = other_value_guard.into_inner();
-                dict_merge_from_value(dict, other_value, kwargs_guard.heap())?;
+                dict_merge_from_value(dict, other_value, kwargs_guard.ctx())?;
             }
 
             let kwargs = kwargs_guard.into_inner();
@@ -532,16 +532,16 @@ impl<'h> HeapRead<'h, Dict> {
     /// For dict sources, uses HeapReader::read() to access the source dict through
     /// the heap, enabling self-referential updates like `d.update(d)`.
     fn merge_from_value(&mut self, other_value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        let mut guard = HeapGuard::new(other_value, vm);
+        let mut guard = DropGuard::new(other_value, vm);
         let (other_value, vm) = guard.as_parts_mut();
         if let Value::Ref(id) = other_value {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
                 let iter = src.iter(vm)?;
-                defer_drop_vm_mut!(iter, vm);
+                defer_drop_mut!(iter, vm);
                 while let Some((key, value)) = iter.next_owned(vm)? {
                     let old_value = self.set(key, value, vm)?;
-                    old_value.drop_with_heap(vm);
+                    old_value.drop_with(vm);
                 }
 
                 // guard drops other_value here
@@ -568,17 +568,17 @@ impl<'h> HeapRead<'h, Dict> {
                     "dictionary update sequence element has length 0; 2 is required",
                 ));
             };
-            let mut key_guard = HeapGuard::new(key, vm);
+            let mut key_guard = DropGuard::new(key, vm);
 
-            let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+            let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 1; 2 is required",
                 ));
             };
-            let mut value_guard = HeapGuard::new(value, key_guard.heap());
+            let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-            if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
-                extra.drop_with_heap(value_guard.heap());
+            if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+                extra.drop_with(value_guard.ctx());
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length > 2; 2 is required",
                 ));
@@ -588,7 +588,7 @@ impl<'h> HeapRead<'h, Dict> {
             let key = key_guard.into_inner();
 
             if let Some(old_value) = self.set(key, value, vm)? {
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
         }
 
@@ -601,7 +601,7 @@ impl<'h> HeapRead<'h, Dict> {
         defer_drop_mut!(kwargs_iter, vm);
         for (key, value) in kwargs_iter {
             let old_value = self.set(key, value, vm)?;
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(())
     }
@@ -668,7 +668,7 @@ impl IntoIterator for Dict {
 /// the reader count for the duration of iteration.
 ///
 /// **Two yield modes.** Pick the variant that matches the caller's natural
-/// pattern to avoid redundant `clone_with_heap` / `drop_with_heap` work:
+/// pattern to avoid redundant `clone_with_heap` / `drop_with` work:
 ///
 /// - [`next`](Self::next) returns `Option<(&Value, &Value)>`. The iterator
 ///   owns the most-recently-yielded pair (using [`Value::Undefined`] as the
@@ -685,8 +685,8 @@ impl IntoIterator for Dict {
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
-/// releases it via [`DropWithVM`]. The iterator MUST be wrapped in
-/// [`defer_drop_vm_mut!`] so the token (and any in-flight pair) is released on
+/// releases it via [`DropWithContext`]. The iterator MUST be wrapped in
+/// [`defer_drop_mut!`] so the token (and any in-flight pair) is released on
 /// every exit path — dict iteration almost always calls back into
 /// `py_eq` / `py_hash` (membership lookups, comparison) which recurse on
 /// cyclic structures.
@@ -768,8 +768,8 @@ impl<'a, 'h> DictIter<'a, 'h> {
     /// guard, then returns the entry index to read at — or `Ok(None)` when
     /// the iterator is exhausted. Bumps `self.index` on success.
     fn advance<R: ResourceTracker>(&mut self, vm: &mut VM<'h, R>) -> RunResult<Option<usize>> {
-        mem::replace(&mut self.current_key, Value::Undefined).drop_with_heap(vm.heap);
-        mem::replace(&mut self.current_value, Value::Undefined).drop_with_heap(vm.heap);
+        mem::replace(&mut self.current_key, Value::Undefined).drop_with(vm.heap);
+        mem::replace(&mut self.current_value, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
         let current = self.dict.get(vm.heap);
         if current.entries.len() != self.expected_len {
@@ -784,11 +784,11 @@ impl<'a, 'h> DictIter<'a, 'h> {
     }
 }
 
-impl<'h> DropWithVM<'h> for DictIter<'_, 'h> {
-    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
-        self.current_key.drop_with_heap(container);
-        self.current_value.drop_with_heap(container);
-        self.token.drop_with_vm(container);
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
+    fn drop_with(self, container: &mut C) {
+        self.current_key.drop_with(container);
+        self.current_value.drop_with(container);
+        self.token.drop_with(container);
     }
 }
 
@@ -874,7 +874,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
         // Drop the old value if one was replaced
         if let Some(old_value) = self.set(key, value, vm)? {
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(())
     }
@@ -887,7 +887,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
-            args.drop_with_heap(vm);
+            args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
         };
 
@@ -897,8 +897,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 let (key, default) = args.get_one_two_args("get", vm.heap)?;
                 defer_drop!(key, vm);
                 let default = default.unwrap_or(Value::None);
-                let mut default_guard = HeapGuard::new(default, vm);
-                let vm = default_guard.heap();
+                let mut default_guard = DropGuard::new(default, vm);
+                let vm = default_guard.ctx();
                 // Handle the lookup - may fail for unhashable keys
                 match self.dict_get(key, vm)? {
                     Some(v) => Ok(v),
@@ -929,11 +929,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
                 let (key, default) = args.get_one_two_args("pop", vm.heap)?;
                 defer_drop!(key, vm);
-                let mut default_guard = HeapGuard::new(default, vm);
-                let vm = default_guard.heap();
+                let mut default_guard = DropGuard::new(default, vm);
+                let vm = default_guard.ctx();
                 if let Some((old_key, value)) = self.pop(key, vm)? {
                     // Drop the old key - we don't need it
-                    old_key.drop_with_heap(vm);
+                    old_key.drop_with(vm);
                     Ok(value)
                 } else {
                     let (default, vm) = default_guard.into_parts();
@@ -963,7 +963,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             // fromkeys is a classmethod but also accessible on instances
             StaticStrings::Fromkeys => dict_fromkeys(args, vm),
             _ => {
-                args.drop_with_heap(vm);
+                args.drop_with(vm);
                 return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
             }
         };
@@ -997,16 +997,16 @@ impl HeapItem for Dict {
     }
 }
 
-impl DropWithHeap for Dict {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.entries.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for Dict {
+    fn drop_with(self, heap: &mut C) {
+        self.entries.drop_with(heap);
     }
 }
 
-impl DropWithHeap for DictEntry {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        self.key.drop_with_heap(heap);
-        self.value.drop_with_heap(heap);
+impl<C: ContainsHeap> DropWithContext<C> for DictEntry {
+    fn drop_with(self, heap: &mut C) {
+        self.key.drop_with(heap);
+        self.value.drop_with(heap);
     }
 }
 
@@ -1015,7 +1015,7 @@ impl DropWithHeap for DictEntry {
 /// Removes all items from the dict.
 fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl ResourceTracker>) {
     dict.get_mut(vm.heap).indices.clear();
-    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with(vm.heap);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
@@ -1047,12 +1047,12 @@ fn dict_update<'h>(
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let DictUpdateArgs { source, extras } = DictUpdateArgs::from_args(args, vm)?;
-    let mut kwargs_guard = HeapGuard::new(extras, vm);
+    let mut kwargs_guard = DropGuard::new(extras, vm);
 
     if let Some(other_value) = source {
-        let other_value_guard = HeapGuard::new(other_value, kwargs_guard.heap());
+        let other_value_guard = DropGuard::new(other_value, kwargs_guard.ctx());
         let other_value = other_value_guard.into_inner();
-        dict.merge_from_value(other_value, kwargs_guard.heap())?;
+        dict.merge_from_value(other_value, kwargs_guard.ctx())?;
     }
 
     let kwargs = kwargs_guard.into_inner();
@@ -1078,7 +1078,7 @@ struct DictUpdateArgs {
 /// This is shared between `dict()` construction and `dict.update()` so both
 /// entry points follow identical positional-source semantics.
 fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
-    let mut other_value_guard = HeapGuard::new(other_value, vm);
+    let mut other_value_guard = DropGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
         if let Value::Ref(id) = other_value
@@ -1093,7 +1093,7 @@ fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, im
             // Apply pairs into the target dict.
             for (key, value) in pairs {
                 let old_value = dict.set(key, value, vm)?;
-                old_value.drop_with_heap(vm);
+                old_value.drop_with(vm);
             }
             return Ok(());
         }
@@ -1126,17 +1126,17 @@ fn dict_merge_from_iterable_pairs(
                 "dictionary update sequence element has length 0; 2 is required",
             ));
         };
-        let mut key_guard = HeapGuard::new(key, vm);
+        let mut key_guard = DropGuard::new(key, vm);
 
-        let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+        let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 1; 2 is required",
             ));
         };
-        let mut value_guard = HeapGuard::new(value, key_guard.heap());
+        let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-        if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
-            extra.drop_with_heap(value_guard.heap());
+        if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+            extra.drop_with(value_guard.ctx());
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length > 2; 2 is required",
             ));
@@ -1146,7 +1146,7 @@ fn dict_merge_from_iterable_pairs(
         let key = key_guard.into_inner();
 
         if let Some(old_value) = dict.set(key, value, vm)? {
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
     }
 
@@ -1166,7 +1166,7 @@ fn dict_merge_from_kwargs(
     defer_drop_mut!(kwargs_iter, vm);
     for (key, value) in kwargs_iter {
         let old_value = dict.set(key, value, vm)?;
-        old_value.drop_with_heap(vm);
+        old_value.drop_with(vm);
     }
     Ok(())
 }
@@ -1182,11 +1182,11 @@ fn dict_setdefault<'h>(
 ) -> RunResult<Value> {
     let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
     let default = default.unwrap_or(Value::None);
-    let mut key_guard = HeapGuard::new(key, vm);
+    let mut key_guard = DropGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts();
 
     if let Some(existing) = dict.dict_get(key, vm)? {
-        default.drop_with_heap(vm);
+        default.drop_with(vm);
         Ok(existing)
     } else {
         // Key doesn't exist - insert default and return it (cloned before insertion)
@@ -1194,7 +1194,7 @@ fn dict_setdefault<'h>(
         let (key, vm) = key_guard.into_parts();
         if let Some(old_value) = dict.set(key, default, vm)? {
             // This shouldn't happen since we checked, but handle it anyway
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
         Ok(return_value)
     }
@@ -1278,14 +1278,14 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
     defer_drop_mut!(iter, vm);
 
     let dict = Dict::new();
-    let mut dict_guard = HeapGuard::new(dict, vm);
+    let mut dict_guard = DropGuard::new(dict, vm);
 
     {
         let (dict, vm) = dict_guard.as_parts_mut();
 
         while let Some(key) = iter.for_next(vm)? {
             let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
-            old_value.drop_with_heap(vm);
+            old_value.drop_with(vm);
         }
     }
 

@@ -132,8 +132,8 @@ jobs:
       # subprocess protocol + child mode + worker pool. The pool tests spawn a
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
-      - run: cargo build -p monty-cli
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-cli -p monty-pool
+      - run: cargo build -p monty-runtime
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       # Generating text report:
@@ -185,10 +185,10 @@ jobs:
         # don't use .venv python in CI
       - run: rm .cargo/config.toml
 
-      # pydantic-monty depends on pydantic-monty-cli; install it from the
+      # pydantic-monty depends on pydantic-monty-runtime; install it from the
       # workspace so `maturin develop` can resolve it (plain build, outside
       # the llvm-cov env, so the worker binary is not instrumented)
-      - run: uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
+      - run: uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 
       - name: Build and test Python bindings and run pytest with Rust coverage
         run: |
@@ -330,15 +330,15 @@ jobs:
 
       - run: cargo test -p monty --features memory-model-checks
       - run: cargo run -p monty-datatest --features memory-model-checks
-      - run: cargo build -p monty-cli
+      - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)
         if: runner.os != 'Windows'
-        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Test subprocess crates (Windows)
         if: runner.os == 'Windows'
-        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 
@@ -483,12 +483,12 @@ jobs:
           command: sdist
           args: --out dist
           rust-toolchain: stable
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-cli-sdist
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -554,7 +554,7 @@ jobs:
           docker-options: -e CI
           working-directory: crates/monty-python
 
-      # the pydantic-monty-cli wheel ships the `monty` worker binary
+      # the pydantic-monty-runtime wheel ships the `monty` worker binary
       # (bin bindings, one py3-none wheel per platform). `-i` is required so
       # maturin can find a Python to read pyproject.toml — the produced wheel
       # is `py3-none-<plat>` and doesn't depend on a specific Python version.
@@ -566,7 +566,7 @@ jobs:
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -576,7 +576,7 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}-cli
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
   # PGO-optimized builds for main platforms
   build-pgo:
@@ -637,7 +637,7 @@ jobs:
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
         env:
           RUSTFLAGS: '-Cprofile-use=${{ github.workspace }}/merged.profdata'
 
@@ -649,7 +649,7 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-pgo-cli
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
   # Test wheels on exotic architectures via QEMU
   test-builds-arch:
@@ -687,7 +687,7 @@ jobs:
             python3 -m venv venv
             source venv/bin/activate
             python3 -m pip install typing_extensions
-            python3 -m pip install pydantic-monty pydantic-monty-cli --no-index --no-deps --find-links /dist --force-reinstall
+            python3 -m pip install pydantic-monty pydantic-monty-runtime --no-index --no-deps --find-links /dist --force-reinstall
             python3 - <<'EOF'
             from pydantic_monty import Monty
 
@@ -734,7 +734,7 @@ jobs:
       - run: python -c "import pydantic_monty; print(pydantic_monty.__version__)"
 
       # the cli wheel built for this platform must serve the worker pools
-      - run: pip install pydantic-monty-cli --no-index --no-deps --find-links dist --force-reinstall
+      - run: pip install pydantic-monty-runtime --no-index --no-deps --find-links dist --force-reinstall
       - name: smoke test worker pools
         shell: bash
         run: |
@@ -819,7 +819,7 @@ jobs:
 
   release-crates:
     name: release to crates.io
-    needs: [check]
+    needs: [check, release-python]
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     runs-on: ubuntu-latest
 
@@ -845,6 +845,11 @@ jobs:
       # exported as CARGO_REGISTRY_TOKEN for the publish step
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
+
+      - id: check-version
+        uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
+        with:
+          version_file_path: 'Cargo.toml'
 
       # Publishes every workspace member that is not `publish = false` (i.e. all
       # the library/bin crates, but not the `pydantic-monty`/`monty-js` bindings,
@@ -892,7 +897,7 @@ jobs:
 
       # the workers the JS client drives
       - name: Build the monty binary
-        run: cargo build -p monty-cli
+        run: cargo build -p monty-runtime
 
       # debug napi build + TypeScript; tests and the smoke test load it
       - name: Build
@@ -968,7 +973,7 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Build the monty binary
-        run: cargo build --release -p monty-cli --target ${{ matrix.settings.target }}
+        run: cargo build --release -p monty-runtime --target ${{ matrix.settings.target }}
 
       - name: Build the napi shared library
         run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}
@@ -987,7 +992,6 @@ jobs:
   build-wasm:
     name: build wasm
     runs-on: ubuntu-latest
-    # used by test-wasm so always run this
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -997,78 +1001,38 @@ jobs:
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: 24
-          package-manager-cache: false
+          cache: npm # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-dependency-path: crates/monty-js/package-lock.json
 
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: stable
           targets: wasm32-wasip1
 
-      - name: Cache cargo
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4  # zizmor: ignore[cache-poisoning]
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            ~/.napi-rs
-            .cargo-cache
-            target/
-          key: wasm32-wasip1-cargo-ubuntu-latest
+          lookup-only: false # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
+          cache-on-failure: true
+          prefix-key: 'v1-wasm32-wasip1'
 
       # don't use .venv python in CI
       - run: rm .cargo/config.toml
-
-      - name: Build
-        run: cargo build -p monty-wasm-worker --target wasm32-wasip1 --release
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: wasm-bindings
-          path: target/wasm32-wasip1/release/monty_wasm_worker.wasm
-          if-no-files-found: error
-    env:
-      CARGO_INCREMENTAL: '1'
-
-  test-wasm:
-    name: test wasm
-    needs:
-      - build-wasm
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup node
-        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0  # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: crates/monty-js/package-lock.json
 
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
 
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - name: Build wasm package assets
+        run: make build-wasm
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: wasm-bindings
-          path: target/wasm32-wasip1/release
-
-      # place the module next to the loaders (where the specs and the turnkey
-      # loader resolve it)
-      - name: Stage wasm module
-        run: node scripts/copy-wasm.mjs
-        working-directory: crates/monty-js
-
-      # the wasm worker pool/transport specs; they need no napi binding
-      - name: Test bindings
-        run: npx ava "__test__/wasm_*.spec.ts"
-        working-directory: crates/monty-js
+          path: crates/monty-js/dist/worker/monty_wasm_worker.wasm
+          if-no-files-found: error
+    env:
+      CARGO_INCREMENTAL: '1'
 
   test-browser:
     name: test browser
@@ -1087,35 +1051,22 @@ jobs:
           cache: npm
           cache-dependency-path: crates/monty-js/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-
-      # don't use .venv python in CI
-      - run: rm .cargo/config.toml
-
       - name: Install dependencies
         run: npm install
         working-directory: crates/monty-js
 
-      # build:debug regenerates index.d.ts and emits dist/ (the Vite app bundles
-      # the built package, exercising the browser export condition)
-      - name: Build napi + TypeScript
-        run: npm run build:debug
+      - name: Build TypeScript
+        run: npm run build:ts
         working-directory: crates/monty-js
 
       - name: Download wasm module
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: wasm-bindings
-          path: target/wasm32-wasip1/release
+          path: crates/monty-js/dist/worker
 
-      - name: Stage wasm module
-        run: node scripts/copy-wasm.mjs
-        working-directory: crates/monty-js
-
-      - name: Run browser test
-        run: npx playwright install --with-deps chromium && npx playwright test
+      - name: Test browser bindings
+        run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js
 
   release-js:
@@ -1123,11 +1074,10 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - check
-      - inspect-python-assets
       - test-js
       - build-js-binaries
-      - test-wasm
       - test-browser
+      - release-python
     if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
     permissions:
       contents: write
@@ -1185,13 +1135,20 @@ jobs:
         run: |
           for dir in artifacts/monty-bin-*; do
             triple=${dir#artifacts/monty-bin-}
-            find "$dir" -name 'monty*' -exec mv {} "npm/$triple/" \;
+            # -type f: without it the artifact dir itself matches 'monty*' and
+            # gets moved wholesale, killing the find that is mid-traversal
+            find "$dir" -type f -name 'monty*' -exec mv {} "npm/$triple/" \;
           done
           chmod +x npm/*/monty npm/*/monty.exe 2>/dev/null || true
           mkdir -p dist/worker
           mv artifacts/wasm/monty_wasm_worker.wasm dist/worker/monty_wasm_worker.wasm
           ls -lR npm/ dist/worker/
         working-directory: crates/monty-js
+
+      - id: check-version
+        uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
+        with:
+          version_file_path: 'Cargo.toml'
 
       - name: Publish
         run: |

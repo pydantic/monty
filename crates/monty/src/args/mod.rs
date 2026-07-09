@@ -16,7 +16,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
-    heap::{ContainsHeap, DropWithHeap, Heap},
+    heap::{ContainsHeap, DropWithContext, Heap},
     intern::StringId,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
@@ -56,7 +56,7 @@ impl ArgValues {
             Self::Empty => Ok(()),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_no_args(name, count))
             }
         }
@@ -70,7 +70,7 @@ impl ArgValues {
             Self::One(a) => Ok(a),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_arg_count(name, 1, count))
             }
         }
@@ -84,7 +84,7 @@ impl ArgValues {
             Self::Two(a1, a2) => Ok((a1, a2)),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_arg_count(name, 2, count))
             }
         }
@@ -103,7 +103,7 @@ impl ArgValues {
             Self::Two(a1, a2) => Ok((a1, Some(a2))),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 if count == 0 {
                     Err(ExcType::type_error_at_least(name, 1, count))
                 } else {
@@ -122,7 +122,7 @@ impl ArgValues {
             Self::One(a) => Ok(Some(a)),
             other => {
                 let count = other.count();
-                other.drop_with_heap(heap);
+                other.drop_with(heap);
                 Err(ExcType::type_error_at_most(name, 1, count))
             }
         }
@@ -181,7 +181,7 @@ impl ArgValues {
                 if kwargs.is_empty() {
                     Ok(ArgPosIter::Vec(args.into_iter()))
                 } else {
-                    args.drop_with_heap(heap);
+                    args.drop_with(heap);
                     Err(Self::unexpected_kwargs_error(kwargs, method_name, heap))
                 }
             }
@@ -194,7 +194,7 @@ impl ArgValues {
         method_name: &str,
         heap: &mut Heap<impl ResourceTracker>,
     ) -> RunError {
-        kwargs.drop_with_heap(heap);
+        kwargs.drop_with(heap);
         ExcType::type_error_no_kwargs(method_name)
     }
 
@@ -231,21 +231,21 @@ impl ArgValues {
     }
 }
 
-impl DropWithHeap for ArgValues {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for ArgValues {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
-            Self::One(v) => v.drop_with_heap(heap),
+            Self::One(v) => v.drop_with(heap),
             Self::Two(v1, v2) => {
-                v1.drop_with_heap(heap);
-                v2.drop_with_heap(heap);
+                v1.drop_with(heap);
+                v2.drop_with(heap);
             }
             Self::Kwargs(kwargs) => {
-                kwargs.drop_with_heap(heap);
+                kwargs.drop_with(heap);
             }
             Self::ArgsKargs { args, kwargs } => {
-                args.drop_with_heap(heap);
-                kwargs.drop_with_heap(heap);
+                args.drop_with(heap);
+                kwargs.drop_with(heap);
             }
         }
     }
@@ -255,10 +255,10 @@ impl DropWithHeap for ArgValues {
 ///
 /// Supports iterating over `ArgValues::One/Two` without converting to Vec.
 /// This iterator must be fully consumed OR explicitly dropped with
-/// `drop_remaining_with_heap()` to maintain correct reference counts.
+/// `drop_with()` to maintain correct reference counts.
 ///
 /// The iterator yields values by ownership transfer. Once a value is yielded,
-/// the caller is responsible for either using it or calling `drop_with_heap()` on it.
+/// the caller is responsible for either using it or calling `drop_with()` on it.
 pub(crate) enum ArgPosIter {
     Empty,
     One(Value),
@@ -315,13 +315,13 @@ impl Iterator for ArgPosIter {
 
 impl ExactSizeIterator for ArgPosIter {}
 
-impl DropWithHeap for ArgPosIter {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for ArgPosIter {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
-            Self::One(v1) => v1.drop_with_heap(heap),
-            Self::Two(v12) => v12.drop_with_heap(heap),
-            Self::Vec(iter) => iter.drop_with_heap(heap),
+            Self::One(v1) => v1.drop_with(heap),
+            Self::Two(v12) => v12.drop_with(heap),
+            Self::Vec(iter) => iter.drop_with(heap),
         }
     }
 }
@@ -385,26 +385,26 @@ impl KwargsValues {
     }
 }
 
-impl DropWithHeap for KwargsValues {
+impl<C: ContainsHeap> DropWithContext<C> for KwargsValues {
     /// Properly drops all values in the arguments, decrementing reference counts.
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
             Self::Inline(kvs) => {
                 for (_, v) in kvs {
-                    v.drop_with_heap(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Pairs(kvs) => {
                 for (k, v) in kvs {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Dict(dict) => {
                 for (k, v) in dict {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
         }
@@ -461,25 +461,25 @@ impl Iterator for KwargsValuesIter {
 
 impl ExactSizeIterator for KwargsValuesIter {}
 
-impl DropWithHeap for KwargsValuesIter {
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+impl<C: ContainsHeap> DropWithContext<C> for KwargsValuesIter {
+    fn drop_with(self, heap: &mut C) {
         match self {
             Self::Empty => {}
             Self::Inline(iter) => {
                 for (_, v) in iter {
-                    v.drop_with_heap(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Pairs(iter) => {
                 for (k, v) in iter {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
             Self::Dict(iter) => {
                 for (k, v) in iter {
-                    k.drop_with_heap(heap);
-                    v.drop_with_heap(heap);
+                    k.drop_with(heap);
+                    v.drop_with(heap);
                 }
             }
         }

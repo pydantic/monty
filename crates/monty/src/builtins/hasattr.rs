@@ -6,7 +6,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{RunError, RunResult, SimpleException},
-    heap::DropWithHeap,
+    heap::DropWithContext,
     resource::ResourceTracker,
     value::Value,
 };
@@ -47,11 +47,11 @@ pub fn builtin_hasattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -
     // important: we must own the returned value if py_get_attr succeeds to drop it
     let has_attr = match object.py_getattr(&name, vm) {
         Ok(CallResult::Value(value)) => {
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             true
         }
         Ok(other) => {
-            other.drop_with_heap(vm);
+            other.drop_with(vm);
             // hasattr() only tests attribute values — OS calls, external calls,
             // method calls, and awaits are not supported here
             //

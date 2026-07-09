@@ -117,7 +117,7 @@ pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: SysFunctions
 fn setrecursionlimit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("sys.setrecursionlimit", vm.heap)?;
     let Value::Int(limit) = arg else {
-        arg.drop_with_heap(vm);
+        arg.drop_with(vm);
         return Err(ExcType::type_error("sys.setrecursionlimit() argument must be int"));
     };
     let Ok(new_limit) = usize::try_from(limit) else {

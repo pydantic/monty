@@ -244,7 +244,7 @@ impl FromValue for DeltaComponent {
             _ if is_long_int(&value, vm) => Err(FromValueFail::Raise(ExcType::overflow_c_int())),
             _ => Err(FromValueFail::WrongType),
         };
-        value.drop_with_heap(vm);
+        value.drop_with(vm);
         result
     }
 

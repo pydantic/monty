@@ -30,7 +30,7 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 
 .PHONY: dev-py
 dev-py: ## Install the python package for development
-	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
 .PHONY: build-js
@@ -43,7 +43,7 @@ lint-js: install-js ## Lint JS code with oxlint
 
 .PHONY: test-js
 test-js: build-js ## Test the JS package (builds the monty binary the workers run)
-	cargo build -p monty-cli
+	cargo build -p monty-runtime
 	cd crates/monty-js && MONTY_BIN="$${CARGO_TARGET_DIR:-../../target}/debug/monty$(EXE_EXT)" npm test
 
 .PHONY: smoke-test-js
@@ -52,20 +52,16 @@ smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests instal
 
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
-	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml --release
+	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml --release
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-wasm
 build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
-.PHONY: test-wasm
-test-wasm: ## Test the wasm worker pool/transport (requires a prior build-wasm)
-	cd crates/monty-js && npx ava "__test__/wasm_*.spec.ts"
-
 .PHONY: test-browser
-test-browser: build-js build-wasm ## Browser (Playwright) test of the wasm worker path in a real headless browser
-	cd crates/monty-js && npx playwright install chromium && npx playwright test
+test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
+	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npm run test:browser
 
 # OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
@@ -192,8 +188,8 @@ test-type-checking: ## Run rust tests on monty-type-checking
 
 .PHONY: test-subprocess
 test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
-	cargo build -p monty-cli
-	cargo test -p monty-proto -p monty-cli -p monty-pool
+	cargo build -p monty-runtime
+	cargo test -p monty-proto -p monty-runtime -p monty-pool
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
@@ -247,7 +243,7 @@ bench: ## Run benchmarks
 
 .PHONY: bench-pool
 bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
-	cargo build -p monty-cli --release
+	cargo build -p monty-runtime --release
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: dev-bench

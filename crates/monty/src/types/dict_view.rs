@@ -5,9 +5,9 @@ use smallvec::smallvec;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut, defer_drop_vm_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{Dict, FrozenSet, LazyHeapSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
@@ -98,9 +98,9 @@ impl<'h> HeapRead<'h, DictKeysView> {
         let dict = self.dict(vm);
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((key, value)) = iter.next_owned(vm)? {
-            value.drop_with_heap(vm);
+            value.drop_with(vm);
             result.add(key, vm)?;
         }
         Ok(result)
@@ -260,7 +260,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
         let dict = self.dict(vm);
         let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((key, value)) = iter.next_owned(vm)? {
             let item = allocate_tuple(smallvec![key, value], vm.heap)?;
             result.add(item, vm)?;
@@ -486,7 +486,7 @@ fn write_dict_keys_contents<'h>(
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     let mut first = true;
     while let Some((key, _value)) = iter.next(vm)? {
         if !first {
@@ -506,7 +506,7 @@ fn write_dict_items_contents<'h>(
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     let mut first = true;
     while let Some((key, value)) = iter.next(vm)? {
         if !first {
@@ -530,7 +530,7 @@ fn write_dict_values_contents<'h>(
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
-    defer_drop_vm_mut!(iter, vm);
+    defer_drop_mut!(iter, vm);
     let mut first = true;
     while let Some((_key, value)) = iter.next(vm)? {
         if !first {
@@ -548,14 +548,14 @@ fn write_dict_values_contents<'h>(
 /// including one-shot iterator objects. Reusing the same collection path keeps
 /// binary operators and `isdisjoint(...)` consistent with each other.
 pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Set, RunError> {
-    let mut value_guard = HeapGuard::new(value, vm);
+    let mut value_guard = DropGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts_mut();
 
     // Fast path existing iterators
     if let Value::Ref(heap_id) = value
         && let HeapReadOutput::Iter(mut iter) = vm.heap.read(*heap_id)
     {
-        let mut set_guard = HeapGuard::new(Set::new(), vm);
+        let mut set_guard = DropGuard::new(Set::new(), vm);
         let (set, vm) = set_guard.as_parts_mut();
         while let Some(item) = iter.advance(vm)? {
             set.add(item, vm)?;
@@ -570,7 +570,7 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl Resourc
     // resource tracker and clamps it so an attacker-controlled iterable length
     // cannot drive an unbounded native pre-allocation.
     let cap = iter.preallocation_hint(mem::size_of::<Value>() * 2, vm)?;
-    let mut set_guard = HeapGuard::new(Set::with_capacity(cap), vm);
+    let mut set_guard = DropGuard::new(Set::with_capacity(cap), vm);
     let (set, vm) = set_guard.as_parts_mut();
     while let Some(item) = iter.for_next(vm)? {
         set.add(item, vm)?;

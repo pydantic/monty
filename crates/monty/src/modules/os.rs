@@ -87,16 +87,17 @@ pub(super) fn call(
 fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
     if let Some(key) = key_value.as_either_str(vm.heap) {
-        key_value.drop_with_heap(vm.heap);
+        key_value.drop_with(vm.heap);
         Ok(CallResult::OsCall(OsFunctionCall::Getenv(GetenvArgs {
             key: key.into_string(vm.interns),
             default: MontyObject::new(default_value.unwrap_or(Value::None), vm),
         })))
     } else {
         let type_name = key_value.py_type_name_heap(vm.heap, vm.interns);
-        key_value.drop_with_heap(vm.heap);
+        key_value.drop_with(vm.heap);
+
         if let Some(d) = default_value {
-            d.drop_with_heap(vm.heap);
+            d.drop_with(vm.heap);
         }
         Err(ExcType::type_error(format!("str expected, not {type_name}")))
     }

@@ -38,10 +38,10 @@ runs:
     # `exercise.py` drives `pydantic_monty.Monty()` which spawns the `monty`
     # worker subprocess — build an instrumented worker so PGO data covers
     # both the parent (FFI/pool/proto in pydantic-monty) and the worker
-    # (bytecode interpreter in monty-cli).
+    # (bytecode interpreter in monty-runtime).
     - name: build instrumented monty binary
       shell: bash
-      run: cargo build --release -p monty-cli
+      run: cargo build --release -p monty-runtime
       env:
         RUSTFLAGS: '-Cprofile-generate=${{ github.workspace }}/profdata'
 

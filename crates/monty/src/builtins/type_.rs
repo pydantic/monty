@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, HeapData},
+    heap::{DropWithContext, HeapData},
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{Class, Dict, PyTrait},
@@ -32,8 +32,8 @@ pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
             if kwargs.is_empty() {
                 Ok(type_of(vm, value))
             } else {
-                value.drop_with_heap(vm);
-                kwargs.drop_with_heap(vm);
+                value.drop_with(vm);
+                kwargs.drop_with(vm);
                 Err(ExcType::type_error_no_kwargs("type"))
             }
         }
@@ -44,8 +44,8 @@ pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
             create_class(vm, name, bases, namespace, kwargs)
         }
         _ => {
-            pos.drop_with_heap(vm);
-            kwargs.drop_with_heap(vm);
+            pos.drop_with(vm);
+            kwargs.drop_with(vm);
             Err(ExcType::type_error("type() takes 1 or 3 arguments"))
         }
     }

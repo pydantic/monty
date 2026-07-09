@@ -1,27 +1,28 @@
-import test from 'ava'
+import { test } from 'vitest'
+import { t } from './assertions.js'
 
 import { MontySyntaxError } from '../ts/index.js'
 import { setupPool } from './helpers.js'
 
-const { run, pool } = setupPool(test)
+const { run, pool } = setupPool()
 
 // =============================================================================
 // Simple expression tests
 // =============================================================================
 
-test('simple expression', async (t) => {
+test('simple expression', async () => {
   t.is(await run('1 + 2'), 3)
 })
 
-test('arithmetic', async (t) => {
+test('arithmetic', async () => {
   t.is(await run('10 * 5 - 3'), 47)
 })
 
-test('string concatenation', async (t) => {
+test('string concatenation', async () => {
   t.is(await run('"hello" + " " + "world"'), 'hello world')
 })
 
-test('syntax error', async (t) => {
+test('syntax error', async () => {
   const error = await t.throwsAsync(() => run('def'), { instanceOf: MontySyntaxError })
   t.true(error.message.includes('SyntaxError'))
 })
@@ -30,7 +31,7 @@ test('syntax error', async (t) => {
 // Multiline code tests
 // =============================================================================
 
-test('multiline code', async (t) => {
+test('multiline code', async () => {
   const code = `
 x = 1
 y = 2
@@ -39,7 +40,7 @@ x + y
   t.is(await run(code), 3)
 })
 
-test('function definition and call', async (t) => {
+test('function definition and call', async () => {
   const code = `
 def add(a, b):
     return a + b
@@ -53,7 +54,7 @@ add(3, 4)
 // Session behaviour
 // =============================================================================
 
-test('session state persists across feeds', async (t) => {
+test('session state persists across feeds', async () => {
   const session = await pool().checkout()
   try {
     t.is(await session.feedRun('x = 5'), null)
@@ -63,7 +64,7 @@ test('session state persists across feeds', async (t) => {
   }
 })
 
-test('sessions are isolated from each other', async (t) => {
+test('sessions are isolated from each other', async () => {
   const a = await pool().checkout()
   const b = await pool().checkout()
   try {
@@ -76,7 +77,7 @@ test('sessions are isolated from each other', async (t) => {
   }
 })
 
-test('await using closes the session', async (t) => {
+test('await using closes the session', async () => {
   let result: unknown
   {
     await using session = await pool().checkout()

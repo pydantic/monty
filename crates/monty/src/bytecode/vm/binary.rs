@@ -4,7 +4,7 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunError},
-    heap::{HeapData, HeapGuard, HeapReadOutput},
+    heap::{DropGuard, HeapData, HeapReadOutput},
     resource::ResourceTracker,
     types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
     value::{BitwiseOp, Value},
@@ -360,8 +360,8 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let rhs = this.pop();
         defer_drop!(rhs, this);
-        // Use HeapGuard because inplace addition will push lhs back on the stack if successful
-        let mut lhs_guard = HeapGuard::new(this.pop(), this);
+        // Use DropGuard because inplace addition will push lhs back on the stack if successful
+        let mut lhs_guard = DropGuard::new(this.pop(), this);
         let (lhs, this) = lhs_guard.as_parts_mut();
 
         // Try in-place operation first (for mutable types like lists)
@@ -395,8 +395,8 @@ impl<T: ResourceTracker> VM<'_, T> {
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
         let rhs = self.pop();
         let lhs = self.pop();
-        lhs.drop_with_heap(self);
-        rhs.drop_with_heap(self);
+        lhs.drop_with(self);
+        rhs.drop_with(self);
         Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into())
     }
 

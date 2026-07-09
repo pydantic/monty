@@ -1,4 +1,6 @@
-//! Python bindings for the Monty sandboxed Python interpreter.
+#![doc = include_str!("../README.md")]
+
+//! # Rust binding internals
 //!
 //! Execution always happens in `monty` worker subprocesses (via the
 //! `monty-pool` crate): a monty process can never be made fully crash-proof
@@ -21,6 +23,7 @@ mod mount;
 mod pool;
 mod print_target;
 mod snapshot;
+mod version;
 
 use std::sync::OnceLock;
 
@@ -35,20 +38,15 @@ pub use snapshot::{
     MontyComplete, PyAsyncFunctionSnapshot, PyAsyncFutureSnapshot, PyAsyncNameLookupSnapshot, PyFunctionSnapshot,
     PyFutureSnapshot, PyNameLookupSnapshot,
 };
+use version::cargo_version_to_pep440;
 
-/// Copied from `get_pydantic_core_version` in pydantic
+/// The PEP 440 version exposed as `pydantic_monty.__version__`.
+///
+/// Copied from `get_pydantic_core_version` in pydantic.
 fn get_version() -> &'static str {
     static VERSION: OnceLock<String> = OnceLock::new();
 
-    VERSION.get_or_init(|| {
-        let version = env!("CARGO_PKG_VERSION");
-        // cargo uses "1.0-alpha1" etc. while python uses "1.0.0a1", this is not full compatibility,
-        // but it's good enough for now
-        // see https://docs.rs/semver/1.0.9/semver/struct.Version.html#method.parse for rust spec
-        // see https://peps.python.org/pep-0440/ for python spec
-        // it seems the dot after "alpha/beta" e.g. "-alpha.1" is not necessary, hence why this works
-        version.replace("-alpha", "a").replace("-beta", "b")
-    })
+    VERSION.get_or_init(|| cargo_version_to_pep440(env!("CARGO_PKG_VERSION")))
 }
 
 /// Private Python object type used for the public `NOT_HANDLED` singleton.

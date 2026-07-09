@@ -25,11 +25,11 @@ use std::{
 
 use super::PyTrait;
 use crate::{
-    bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
-    defer_drop, defer_drop_vm_mut,
+    bytecode::{CallResult, ContainsVM, RecursionToken, VM},
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::HashValue,
-    heap::{HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropWithContext, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
     resource::ResourceTracker,
     types::{Type, py_trait::LazyHeapSet},
@@ -184,7 +184,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             return Ok(false);
         }
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some((i, a)) = iter.next_with_index(vm)? {
             let b = other.clone_item(i, vm);
             defer_drop!(b, vm);
@@ -201,7 +201,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
 /// Same shape as [`TupleIter`](super::tuple::TupleIter): yields each item by
 /// reference, owns the most-recently-yielded item in a `Value::Undefined`
 /// sentinel slot, and holds a [`RecursionToken`] for its lifetime. MUST be
-/// wrapped in [`defer_drop_vm_mut!`] so the token and the in-flight item are
+/// wrapped in [`defer_drop_mut!`] so the token and the in-flight item are
 /// released on every exit path.
 ///
 /// `NamedTuple` is immutable, so there is no size-change detection — only
@@ -238,7 +238,7 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     /// Rust-side loops cannot bypass the configured timeout.
     pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
-        mem::replace(&mut self.current, Value::Undefined).drop_with_heap(vm.heap);
+        mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
         let items = &self.tuple.get(vm.heap).items;
         if self.index >= items.len() {
@@ -261,10 +261,10 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     }
 }
 
-impl<'h> DropWithVM<'h> for NamedTupleIter<'_, 'h> {
-    fn drop_with_vm(self, container: &mut impl ContainsVM<'h>) {
-        self.current.drop_with_heap(container);
-        self.token.drop_with_vm(container);
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for NamedTupleIter<'_, 'h> {
+    fn drop_with(self, container: &mut C) {
+        self.current.drop_with(container);
+        self.token.drop_with(container);
     }
 }
 
@@ -304,7 +304,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
                     return Ok(Some(false));
                 }
                 let iter = self.iter(vm)?;
-                defer_drop_vm_mut!(iter, vm);
+                defer_drop_mut!(iter, vm);
                 while let Some((i, a)) = iter.next_with_index(vm)? {
                     let b = other.clone_item(i, vm);
                     defer_drop!(b, vm);
@@ -329,7 +329,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
         let mut hasher = DefaultHasher::new();
         let iter = self.iter(vm)?;
-        defer_drop_vm_mut!(iter, vm);
+        defer_drop_mut!(iter, vm);
         while let Some(item) = iter.next(vm)? {
             match item.py_hash(vm)? {
                 Some(h) => h.hash(&mut hasher),
