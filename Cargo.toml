@@ -55,6 +55,7 @@ monty-proto = { path = "crates/monty-proto", version = "0.0.19-beta.2" }
 monty-pool = { path = "crates/monty-pool", version = "0.0.19-beta.2" }
 monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.19-beta.2" }
 monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19-beta.2" }
+monty-worker = { path = "crates/monty-worker", version = "0.0.19-beta.2" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.3"
 ruff_python_stdlib = "0.0.3"
