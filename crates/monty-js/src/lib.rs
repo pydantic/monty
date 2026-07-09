@@ -1,7 +1,8 @@
 // napi macros generate code that triggers some clippy lints
 #![allow(clippy::needless_pass_by_value, clippy::trivially_copy_pass_by_ref)]
+#![doc = include_str!("../README.md")]
 
-//! Node.js/TypeScript bindings for the Monty sandboxed Python interpreter.
+//! # Rust binding internals
 //!
 //! Two execution surfaces share this crate:
 //!

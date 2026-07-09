@@ -189,6 +189,17 @@ subpath (no crash isolation: a sandbox crash is a host crash there).
 
 ### Rust
 
+For running untrusted code from Rust, we recommend the
+[`monty-pool`](https://crates.io/crates/monty-pool) crate rather than the in-process API below.
+`monty-pool` only runs code in `monty` worker subprocesses, which affords extra protections:
+a crash triggered by adversarial code (stack overflow, allocator abort) kills only the worker —
+the pool detects the death and replaces the worker — and a parent-side watchdog can kill workers
+that exceed a hard timeout. It is the same engine the Python and JavaScript packages above are
+built on. See the [monty-pool README](https://github.com/pydantic/monty/tree/main/crates/monty-pool)
+for usage.
+
+The `monty` crate itself provides the in-process interpreter:
+
 ```rust
 use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 

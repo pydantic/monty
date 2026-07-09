@@ -82,7 +82,7 @@ pub enum TurnEvent {
         /// The exception the sandbox would raise if nothing handles this
         /// call; a caller with no handler should resume with
         /// `ResumeValue::Error(not_handled_error)`. `None` only for calls
-        /// re-announced after `Pool::checkout_load`.
+        /// re-announced after [`Checkout::restore`].
         not_handled_error: Option<MontyException>,
     },
     /// The sandbox read an undefined name — answer with
@@ -406,7 +406,7 @@ impl Checkout {
     }
 
     /// Serializes the session (idle or suspended) into opaque bytes that
-    /// [`crate::Pool::checkout_load`] can restore — including into a
+    /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
         let request = pb::ParentRequest {
@@ -485,7 +485,7 @@ impl Checkout {
     /// must not rewind the parent's view of its consumed budget (it can still
     /// under-report, but each turn stays bounded by `budget + grace`). The
     /// budget itself is only adopted when the parent doesn't already know it,
-    /// i.e. after `Pool::checkout_load`.
+    /// i.e. after [`Checkout::restore`].
     fn note_reported_time(&mut self, event: &pb::ChildEvent) {
         self.reported_execution = self
             .reported_execution

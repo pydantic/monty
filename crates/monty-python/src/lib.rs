@@ -1,4 +1,6 @@
-//! Python bindings for the Monty sandboxed Python interpreter.
+#![doc = include_str!("../README.md")]
+
+//! # Rust binding internals
 //!
 //! Execution always happens in `monty` worker subprocesses (via the
 //! `monty-pool` crate): a monty process can never be made fully crash-proof
