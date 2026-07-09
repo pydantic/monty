@@ -2038,19 +2038,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-cli"
-version = "0.0.19-beta.2"
-dependencies = [
- "clap",
- "monty",
- "monty-proto",
- "monty-type-checking",
- "prost",
- "rustyline",
- "tempfile",
-]
-
-[[package]]
 name = "monty-cpython"
 version = "0.0.19-beta.2"
 dependencies = [
@@ -2135,6 +2122,19 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+]
+
+[[package]]
+name = "monty-runtime"
+version = "0.0.19-beta.2"
+dependencies = [
+ "clap",
+ "monty",
+ "monty-proto",
+ "monty-type-checking",
+ "prost",
+ "rustyline",
+ "tempfile",
 ]
 
 [[package]]

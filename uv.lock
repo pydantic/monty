@@ -1388,7 +1388,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "pydantic-monty-runtime", editable = "crates/monty-cli" },
+    { name = "pydantic-monty-runtime", editable = "crates/monty-runtime" },
     { name = "typing-extensions", specifier = ">=4.5" },
 ]
 
@@ -1405,7 +1405,7 @@ dev = [
 
 [[package]]
 name = "pydantic-monty-runtime"
-source = { editable = "crates/monty-cli" }
+source = { editable = "crates/monty-runtime" }
 
 [[package]]
 name = "pyee"

@@ -25,8 +25,8 @@ state cannot be trusted back into the pool.
 ## Usage
 
 Workers are `monty` CLI binaries spawned as subprocesses — build one with
-`cargo build -p monty-cli` in the [Monty repository](https://github.com/pydantic/monty), or
-install it from PyPI as [`pydantic-monty-cli`](https://pypi.org/project/pydantic-monty-cli/).
+`cargo build -p monty-runtime` in the [Monty repository](https://github.com/pydantic/monty), or
+install it from PyPI as [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
 
 ```rust,no_run
 use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};

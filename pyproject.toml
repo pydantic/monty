@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.10"
 
 [tool.uv.workspace]
-members = ["crates/monty-python", "crates/monty-cli"]
+members = ["crates/monty-python", "crates/monty-runtime"]
 
 [dependency-groups]
 dev = [

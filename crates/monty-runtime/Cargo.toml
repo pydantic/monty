@@ -1,5 +1,5 @@
 [package]
-name = "monty-cli"
+name = "monty-runtime"
 readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }

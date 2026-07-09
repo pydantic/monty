@@ -854,7 +854,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
 /// Parse-derived continuation state for interactive REPL input collection.
 ///
-/// `monty-cli` uses this to decide whether to execute the buffered snippet
+/// `monty-runtime` uses this to decide whether to execute the buffered snippet
 /// immediately, keep collecting continuation lines, or require a terminating
 /// blank line for block statements (`if:`, `def:`, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

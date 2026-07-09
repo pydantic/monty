@@ -14,7 +14,7 @@ echo "=== Building package ==="
 npm run build:debug
 
 echo "=== Building the monty binary ==="
-cargo build -p monty-cli --manifest-path "$WORKSPACE_DIR/Cargo.toml"
+cargo build -p monty-runtime --manifest-path "$WORKSPACE_DIR/Cargo.toml"
 
 echo "=== Creating platform package ==="
 rm -rf npm/

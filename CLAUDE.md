@@ -94,7 +94,7 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
-- `monty subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+- `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.

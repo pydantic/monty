@@ -132,8 +132,8 @@ jobs:
       # subprocess protocol + child mode + worker pool. The pool tests spawn a
       # real `monty` binary: build it plainly first (outside the llvm-cov
       # target dir) and point the tests at it explicitly.
-      - run: cargo build -p monty-cli
-      - run: cargo llvm-cov --no-report -p monty-proto -p monty-cli -p monty-pool
+      - run: cargo build -p monty-runtime
+      - run: cargo llvm-cov --no-report -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       # Generating text report:
@@ -188,7 +188,7 @@ jobs:
       # pydantic-monty depends on pydantic-monty-runtime; install it from the
       # workspace so `maturin develop` can resolve it (plain build, outside
       # the llvm-cov env, so the worker binary is not instrumented)
-      - run: uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
+      - run: uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 
       - name: Build and test Python bindings and run pytest with Rust coverage
         run: |
@@ -330,15 +330,15 @@ jobs:
 
       - run: cargo test -p monty --features memory-model-checks
       - run: cargo run -p monty-datatest --features memory-model-checks
-      - run: cargo build -p monty-cli
+      - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)
         if: runner.os != 'Windows'
-        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}/target/debug/monty
       - name: Test subprocess crates (Windows)
         if: runner.os == 'Windows'
-        run: cargo test -p monty-proto -p monty-cli -p monty-pool
+        run: cargo test -p monty-proto -p monty-runtime -p monty-pool
         env:
           MONTY_TEST_BIN: ${{ github.workspace }}\target\debug\monty.exe
 
@@ -483,12 +483,12 @@ jobs:
           command: sdist
           args: --out dist
           rust-toolchain: stable
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-cli-sdist
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -566,7 +566,7 @@ jobs:
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -576,7 +576,7 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}-cli
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
   # PGO-optimized builds for main platforms
   build-pgo:
@@ -637,7 +637,7 @@ jobs:
           args: --release --out dist -i 3.10 3.11 3.12 3.13 3.14
           rust-toolchain: stable
           docker-options: -e CI
-          working-directory: crates/monty-cli
+          working-directory: crates/monty-runtime
         env:
           RUSTFLAGS: '-Cprofile-use=${{ github.workspace }}/merged.profdata'
 
@@ -649,7 +649,7 @@ jobs:
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: pypi_files-${{ matrix.os }}-pgo-cli
-          path: crates/monty-cli/dist
+          path: crates/monty-runtime/dist
 
   # Test wheels on exotic architectures via QEMU
   test-builds-arch:
@@ -897,7 +897,7 @@ jobs:
 
       # the workers the JS client drives
       - name: Build the monty binary
-        run: cargo build -p monty-cli
+        run: cargo build -p monty-runtime
 
       # debug napi build + TypeScript; tests and the smoke test load it
       - name: Build
@@ -973,7 +973,7 @@ jobs:
         working-directory: crates/monty-js
 
       - name: Build the monty binary
-        run: cargo build --release -p monty-cli --target ${{ matrix.settings.target }}
+        run: cargo build --release -p monty-runtime --target ${{ matrix.settings.target }}
 
       - name: Build the napi shared library
         run: npx napi build --platform --release --esm --target ${{ matrix.settings.target }}

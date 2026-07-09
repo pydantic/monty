@@ -49,7 +49,7 @@ jobs:
       # measure parent-side spawn/checkout/wire cost; the uninstrumented worker
       # children are not counted.)
       - name: Build the monty worker binary
-        run: cargo build -p monty-cli --release
+        run: cargo build -p monty-runtime --release
 
       # No `--bench` filter: build and run every monty-bench target (`main` +
       # `pool`). CodSpeed runs all benches built into the package.
