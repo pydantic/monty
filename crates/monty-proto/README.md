@@ -31,6 +31,12 @@ this same protocol.
 - `MONTY_VERSION` — the version both sides compare in the `Configure`
   handshake. The protocol has no in-band negotiation, so parent and child must
   be deployed in lockstep.
+- `python` (cargo feature, off by default) — the `python` module: PyO3-based
+  conversions between live Python objects and `MontyObject`/`MontyException`,
+  shared by the `pydantic-monty` extension module and the `monty-cpython`
+  embedded-CPython worker. The feature pulls in `pyo3` (but never its
+  `extension-module` feature — how libpython is linked stays the top crate's
+  decision), so pure-Rust consumers pay nothing for it.
 
 ## Values are special-cased for performance
 

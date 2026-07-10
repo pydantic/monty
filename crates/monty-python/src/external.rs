@@ -8,17 +8,14 @@
 //! concern: they consult the dataclass instance, not `external_lookup`.
 
 use ::monty::{ExtFunctionResult, MontyObject};
+use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
 use pyo3::{
     exceptions::{PyAttributeError, PyRuntimeError},
     prelude::*,
     types::{PyDict, PyTuple},
 };
 
-use crate::{
-    convert::{monty_to_py, py_to_monty, py_to_monty_value},
-    dataclass::DcRegistry,
-    exceptions::{MontyConversionError, exc_py_to_monty},
-};
+use crate::exceptions::MontyConversionError;
 
 /// Dispatches a dataclass method call back to the original Python object.
 ///

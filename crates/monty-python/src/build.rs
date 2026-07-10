@@ -7,16 +7,13 @@
 //! than leaking raw PyO3 errors.
 
 use ::monty::{ExcType, MontyException, MontyObject};
+use monty_proto::python::{DcRegistry, exc_py_to_monty, py_to_monty_value};
 use pyo3::{
     prelude::*,
     types::{PyDict, PyString},
 };
 
-use crate::{
-    convert::py_to_monty_value,
-    dataclass::DcRegistry,
-    exceptions::{MontyConversionError, MontyError, exc_py_to_monty},
-};
+use crate::exceptions::{MontyConversionError, MontyError};
 
 /// Extracts source code, converting invalid UTF-8 (lone surrogates) into a
 /// `MontySyntaxError` — text that cannot be decoded is not valid Python

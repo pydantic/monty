@@ -34,6 +34,7 @@ use std::{
 
 use ::monty::{ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
+use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
@@ -46,9 +47,7 @@ use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
-    convert::{monty_to_py, py_to_monty_value},
-    dataclass::DcRegistry,
-    exceptions::{MontyError, exc_py_to_monty},
+    exceptions::MontyError,
     external::{CallResult, ExternalLookup},
     pool::{
         FeedArgs, SharedCheckout, discard_checkout, discard_checkout_async, dispatch_os_parts, ext_to_resume,

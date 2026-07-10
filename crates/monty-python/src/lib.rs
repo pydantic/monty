@@ -11,11 +11,6 @@
 
 mod async_dispatch;
 mod build;
-// The Python ↔ MontyObject value-conversion layer. Declared `pub` so the
-// `monty-cpython` child worker can link these conversions (it embeds CPython
-// and speaks the same value model) without duplicating them.
-pub mod convert;
-pub mod dataclass;
 pub mod exceptions;
 mod external;
 mod limits;
@@ -79,6 +74,12 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
 /// Monty - A sandboxed Python interpreter written in Rust.
 #[pymodule]
 mod _monty {
+    // `MontyFileHandle` is produced by the value-conversion layer (in
+    // `monty_proto`, shared with the `monty-cpython` worker) whenever a
+    // `MontyObject::FileHandle` crosses the boundary; export it as part of the
+    // `pydantic_monty` surface.
+    #[pymodule_export]
+    use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     use pyo3::prelude::*;
 
     #[pymodule_export]
@@ -126,11 +127,6 @@ mod _monty {
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
     use super::{get_not_handled, get_version};
-    // `MontyFileHandle` is produced by the value-conversion layer whenever a
-    // `MontyObject::FileHandle` crosses the boundary; export it as part of the
-    // `pydantic_monty` surface.
-    #[pymodule_export]
-    use crate::convert::PyMontyFileHandle as MontyFileHandle;
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {

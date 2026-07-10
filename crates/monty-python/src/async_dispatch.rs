@@ -6,15 +6,13 @@
 //! worker.
 
 use ::monty::{ExtFunctionResult, MontyObject};
+use monty_proto::python::DcRegistry;
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::tokio::into_future;
 use tokio::task::{JoinError, JoinSet};
 
-use crate::{
-    dataclass::DcRegistry,
-    external::{
-        CallResult, ExternalLookup, dispatch_method_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
-    },
+use crate::external::{
+    CallResult, ExternalLookup, dispatch_method_call_or_coroutine, py_err_to_ext_result, py_obj_to_ext_result,
 };
 
 /// Dispatches a function call to a dataclass method or external function,

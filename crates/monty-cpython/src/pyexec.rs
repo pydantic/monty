@@ -20,14 +20,12 @@ use std::{
     ffi::CStr,
 };
 
-use _monty::{
-    convert::{monty_to_py, py_to_monty_value},
-    dataclass::DcRegistry,
-    exceptions::exc_monty_to_py,
-};
 use ahash::AHashMap;
 use monty::{ExtFunctionResult, MontyObject, NameLookupResult};
-use monty_proto::{exceeds_max_value_depth, pb};
+use monty_proto::{
+    exceeds_max_value_depth, pb,
+    python::{DcRegistry, exc_monty_to_py, monty_to_py, py_to_monty_value},
+};
 use pyo3::{
     exceptions::{PyKeyError, PyNameError, PyRuntimeError, PyValueError},
     prelude::*,

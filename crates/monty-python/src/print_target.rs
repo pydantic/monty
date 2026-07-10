@@ -17,6 +17,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use monty::{MontyException, PrintStream};
+use monty_proto::python::exc_py_to_monty;
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,
@@ -24,8 +25,6 @@ use pyo3::{
     prelude::*,
     types::{PyList, PyString},
 };
-
-use crate::exceptions::exc_py_to_monty;
 
 /// Shared buffer for the `CollectStreams` mode.
 ///

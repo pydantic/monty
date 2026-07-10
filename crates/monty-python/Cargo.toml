@@ -16,19 +16,13 @@ repository = { workspace = true }
 
 [lib]
 name = "_monty"
-# cdylib: the `_monty` Python extension module (the actual deliverable).
-# rlib: added only so `monty-cpython` can `use _monty::{convert, dataclass,
-# exceptions}` — a `cdylib`-only crate can't be a Rust dependency. This is a
-# backwards coupling: the lean embedded-CPython child wants just those three
-# value-conversion modules but ends up linking all of `_monty` (and so transitively
-# `monty-pool`/`tokio`/`pyo3-async-runtimes`, which it never uses). The clean fix is
-# to split the conversion layer into its own leaf crate both can depend on; the rlib
-# is the deliberate diff-minimal shortcut until then.
-crate-type = ["cdylib", "rlib"]
+# The `_monty` Python extension module (the actual deliverable).
+crate-type = ["cdylib"]
 
 [dependencies]
 ahash = { workspace = true }
 monty-pool = { workspace = true }
+monty-proto = { workspace = true, features = ["python"] }
 monty = { workspace = true }
 pyo3 = { version = "0.28", features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }

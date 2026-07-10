@@ -195,8 +195,9 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
   (see the security note above).
 - **`print()`**: both `sys.stdout` and `sys.stderr` are streamed to the parent
   as `Print` events, each tagged with its stream (`Stdout` / `Stderr`).
-- **Values**: the Python ↔ wire value model is `pydantic_monty`'s shared
-  conversion layer, so the supported types and their divergences (e.g.
-  dataclasses do not round-trip to their original type) match `pydantic_monty`.
+- **Values**: the Python ↔ wire value model is the shared conversion layer in
+  `monty-proto` (its `python` feature, also used by `pydantic_monty`), so the
+  supported types and their divergences (e.g. dataclasses do not round-trip to
+  their original type) match `pydantic_monty`.
 - **REPL semantics**: a trailing expression becomes the `Complete` value; a
   snippet ending in a statement completes with `None`.

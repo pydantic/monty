@@ -2045,7 +2045,6 @@ dependencies = [
  "clap",
  "monty",
  "monty-proto",
- "pydantic-monty",
  "pyo3",
  "pyo3-build-config",
  "regex",
@@ -2122,6 +2121,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protox",
+ "pyo3",
 ]
 
 [[package]]
@@ -2738,6 +2738,7 @@ dependencies = [
  "ahash",
  "monty",
  "monty-pool",
+ "monty-proto",
  "num-bigint",
  "pyo3",
  "pyo3-async-runtimes",

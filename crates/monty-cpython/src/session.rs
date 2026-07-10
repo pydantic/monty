@@ -12,13 +12,12 @@
 
 use std::process::ExitCode;
 
-use _monty::{
-    convert::{monty_to_py, py_to_monty_value},
-    dataclass::DcRegistry,
-    exceptions::exc_py_to_monty,
-};
 use monty::ExcType;
-use monty_proto::{MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{
+    MONTY_VERSION, exceeds_max_value_depth, pb,
+    python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value},
+    validate_requirement,
+};
 use pyo3::prelude::*;
 
 use crate::{

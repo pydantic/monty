@@ -10,7 +10,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use ::monty::{DictPairs, MontyObject};
+use monty::{DictPairs, MontyObject};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyTypeError},
@@ -20,7 +20,7 @@ use pyo3::{
     types::{PyDict, PyList, PyString, PyType},
 };
 
-use crate::convert::{monty_to_py_inner, py_to_monty};
+use super::convert::{monty_to_py_inner, py_to_monty};
 
 /// Checks if a Python object is a dataclass instance (not a type).
 ///
@@ -254,8 +254,10 @@ impl PyUnknownDataclass {
                 py.None().into_bound(py).get_type().into_any()
             };
 
-            // Create a Field object with the required attributes
-            let field_obj = if cfg!(Py_3_14) {
+            // Create a Field object with the required attributes.
+            // Runtime version check (not `cfg!(Py_3_14)`): this crate has no
+            // pyo3-build-config build script, so the version cfgs don't exist.
+            let field_obj = if py.version_info() >= (3, 14) {
                 // Field(default, default_factory, init, repr, hash, compare, metadata, kw_only, doc)
                 // doc is now in 3.14
                 // https://github.com/python/cpython/blob/3.14/Lib/dataclasses.py#L294
@@ -301,7 +303,8 @@ impl PyUnknownDataclass {
     #[getter]
     fn __dataclass_params__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let params_class = get_dataclass_params_class(py)?;
-        let params = if cfg!(Py_3_12) {
+        // Runtime version check — see `__dataclass_fields__` for why not `cfg!`.
+        let params = if py.version_info() >= (3, 12) {
             // https://github.com/python/cpython/blob/3.12/Lib/dataclasses.py#L373
             // _DataclassParams(init, repr, eq, order, unsafe_hash, frozen, match_args, kw_only, slots, weakref_slot)
             params_class.call1((

@@ -18,9 +18,8 @@ use std::{
 };
 
 use monty::fs::{Mount, MountMode};
+use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*};
-
-use crate::exceptions::exc_monty_to_py;
 
 /// Shared storage for a [`Mount`] that can be temporarily taken for execution.
 pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;

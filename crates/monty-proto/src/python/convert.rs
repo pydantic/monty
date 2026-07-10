@@ -3,10 +3,10 @@
 
 use std::borrow::Cow;
 
-use ::monty::{
-    FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+use monty::{
+    FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
+    MontyType, StringRepr,
 };
-use monty::{MontyException, StringRepr};
 use num_bigint::BigInt;
 use pyo3::{
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError, PyValueError},
@@ -19,17 +19,18 @@ use pyo3::{
     },
 };
 
-use crate::{
+use super::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_py_to_monty, exc_to_monty_object},
 };
+use crate::MAX_VALUE_DEPTH;
 
 /// Depth limit for converting host values INTO the sandbox: values must fit
-/// the wire protocol, whose decoder caps nesting (see
-/// `monty_proto::MAX_VALUE_DEPTH`) — checking here gives the caller a clean
-/// `Max input depth exceeded` error before anything is sent to a worker.
+/// the wire protocol, whose decoder caps nesting (see [`MAX_VALUE_DEPTH`]) —
+/// checking here gives the caller a clean `Max input depth exceeded` error
+/// before anything is sent to a worker.
 #[expect(clippy::cast_possible_truncation, reason = "MAX_VALUE_DEPTH is 48")]
-const MAX_INPUT_DEPTH: u8 = monty_pool::MAX_VALUE_DEPTH as u8;
+const MAX_INPUT_DEPTH: u8 = MAX_VALUE_DEPTH as u8;
 /// Depth limit when converting sandbox values back to Python objects; values
 /// arriving over the wire are already bounded well below this, so it is a
 /// pure defence-in-depth backstop.
