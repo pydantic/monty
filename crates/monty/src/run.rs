@@ -23,10 +23,10 @@ use crate::{
 
 /// Options controlling how Monty behavior diverges from plain CPython.
 ///
-/// Consumed when code is loaded — the choices are baked into the resulting
-/// program, so nothing here needs to be serialized alongside a dumped
-/// [`MontyRun`].
-#[derive(Debug, Clone, Copy)]
+/// Consumed when code is compiled: a [`MontyRun`] bakes the choices into the
+/// program at construction, while a `MontyRepl` stores them so every snippet
+/// fed to the session compiles the same way.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct CompileOptions {
     /// Give failed `assert` statements pytest-style introspected messages
     /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
@@ -309,6 +309,7 @@ impl Executor {
         mut existing_globals: NameMap,
         existing_interns: &Interns,
         input_names: &[String],
+        options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
@@ -337,13 +338,12 @@ impl Executor {
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        // REPL surfaces always compile with default options (assert messages on).
         let compile_result = Compiler::compile_module_with_functions(
             &prepared.nodes,
             &interns,
             &prepared.globals,
             existing_functions,
-            CompileOptions::default(),
+            options,
         )
         .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);

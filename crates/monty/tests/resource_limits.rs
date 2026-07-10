@@ -1539,7 +1539,7 @@ fn suspension_time_does_not_count_toward_max_duration() {
 #[test]
 fn call_function_enforces_max_duration() {
     let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
-    let mut repl = MontyRepl::new("test.py", LimitedTracker::new(limits));
+    let mut repl = MontyRepl::new("test.py", LimitedTracker::new(limits), CompileOptions::default());
     repl.feed_run(
         "def spin():\n    while True:\n        pass",
         vec![],

@@ -185,7 +185,7 @@ fn callable_export_stable_across_source_mention() {
 /// unit-input tests above cannot reach.
 #[test]
 fn repl_cross_representation_extfunction_identity() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker);
+    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
 
     // Feed 1: `x = foobar` triggers NameLookup for "foobar"; host returns a
     // `Function` whose `__name__` ("ext_fn") does not appear in feed 1's

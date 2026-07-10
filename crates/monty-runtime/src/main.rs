@@ -381,7 +381,7 @@ fn run_repl(
     tracker: impl ResourceTracker,
     mut mount_table: Option<MountTable>,
 ) -> ExitCode {
-    let mut repl = Some(MontyRepl::new(file_path, tracker));
+    let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
 
     if !code.is_empty() {
         execute_repl_snippet(&mut repl, code, &mut mount_table);

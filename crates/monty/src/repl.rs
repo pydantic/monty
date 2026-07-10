@@ -26,7 +26,7 @@ use crate::{
     object::MontyObject,
     os::OsFunctionCall,
     resource::ResourceTracker,
-    run::Executor,
+    run::{CompileOptions, Executor},
     run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
     value::Value,
 };
@@ -60,6 +60,10 @@ pub struct MontyRepl<T: ResourceTracker> {
     /// the current snippet's `Executor.code` is not sufficient.
     #[serde(default)]
     sources: AHashMap<String, String>,
+    /// [`CompileOptions`] applied to every snippet fed to this session, fixed
+    /// at construction so all snippets compile consistently.
+    #[serde(default)]
+    options: CompileOptions,
     /// Persistent heap across snippets.
     heap: Heap<T>,
     /// Persistent global variable values across snippets.
@@ -75,8 +79,9 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// All code execution is driven through `feed_run()` or `feed_start()`. This separates
     /// construction from execution, matching the pattern used by `MontyRun::new()`.
+    /// The [`CompileOptions`] apply to every snippet fed to the session.
     #[must_use]
-    pub fn new(script_name: &str, resource_tracker: T) -> Self {
+    pub fn new(script_name: &str, resource_tracker: T, options: CompileOptions) -> Self {
         let heap = Heap::new(0, resource_tracker);
 
         Self {
@@ -85,6 +90,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             global_names: NameMap::new(),
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
             sources: AHashMap::new(),
+            options,
             heap,
             globals: Vec::new(),
         }
@@ -148,6 +154,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             this.global_names.clone(),
             &this.interns,
             &input_names,
+            this.options,
         ) {
             Ok(exec) => exec,
             Err(error) => return Err(Box::new(ReplStartError { repl: this, error })),
@@ -220,6 +227,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
             self.global_names.clone(),
             &self.interns,
             &input_names,
+            self.options,
         )?;
 
         self.ensure_globals_size(executor.namespace_size());

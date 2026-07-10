@@ -254,13 +254,25 @@ fn opt_out_restores_cpython_behavior() {
 
 #[test]
 fn assert_inside_repl_gets_messages() {
-    // The REPL surface (which backs the subprocess workers and thus the
-    // Python/JS packages) always compiles with assert messages on.
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
+    // The subprocess workers (and thus the Python/JS packages) construct their
+    // REPL with default options, so asserts fed to a session get messages.
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)
         .expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), Some("assert 3 == 4"));
+}
+
+#[test]
+fn repl_opt_out_applies_to_every_snippet() {
+    let options = CompileOptions { assert_messages: false };
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
+    let err = repl
+        .feed_run("assert x == 4", vec![], PrintWriter::Stdout)
+        .expect_err("assert should fail");
+    assert_eq!(err.exc_type(), ExcType::AssertionError);
+    assert_eq!(err.message(), None);
 }
