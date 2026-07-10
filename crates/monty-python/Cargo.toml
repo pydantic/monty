@@ -24,13 +24,13 @@ ahash = { workspace = true }
 monty-pool = { workspace = true }
 monty-proto = { workspace = true, features = ["python"] }
 monty = { workspace = true }
-pyo3 = { version = "0.28", features = ["indexmap", "generate-import-lib", "num-bigint"] }
+pyo3 = { workspace = true, features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 tokio = { version = "1", features = ["rt", "sync"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+pyo3-build-config = { workspace = true }
 
 [features]
 # make extensions visible to cargo vendor

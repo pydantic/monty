@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
 monty-pool = { workspace = true }
-pyo3 = { version = "0.28", features = ["auto-initialize"] }
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 codspeed-criterion-compat = "4.2.1"
 criterion = "0.5"
 
@@ -19,7 +19,7 @@ criterion = "0.5"
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 
 [build-dependencies]
-pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+pyo3-build-config = { workspace = true }
 
 [[bench]]
 name = "main"

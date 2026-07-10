@@ -90,6 +90,13 @@ unicode-normalization = "0.1"
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
 num-integer = "0.1"
+# PyO3: one workspace pin so `pyo3` and `pyo3-build-config` (whose versions
+# must match) are always bumped together. The `pyo3` entry stays feature-free —
+# workspace-dep features are additive, and each crate needs a different set
+# (`auto-initialize` embeds CPython, `generate-import-lib`/`num-bigint`/... for
+# the extension module and conversion layers).
+pyo3 = "0.28"
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 # others
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
