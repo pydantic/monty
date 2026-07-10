@@ -3,14 +3,20 @@
 use super::VM;
 use crate::{
     builtins::Builtins,
+    bytecode::op::AssertCmpOp,
     defer_drop,
-    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
+    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
 };
+
+/// Max chars of a single operand's repr in an assert failure message —
+/// keeps `assert huge_list == other` messages readable while still showing
+/// enough of each value to diagnose the failure.
+const MAX_ASSERT_REPR_CHARS: usize = 120;
 
 impl<T: ResourceTracker> VM<'_, T> {
     /// Returns the current frame's name for traceback generation: the
@@ -107,6 +113,90 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         RunError::Exc(ExceptionRaise {
             exc: simple_exc,
+            frame: Some(frame),
+            hide_caret: false,
+        })
+    }
+
+    /// Builds the `AssertionError` for a failed bare `assert` (no explicit message),
+    /// popping the operands named by `cmp_op` (see [`assert_detail`](Self::assert_detail)).
+    ///
+    /// If formatting raises a catchable exception (user `__repr__` raised, recursion),
+    /// falls back to a message-less `AssertionError` — the repr is best-effort detail
+    /// and must never replace the assertion failure itself. Terminal errors
+    /// (`Internal`, resource exhaustion) propagate instead.
+    pub(super) fn assert_failed(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {
+        match self.assert_detail(cmp_op) {
+            Ok(detail) => self.assertion_error(Some(format!("assert {detail}"))),
+            Err(RunError::Exc(_)) => self.assertion_error(None),
+            Err(e) => e,
+        }
+    }
+
+    /// Builds the `AssertionError` for a failed `assert test, msg`: the explicit
+    /// message on the first line with the introspected detail appended on a new
+    /// line, e.g. `my msg\nassert 2 == 5`.
+    ///
+    /// Stack: [..., operands..., msg]. Same fallback policy as
+    /// [`assert_failed`](Self::assert_failed) — whichever of message/detail
+    /// formats successfully is used, so a failing operand `__repr__` still
+    /// surfaces the user's message (and vice versa).
+    pub(super) fn assert_failed_msg(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {
+        let this = self;
+        let msg_value = this.pop();
+        defer_drop!(msg_value, this);
+        // Format the operands first so they are popped and released even if
+        // the message itself fails to stringify.
+        let detail = match this.assert_detail(cmp_op) {
+            Ok(detail) => Some(detail),
+            Err(RunError::Exc(_)) => None,
+            Err(e) => return e,
+        };
+        let msg = match assert_msg_str(msg_value, this) {
+            Ok(msg) => Some(msg),
+            Err(RunError::Exc(_)) => None,
+            Err(e) => return e,
+        };
+        let full = match (msg, detail) {
+            (Some(msg), Some(detail)) => Some(format!("{msg}\nassert {detail}")),
+            (Some(msg), None) => Some(msg),
+            (None, Some(detail)) => Some(format!("assert {detail}")),
+            (None, None) => None,
+        };
+        this.assertion_error(full)
+    }
+
+    /// Pops and reprs the failed assert's operands: `{lhs!r} {op} {rhs!r}` for a
+    /// comparison assert (`Some(cmp_op)`, stack `[..., lhs, rhs]`), or the falsy
+    /// test value's repr otherwise (stack `[..., test]`).
+    ///
+    /// The operands are dropped on every path — including a mid-format `Err` —
+    /// via `defer_drop!` guards.
+    fn assert_detail(&mut self, cmp_op: Option<AssertCmpOp>) -> RunResult<String> {
+        let this = self;
+        if let Some(op) = cmp_op {
+            let rhs = this.pop();
+            defer_drop!(rhs, this);
+            let lhs = this.pop();
+            defer_drop!(lhs, this);
+            let lhs_repr = assert_operand_repr(lhs, this)?;
+            let rhs_repr = assert_operand_repr(rhs, this)?;
+            Ok(format!("{lhs_repr} {} {rhs_repr}", op.symbol()))
+        } else {
+            let test = this.pop();
+            defer_drop!(test, this);
+            assert_operand_repr(test, this)
+        }
+    }
+
+    /// `AssertionError` carrying `msg` as its arg, raised at the current position
+    /// with the caret hidden — mirrors the `is_raise=true` path of
+    /// [`make_exception`](Self::make_exception) so tracebacks render identically
+    /// to a plain `assert` raise.
+    fn assertion_error(&self, msg: Option<String>) -> RunError {
+        let frame = RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name());
+        RunError::Exc(ExceptionRaise {
+            exc: SimpleException::new(ExcType::AssertionError, msg),
             frame: Some(frame),
             hide_caret: false,
         })
@@ -357,5 +447,32 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// exception that is a subclass of the handler's class.
     fn exc_matches_handler(exc_type_enum: Type, handler_type: ExcType) -> bool {
         matches!(exc_type_enum, Type::Exception(et) if et.is_subclass_of(handler_type))
+    }
+}
+
+/// `repr()` of an assert operand for the failure message, char-truncated to
+/// [`MAX_ASSERT_REPR_CHARS`] with a `...` suffix so pathological operands
+/// (huge collections, long strings) keep the message readable.
+fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    let repr_value = value.py_repr(vm)?;
+    defer_drop!(repr_value, vm);
+    let repr = repr_value.to_str(vm)?;
+    Ok(truncate_chars(repr))
+}
+
+/// `str()` of an explicit assert message, matching how the message renders in
+/// `AssertionError: {msg}` — not truncated, since the user chose it explicitly.
+fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    let str_value = value.py_str(vm)?;
+    defer_drop!(str_value, vm);
+    Ok(str_value.to_str(vm)?.to_owned())
+}
+
+/// Truncates `s` to at most [`MAX_ASSERT_REPR_CHARS`] chars (not bytes, so the
+/// cut is always on a char boundary), appending `...` when truncated.
+fn truncate_chars(s: &str) -> String {
+    match s.char_indices().nth(MAX_ASSERT_REPR_CHARS) {
+        Some((idx, _)) => format!("{}...", &s[..idx]),
+        None => s.to_owned(),
     }
 }

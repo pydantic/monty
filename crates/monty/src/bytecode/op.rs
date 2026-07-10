@@ -519,6 +519,94 @@ pub enum Opcode {
     /// available — we synthesise the equivalent by peeking the receiver.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     MethodDictMerge,
+
+    // === Assert failure messages ===
+    // Pytest-style introspected messages for failing `assert` statements — a
+    // deliberate CPython divergence (see limitations/assert.md), disabled via
+    // `CompileOptions::assert_messages` for the CPython-parity test harness.
+    /// Raise `AssertionError('assert {test!r}')` for a failed bare `assert test`.
+    ///
+    /// Stack: [..., test] -> (raises)
+    /// Pops the falsy test value and formats its repr into the message. Always
+    /// raises — fall-through is dead code, like `Raise`.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    AssertFailed,
+    /// Raise `AssertionError('assert {lhs!r} {op} {rhs!r}')` for a failed bare
+    /// `assert lhs OP rhs`. Operand: u8 [`AssertCmpOp`] discriminant (via `FromRepr`).
+    ///
+    /// Stack: [..., lhs, rhs] -> (raises)
+    /// The compiler keeps the original operands alive under a `Dup2` + compare
+    /// so this opcode can show the actual values. Always raises.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    AssertFailedCmp,
+    /// Raise `AssertionError('{msg}\nassert {test!r}')` for a failed
+    /// `assert test, msg` — the explicit message with the introspected detail
+    /// appended on a new line.
+    ///
+    /// Stack: [..., test, msg] -> (raises)
+    /// The msg expression is only evaluated on the failure path, matching
+    /// CPython's lazy evaluation. Always raises.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    AssertFailedMsg,
+    /// Raise `AssertionError('{msg}\nassert {lhs!r} {op} {rhs!r}')` for a failed
+    /// `assert lhs OP rhs, msg`. Operand: u8 [`AssertCmpOp`] discriminant.
+    ///
+    /// Stack: [..., lhs, rhs, msg] -> (raises)
+    /// Combines [`Opcode::AssertFailedCmp`] introspection with the explicit
+    /// message on the first line. Always raises.
+    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    AssertFailedCmpMsg,
+}
+
+/// Comparison operator carried as the u8 operand of [`Opcode::AssertFailedCmp`] /
+/// [`Opcode::AssertFailedCmpMsg`].
+///
+/// A dedicated enum (rather than reusing `CmpOperator`) because the operand is
+/// part of the serialized `Code` format and needs a stable u8 repr —
+/// `CmpOperator` carries a data-bearing `ModEq(i64)` variant and has no such
+/// repr. Append new variants at the end to keep serialized bytes stable.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
+pub enum AssertCmpOp {
+    /// `==`
+    Eq,
+    /// `!=`
+    NotEq,
+    /// `<`
+    Lt,
+    /// `<=`
+    LtE,
+    /// `>`
+    Gt,
+    /// `>=`
+    GtE,
+    /// `is`
+    Is,
+    /// `is not`
+    IsNot,
+    /// `in`
+    In,
+    /// `not in`
+    NotIn,
+}
+
+impl AssertCmpOp {
+    /// Source-level symbol used in the failure message, e.g. `"=="`, `"not in"`.
+    #[must_use]
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Eq => "==",
+            Self::NotEq => "!=",
+            Self::Lt => "<",
+            Self::LtE => "<=",
+            Self::Gt => ">",
+            Self::GtE => ">=",
+            Self::Is => "is",
+            Self::IsNot => "is not",
+            Self::In => "in",
+            Self::NotIn => "not in",
+        }
+    }
 }
 
 impl TryFrom<u8> for Opcode {
@@ -733,6 +821,12 @@ impl Opcode {
             // code, but the tracker absorbs the bytes with effect 0 before the
             // following region starts.
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
+            // Assert-failure raisers pop their message operands then raise —
+            // fall-through is dead code, like `RaiseUnboundLocal`.
+            (AssertFailed, Operand::None) => -1,
+            (AssertFailedMsg, Operand::None) => -2,
+            (AssertFailedCmp, Operand::U8(_)) => -2,
+            (AssertFailedCmpMsg, Operand::U8(_)) => -3,
 
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
@@ -801,7 +895,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::MethodDictMerge as u8 {
+        for byte in 0..=Opcode::AssertFailedCmpMsg as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -828,12 +922,17 @@ mod tests {
         // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
         // tail so older opcode bytes keep their discriminants.
         assert_eq!(Opcode::MethodDictMerge as u8, 118);
+        // Assert-failure message opcodes (pytest-style introspection).
+        assert_eq!(Opcode::AssertFailed as u8, 119);
+        assert_eq!(Opcode::AssertFailedCmp as u8, 120);
+        assert_eq!(Opcode::AssertFailedMsg as u8, 121);
+        assert_eq!(Opcode::AssertFailedCmpMsg as u8, 122);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::MethodDictMerge as u8 + 1);
+        let result = Opcode::try_from(Opcode::AssertFailedCmpMsg as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

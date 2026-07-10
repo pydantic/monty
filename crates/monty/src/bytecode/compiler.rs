@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
+    op::{AssertCmpOp, FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -224,6 +224,25 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
 /// When a `PreparedFunctionDef` is encountered, its body is compiled first,
 /// creating a `Function` struct that is added to the vector. The index of the
 /// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
+/// Compile-time options for Monty's bytecode compiler.
+///
+/// Consumed entirely at compile time — the choices are baked into the emitted
+/// bytecode, so nothing here needs to be serialized alongside `Code`.
+#[derive(Debug, Clone, Copy)]
+pub struct CompileOptions {
+    /// Emit pytest-style failure messages for `assert` statements
+    /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
+    /// CPython's empty `AssertionError`; see `limitations/assert.md`.
+    /// Defaults to `true`; the CPython-parity test harness disables it.
+    pub assert_messages: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self { assert_messages: true }
+    }
+}
+
 pub struct Compiler<'a> {
     /// Current code being built.
     code: CodeBuilder,
@@ -297,6 +316,12 @@ pub struct Compiler<'a> {
     /// `RaiseUnboundLocal(name_id)`. The same comprehension's slots are
     /// removed at `exit_comprehension`, so sibling comps start fresh.
     bound_comp_slots: AHashSet<u16>,
+
+    /// [`CompileOptions::assert_messages`]: emit pytest-style introspected
+    /// failure messages for `assert` statements. Threaded into nested
+    /// function/class-body compilers so `assert` behaves identically at
+    /// every scope.
+    assert_messages: bool,
 }
 
 /// Information about a loop for break/continue handling.
@@ -393,7 +418,13 @@ impl<'a> Compiler<'a> {
     /// load/store opcodes encode `frame_locals + offset` as their slot
     /// operand so plain `LoadLocal/W` and `StoreLocal/W` reach the correct
     /// operand-stack position at runtime.
-    fn new(interns: &'a Interns, functions: Vec<Function>, is_module_scope: bool, frame_locals: u16) -> Self {
+    fn new(
+        interns: &'a Interns,
+        functions: Vec<Function>,
+        is_module_scope: bool,
+        frame_locals: u16,
+        assert_messages: bool,
+    ) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
@@ -407,6 +438,7 @@ impl<'a> Compiler<'a> {
             frame_locals,
             slot_offsets: Vec::new(),
             bound_comp_slots: AHashSet::new(),
+            assert_messages,
         }
     }
 
@@ -419,8 +451,9 @@ impl<'a> Compiler<'a> {
         nodes: &[PreparedNode],
         interns: &Interns,
         globals: &NameMap,
+        options: CompileOptions,
     ) -> Result<CompileResult, CompileError> {
-        Self::compile_module_with_functions(nodes, interns, globals, Vec::new())
+        Self::compile_module_with_functions(nodes, interns, globals, Vec::new(), options)
     }
 
     /// Compiles module-level code while preserving an existing function table prefix.
@@ -433,12 +466,13 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         globals: &NameMap,
         existing_functions: Vec<Function>,
+        options: CompileOptions,
     ) -> Result<CompileResult, CompileError> {
         let num_locals = check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(interns, existing_functions, true, 0);
+        let mut compiler = Compiler::new(interns, existing_functions, true, 0, options.assert_messages);
 
         // All globals are "local names" in the module
         for (slot, name_id) in globals.iter() {
@@ -470,11 +504,12 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
+        assert_messages: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_messages);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -709,8 +744,9 @@ impl<'a> Compiler<'a> {
     /// namespace-size error message. Net stack effect is `+1`: even when free
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
+        let assert_messages = self.assert_messages;
         self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
-            Self::compile_function_body(&func_def.body, interns, functions, namespace_size)
+            Self::compile_function_body(&func_def.body, interns, functions, namespace_size, assert_messages)
         })
     }
 
@@ -835,6 +871,7 @@ impl<'a> Compiler<'a> {
         class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
+        let assert_messages = self.assert_messages;
         self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -844,6 +881,7 @@ impl<'a> Compiler<'a> {
                 interns,
                 functions,
                 namespace_size,
+                assert_messages,
             )
         })
     }
@@ -860,6 +898,7 @@ impl<'a> Compiler<'a> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
@@ -868,8 +907,9 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
+        assert_messages: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_messages);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -3167,6 +3207,12 @@ impl<'a> Compiler<'a> {
 
     /// Compiles an assert statement.
     fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
+        if self.assert_messages {
+            return self.compile_assert_with_message(test, msg);
+        }
+        // CPython-parity path (`CompileOptions::assert_messages` off): raise a
+        // plain `AssertionError` / `AssertionError(msg)` with no introspection.
+
         // Compile test
         self.compile_expr(test)?;
         // Jump over raise if truthy
@@ -3189,6 +3235,61 @@ impl<'a> Compiler<'a> {
 
         self.code.emit(Opcode::Raise)?;
         self.code.patch_jump(skip_jump)?;
+        Ok(())
+    }
+
+    /// Compiles an assert statement with pytest-style failure introspection —
+    /// a deliberate CPython divergence (see `limitations/assert.md`).
+    ///
+    /// A top-level binary comparison keeps both operands alive under a `Dup2`
+    /// so the failure message can show the actual values
+    /// (`AssertionError: assert 2 == 5`); any other test shows the falsy
+    /// value's repr. An explicit `assert test, msg` message is compiled on the
+    /// failure path only (matching CPython's lazy evaluation) and rendered on
+    /// the first line with the detail appended: `msg\nassert 2 == 5`.
+    fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
+        // `x % n == k` is fused into `CmpOp { op: ModEq(k) }` by the prepare
+        // phase; `assert_cmp_op` returns `None` for it, routing such asserts
+        // to the generic falsy-value path rather than showing wrong operands.
+        if let Expr::CmpOp { left, op, right } = &test.expr
+            && let Some(assert_op) = assert_cmp_op(op)
+        {
+            self.compile_expr(left)?;
+            self.compile_expr(right)?;
+            // The caret/traceback range covers the whole comparison.
+            self.code.set_location(test.position, None);
+            self.code.emit(Opcode::Dup2)?;
+            self.code.emit(cmp_operator_to_opcode(op))?;
+            let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
+            // Failure: [lhs, rhs] retained for the message.
+            if let Some(msg_expr) = msg {
+                self.compile_expr(msg_expr)?;
+                self.code.set_location(test.position, None);
+                self.code.emit_u8(Opcode::AssertFailedCmpMsg, assert_op as u8)?;
+            } else {
+                self.code.emit_u8(Opcode::AssertFailedCmp, assert_op as u8)?;
+            }
+            // Success: drop the retained operands.
+            self.code.patch_jump(pass)?;
+            self.code.emit(Opcode::Pop)?;
+            self.code.emit(Opcode::Pop)?;
+        } else {
+            self.compile_expr(test)?;
+            self.code.set_location(test.position, None);
+            // Truthy: pop the test and skip the raise; falsy: jump KEEPING the
+            // test value on the stack for the failure message.
+            let fail = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
+            let end = self.code.emit_jump(Opcode::Jump)?;
+            self.code.patch_jump(fail)?;
+            if let Some(msg_expr) = msg {
+                self.compile_expr(msg_expr)?;
+                self.code.set_location(test.position, None);
+                self.code.emit(Opcode::AssertFailedMsg)?;
+            } else {
+                self.code.emit(Opcode::AssertFailed)?;
+            }
+            self.code.patch_jump(end)?;
+        }
         Ok(())
     }
 
@@ -4007,6 +4108,26 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::IsNot => Opcode::CompareIsNot,
         CmpOperator::In => Opcode::CompareIn,
         CmpOperator::NotIn => Opcode::CompareNotIn,
+    }
+}
+
+/// Maps a comparison operator to the [`AssertCmpOp`] operand of
+/// `AssertFailedCmp`/`AssertFailedCmpMsg`, or `None` for `ModEq` — the fused
+/// `x % n == k` form has no meaningful lhs/rhs to show, so such asserts take
+/// the generic falsy-value message path.
+fn assert_cmp_op(op: &CmpOperator) -> Option<AssertCmpOp> {
+    match op {
+        CmpOperator::Eq => Some(AssertCmpOp::Eq),
+        CmpOperator::NotEq => Some(AssertCmpOp::NotEq),
+        CmpOperator::Lt => Some(AssertCmpOp::Lt),
+        CmpOperator::LtE => Some(AssertCmpOp::LtE),
+        CmpOperator::Gt => Some(AssertCmpOp::Gt),
+        CmpOperator::GtE => Some(AssertCmpOp::GtE),
+        CmpOperator::Is => Some(AssertCmpOp::Is),
+        CmpOperator::IsNot => Some(AssertCmpOp::IsNot),
+        CmpOperator::In => Some(AssertCmpOp::In),
+        CmpOperator::NotIn => Some(AssertCmpOp::NotIn),
+        CmpOperator::ModEq(_) => None,
     }
 }
 

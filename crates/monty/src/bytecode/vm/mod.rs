@@ -28,7 +28,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::Opcode,
+        op::{AssertCmpOp, Opcode},
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
@@ -1621,6 +1621,24 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::Raise => {
                     let exc = self.pop();
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
+                    catch_sync!(self, cached_frame, error);
+                }
+                Opcode::AssertFailed => {
+                    let error = self.assert_failed(None);
+                    catch_sync!(self, cached_frame, error);
+                }
+                Opcode::AssertFailedCmp => {
+                    let op = AssertCmpOp::from_repr(cached_frame.fetch_u8()).expect("invalid AssertCmpOp in bytecode");
+                    let error = self.assert_failed(Some(op));
+                    catch_sync!(self, cached_frame, error);
+                }
+                Opcode::AssertFailedMsg => {
+                    let error = self.assert_failed_msg(None);
+                    catch_sync!(self, cached_frame, error);
+                }
+                Opcode::AssertFailedCmpMsg => {
+                    let op = AssertCmpOp::from_repr(cached_frame.fetch_u8()).expect("invalid AssertCmpOp in bytecode");
+                    let error = self.assert_failed_msg(Some(op));
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {

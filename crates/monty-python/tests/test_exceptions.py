@@ -153,17 +153,31 @@ def test_name_error(monty_run: RunMonty):
 
 
 def test_assertion_error(monty_run: RunMonty):
+    # Unlike CPython, Monty gives bare asserts a pytest-style message
+    # (see limitations/assert.md).
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('assert False')
-    assert isinstance(exc_info.value.exception(), AssertionError)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('assert False')
+
+
+def test_assertion_error_comparison(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('assert 1 == 2')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('assert 1 == 2')
 
 
 def test_assertion_error_with_message(monty_run: RunMonty):
+    # The explicit message keeps the first line; the introspected detail is
+    # appended on a new line (see limitations/assert.md).
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("assert False, 'custom message'")
     inner = exc_info.value.exception()
     assert isinstance(inner, AssertionError)
-    assert str(inner) == snapshot('custom message')
+    assert str(inner) == snapshot('custom message\nassert False')
 
 
 def test_runtime_error(monty_run: RunMonty):

@@ -5,7 +5,7 @@ use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     ExcType, MontyException,
-    bytecode::{Code, Compiler, FrameExit, VM},
+    bytecode::{Code, CompileOptions, Compiler, FrameExit, VM},
     exception_private::RunResult,
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
@@ -56,7 +56,19 @@ impl MontyRun {
     /// # Errors
     /// Returns `MontyException` if the code cannot be parsed.
     pub fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
-        Executor::new(code, script_name, input_names).map(|executor| Self { executor })
+        Self::new_with_options(code, script_name, input_names, CompileOptions::default())
+    }
+
+    /// [`new`](Self::new) with explicit [`CompileOptions`] — e.g.
+    /// `CompileOptions { assert_messages: false }` restores CPython's plain
+    /// `AssertionError` behavior for parity testing.
+    pub fn new_with_options(
+        code: String,
+        script_name: &str,
+        input_names: Vec<String>,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
+        Executor::new(code, script_name, input_names, options).map(|executor| Self { executor })
     }
 
     /// Returns the code that was parsed to create this snapshot.
@@ -220,8 +232,13 @@ impl Clone for Executor {
 }
 
 impl Executor {
-    /// Creates a new executor with the given code, filename, and input names.
-    pub(crate) fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+    /// Creates a new executor with the given code, filename, input names, and compile options.
+    pub(crate) fn new(
+        code: String,
+        script_name: &str,
+        input_names: Vec<String>,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -233,7 +250,7 @@ impl Executor {
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals)
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals, options)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Set the compiled functions in the interns
@@ -300,9 +317,15 @@ impl Executor {
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        let compile_result =
-            Compiler::compile_module_with_functions(&prepared.nodes, &interns, &prepared.globals, existing_functions)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
+        // REPL surfaces always compile with default options (assert messages on).
+        let compile_result = Compiler::compile_module_with_functions(
+            &prepared.nodes,
+            &interns,
+            &prepared.globals,
+            existing_functions,
+            CompileOptions::default(),
+        )
+        .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);
 
         Ok(Self {

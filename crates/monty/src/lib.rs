@@ -37,6 +37,7 @@ mod value;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
+    bytecode::CompileOptions,
     exception_private::ExcType,
     exception_public::{
         CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,

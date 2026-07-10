@@ -25,9 +25,9 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress, dir_stat,
-    file_stat,
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress,
+    dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -65,6 +65,18 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
     ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
+}
+
+/// Builds a `MontyRun` with pytest-style assert messages disabled, so bare
+/// `assert` fixtures keep raising CPython's plain `AssertionError` — the
+/// harness runs every fixture on both interpreters and diffs the output.
+fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
+    MontyRun::new_with_options(
+        code.to_owned(),
+        test_name,
+        vec![],
+        CompileOptions { assert_messages: false },
+    )
 }
 
 /// Test configuration parsed from directive comments.
@@ -1325,7 +1337,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+        match new_monty_run(code, &test_name) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
@@ -1375,7 +1387,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    match new_monty_run(code, &test_name) {
         Ok(ex) => {
             let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
@@ -1527,7 +1539,7 @@ fn try_run_iter_test(
         });
     }
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1673,7 +1685,7 @@ fn try_run_mount_fs_test(
         )
         .expect("failed to mount temp dir for mount-fs test");
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             return Err(TestFailure {
