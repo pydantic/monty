@@ -383,9 +383,8 @@ message Configure {
   // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
   // than a silent source of frame desync.
   string monty_version = 5;
-  // Give failed `assert` statements pytest-style introspected messages
-  // (see limitations/assert.md). Optional so the default (missing = true)
-  // matches the feature being on by default.
+  // Give failed `assert` statements introspected messages (see limitations/assert.md).
+  // The runtime treats an absent value as true; protobuf itself does not.
   optional bool assert_message_annotations = 6;
 }
 

@@ -502,9 +502,8 @@ pub struct Configure {
     /// than a silent source of frame desync.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
-    /// Give failed `assert` statements pytest-style introspected messages
-    /// (see limitations/assert.md). Optional so the default (missing = true)
-    /// matches the feature being on by default.
+    /// Give failed `assert` statements introspected messages (see limitations/assert.md).
+    /// The runtime treats an absent value as true; protobuf itself does not.
     #[prost(bool, optional, tag = "6")]
     pub assert_message_annotations: ::core::option::Option<bool>,
 }

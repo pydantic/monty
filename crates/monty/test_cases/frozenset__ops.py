@@ -68,21 +68,21 @@ except TypeError as e:
 # === Issubset ===
 fs1 = frozenset([1, 2])
 fs2 = frozenset([1, 2, 3])
-assert fs1.issubset(fs2) == True
-assert fs2.issubset(fs1) == False
+assert fs1.issubset(fs2) is True
+assert fs2.issubset(fs1) is False
 
 # === Issuperset ===
 fs1 = frozenset([1, 2, 3])
 fs2 = frozenset([1, 2])
-assert fs1.issuperset(fs2) == True
-assert fs2.issuperset(fs1) == False
+assert fs1.issuperset(fs2) is True
+assert fs2.issuperset(fs1) is False
 
 # === Isdisjoint ===
 fs1 = frozenset([1, 2])
 fs2 = frozenset([3, 4])
 fs3 = frozenset([2, 3])
-assert fs1.isdisjoint(fs2) == True
-assert fs1.isdisjoint(fs3) == False
+assert fs1.isdisjoint(fs2) is True
+assert fs1.isdisjoint(fs3) is False
 
 # === Bool ===
 assert bool(frozenset()) == False
