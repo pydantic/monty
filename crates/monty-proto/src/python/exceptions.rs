@@ -61,15 +61,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
-        ExcType::JsonDecodeError => {
-            if let Ok(json_decode_error) = get_json_decode_error(py)
-                && let Ok(exc_instance) = json_decode_error.call1((PyString::new(py, &msg),))
-            {
-                PyErr::from_value(exc_instance)
-            } else {
-                exceptions::PyValueError::new_err(msg)
-            }
-        }
+        ExcType::JsonDecodeError => json_decode_error_to_py(py, msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
@@ -126,6 +118,41 @@ fn unicode_error_to_py(py: Python<'_>, exc_type: ExcType, exc_data: ExcData, msg
         }
     }
     exceptions::PyValueError::new_err(msg)
+}
+
+/// Builds a real `json.JSONDecodeError` from Monty's formatted message.
+///
+/// The constructor requires `(msg, doc, pos)` and rebuilds the message and
+/// `lineno`/`colno` itself, but Monty only carries the formatted message —
+/// so we parse the location back out, construct with a placeholder, and
+/// overwrite the location attributes. `doc` is left as `''` since the
+/// original document is not preserved. Falls back to a plain `ValueError`
+/// when the message doesn't match CPython's shape (e.g. an exception raised
+/// manually inside the sandbox) or construction fails.
+fn json_decode_error_to_py(py: Python<'_>, msg: String) -> PyErr {
+    if let Ok(exc_cls) = get_json_decode_error(py)
+        && let Some((short_msg, line, column, pos)) = parse_json_decode_msg(&msg)
+        && let Ok(exc_instance) = exc_cls.call1((short_msg, "", 0))
+        && exc_instance.setattr("lineno", line).is_ok()
+        && exc_instance.setattr("colno", column).is_ok()
+        && exc_instance.setattr("pos", pos).is_ok()
+        && exc_instance.setattr("args", (PyString::new(py, &msg),)).is_ok()
+    {
+        PyErr::from_value(exc_instance)
+    } else {
+        exceptions::PyValueError::new_err(msg)
+    }
+}
+
+/// Splits a `JSONDecodeError` message formatted by Monty
+/// (`{msg}: line {lineno} column {colno} (char {pos})`, matching CPython)
+/// back into its parts. Returns `None` when the message doesn't match.
+fn parse_json_decode_msg(msg: &str) -> Option<(&str, u64, u64, u64)> {
+    let (short_msg, rest) = msg.rsplit_once(": line ")?;
+    let (line, rest) = rest.split_once(" column ")?;
+    let (column, rest) = rest.split_once(" (char ")?;
+    let pos = rest.strip_suffix(')')?;
+    Some((short_msg, line.parse().ok()?, column.parse().ok()?, pos.parse().ok()?))
 }
 
 /// Converts a python exception to monty.
@@ -229,14 +256,28 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::NotADirectoryError
             } else if exceptions::PyPermissionError::type_check(exc) {
                 ExcType::PermissionError
+            // TimeoutError is an OSError subclass since Python 3.10, so it must
+            // be matched here — a standalone check after this branch is dead code
+            } else if exceptions::PyTimeoutError::type_check(exc) {
+                ExcType::TimeoutError
             } else {
                 ExcType::OSError
             }
+        // ImportError hierarchy (check ModuleNotFoundError first as it's a subclass)
+        } else if exceptions::PyImportError::type_check(exc) {
+            if exceptions::PyModuleNotFoundError::type_check(exc) {
+                ExcType::ModuleNotFoundError
+            } else {
+                ExcType::ImportError
+            }
         // other standalone exception types
-        } else if exceptions::PyTimeoutError::type_check(exc) {
-            ExcType::TimeoutError
         } else if exceptions::PyMemoryError::type_check(exc) {
             ExcType::MemoryError
+        } else if exceptions::PyStopIteration::type_check(exc) {
+            ExcType::StopIteration
+        // last as it needs a python isinstance call against an imported class
+        } else if is_re_pattern_error(exc) {
+            ExcType::RePatternError
         } else {
             ExcType::Exception
         }
@@ -266,6 +307,16 @@ fn is_frozen_instance_error(exc: &Bound<'_, exceptions::PyBaseException>) -> boo
 fn is_json_decode_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
     if let Ok(json_decode_error_cls) = get_json_decode_error(exc.py()) {
         exc.is_instance(json_decode_error_cls).unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Checks if an exception is a `re.PatternError` (a stdlib class, not a
+/// PyO3 built-in, so looked up lazily and cached).
+fn is_re_pattern_error(exc: &Bound<'_, exceptions::PyBaseException>) -> bool {
+    if let Ok(re_pattern_error_cls) = get_re_pattern_error(exc.py()) {
+        exc.is_instance(re_pattern_error_cls).unwrap_or(false)
     } else {
         false
     }

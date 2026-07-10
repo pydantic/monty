@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
@@ -72,6 +74,34 @@ def test_unicode_error_message_only_fallback(monty_run: RunMonty):
     inner = exc_info.value.exception()
     assert isinstance(inner, ValueError)
     assert not isinstance(inner, UnicodeDecodeError)
+    assert str(inner) == snapshot('nope')
+
+
+def test_json_decode_error(monty_run: RunMonty):
+    # A `json.loads` failure inside the sandbox surfaces as a real
+    # `json.JSONDecodeError`: the location is parsed back out of the formatted
+    # message, but the original document is not preserved so `doc` is `''`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import json\njson.loads('[1,\\n2,]')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, json.JSONDecodeError)
+    assert isinstance(inner, ValueError)
+    assert str(inner) == snapshot('Illegal trailing comma before end of array: line 2 column 2 (char 5)')
+    assert inner.msg == snapshot('Illegal trailing comma before end of array')
+    assert inner.lineno == snapshot(2)
+    assert inner.colno == snapshot(2)
+    assert inner.pos == snapshot(5)
+    assert inner.doc == ''
+
+
+def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
+    # A `JSONDecodeError` raised manually inside the sandbox has no location
+    # suffix to parse, so `.exception()` falls back to a `ValueError`.
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import json\nraise json.JSONDecodeError('nope')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, ValueError)
+    assert not isinstance(inner, json.JSONDecodeError)
     assert str(inner) == snapshot('nope')
 
 

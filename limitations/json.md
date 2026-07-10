@@ -41,3 +41,10 @@ Rejected with `TypeError` if passed:
 Inherits from `ValueError` (catchable as `except ValueError:`). The class
 qualified name is `json.JSONDecodeError`; `__name__` matches CPython.
 Error messages use the same `line N column M (char K)` suffix as CPython.
+
+Inside the sandbox the exception is message-only: the `msg`, `doc`, `pos`,
+`lineno` and `colno` attributes CPython sets are not available. When a
+sandbox `JSONDecodeError` surfaces to the host (e.g. via `pydantic_monty`),
+it is rebuilt as a real `json.JSONDecodeError` with `msg`/`lineno`/`colno`/
+`pos` parsed back out of the message — but the original document is not
+preserved, so `doc` is always `''`.

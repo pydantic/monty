@@ -333,6 +333,32 @@ except RuntimeError:
     caught_recursion_by_runtime = True
 assert caught_recursion_by_runtime, 'RuntimeError should catch RecursionError'
 
+# === Exception hierarchy: OSError ===
+# OSError should catch TimeoutError (subclass since Python 3.10)
+caught_timeout_by_oserror = False
+try:
+    raise TimeoutError('timed out')
+except OSError:
+    caught_timeout_by_oserror = True
+assert caught_timeout_by_oserror, 'OSError should catch TimeoutError'
+
+# TimeoutError should still be caught specifically before OSError
+caught_timeout_specifically = False
+try:
+    raise TimeoutError('timed out')
+except TimeoutError:
+    caught_timeout_specifically = True
+except OSError:
+    pass
+assert caught_timeout_specifically, 'TimeoutError handler should match TimeoutError'
+
+try:
+    raise TimeoutError('timed out')
+except TimeoutError as e:
+    assert isinstance(e, TimeoutError), 'exception should be instance of TimeoutError'
+    assert isinstance(e, OSError), 'TimeoutError should be instance of OSError'
+    assert not isinstance(e, ValueError), 'TimeoutError should not be ValueError'
+
 # === Exception hierarchy in tuple ===
 # Tuple containing base class should catch derived
 caught_by_tuple_base = False
