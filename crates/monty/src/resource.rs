@@ -1,11 +1,13 @@
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
 use std::{cell::Cell, error::Error, fmt, time::Duration};
 
-// `web_time::Instant` is `std::time::Instant` on native and WASI targets, and a
-// `performance.now()`-backed clock on `wasm32-unknown-unknown`, where the std
-// `Instant::now()` panics ("time not implemented on this platform"). This keeps
-// the `max_duration` time limit working when `monty` is embedded directly in a
-// browser wasm module. Time behavior on all currently-supported targets is
-// unchanged (it re-exports std verbatim there).
+// `std::time::Instant::now()` panics ("time not implemented on this platform")
+// on `wasm32-unknown-unknown`, so any `max_duration` limit aborts there. Swap in
+// `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
+// target; every other target (native, WASI) keeps std, so the `web-time`
+// dependency is pulled in only where it's needed (see Cargo.toml).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
 
 use crate::{
