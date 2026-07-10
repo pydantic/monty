@@ -214,16 +214,6 @@ fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> 
     CompileError::new(format!("more than {MAX_CALL_ARGS} {kind} ({count})"), position)
 }
 
-/// Compiles prepared AST nodes to bytecode.
-///
-/// The compiler traverses the AST and emits bytecode instructions using
-/// `CodeBuilder`. It handles variable scoping, control flow, and expression
-/// evaluation order following Python semantics.
-///
-/// Functions are compiled recursively and collected in the `functions` vector.
-/// When a `PreparedFunctionDef` is encountered, its body is compiled first,
-/// creating a `Function` struct that is added to the vector. The index of the
-/// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
 /// Compile-time options for Monty's bytecode compiler.
 ///
 /// Consumed entirely at compile time — the choices are baked into the emitted
@@ -243,6 +233,16 @@ impl Default for CompileOptions {
     }
 }
 
+/// Compiles prepared AST nodes to bytecode.
+///
+/// The compiler traverses the AST and emits bytecode instructions using
+/// `CodeBuilder`. It handles variable scoping, control flow, and expression
+/// evaluation order following Python semantics.
+///
+/// Functions are compiled recursively and collected in the `functions` vector.
+/// When a `PreparedFunctionDef` is encountered, its body is compiled first,
+/// creating a `Function` struct that is added to the vector. The index of the
+/// function in this vector becomes the operand for MakeFunction/MakeClosure opcodes.
 pub struct Compiler<'a> {
     /// Current code being built.
     code: CodeBuilder,
