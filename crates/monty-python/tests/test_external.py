@@ -330,17 +330,17 @@ except json.JSONDecodeError as e:
     raise e
 """
 
+    # Constructed directly rather than via `json.loads`, whose message wording
+    # varies across Python versions (3.13/3.14 reworded the error messages).
     def fail(*args: Any, **kwargs: Any) -> None:
-        json.loads('[1,\n2,]')
+        raise json.JSONDecodeError('Expecting value', '[1,\n2,]', 6)
 
     with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
         monty_run(code, external_lookup={'fail': fail})
     inner = exc_info.value.exception()
     assert type(inner) is json.JSONDecodeError
-    assert str(inner) == snapshot('Illegal trailing comma before end of array: line 2 column 2 (char 5)')
-    assert (inner.msg, inner.lineno, inner.colno, inner.pos) == snapshot(
-        ('Illegal trailing comma before end of array', 2, 2, 5)
-    )
+    assert str(inner) == snapshot('Expecting value: line 2 column 3 (char 6)')
+    assert (inner.msg, inner.lineno, inner.colno, inner.pos) == snapshot(('Expecting value', 2, 3, 6))
     assert inner.doc == '[1,\n2,]'
 
 
