@@ -25,7 +25,7 @@ See the [project README](https://github.com/pydantic/monty) for the full feature
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 let code = r#"
 def fib(n):
@@ -36,7 +36,7 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
@@ -49,7 +49,7 @@ Untrusted code shouldn't be able to hog the host. `LimitedTracker` enforces limi
 
 ```rust
 use std::time::Duration;
-use monty::{MontyRun, LimitedTracker, PrintWriter, ResourceLimits};
+use monty::{CompileOptions, MontyRun, LimitedTracker, PrintWriter, ResourceLimits};
 
 let limits = ResourceLimits {
     max_memory: Some(10 * 1024 * 1024),
@@ -57,7 +57,7 @@ let limits = ResourceLimits {
     ..ResourceLimits::new()
 };
 
-let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![]).unwrap();
+let runner = MontyRun::new("while True: pass".to_owned(), "spin.py", vec![], CompileOptions::default()).unwrap();
 let err = runner.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout).unwrap_err();
 assert!(err.to_string().contains("time limit exceeded"));
 ```
@@ -67,10 +67,10 @@ assert!(err.to_string().contains("time limit exceeded"));
 The defining feature of the crate: instead of running to completion, `MontyRun::start` returns a `RunProgress` that pauses execution whenever the sandboxed code calls a function provided by the host. The host runs the real function (an API call, a database query, an LLM tool) and resumes with the result:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter, RunProgress};
 
 let code = "data = get_data(3)\ndata * 2";
-let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
 let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
@@ -90,9 +90,9 @@ assert_eq!(result, MontyObject::Int(42));
 A paused `RunProgress` is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `load()` + resume it later — in a different process or on a different machine. `MontyRun` itself can also be dumped and loaded to cache parsed code:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()]).unwrap();
+let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let bytes = runner.dump().unwrap();
 
 // later, restore and run

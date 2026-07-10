@@ -33,6 +33,7 @@ use crate::{
     modules::StandardLib,
     name_map::NameMap,
     parse::{CodeRange, ExceptHandler, Try},
+    run::CompileOptions,
     value::{EitherStr, Value},
 };
 
@@ -212,25 +213,6 @@ fn check_call_args_u8(count: usize, kind: &'static str, position: CodeRange) -> 
 #[inline(never)]
 fn too_many_call_args(count: usize, kind: &'static str, position: CodeRange) -> CompileError {
     CompileError::new(format!("more than {MAX_CALL_ARGS} {kind} ({count})"), position)
-}
-
-/// Compile-time options for Monty's bytecode compiler.
-///
-/// Consumed entirely at compile time — the choices are baked into the emitted
-/// bytecode, so nothing here needs to be serialized alongside `Code`.
-#[derive(Debug, Clone, Copy)]
-pub struct CompileOptions {
-    /// Emit pytest-style failure messages for `assert` statements
-    /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
-    /// CPython's empty `AssertionError`; see `limitations/assert.md`.
-    /// Defaults to `true`; the CPython-parity test harness disables it.
-    pub assert_messages: bool,
-}
-
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self { assert_messages: true }
-    }
 }
 
 /// Compiles prepared AST nodes to bytecode.

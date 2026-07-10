@@ -19,7 +19,7 @@ mod op;
 mod vm;
 
 pub use code::Code;
-pub use compiler::{CompileOptions, Compiler};
+pub use compiler::Compiler;
 pub(crate) use vm::{CallResult, ContainsVM, RecursionToken};
 pub use vm::{FrameExit, VM, VMSnapshot};
 

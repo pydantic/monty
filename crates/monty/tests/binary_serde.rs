@@ -4,7 +4,7 @@
 //! - Caching parsed code to avoid re-parsing
 //! - Snapshotting execution state for external function calls
 
-use monty::{MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{CompileOptions, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
 fn resolve_name_lookups<T: monty::ResourceTracker>(
@@ -25,7 +25,7 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
 #[test]
 fn monty_run_dump_load_simple() {
     // Create a runner, dump it, load it, and verify it produces the same result
-    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
@@ -36,7 +36,13 @@ fn monty_run_dump_load_simple() {
 #[test]
 fn monty_run_dump_load_with_inputs() {
     // Test that input names are preserved across dump/load
-    let runner = MontyRun::new("x + y * 2".to_owned(), "test.py", vec!["x".to_owned(), "y".to_owned()]).unwrap();
+    let runner = MontyRun::new(
+        "x + y * 2".to_owned(),
+        "test.py",
+        vec!["x".to_owned(), "y".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
@@ -50,7 +56,7 @@ fn monty_run_dump_load_with_inputs() {
 fn monty_run_dump_load_preserves_code() {
     // Verify the code string is preserved
     let code = "def foo(x):\n    return x * 2\nfoo(21)".to_owned();
-    let runner = MontyRun::new(code.clone(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.clone(), "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
@@ -75,7 +81,7 @@ result
 "
     .to_owned();
 
-    let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
@@ -99,7 +105,13 @@ result
 #[test]
 fn monty_run_dump_load_multiple_runs() {
     // A loaded runner can be run multiple times
-    let runner = MontyRun::new("x * 2".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let runner = MontyRun::new(
+        "x * 2".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
@@ -118,7 +130,13 @@ fn monty_run_dump_load_multiple_runs() {
 #[test]
 fn run_progress_dump_load_roundtrip() {
     // Start execution with an external function, dump at the call, load and resume
-    let runner = MontyRun::new("ext_fn(42) + 1".to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(
+        "ext_fn(42) + 1".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
@@ -144,7 +162,13 @@ fn run_progress_dump_load_roundtrip() {
 #[test]
 fn run_progress_dump_load_multiple_calls() {
     // Test multiple external calls with dump/load between each
-    let runner = MontyRun::new("x = ext_fn(1); y = ext_fn(2); x + y".to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(
+        "x = ext_fn(1); y = ext_fn(2); x + y".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
 
     // First call - resolve NameLookup for ext_fn first
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
@@ -175,7 +199,7 @@ fn run_progress_dump_load_multiple_calls() {
 #[test]
 fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
-    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     let bytes = progress.dump().unwrap();

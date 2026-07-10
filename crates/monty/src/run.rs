@@ -5,7 +5,7 @@ use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     ExcType, MontyException,
-    bytecode::{Code, CompileOptions, Compiler, FrameExit, VM},
+    bytecode::{Code, Compiler, FrameExit, VM},
     exception_private::RunResult,
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
@@ -21,6 +21,26 @@ use crate::{
     value::Value,
 };
 
+/// Options controlling how Monty behavior diverges from plain CPython.
+///
+/// Consumed when code is loaded — the choices are baked into the resulting
+/// program, so nothing here needs to be serialized alongside a dumped
+/// [`MontyRun`].
+#[derive(Debug, Clone, Copy)]
+pub struct CompileOptions {
+    /// Give failed `assert` statements pytest-style introspected messages
+    /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
+    /// CPython's empty `AssertionError`; see `limitations/assert.md`.
+    /// Defaults to `true`; set to `false` to restore CPython's behavior.
+    pub assert_messages: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self { assert_messages: true }
+    }
+}
+
 /// Primary interface for running Monty code.
 ///
 /// `MontyRun` supports two execution modes:
@@ -30,9 +50,15 @@ use crate::{
 ///
 /// # Example
 /// ```
-/// use monty::{MontyRun, MontyObject};
+/// use monty::{CompileOptions, MontyRun, MontyObject};
 ///
-/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+/// let runner = MontyRun::new(
+///     "x + 1".to_owned(),
+///     "test.py",
+///     vec!["x".to_owned()],
+///     CompileOptions::default(),
+/// )
+/// .unwrap();
 /// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
@@ -52,17 +78,11 @@ impl MontyRun {
     /// * `code` - The Python code to execute
     /// * `script_name` - The script name for error messages
     /// * `input_names` - Names of input variables
+    /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
     /// # Errors
     /// Returns `MontyException` if the code cannot be parsed.
-    pub fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
-        Self::new_with_options(code, script_name, input_names, CompileOptions::default())
-    }
-
-    /// [`new`](Self::new) with explicit [`CompileOptions`] — e.g.
-    /// `CompileOptions { assert_messages: false }` restores CPython's plain
-    /// `AssertionError` behavior for parity testing.
-    pub fn new_with_options(
+    pub fn new(
         code: String,
         script_name: &str,
         input_names: Vec<String>,

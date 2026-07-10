@@ -6,7 +6,7 @@ use std::ffi::CString;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{MontyObject, MontyRun};
+use monty::{CompileOptions, MontyObject, MontyRun};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)
@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
@@ -31,7 +31,13 @@ fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
 /// Runs a benchmark using the Monty interpreter with a single string input bound to `DATA`.
 /// Parses once, then benchmarks repeated execution with the same input.
 fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i64) {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["DATA".to_owned()]).unwrap();
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["DATA".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let make_input = || vec![MontyObject::String(data.to_owned())];
     let r = ex.run_no_limits(make_input()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
@@ -385,7 +391,13 @@ r
 /// This is different from other benchmarks as it includes parsing in the loop.
 fn end_to_end_monty(bench: &mut Bencher) {
     bench.iter(|| {
-        let ex = MontyRun::new(black_box("1 + 2").to_owned(), "test.py", vec![]).unwrap();
+        let ex = MontyRun::new(
+            black_box("1 + 2").to_owned(),
+            "test.py",
+            vec![],
+            CompileOptions::default(),
+        )
+        .unwrap();
         let r = ex.run_no_limits(vec![]).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
@@ -399,7 +411,7 @@ fn end_to_end_monty(bench: &mut Bencher) {
 fn parse_1k_assigns(bench: &mut Bencher) {
     let code: String = "x = 1\n".repeat(1_000);
     bench.iter(|| {
-        let ex = MontyRun::new(black_box(code.clone()), "test.py", vec![]).unwrap();
+        let ex = MontyRun::new(black_box(code.clone()), "test.py", vec![], CompileOptions::default()).unwrap();
         black_box(ex);
     });
 }

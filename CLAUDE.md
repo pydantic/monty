@@ -430,19 +430,26 @@ Commands:
 # Build the project
 cargo build
 
-# Run tests (this is the best way to run all tests as it enables the memory-model-checks feature)
-make test-memory-model-checks
+# Run tests
+cargo test -p monty
 
 # Run crates/monty/test_cases tests only
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test TEST --features memory-model-checks str__ops
-cargo run -p monty-datatest --features memory-model-checks str__ops
+cargo test -p monty --test TEST str__ops
+cargo run -p monty-datatest str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
 ```
+
+The `memory-model-checks` feature (`make test-memory-model-checks`, or
+`--features memory-model-checks` on the commands above) is VERY SLOW — it is
+run in CI, so do NOT enable it by default. Only reach for it when a change
+specifically touches refcount/heap/GC behavior (e.g. new opcodes that retain
+values, `drop_with` paths, cycle collection) and then run just the relevant
+test binary, e.g. `cargo test -p monty --test TEST --features memory-model-checks`.
 
 See more test commands above.
 

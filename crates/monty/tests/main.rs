@@ -1,9 +1,9 @@
-use monty::{MontyObject, MontyRun};
+use monty::{CompileOptions, MontyObject, MontyRun};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]
 fn repeat_exec() {
-    let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
@@ -16,7 +16,7 @@ fn repeat_exec() {
 
 #[test]
 fn test_get_interned_string() {
-    let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
@@ -44,7 +44,13 @@ fn dataclass_method_call_in_standard_mode_errors() {
         frozen: true,
     };
 
-    let ex = MontyRun::new("point.sum()".to_owned(), "test.py", vec!["point".to_string()]).unwrap();
+    let ex = MontyRun::new(
+        "point.sum()".to_owned(),
+        "test.py",
+        vec!["point".to_string()],
+        CompileOptions::default(),
+    )
+    .unwrap();
 
     let err = ex.run_no_limits(vec![point]).unwrap_err();
     let msg = err.to_string();
@@ -63,7 +69,13 @@ fn dataclass_method_call_in_standard_mode_errors() {
 /// exists.
 #[test]
 fn subscript_augassign_matmul_reports_not_supported() {
-    let err = MontyRun::new("d = {'x': 1}\nd['x'] @= 2".to_owned(), "test.py", vec![]).unwrap_err();
+    let err = MontyRun::new(
+        "d = {'x': 1}\nd['x'] @= 2".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 2\n    d['x'] @= 2\n    ~~~~~~\nSyntaxError: matrix multiplication augmented assignment (@=) is not yet supported"
@@ -79,7 +91,13 @@ fn subscript_augassign_matmul_reports_not_supported() {
 #[test]
 fn external_function_as_init_raises_not_implemented() {
     let code = "class Foo:\n    __init__ = ext_fn\n\nFoo()";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec!["ext_fn".to_owned()]).unwrap();
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let err = ex
         .run_no_limits(vec![MontyObject::Function {
             name: "ext_fn".to_owned(),
@@ -99,7 +117,7 @@ fn external_function_as_init_raises_not_implemented() {
 #[test]
 fn dynamic_type_with_bases_raises_type_error() {
     let code = "type('A', (int,), {})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
@@ -116,7 +134,7 @@ fn dynamic_type_with_bases_raises_type_error() {
 #[test]
 fn dynamic_type_with_non_string_key_raises_type_error() {
     let code = "type('A', (), {1: 'one'})";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),

@@ -8,7 +8,7 @@ use monty::{CompileOptions, ExcType, MontyException, MontyObject, MontyRepl, Mon
 
 /// Runs `code` and returns the exception it raises.
 fn get_err(code: &str) -> MontyException {
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).expect("should compile");
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should compile");
     run.run_no_limits(vec![]).expect_err("expected an exception")
 }
 
@@ -100,7 +100,7 @@ assert 1 == 1, msg()
 assert 2 == 2, msg()
 len(calls)
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(0));
 }
@@ -118,7 +118,7 @@ for _ in range(100):
     assert xs, 'must not be empty'
 len(xs)
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
@@ -136,7 +136,7 @@ except AssertionError:
     pass
 len(calls)
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(1));
 }
@@ -150,7 +150,7 @@ except AssertionError as e:
     r = str(e)
 r
 ";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::String("assert 1 == 2".into()));
 }
@@ -241,13 +241,13 @@ fn comparison_type_errors_still_raise() {
 #[test]
 fn opt_out_restores_cpython_behavior() {
     let options = CompileOptions { assert_messages: false };
-    let run = MontyRun::new_with_options("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
+    let run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 
     let options = CompileOptions { assert_messages: false };
-    let run = MontyRun::new_with_options("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
+    let run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.message(), Some("msg"));
 }

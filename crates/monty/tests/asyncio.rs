@@ -4,8 +4,8 @@
 //! resolving external futures incrementally via `ResolveFutures::resume()`.
 
 use monty::{
-    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
-    ResolveFutures, RunProgress,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRun, NameLookupResult,
+    NoLimitTracker, PrintWriter, ResolveFutures, RunProgress,
 };
 
 /// Helper to create a MontyRun for async external function tests.
@@ -22,7 +22,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
 }
 
 /// Helper to create a MontyRun for async external function tests with three functions.
@@ -36,7 +36,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
 }
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -107,7 +107,7 @@ async def ready():
 
 await asyncio.gather(parked(), ready())
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -365,7 +365,7 @@ async def main():
 
 await main()
 ";
-    MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap()
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap()
 }
 
 #[test]
@@ -602,7 +602,7 @@ async def double(x):
 results = await asyncio.gather(double(5), async_call(100))
 results
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
@@ -730,7 +730,7 @@ async def slow_b():
 results = await asyncio.gather(slow_a(), slow_b(), async_call(999))
 results
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
@@ -805,7 +805,7 @@ async def main():
 await main()
 ";
 
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 
@@ -875,7 +875,7 @@ async def main():
 await main()
 ";
 
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
 

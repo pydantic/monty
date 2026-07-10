@@ -201,7 +201,7 @@ for usage.
 The `monty` crate itself provides the in-process interpreter:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 let code = r#"
 def fib(n):
@@ -212,7 +212,7 @@ def fib(n):
 fib(x)
 "#;
 
-let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()]).unwrap();
+let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
@@ -222,10 +222,10 @@ assert_eq!(result, MontyObject::Int(55));
 `MontyRun` and `RunProgress` can be serialized using the `dump()` and `load()` methods:
 
 ```rust
-use monty::{MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
 
 // Serialize parsed code
-let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()]).unwrap();
+let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let bytes = runner.dump().unwrap();
 
 // Later, restore and run

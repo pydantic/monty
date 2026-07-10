@@ -37,7 +37,6 @@ mod value;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
-    bytecode::CompileOptions,
     exception_private::ExcType,
     exception_public::{
         CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
@@ -58,7 +57,7 @@ pub use crate::{
     resource::{
         DEFAULT_MAX_RECURSION_DEPTH, LimitedTracker, NoLimitTracker, ResourceError, ResourceLimits, ResourceTracker,
     },
-    run::MontyRun,
+    run::{CompileOptions, MontyRun},
     run_progress::{
         ExtFunctionResult, FunctionCall, NameLookup, NameLookupResult, OsCall, ResolveFutures, RunProgress,
     },

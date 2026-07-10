@@ -71,7 +71,7 @@ fn default_test_limits() -> ResourceLimits {
 /// `assert` fixtures keep raising CPython's plain `AssertionError` — the
 /// harness runs every fixture on both interpreters and diffs the output.
 fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
-    MontyRun::new_with_options(
+    MontyRun::new(
         code.to_owned(),
         test_name,
         vec![],
