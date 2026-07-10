@@ -65,6 +65,17 @@ fn json_error_doc_omitted_for_huge_documents() {
     assert_eq!(data.pos, JsonErrorData::MAX_DOC_LEN + 1);
 }
 
+/// `bytes` input that is not valid UTF-8 cannot be carried as a `str` `doc`;
+/// the rest of the payload is still attached.
+#[test]
+fn json_error_doc_omitted_for_invalid_utf8() {
+    let exc = run_exc("import json\njson.loads(b'[1, \\xff]')");
+    assert_eq!(exc.exc_type().to_string(), "json.JSONDecodeError");
+    let data = exc.json_data().unwrap();
+    assert_eq!(data.doc, None);
+    assert_eq!(data.pos, 4);
+}
+
 /// A manually raised `JSONDecodeError` is message-only — no payload, so hosts
 /// fall back to a plain `ValueError`.
 #[test]

@@ -94,6 +94,21 @@ def test_json_decode_error(monty_run: RunMonty):
     assert inner.doc == '[1,\n2,]'
 
 
+def test_json_decode_error_doc_dropped_for_huge_documents(monty_run: RunMonty):
+    # Documents over the payload size cap are not carried: `doc` is '' on the
+    # surfaced exception. The location attributes and message must still be
+    # right — the constructor recomputes them from `doc`, so this exercises
+    # the empty-doc overrides (a multi-line document makes wrong recomputed
+    # values distinguishable: from '' they would be lineno=1, colno=pos+1).
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("import json\njson.loads('[' + '1,\\n' * 30000 + 'x')")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, json.JSONDecodeError)
+    assert str(inner) == snapshot('Expecting value: line 30001 column 1 (char 90001)')
+    assert (inner.msg, inner.lineno, inner.colno, inner.pos) == snapshot(('Expecting value', 30001, 1, 90001))
+    assert inner.doc == ''
+
+
 def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
     # A `JSONDecodeError` raised manually inside the sandbox has no location
     # suffix to parse, so `.exception()` falls back to a `ValueError`.

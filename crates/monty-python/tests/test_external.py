@@ -344,6 +344,24 @@ except json.JSONDecodeError as e:
     assert inner.doc == '[1,\n2,]'
 
 
+def test_external_function_json_decode_error_missing_attributes(monty_run: RunMonty):
+    """A host `JSONDecodeError` stripped of one of its attributes crosses into
+    the sandbox message-only (the structured capture is all-or-nothing), so it
+    surfaces back out as the plain `ValueError` fallback."""
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        exc = json.JSONDecodeError('Expecting value', '[', 1)
+        del exc.pos
+        raise exc
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        monty_run('fail()', external_lookup={'fail': fail})
+    inner = exc_info.value.exception()
+    assert type(inner) is ValueError
+    assert not isinstance(inner, json.JSONDecodeError)
+    assert str(inner) == snapshot('Expecting value: line 1 column 2 (char 1)')
+
+
 @pytest.mark.parametrize(
     'exception_class,exception_name',
     [
