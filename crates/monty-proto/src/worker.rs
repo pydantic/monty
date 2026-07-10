@@ -54,8 +54,9 @@ type Tracker = LimitedTracker;
 ///   count is 0 for an idle dump.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it.
-const DUMP_VERSION: u16 = 2;
+/// version can restore it. Bumped to 3 when `MontyRepl` gained the serialized
+/// `CompileOptions` field (assert-message annotations).
+const DUMP_VERSION: u16 = 3;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.

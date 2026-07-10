@@ -118,12 +118,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         })
     }
 
-    /// Fused bare `assert test` ([`Opcode::Assert`](crate::bytecode::op::Opcode::Assert)):
-    /// pops the test value and returns `Ok` when truthy. A falsy value raises
-    /// `AssertionError('assert {test!r}')`, or a message-less `AssertionError`
-    /// for a literal `False` — `assert False` restates what a failed assert
-    /// already implies, so it is pure clutter (other falsy values like `[]`,
-    /// `0`, `None`, `''` still show their repr).
+    /// Runs fused bare `assert test`.
+    ///
+    /// Truthy values pass; falsy values raise with their repr, except literal
+    /// `False` has no detail because `assert False` adds no information.
     pub(super) fn assert_test(&mut self) -> Result<(), RunError> {
         let this = self;
         let test = this.pop();
@@ -138,11 +136,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Fused bare `assert lhs OP rhs` ([`Opcode::AssertCmp`](crate::bytecode::op::Opcode::AssertCmp)):
-    /// pops both operands and runs the comparison with the same semantics as
-    /// the `Compare*` opcodes — including their `TypeError` for incomparable
-    /// ordering operands. Returns `Ok` when the comparison holds; otherwise
-    /// raises `AssertionError('assert {lhs!r} {op} {rhs!r}')`.
+    /// Runs fused bare `assert lhs OP rhs`.
+    ///
+    /// Uses the same comparison semantics as `Compare*`; failed comparisons
+    /// raise with both operand reprs.
     pub(super) fn assert_cmp(&mut self, op: CmpOperator) -> Result<(), RunError> {
         let this = self;
         let rhs = this.pop();
@@ -200,16 +197,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Builds the `AssertionError` for a failed `assert test, msg`: the explicit
-    /// message on the first line with the introspected detail appended on a new
-    /// line, e.g. `my msg\nassert 2 == 5`. When the detail carries no information
-    /// (test value literally `False`) only the message is used — CPython's exact
-    /// behavior.
+    /// Raises for failed `assert test, msg`.
     ///
-    /// Stack: [..., operands..., msg]. Same fallback policy as
-    /// [`assert_failure`](Self::assert_failure) — whichever of message/detail
-    /// formats successfully is used, so a failing operand `__repr__` still
-    /// surfaces the user's message (and vice versa).
+    /// Uses `msg` first and appends introspected detail when available. If
+    /// either formatting path raises a Python exception, the other still wins.
     pub(super) fn assert_failed_msg(&mut self, cmp_op: Option<CmpOperator>) -> RunError {
         let this = self;
         let msg_value = this.pop();
@@ -235,17 +226,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         this.assertion_error(full)
     }
 
-    /// Pops and reprs the failed assert's operands: `{lhs!r} {op} {rhs!r}` for a
-    /// comparison assert (`Some(cmp_op)`, stack `[..., lhs, rhs]`), or the falsy
-    /// test value's repr otherwise (stack `[..., test]`).
+    /// Pops failed assert operands and formats their detail.
     ///
-    /// Returns `Ok(None)` when the test value is literally `False` (e.g. a `not`
-    /// expression or chained comparison) — `assert False` restates what a failed
-    /// assert already implies, so it is pure clutter. Other falsy values (`[]`,
-    /// `0`, `None`, `''`) still show their repr.
-    ///
-    /// The operands are dropped on every path — including a mid-format `Err` —
-    /// via `defer_drop!` guards.
+    /// Comparisons produce `{lhs!r} {op} {rhs!r}`; other tests use the falsy
+    /// value repr. Literal `False` returns no detail.
     fn assert_detail(&mut self, cmp_op: Option<CmpOperator>) -> RunResult<Option<String>> {
         let this = self;
         if let Some(op) = cmp_op {
@@ -267,10 +251,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// `AssertionError` carrying `msg` as its arg, raised at the current position
-    /// with the caret hidden — mirrors the `is_raise=true` path of
-    /// [`make_exception`](Self::make_exception) so tracebacks render identically
-    /// to a plain `assert` raise.
+    /// Creates an `AssertionError` raised at the current source position.
     fn assertion_error(&self, msg: Option<String>) -> RunError {
         let frame = RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name());
         RunError::Exc(ExceptionRaise {
@@ -529,7 +510,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 }
 
 /// `repr()` of an assert operand for the failure message, char-truncated to
-/// [`MAX_ASSERT_REPR_CHARS`] with a `...` suffix so pathological operands
+/// [`MAX_ASSERT_REPR_CHARS`] with a `…` suffix so pathological operands
 /// (huge collections, long strings) keep the message readable.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
     let repr_value = value.py_repr(vm)?;
@@ -546,11 +527,17 @@ fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunRe
     Ok(str_value.to_str(vm)?.to_owned())
 }
 
-/// Truncates `s` to at most [`MAX_ASSERT_REPR_CHARS`] chars (not bytes, so the
-/// cut is always on a char boundary), appending `...` when truncated.
+/// Truncates `s` after [`MAX_ASSERT_REPR_CHARS`] chars, appending `…`.
+///
+/// Short strings by byte length cannot exceed the char limit, so avoid scanning
+/// them. Longer strings are cut on the boundary reported by `char_indices`.
 fn truncate_chars(s: &str) -> String {
-    match s.char_indices().nth(MAX_ASSERT_REPR_CHARS) {
-        Some((idx, _)) => format!("{}...", &s[..idx]),
-        None => s.to_owned(),
+    if s.len() <= MAX_ASSERT_REPR_CHARS {
+        s.to_owned()
+    } else {
+        match s.char_indices().nth(MAX_ASSERT_REPR_CHARS) {
+            Some((idx, _)) => format!("{}…", &s[..idx]),
+            None => s.to_owned(),
+        }
     }
 }

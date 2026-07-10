@@ -53,9 +53,7 @@ fn falsy_value_fallback() {
 
 #[test]
 fn false_test_value_carries_no_message() {
-    // `assert False` restates what a failed assert already implies, so tests
-    // that evaluate to the bool `False` (`not` expressions, chained
-    // comparisons, boolean ops) raise a plain AssertionError like CPython.
+    // Bool `False` adds no useful detail, so it matches CPython's bare error.
     for code in [
         "assert False",
         "assert not True",
@@ -92,10 +90,7 @@ fn explicit_message_appends_detail() {
     no items
     assert []
     ");
-    // A `False` test value adds no detail line — the message alone is used,
-    // exactly matching CPython.
     assert_snapshot!(assert_msg("assert False, 'msg'"), @"msg");
-    // Non-str messages are rendered with str().
     assert_snapshot!(assert_msg("assert False, 123"), @"123");
 }
 
@@ -117,9 +112,7 @@ len(calls)
 
 #[test]
 fn passing_asserts_release_retained_operands() {
-    // The success path of a comparison assert drops the `Dup2`-retained
-    // operands; heap operands in a loop would trip the refcount checks
-    // (memory-model-checks / cycle collection) if a Pop were missed.
+    // Heap operands in a loop catch missed drops on the success path.
     let code = "
 xs = [1, 2]
 for _ in range(100):
@@ -167,8 +160,7 @@ r
 
 #[test]
 fn traceback_shape_unchanged() {
-    // The message lands after `AssertionError:`; frames and caret behavior
-    // (hidden for assert, like `raise`) are identical to the old bytecode.
+    // Frames and caret behavior should match the old bytecode.
     let code = "
 def check(v):
     assert v == 99
@@ -232,9 +224,9 @@ assert 1 == 2, BadStr()
 
 #[test]
 fn operand_reprs_truncated() {
-    // Each operand's repr is capped at 120 chars with a `...` suffix.
+    // Each operand's repr is capped at 120 chars with a `…` suffix.
     let msg = assert_msg("assert list(range(200)) == []");
-    assert_snapshot!(msg, @"assert [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 3... == []");
+    assert_snapshot!(msg, @"assert [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 3… == []");
 }
 
 #[test]
@@ -268,8 +260,6 @@ fn opt_out_restores_cpython_behavior() {
 
 #[test]
 fn assert_inside_repl_gets_messages() {
-    // The subprocess workers (and thus the Python/JS packages) construct their
-    // REPL with default options, so asserts fed to a session get messages.
     let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl

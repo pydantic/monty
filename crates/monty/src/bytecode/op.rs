@@ -521,47 +521,19 @@ pub enum Opcode {
     MethodDictMerge,
 
     // === Assert statements ===
-    // Pytest-style introspected messages for failing `assert` statements — a
-    // deliberate CPython divergence (see limitations/assert.md), can be disabled
-    // via `CompileOptions::assert_message_annotations`.
-    /// Fused bare `assert test` (no explicit message): pop the test value and
-    /// fall through if truthy; raise `AssertionError('assert {test!r}')` if
-    /// falsy (message-less when the value is literally `False`).
-    ///
-    /// Stack: [..., test] -> [...]
-    /// Fusing the truthiness test into the raiser makes a passing assert a
-    /// single dispatch — no branch, no separate raise block.
-    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    // Introspected assert failures are a deliberate CPython divergence; see
+    // `CompileOptions::assert_message_annotations` and limitations/assert.md.
+    /// Fused bare `assert test`: stack [..., test] -> [...]. Falsy values raise
+    /// `AssertionError('assert {test!r}')`, except literal `False` has no detail.
     Assert,
-    /// Fused bare `assert lhs OP rhs` (no explicit message): pop both
-    /// operands, run the comparison, and fall through if truthy; raise
-    /// `AssertionError('assert {lhs!r} {op} {rhs!r}')` if falsy. Operand: u8
-    /// comparison encoding (see `CmpOperator::as_operand`).
-    ///
-    /// Stack: [..., lhs, rhs] -> [...]
-    /// Runs the same comparison semantics as the `Compare*` opcodes (including
-    /// their `TypeError` for incomparable operands), so a passing comparison
-    /// assert is one dispatch instead of `Dup2`/compare/branch/`Pop`s.
-    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    /// Fused bare `assert lhs OP rhs`: stack [..., lhs, rhs] -> [...]. Operand
+    /// is `CmpOperator::as_operand`; comparison errors match `Compare*`.
     AssertCmp,
-    /// Raise `AssertionError('{msg}\nassert {test!r}')` for a failed
-    /// `assert test, msg` — the explicit message with the introspected detail
-    /// appended on a new line.
-    ///
-    /// Stack: [..., test, msg] -> (raises)
-    /// The msg expression is only evaluated on the failure path (matching
-    /// CPython's lazy evaluation), so message asserts keep the branchy shape
-    /// instead of fusing like [`Opcode::Assert`]. Always raises.
-    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    /// Raise for failed `assert test, msg`: stack [..., test, msg] -> raises.
+    /// The message is first, with introspected detail appended when available.
     AssertFailedMsg,
-    /// Raise `AssertionError('{msg}\nassert {lhs!r} {op} {rhs!r}')` for a failed
-    /// `assert lhs OP rhs, msg`. Operand: u8 comparison encoding
-    /// (see `CmpOperator::as_operand`).
-    ///
-    /// Stack: [..., lhs, rhs, msg] -> (raises)
-    /// Combines [`Opcode::AssertCmp`] introspection with the explicit
-    /// message on the first line. Always raises.
-    /// Appended at the end to preserve the serialized byte values of all older opcodes.
+    /// Raise for failed `assert lhs OP rhs, msg`: stack [..., lhs, rhs, msg] ->
+    /// raises. Operand is `CmpOperator::as_operand`.
     AssertFailedCmpMsg,
 }
 

@@ -575,6 +575,39 @@ fn type_check_state_survives_dump_and_load() {
     fresh.shutdown();
 }
 
+#[test]
+fn assert_annotation_option_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: Some(false),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 1 == 2");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message, None);
+    fresh.shutdown();
+}
+
 // =============================================================================
 // Protocol violations and crashes
 // =============================================================================

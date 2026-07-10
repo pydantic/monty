@@ -3226,16 +3226,11 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles an assert statement with pytest-style failure introspection —
-    /// a deliberate CPython divergence (see `limitations/assert.md`).
+    /// Compiles an assert with Monty's introspected failure messages.
     ///
-    /// A message-less assert compiles to a single fused test-and-raise opcode
-    /// ([`Opcode::Assert`] / [`Opcode::AssertCmp`]) — one dispatch on the
-    /// passing path, introspection (`AssertionError: assert 2 == 5`) on
-    /// failure. An explicit `assert test, msg` message must only be evaluated
-    /// on failure (matching CPython's lazy evaluation), so it keeps a branchy
-    /// shape: comparison operands are retained under a `Dup2` for the message
-    /// (`msg\nassert 2 == 5`), other tests keep the falsy value for its repr.
+    /// Bare asserts use fused opcodes on the passing path; explicit-message
+    /// asserts keep CPython's lazy message evaluation and retain operands only
+    /// on the failure path.
     fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
         if let Expr::CmpOp { left, op, right } = &test.expr {
             self.compile_expr(left)?;
@@ -3261,8 +3256,7 @@ impl<'a> Compiler<'a> {
             self.compile_expr(test)?;
             self.code.set_location(test.position, None);
             if let Some(msg_expr) = msg {
-                // Truthy: pop the test and skip the raise; falsy: jump KEEPING
-                // the test value on the stack for the failure message.
+                // Keep the falsy test value for the failure message.
                 let fail = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
                 let end = self.code.emit_jump(Opcode::Jump)?;
                 self.code.patch_jump(fail)?;

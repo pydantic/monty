@@ -40,7 +40,7 @@ values involved instead of a blank `AssertionError`.
 
 ## Formatting edge cases
 
-- Each operand's repr is truncated to 120 characters with a `...` suffix.
+- Each operand's repr is truncated to 120 characters with a `…` suffix.
 - If an operand's `__repr__` (or an explicit message's `__str__`) raises, that
   part is dropped rather than replacing the `AssertionError`: a bare assert
   falls back to a message-less `AssertionError`, an explicit-message assert
@@ -53,6 +53,10 @@ CPython's plain `AssertionError` behavior can be restored per session:
 - Rust: pass `CompileOptions { assert_message_annotations: false }` to
   `MontyRun::new` or `MontyRepl::new`.
 - Python: `pool.checkout(assert_message_annotations=False)`.
-- JavaScript: `pool.checkout({ assertMessageAnnotations: false })`.
+- JavaScript: `pool.checkout({ assertMessageAnnotations: false })`, or
+  `new Monty(..., { assertMessageAnnotations: false })` /
+  `new MontyRepl({ assertMessageAnnotations: false })` on the in-process API.
 
-All surfaces default to messages on.
+Monty's Rust, Python, JavaScript pool, and JavaScript in-process surfaces
+default to messages on. The CPython compatibility worker ignores this option
+and always uses CPython's plain `AssertionError` behavior.
