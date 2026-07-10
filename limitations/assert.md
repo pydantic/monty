@@ -36,6 +36,10 @@ values involved instead of a blank `AssertionError`.
 - When the test value is literally `False` no detail is appended, so
   `assert False, 'msg'` raises `AssertionError('msg')` — the same as CPython
   apart from the `str()` rendering of non-`str` messages.
+- A message that stringifies to the empty string is treated as absent, so only
+  the detail is shown: `assert 1 == 2, ''` raises `AssertionError('assert 1 == 2')`
+  (CPython raises `AssertionError('')`), and `assert False, ''` raises a
+  message-less `AssertionError`.
 - The message expression is still only evaluated on failure, as in CPython.
 
 ## Formatting edge cases
@@ -53,10 +57,9 @@ CPython's plain `AssertionError` behavior can be restored per session:
 - Rust: pass `CompileOptions { assert_message_annotations: false }` to
   `MontyRun::new` or `MontyRepl::new`.
 - Python: `pool.checkout(assert_message_annotations=False)`.
-- JavaScript: `pool.checkout({ assertMessageAnnotations: false })`, or
-  `new Monty(..., { assertMessageAnnotations: false })` /
-  `new MontyRepl({ assertMessageAnnotations: false })` on the in-process API.
+- JavaScript: `pool.checkout({ assertMessageAnnotations: false })` (both the
+  native and wasm-worker pools).
 
-Monty's Rust, Python, JavaScript pool, and JavaScript in-process surfaces
-default to messages on. The CPython compatibility worker ignores this option
-and always uses CPython's plain `AssertionError` behavior.
+Monty's Rust, Python, and JavaScript surfaces default to messages on. The
+CPython compatibility worker ignores this option and always uses CPython's
+plain `AssertionError` behavior.

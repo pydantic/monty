@@ -92,6 +92,12 @@ fn explicit_message_appends_detail() {
     ");
     assert_snapshot!(assert_msg("assert False, 'msg'"), @"msg");
     assert_snapshot!(assert_msg("assert False, 123"), @"123");
+    // An empty message is treated as absent: detail only, no leading newline.
+    assert_snapshot!(assert_msg("assert 1 == 2, ''"), @"assert 1 == 2");
+    // Empty message with no detail (`False`) yields a message-less error.
+    let err = get_err("assert False, ''");
+    assert_eq!(err.exc_type(), ExcType::AssertionError);
+    assert_eq!(err.message(), None);
 }
 
 #[test]

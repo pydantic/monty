@@ -213,6 +213,9 @@ impl<T: ResourceTracker> VM<'_, T> {
             Err(e) => return e,
         };
         let msg = match assert_msg_str(msg_value, this) {
+            // An empty message adds nothing, so treat it like an absent one and
+            // show only the detail — avoids a stray leading `\n` before `assert`.
+            Ok(msg) if msg.is_empty() => None,
             Ok(msg) => Some(msg),
             Err(RunError::Exc(_)) => None,
             Err(e) => return e,

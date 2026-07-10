@@ -120,12 +120,15 @@ s1 = set([1, 2])
 s2 = set([1, 2, 3])
 assert s1.issubset(s2) == True
 assert s2.issubset(s1) == False
+# non-Ref iterable argument (range) must not raise
+assert set([1, 2, 3]).issubset(range(10)) == True
 
 # === Issuperset ===
 s1 = set([1, 2, 3])
 s2 = set([1, 2])
 assert s1.issuperset(s2) == True
 assert s2.issuperset(s1) == False
+assert set([1, 2, 3]).issuperset(range(1, 3)) == True
 
 # === Isdisjoint ===
 s1 = set([1, 2])
@@ -133,6 +136,7 @@ s2 = set([3, 4])
 s3 = set([2, 3])
 assert s1.isdisjoint(s2) == True
 assert s1.isdisjoint(s3) == False
+assert set([1, 2, 3]).isdisjoint(range(10, 20)) == True
 
 # === Bool ===
 assert bool(set()) == False
@@ -140,6 +144,18 @@ assert bool(set([1])) == True
 
 # === repr ===
 assert repr(set()) == 'set()'
+# non-empty set repr has no type prefix; frozenset repr does
+assert repr({1, 2}) == '{1, 2}' or repr({1, 2}) == '{2, 1}', 'set repr should not have a type prefix'
+assert repr(frozenset()) == 'frozenset()'
+fs_repr = repr(frozenset({1, 2}))
+assert fs_repr == 'frozenset({1, 2})' or fs_repr == 'frozenset({2, 1})', 'frozenset repr should include the type name'
+
+# === Construction with nested heap objects ===
+# The temporary list argument is dropped after construction; a missed refcount
+# increment on the nested tuple would corrupt these.
+assert repr(set([(1, 2)])) == '{(1, 2)}'
+assert repr(set([(3, 4)])) == '{(3, 4)}'
+assert repr(frozenset([(5, 6)])) == 'frozenset({(5, 6)})'
 
 # === Set literals ===
 s = {1, 2, 3}
