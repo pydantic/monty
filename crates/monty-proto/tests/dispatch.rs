@@ -6,8 +6,11 @@
 //! toolchain.
 
 use monty::MontyObject;
-use monty_proto::{FrameReader, MONTY_VERSION, WireObject, pb, write_frame};
-use monty_worker::{Child, HandleOutcome, dispatch_frame};
+use monty_proto::{
+    FrameReader, MONTY_VERSION, WireObject, pb,
+    worker::{Child, HandleOutcome, dispatch_frame},
+    write_frame,
+};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {

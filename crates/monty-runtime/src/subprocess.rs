@@ -1,6 +1,6 @@
 //! `monty subprocess`: protocol child mode.
 //!
-//! A thin stdio shell around [`monty_worker::Child`] (the transport-agnostic
+//! A thin stdio shell around [`monty_proto::worker::Child`] (the transport-agnostic
 //! state machine). Reads framed [`pb::ParentRequest`]s from stdin and writes
 //! the [`pb::ChildEvent`]s the child emits to stdout (see `monty-proto` for the
 //! schema and protocol rules). The child is strictly turn-based: one request
@@ -15,8 +15,11 @@
 
 use std::{io, panic, process::ExitCode};
 
-use monty_proto::{FrameError, FrameReader, pb, write_frame};
-use monty_worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation};
+use monty_proto::{
+    FrameError, FrameReader, pb,
+    worker::{Child, EventSink, HandleOutcome, fatal_error_event, protocol_violation},
+    write_frame,
+};
 
 /// Runs the subprocess child loop until EOF, `Shutdown`, or a fatal error.
 pub(crate) fn run() -> ExitCode {

@@ -9,6 +9,8 @@ mod generated;
 pub mod python;
 mod requirement;
 mod wire;
+#[cfg(feature = "worker")]
+pub mod worker;
 
 /// The monty version this build speaks the wire protocol as, used for the
 /// `Configure.monty_version` skew check. Parent and child must be deployed in

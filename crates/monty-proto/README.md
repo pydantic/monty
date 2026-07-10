@@ -54,6 +54,12 @@ untrusted input: conversions from proto to Rust are fallible by design,
 decoding enforces depth and size budgets, and nothing in this crate panics on
 malformed wire data.
 
+## Worker state machine
+
+This crate includes the `worker` feature and module
+
+A transport-agnostic Monty protocol-child state machine, shared by the native subprocess and the wasm worker.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

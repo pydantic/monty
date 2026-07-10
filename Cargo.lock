@@ -2117,6 +2117,7 @@ name = "monty-proto"
 version = "0.0.19-beta.2"
 dependencies = [
  "monty",
+ "monty-type-checking",
  "num-bigint",
  "prost",
  "prost-build",
@@ -2132,7 +2133,6 @@ dependencies = [
  "monty",
  "monty-proto",
  "monty-type-checking",
- "monty-worker",
  "rustyline",
  "tempfile",
 ]
@@ -2171,20 +2171,9 @@ name = "monty-wasm-runtime"
 version = "0.0.19-beta.2"
 dependencies = [
  "monty-proto",
- "monty-worker",
  "prost",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "monty-worker"
-version = "0.0.19-beta.2"
-dependencies = [
- "monty",
- "monty-proto",
- "monty-type-checking",
- "prost",
 ]
 
 [[package]]

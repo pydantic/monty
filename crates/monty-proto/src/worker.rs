@@ -22,12 +22,13 @@ use monty::{
     ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
-use monty_proto::{
+use monty_type_checking::{SourceFile, type_check};
+use prost::Message;
+
+use super::{
     FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, WireOsCall, build_mount_table,
     exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
-use monty_type_checking::{SourceFile, type_check};
-use prost::Message;
 
 /// The child always runs with `LimitedTracker`: an absent/empty limits message
 /// behaves like `ResourceLimits::new()`, and a single tracker type keeps the

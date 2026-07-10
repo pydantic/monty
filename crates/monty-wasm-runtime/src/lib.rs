@@ -1,7 +1,7 @@
 //! The lean wasip1 Monty worker.
 //!
 //! This is the browser/wasm analog of `monty subprocess`: a [`Child`] state
-//! machine ([`monty_worker`]) driven one protocol turn per call. Where the
+//! machine ([`monty_proto::worker`]) driven one protocol turn per call. Where the
 //! native subprocess loops forever reading framed requests from a pipe, the
 //! wasm worker is event-driven — the host (a Web Worker drive loop) hands it one
 //! request frame per `postMessage` and reads back that turn's reply frames — so
@@ -33,8 +33,10 @@ use std::{
     io::{self, Read, Write},
 };
 
-use monty_proto::{decode_frame, pb};
-use monty_worker::{Child, HandleOutcome, dispatch_frame};
+use monty_proto::{
+    decode_frame, pb,
+    worker::{Child, HandleOutcome, dispatch_frame},
+};
 use pb::child_event::Kind;
 use prost::Message;
 use serde::Serialize;
