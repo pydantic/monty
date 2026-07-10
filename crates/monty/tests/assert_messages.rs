@@ -49,9 +49,23 @@ fn falsy_value_fallback() {
     assert_snapshot!(assert_msg("assert 0"), @"assert 0");
     assert_snapshot!(assert_msg("assert None"), @"assert None");
     assert_snapshot!(assert_msg("assert ''"), @"assert ''");
-    // `not` / chained comparisons / boolean ops evaluate to a bool first.
-    assert_snapshot!(assert_msg("assert not True"), @"assert False");
-    assert_snapshot!(assert_msg("assert 1 < 2 > 3"), @"assert False");
+}
+
+#[test]
+fn false_test_value_carries_no_message() {
+    // `assert False` restates what a failed assert already implies, so tests
+    // that evaluate to the bool `False` (`not` expressions, chained
+    // comparisons, boolean ops) raise a plain AssertionError like CPython.
+    for code in [
+        "assert False",
+        "assert not True",
+        "assert 1 < 2 > 3",
+        "x = False\nassert x",
+    ] {
+        let err = get_err(code);
+        assert_eq!(err.exc_type(), ExcType::AssertionError);
+        assert_eq!(err.message(), None, "expected no message for {code:?}");
+    }
 }
 
 #[test]
@@ -78,15 +92,11 @@ fn explicit_message_appends_detail() {
     no items
     assert []
     ");
-    assert_snapshot!(assert_msg("assert False, 'msg'"), @r"
-    msg
-    assert False
-    ");
+    // A `False` test value adds no detail line — the message alone is used,
+    // exactly matching CPython.
+    assert_snapshot!(assert_msg("assert False, 'msg'"), @"msg");
     // Non-str messages are rendered with str().
-    assert_snapshot!(assert_msg("assert False, 123"), @r"
-    123
-    assert False
-    ");
+    assert_snapshot!(assert_msg("assert False, 123"), @"123");
 }
 
 #[test]

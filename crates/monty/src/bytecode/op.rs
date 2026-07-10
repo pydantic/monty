@@ -565,48 +565,32 @@ pub enum Opcode {
 /// part of the serialized `Code` format and needs a stable u8 repr, which
 /// `CmpOperator` does not have. Append new variants at the end to keep
 /// serialized bytes stable.
+///
+/// `Display` (via strum) renders the source-level symbol used in failure
+/// messages, e.g. `==` or `not in`.
 #[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, strum::Display)]
 pub enum AssertCmpOp {
-    /// `==`
+    #[strum(serialize = "==")]
     Eq,
-    /// `!=`
+    #[strum(serialize = "!=")]
     NotEq,
-    /// `<`
+    #[strum(serialize = "<")]
     Lt,
-    /// `<=`
+    #[strum(serialize = "<=")]
     LtE,
-    /// `>`
+    #[strum(serialize = ">")]
     Gt,
-    /// `>=`
+    #[strum(serialize = ">=")]
     GtE,
-    /// `is`
+    #[strum(serialize = "is")]
     Is,
-    /// `is not`
+    #[strum(serialize = "is not")]
     IsNot,
-    /// `in`
+    #[strum(serialize = "in")]
     In,
-    /// `not in`
+    #[strum(serialize = "not in")]
     NotIn,
-}
-
-impl AssertCmpOp {
-    /// Source-level symbol used in the failure message, e.g. `"=="`, `"not in"`.
-    #[must_use]
-    pub fn symbol(self) -> &'static str {
-        match self {
-            Self::Eq => "==",
-            Self::NotEq => "!=",
-            Self::Lt => "<",
-            Self::LtE => "<=",
-            Self::Gt => ">",
-            Self::GtE => ">=",
-            Self::Is => "is",
-            Self::IsNot => "is not",
-            Self::In => "in",
-            Self::NotIn => "not in",
-        }
-    }
 }
 
 impl TryFrom<u8> for Opcode {

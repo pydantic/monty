@@ -68,15 +68,21 @@ test('name error', async () => {
 })
 
 test('assertion error', async () => {
-  // Monty gives bare asserts a pytest-style message (see limitations/assert.md)
+  // `assert False` adds no information, so no pytest-style detail is added
+  // (see limitations/assert.md)
   const error = await t.throwsAsync(() => run('assert False'), isRuntimeError)
-  t.is(error.message, 'AssertionError: assert False')
+  t.is(error.message, 'AssertionError')
 })
 
 test('assertion error with message', async () => {
-  // the introspected detail is appended on a new line after the explicit message
   const error = await t.throwsAsync(() => run('assert False, "custom message"'), isRuntimeError)
-  t.is(error.message, 'AssertionError: custom message\nassert False')
+  t.is(error.message, 'AssertionError: custom message')
+})
+
+test('assertion error with introspected detail', async () => {
+  // failed comparisons get a pytest-style message (see limitations/assert.md)
+  const error = await t.throwsAsync(() => run('assert 1 == 2'), isRuntimeError)
+  t.is(error.message, 'AssertionError: assert 1 == 2')
 })
 
 test('runtime error', async () => {

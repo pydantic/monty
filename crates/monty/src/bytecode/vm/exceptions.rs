@@ -121,21 +121,24 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Builds the `AssertionError` for a failed bare `assert` (no explicit message),
     /// popping the operands named by `cmp_op` (see [`assert_detail`](Self::assert_detail)).
     ///
-    /// If formatting raises a catchable exception (user `__repr__` raised, recursion),
+    /// If the detail carries no information (the test value was literally `False`),
+    /// or formatting raises a catchable exception (user `__repr__` raised, recursion),
     /// falls back to a message-less `AssertionError` — the repr is best-effort detail
     /// and must never replace the assertion failure itself. Terminal errors
     /// (`Internal`, resource exhaustion) propagate instead.
     pub(super) fn assert_failed(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {
         match self.assert_detail(cmp_op) {
-            Ok(detail) => self.assertion_error(Some(format!("assert {detail}"))),
-            Err(RunError::Exc(_)) => self.assertion_error(None),
+            Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
+            Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
             Err(e) => e,
         }
     }
 
     /// Builds the `AssertionError` for a failed `assert test, msg`: the explicit
     /// message on the first line with the introspected detail appended on a new
-    /// line, e.g. `my msg\nassert 2 == 5`.
+    /// line, e.g. `my msg\nassert 2 == 5`. When the detail carries no information
+    /// (test value literally `False`) only the message is used — CPython's exact
+    /// behavior.
     ///
     /// Stack: [..., operands..., msg]. Same fallback policy as
     /// [`assert_failed`](Self::assert_failed) — whichever of message/detail
@@ -148,7 +151,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Format the operands first so they are popped and released even if
         // the message itself fails to stringify.
         let detail = match this.assert_detail(cmp_op) {
-            Ok(detail) => Some(detail),
+            Ok(detail) => detail,
             Err(RunError::Exc(_)) => None,
             Err(e) => return e,
         };
@@ -170,9 +173,14 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// comparison assert (`Some(cmp_op)`, stack `[..., lhs, rhs]`), or the falsy
     /// test value's repr otherwise (stack `[..., test]`).
     ///
+    /// Returns `Ok(None)` when the test value is literally `False` (e.g. a `not`
+    /// expression or chained comparison) — `assert False` restates what a failed
+    /// assert already implies, so it is pure clutter. Other falsy values (`[]`,
+    /// `0`, `None`, `''`) still show their repr.
+    ///
     /// The operands are dropped on every path — including a mid-format `Err` —
     /// via `defer_drop!` guards.
-    fn assert_detail(&mut self, cmp_op: Option<AssertCmpOp>) -> RunResult<String> {
+    fn assert_detail(&mut self, cmp_op: Option<AssertCmpOp>) -> RunResult<Option<String>> {
         let this = self;
         if let Some(op) = cmp_op {
             let rhs = this.pop();
@@ -181,11 +189,15 @@ impl<T: ResourceTracker> VM<'_, T> {
             defer_drop!(lhs, this);
             let lhs_repr = assert_operand_repr(lhs, this)?;
             let rhs_repr = assert_operand_repr(rhs, this)?;
-            Ok(format!("{lhs_repr} {} {rhs_repr}", op.symbol()))
+            Ok(Some(format!("{lhs_repr} {op} {rhs_repr}")))
         } else {
             let test = this.pop();
             defer_drop!(test, this);
-            assert_operand_repr(test, this)
+            if matches!(test, Value::Bool(false)) {
+                Ok(None)
+            } else {
+                assert_operand_repr(test, this).map(Some)
+            }
         }
     }
 

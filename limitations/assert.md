@@ -17,10 +17,12 @@ values involved instead of a blank `AssertionError`.
   once — side effects are not duplicated.
 - Any other failing test shows the falsy value's repr instead:
   `assert []` → `assert []`, `assert None` → `assert None`,
-  `assert 0` → `assert 0`.
-- Chained comparisons (`assert 1 < 2 > 3`), `not` expressions, and boolean
-  operators evaluate to a `bool` first, so their message degrades to
-  `assert False`.
+  `assert 0` → `assert 0` — except `False` itself, which adds no information:
+  `assert False` raises a plain message-less `AssertionError`, exactly like
+  CPython.
+- Consequently chained comparisons (`assert 1 < 2 > 3`), `not` expressions,
+  and boolean operators — which evaluate to a `bool` first — carry no message
+  when they fail, matching CPython.
 
 ## `assert test, msg` appends the detail on a new line
 
@@ -29,8 +31,11 @@ values involved instead of a blank `AssertionError`.
   `AssertionError('my message')`.
 - Consequently `e.args[0]` contains the combined string, not the original
   message object. Non-`str` messages are rendered with `str()`
-  (`assert False, 123` → `123\nassert False`); CPython stores the object
+  (`assert [], 123` → `123\nassert []`); CPython stores the object
   itself in `e.args`.
+- When the test value is literally `False` no detail is appended, so
+  `assert False, 'msg'` raises `AssertionError('msg')` — the same as CPython
+  apart from the `str()` rendering of non-`str` messages.
 - The message expression is still only evaluated on failure, as in CPython.
 
 ## Formatting edge cases
