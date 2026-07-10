@@ -126,14 +126,14 @@ fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, impl ResourceTracker>) -> RunR
     vm.json_string_cache = cache;
     let value = result.map_err(|error| match error {
         JsonLoadError::Parse(error) => json_number_out_of_range_to_run_error(&error, bytes)
-            .unwrap_or_else(|| json_error_to_run_error(&error, &jiter, bytes)),
+            .unwrap_or_else(|| json_error_to_run_error(&error, bytes)),
         JsonLoadError::Run(error) => error,
     })?;
     // The successfully parsed `value` must be dropped via `drop_with` if
     // `finish()` detects trailing data — a plain `?` would leak its refcount.
     if let Err(error) = jiter.finish() {
         value.drop_with(vm);
-        return Err(json_error_to_run_error(&error, &jiter, bytes));
+        return Err(json_error_to_run_error(&error, bytes));
     }
     Ok(value)
 }
@@ -382,14 +382,13 @@ fn is_json_number_byte(byte: u8) -> bool {
 
 /// Converts a `jiter` parse error into `json.JSONDecodeError`.
 ///
-/// `jiter` exposes the error byte index plus a helper for computing line and
-/// column, which is enough to reproduce CPython's message suffix exactly.
-fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) -> RunError {
-    let (message, index, column_offset) = match &error.error_type {
+/// `jiter` exposes the error byte index; [`error_coordinates`] converts it to
+/// the character-based `pos`/`lineno`/`colno` CPython reports.
+fn json_error_to_run_error(error: &JiterError, bytes: &[u8]) -> RunError {
+    let (message, index) = match &error.error_type {
         JiterErrorType::JsonError(JsonErrorType::KeyMustBeAString) => (
             "Expecting property name enclosed in double quotes".to_owned(),
             error.index,
-            0,
         ),
         JiterErrorType::JsonError(JsonErrorType::TrailingComma) => {
             let comma_index = find_trailing_comma_index(bytes, error.index).unwrap_or(error.index);
@@ -401,25 +400,22 @@ fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) 
                 Some(b']') => "Illegal trailing comma before end of array",
                 _ => "trailing comma",
             };
-            (message.to_owned(), comma_index, 0)
+            (message.to_owned(), comma_index)
         }
         JiterErrorType::JsonError(JsonErrorType::EofWhileParsingString) => (
             "Unterminated string starting at".to_owned(),
             find_unterminated_string_start(bytes, error.index).unwrap_or(error.index),
-            0,
         ),
         JiterErrorType::JsonError(JsonErrorType::EofWhileParsingValue | JsonErrorType::ExpectedSomeValue) => {
-            ("Expecting value".to_owned(), error.index, 0)
+            ("Expecting value".to_owned(), error.index)
         }
-        JiterErrorType::JsonError(JsonErrorType::ExpectedColon) => {
-            ("Expecting ':' delimiter".to_owned(), error.index, 0)
-        }
+        JiterErrorType::JsonError(JsonErrorType::ExpectedColon) => ("Expecting ':' delimiter".to_owned(), error.index),
         JiterErrorType::JsonError(
             JsonErrorType::ExpectedListCommaOrEnd
             | JsonErrorType::ExpectedObjectCommaOrEnd
             | JsonErrorType::EofWhileParsingList
             | JsonErrorType::EofWhileParsingObject,
-        ) => ("Expecting ',' delimiter".to_owned(), error.index, 1),
+        ) => ("Expecting ',' delimiter".to_owned(), error.index),
         JiterErrorType::JsonError(JsonErrorType::InvalidEscape) => {
             let escape_index = find_string_escape_start(bytes, error.index).unwrap_or(error.index);
             let is_unicode_escape = bytes.get(escape_index.saturating_add(1)) == Some(&b'u');
@@ -433,18 +429,41 @@ fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) 
             } else {
                 escape_index
             };
-            (message.to_owned(), index, 0)
+            (message.to_owned(), index)
         }
-        JiterErrorType::JsonError(JsonErrorType::TrailingCharacters) => ("Extra data".to_owned(), error.index, 0),
-        JiterErrorType::JsonError(error_type) => (error_type.to_string(), error.index, 0),
-        JiterErrorType::WrongType { .. } => (error.error_type.to_string(), error.index, 0),
+        JiterErrorType::JsonError(JsonErrorType::TrailingCharacters) => ("Extra data".to_owned(), error.index),
+        JiterErrorType::JsonError(error_type) => (error_type.to_string(), error.index),
+        JiterErrorType::WrongType { .. } => (error.error_type.to_string(), error.index),
     };
-    let mut position = jiter.error_position(index);
-    if position.column == 0 {
-        position.column = 1;
+    let (pos, line, column) = error_coordinates(bytes, index);
+    ExcType::json_decode_error(&message, bytes, line, column, pos)
+}
+
+/// CPython-style error coordinates `(pos, lineno, colno)` for a byte offset
+/// into `bytes`: `pos` counts characters (UTF-8 sequence starts, not bytes),
+/// and `colno` is characters since the last newline + 1 — locked to `pos`
+/// exactly as `json.JSONDecodeError.__init__` derives them from `doc`.
+///
+/// This deliberately replaces `jiter`'s `error_position`, which counts bytes
+/// (wrong for multibyte documents) and clamps at end of input (wrong column
+/// for EOF errors).
+fn error_coordinates(bytes: &[u8], byte_index: usize) -> (usize, usize, usize) {
+    let prefix = &bytes[..byte_index.min(bytes.len())];
+    let mut pos = 0;
+    let mut lineno = 1;
+    let mut column_chars = 0;
+    for &byte in prefix {
+        // a character starts at every byte that is not a UTF-8 continuation byte
+        if !matches!(byte, 0x80..=0xBF) {
+            pos += 1;
+            column_chars += 1;
+        }
+        if byte == b'\n' {
+            lineno += 1;
+            column_chars = 0;
+        }
     }
-    position.column += column_offset;
-    ExcType::json_decode_error(&message, bytes, position.line, position.column, index)
+    (pos, lineno, column_chars + 1)
 }
 
 /// Finds the opening quote for an unterminated JSON string.

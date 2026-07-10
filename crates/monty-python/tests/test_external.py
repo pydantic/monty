@@ -404,7 +404,7 @@ def test_external_function_exception_hierarchy(
         (IndexError, LookupError, 'child'),
         # ImportError hierarchy
         (ModuleNotFoundError, ImportError, 'child'),
-        # OSError hierarchy (TimeoutError is a subclass since Python 3.10)
+        # OSError hierarchy (TimeoutError is a subclass since Python 3.3)
         (TimeoutError, OSError, 'child'),
     ],
 )

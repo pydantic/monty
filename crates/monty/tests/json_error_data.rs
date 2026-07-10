@@ -30,6 +30,19 @@ fn json_decode_error_carries_structured_data() {
     assert_eq!(data.colno, 2);
 }
 
+/// `pos`/`colno` count characters like CPython, not `jiter`'s byte offsets —
+/// multibyte UTF-8 before the error must not inflate them.
+#[test]
+fn json_error_positions_count_characters_not_bytes() {
+    let exc = run_exc("import json\njson.loads('[\"日本語\", x]')");
+    assert_eq!(exc.message(), Some("Expecting value: line 1 column 9 (char 8)"));
+    let data = exc.json_data().unwrap();
+    assert_eq!(data.doc.as_deref(), Some("[\"日本語\", x]"));
+    assert_eq!(data.pos, 8);
+    assert_eq!(data.lineno, 1);
+    assert_eq!(data.colno, 9);
+}
+
 #[test]
 fn json_error_data_survives_reraise() {
     let exc = run_exc("import json\ntry:\n    json.loads('nope')\nexcept ValueError as e:\n    raise e");

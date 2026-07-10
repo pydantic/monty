@@ -123,7 +123,7 @@ pub enum ExcType {
     /// CPython.
     #[strum(serialize = "io.UnsupportedOperation")]
     UnsupportedOperation,
-    /// Subclass of OSError since Python 3.10 (when it absorbed `socket.timeout`).
+    /// Subclass of OSError since Python 3.3 (PEP 3151).
     TimeoutError,
 
     // --- Standalone exception types ---
@@ -192,7 +192,7 @@ impl ExcType {
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
             // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
             // NotADirectoryError, PermissionError, io.UnsupportedOperation, and
-            // TimeoutError (an OSError subclass since Python 3.10)
+            // TimeoutError (an OSError subclass since Python 3.3)
             Self::OSError => matches!(
                 self,
                 Self::FileNotFoundError

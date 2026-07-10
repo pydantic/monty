@@ -334,7 +334,7 @@ except RuntimeError:
 assert caught_recursion_by_runtime, 'RuntimeError should catch RecursionError'
 
 # === Exception hierarchy: OSError ===
-# OSError should catch TimeoutError (subclass since Python 3.10)
+# OSError should catch TimeoutError (subclass since Python 3.3)
 caught_timeout_by_oserror = False
 try:
     raise TimeoutError('timed out')

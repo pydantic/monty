@@ -332,7 +332,8 @@ pub struct JsonErrorData {
     /// Bare error message, without the ": line N column M (char K)" suffix.
     #[prost(string, tag = "1")]
     pub msg: ::prost::alloc::string::String,
-    /// The document being parsed; absent when larger than the sender's size cap.
+    /// The document being parsed; absent when larger than the sender's size cap
+    /// or when bytes input is not valid UTF-8.
     #[prost(string, optional, tag = "2")]
     pub doc: ::core::option::Option<::prost::alloc::string::String>,
     /// Character index of the error in `doc`.

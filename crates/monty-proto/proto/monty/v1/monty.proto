@@ -249,7 +249,8 @@ message UnicodeErrorData {
 message JsonErrorData {
   // Bare error message, without the ": line N column M (char K)" suffix.
   string msg = 1;
-  // The document being parsed; absent when larger than the sender's size cap.
+  // The document being parsed; absent when larger than the sender's size cap
+  // or when bytes input is not valid UTF-8.
   optional string doc = 2;
   // Character index of the error in `doc`.
   uint64 pos = 3;

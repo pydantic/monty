@@ -269,7 +269,7 @@ fn py_err_to_exc_type(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcType {
                 ExcType::NotADirectoryError
             } else if exceptions::PyPermissionError::type_check(exc) {
                 ExcType::PermissionError
-            // TimeoutError is an OSError subclass since Python 3.10, so it must
+            // TimeoutError is an OSError subclass since Python 3.3, so it must
             // be matched here — a standalone check after this branch is dead code
             } else if exceptions::PyTimeoutError::type_check(exc) {
                 ExcType::TimeoutError
