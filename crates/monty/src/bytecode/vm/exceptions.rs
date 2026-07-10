@@ -9,7 +9,7 @@ use crate::{
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{CmpOrder, PyTrait, Type},
     value::Value,
 };
 
@@ -118,16 +118,82 @@ impl<T: ResourceTracker> VM<'_, T> {
         })
     }
 
-    /// Builds the `AssertionError` for a failed bare `assert` (no explicit message),
-    /// popping the operands named by `cmp_op` (see [`assert_detail`](Self::assert_detail)).
-    ///
-    /// If the detail carries no information (the test value was literally `False`),
-    /// or formatting raises a catchable exception (user `__repr__` raised, recursion),
-    /// falls back to a message-less `AssertionError` — the repr is best-effort detail
-    /// and must never replace the assertion failure itself. Terminal errors
-    /// (`Internal`, resource exhaustion) propagate instead.
-    pub(super) fn assert_failed(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {
-        match self.assert_detail(cmp_op) {
+    /// Fused bare `assert test` ([`Opcode::Assert`](crate::bytecode::op::Opcode::Assert)):
+    /// pops the test value and returns `Ok` when truthy. A falsy value raises
+    /// `AssertionError('assert {test!r}')`, or a message-less `AssertionError`
+    /// for a literal `False` — `assert False` restates what a failed assert
+    /// already implies, so it is pure clutter (other falsy values like `[]`,
+    /// `0`, `None`, `''` still show their repr).
+    pub(super) fn assert_test(&mut self) -> Result<(), RunError> {
+        let this = self;
+        let test = this.pop();
+        defer_drop!(test, this);
+        if test.py_bool(this) {
+            Ok(())
+        } else if matches!(test, Value::Bool(false)) {
+            Err(this.assertion_error(None))
+        } else {
+            let detail = assert_operand_repr(test, this).map(Some);
+            Err(this.assert_failure(detail))
+        }
+    }
+
+    /// Fused bare `assert lhs OP rhs` ([`Opcode::AssertCmp`](crate::bytecode::op::Opcode::AssertCmp)):
+    /// pops both operands and runs the comparison with the same semantics as
+    /// the `Compare*` opcodes — including their `TypeError` for incomparable
+    /// ordering operands. Returns `Ok` when the comparison holds; otherwise
+    /// raises `AssertionError('assert {lhs!r} {op} {rhs!r}')`.
+    pub(super) fn assert_cmp(&mut self, op: AssertCmpOp) -> Result<(), RunError> {
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+        let passed = match op {
+            AssertCmpOp::Eq => lhs.py_eq(rhs, this)?,
+            AssertCmpOp::NotEq => !lhs.py_eq(rhs, this)?,
+            AssertCmpOp::Is => lhs.is(rhs, this),
+            AssertCmpOp::IsNot => !lhs.is(rhs, this),
+            AssertCmpOp::In => rhs.py_contains(lhs, this)?,
+            AssertCmpOp::NotIn => !rhs.py_contains(lhs, this)?,
+            AssertCmpOp::Lt | AssertCmpOp::LtE | AssertCmpOp::Gt | AssertCmpOp::GtE => {
+                match lhs.py_cmp(rhs, this)? {
+                    CmpOrder::Ordered(ordering) => match op {
+                        AssertCmpOp::Lt => ordering.is_lt(),
+                        AssertCmpOp::LtE => ordering.is_le(),
+                        AssertCmpOp::Gt => ordering.is_gt(),
+                        _ => ordering.is_ge(),
+                    },
+                    // NaN involved: CPython yields False for every ordering
+                    // operator, so the assert fails and shows the operands.
+                    CmpOrder::Unordered => false,
+                    CmpOrder::Incomparable => {
+                        let left_type = lhs.py_type_name(this);
+                        let right_type = rhs.py_type_name(this);
+                        return Err(ExcType::type_error_ordering(&op.to_string(), &left_type, &right_type));
+                    }
+                }
+            }
+        };
+        if passed {
+            Ok(())
+        } else {
+            let detail = assert_operand_repr(lhs, this).and_then(|lhs_repr| {
+                let rhs_repr = assert_operand_repr(rhs, this)?;
+                Ok(Some(format!("{lhs_repr} {op} {rhs_repr}")))
+            });
+            Err(this.assert_failure(detail))
+        }
+    }
+
+    /// Wraps a formatted assert detail into the raised `AssertionError`:
+    /// `Ok(Some(detail))` becomes `assert {detail}`, while a no-information
+    /// detail or a catchable formatting failure (user `__repr__` raised,
+    /// recursion) falls back to a message-less `AssertionError` — the repr is
+    /// best-effort and must never replace the assertion failure itself.
+    /// Terminal errors (`Internal`, resource exhaustion) propagate instead.
+    fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
+        match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
             Ok(None) | Err(RunError::Exc(_)) => self.assertion_error(None),
             Err(e) => e,
@@ -141,7 +207,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// behavior.
     ///
     /// Stack: [..., operands..., msg]. Same fallback policy as
-    /// [`assert_failed`](Self::assert_failed) — whichever of message/detail
+    /// [`assert_failure`](Self::assert_failure) — whichever of message/detail
     /// formats successfully is used, so a failing operand `__repr__` still
     /// surfaces the user's message (and vice versa).
     pub(super) fn assert_failed_msg(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {

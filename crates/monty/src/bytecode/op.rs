@@ -520,45 +520,51 @@ pub enum Opcode {
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     MethodDictMerge,
 
-    // === Assert failure messages ===
+    // === Assert statements ===
     // Pytest-style introspected messages for failing `assert` statements — a
     // deliberate CPython divergence (see limitations/assert.md), can be disabled
     // via `CompileOptions::assert_message_annotations`.
-    /// Raise `AssertionError('assert {test!r}')` for a failed bare `assert test`.
+    /// Fused bare `assert test` (no explicit message): pop the test value and
+    /// fall through if truthy; raise `AssertionError('assert {test!r}')` if
+    /// falsy (message-less when the value is literally `False`).
     ///
-    /// Stack: [..., test] -> (raises)
-    /// Pops the falsy test value and formats its repr into the message. Always
-    /// raises — fall-through is dead code, like `Raise`.
+    /// Stack: [..., test] -> [...]
+    /// Fusing the truthiness test into the raiser makes a passing assert a
+    /// single dispatch — no branch, no separate raise block.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
-    AssertFailed,
-    /// Raise `AssertionError('assert {lhs!r} {op} {rhs!r}')` for a failed bare
-    /// `assert lhs OP rhs`. Operand: u8 [`AssertCmpOp`] discriminant (via `FromRepr`).
+    Assert,
+    /// Fused bare `assert lhs OP rhs` (no explicit message): pop both
+    /// operands, run the comparison, and fall through if truthy; raise
+    /// `AssertionError('assert {lhs!r} {op} {rhs!r}')` if falsy. Operand: u8
+    /// [`AssertCmpOp`] discriminant (via `FromRepr`).
     ///
-    /// Stack: [..., lhs, rhs] -> (raises)
-    /// The compiler keeps the original operands alive under a `Dup2` + compare
-    /// so this opcode can show the actual values. Always raises.
+    /// Stack: [..., lhs, rhs] -> [...]
+    /// Runs the same comparison semantics as the `Compare*` opcodes (including
+    /// their `TypeError` for incomparable operands), so a passing comparison
+    /// assert is one dispatch instead of `Dup2`/compare/branch/`Pop`s.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
-    AssertFailedCmp,
+    AssertCmp,
     /// Raise `AssertionError('{msg}\nassert {test!r}')` for a failed
     /// `assert test, msg` — the explicit message with the introspected detail
     /// appended on a new line.
     ///
     /// Stack: [..., test, msg] -> (raises)
-    /// The msg expression is only evaluated on the failure path, matching
-    /// CPython's lazy evaluation. Always raises.
+    /// The msg expression is only evaluated on the failure path (matching
+    /// CPython's lazy evaluation), so message asserts keep the branchy shape
+    /// instead of fusing like [`Opcode::Assert`]. Always raises.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     AssertFailedMsg,
     /// Raise `AssertionError('{msg}\nassert {lhs!r} {op} {rhs!r}')` for a failed
     /// `assert lhs OP rhs, msg`. Operand: u8 [`AssertCmpOp`] discriminant.
     ///
     /// Stack: [..., lhs, rhs, msg] -> (raises)
-    /// Combines [`Opcode::AssertFailedCmp`] introspection with the explicit
+    /// Combines [`Opcode::AssertCmp`] introspection with the explicit
     /// message on the first line. Always raises.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     AssertFailedCmpMsg,
 }
 
-/// Comparison operator carried as the u8 operand of [`Opcode::AssertFailedCmp`] /
+/// Comparison operator carried as the u8 operand of [`Opcode::AssertCmp`] /
 /// [`Opcode::AssertFailedCmpMsg`].
 ///
 /// A dedicated enum (rather than reusing `CmpOperator`) because the operand is
@@ -805,11 +811,12 @@ impl Opcode {
             // code, but the tracker absorbs the bytes with effect 0 before the
             // following region starts.
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
-            // Assert-failure raisers pop their message operands then raise —
-            // fall-through is dead code, like `RaiseUnboundLocal`.
-            (AssertFailed, Operand::None) => -1,
+            // Fused asserts pop their operands and fall through on success;
+            // the message-carrying raisers always raise (fall-through is dead
+            // code, like `RaiseUnboundLocal`) but pop the same way.
+            (Assert, Operand::None) => -1,
             (AssertFailedMsg, Operand::None) => -2,
-            (AssertFailedCmp, Operand::U8(_)) => -2,
+            (AssertCmp, Operand::U8(_)) => -2,
             (AssertFailedCmpMsg, Operand::U8(_)) => -3,
 
             // === Fixed-effect, U16U16 operand ===
@@ -906,9 +913,10 @@ mod tests {
         // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
         // tail so older opcode bytes keep their discriminants.
         assert_eq!(Opcode::MethodDictMerge as u8, 118);
-        // Assert-failure message opcodes (pytest-style introspection).
-        assert_eq!(Opcode::AssertFailed as u8, 119);
-        assert_eq!(Opcode::AssertFailedCmp as u8, 120);
+        // Assert opcodes (pytest-style introspection): fused test-and-raise
+        // for bare asserts, raise-only for the lazy explicit-message forms.
+        assert_eq!(Opcode::Assert as u8, 119);
+        assert_eq!(Opcode::AssertCmp as u8, 120);
         assert_eq!(Opcode::AssertFailedMsg as u8, 121);
         assert_eq!(Opcode::AssertFailedCmpMsg as u8, 122);
     }

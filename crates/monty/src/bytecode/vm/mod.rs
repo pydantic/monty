@@ -1623,14 +1623,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     catch_sync!(self, cached_frame, error);
                 }
-                Opcode::AssertFailed => {
-                    let error = self.assert_failed(None);
-                    catch_sync!(self, cached_frame, error);
-                }
-                Opcode::AssertFailedCmp => {
+                Opcode::Assert => try_catch_sync!(self, cached_frame, self.assert_test()),
+                Opcode::AssertCmp => {
                     let op = AssertCmpOp::from_repr(cached_frame.fetch_u8()).expect("invalid AssertCmpOp in bytecode");
-                    let error = self.assert_failed(Some(op));
-                    catch_sync!(self, cached_frame, error);
+                    try_catch_sync!(self, cached_frame, self.assert_cmp(op));
                 }
                 Opcode::AssertFailedMsg => {
                     let error = self.assert_failed_msg(None);

@@ -3229,12 +3229,13 @@ impl<'a> Compiler<'a> {
     /// Compiles an assert statement with pytest-style failure introspection —
     /// a deliberate CPython divergence (see `limitations/assert.md`).
     ///
-    /// A top-level binary comparison keeps both operands alive under a `Dup2`
-    /// so the failure message can show the actual values
-    /// (`AssertionError: assert 2 == 5`); any other test shows the falsy
-    /// value's repr. An explicit `assert test, msg` message is compiled on the
-    /// failure path only (matching CPython's lazy evaluation) and rendered on
-    /// the first line with the detail appended: `msg\nassert 2 == 5`.
+    /// A message-less assert compiles to a single fused test-and-raise opcode
+    /// ([`Opcode::Assert`] / [`Opcode::AssertCmp`]) — one dispatch on the
+    /// passing path, introspection (`AssertionError: assert 2 == 5`) on
+    /// failure. An explicit `assert test, msg` message must only be evaluated
+    /// on failure (matching CPython's lazy evaluation), so it keeps a branchy
+    /// shape: comparison operands are retained under a `Dup2` for the message
+    /// (`msg\nassert 2 == 5`), other tests keep the falsy value for its repr.
     fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
         if let Expr::CmpOp { left, op, right } = &test.expr {
             self.compile_expr(left)?;
@@ -3242,37 +3243,37 @@ impl<'a> Compiler<'a> {
             // The caret/traceback range covers the whole comparison.
             self.code.set_location(test.position, None);
             let assert_op = assert_cmp_op(op);
-            self.code.emit(Opcode::Dup2)?;
-            self.code.emit(cmp_operator_to_opcode(op))?;
-            let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
-            // Failure: [lhs, rhs] retained for the message.
             if let Some(msg_expr) = msg {
+                self.code.emit(Opcode::Dup2)?;
+                self.code.emit(cmp_operator_to_opcode(op))?;
+                let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
+                // Failure: [lhs, rhs] retained for the message.
                 self.compile_expr(msg_expr)?;
                 self.code.set_location(test.position, None);
                 self.code.emit_u8(Opcode::AssertFailedCmpMsg, assert_op as u8)?;
+                // Success: drop the retained operands.
+                self.code.patch_jump(pass)?;
+                self.code.emit(Opcode::Pop)?;
+                self.code.emit(Opcode::Pop)?;
             } else {
-                self.code.emit_u8(Opcode::AssertFailedCmp, assert_op as u8)?;
+                self.code.emit_u8(Opcode::AssertCmp, assert_op as u8)?;
             }
-            // Success: drop the retained operands.
-            self.code.patch_jump(pass)?;
-            self.code.emit(Opcode::Pop)?;
-            self.code.emit(Opcode::Pop)?;
         } else {
             self.compile_expr(test)?;
             self.code.set_location(test.position, None);
-            // Truthy: pop the test and skip the raise; falsy: jump KEEPING the
-            // test value on the stack for the failure message.
-            let fail = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
-            let end = self.code.emit_jump(Opcode::Jump)?;
-            self.code.patch_jump(fail)?;
             if let Some(msg_expr) = msg {
+                // Truthy: pop the test and skip the raise; falsy: jump KEEPING
+                // the test value on the stack for the failure message.
+                let fail = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
+                let end = self.code.emit_jump(Opcode::Jump)?;
+                self.code.patch_jump(fail)?;
                 self.compile_expr(msg_expr)?;
                 self.code.set_location(test.position, None);
                 self.code.emit(Opcode::AssertFailedMsg)?;
+                self.code.patch_jump(end)?;
             } else {
-                self.code.emit(Opcode::AssertFailed)?;
+                self.code.emit(Opcode::Assert)?;
             }
-            self.code.patch_jump(end)?;
         }
         Ok(())
     }
@@ -4096,7 +4097,7 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
 }
 
 /// Maps a comparison operator to the [`AssertCmpOp`] operand of
-/// `AssertFailedCmp`/`AssertFailedCmpMsg`.
+/// `AssertCmp`/`AssertFailedCmpMsg`.
 fn assert_cmp_op(op: &CmpOperator) -> AssertCmpOp {
     match op {
         CmpOperator::Eq => AssertCmpOp::Eq,
