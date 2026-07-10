@@ -32,12 +32,14 @@ pub struct CompileOptions {
     /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
     /// CPython's empty `AssertionError`; see `limitations/assert.md`.
     /// Defaults to `true`; set to `false` to restore CPython's behavior.
-    pub assert_messages: bool,
+    pub assert_message_annotations: bool,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        Self { assert_messages: true }
+        Self {
+            assert_message_annotations: true,
+        }
     }
 }
 

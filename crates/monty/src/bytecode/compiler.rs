@@ -299,11 +299,11 @@ pub struct Compiler<'a> {
     /// removed at `exit_comprehension`, so sibling comps start fresh.
     bound_comp_slots: AHashSet<u16>,
 
-    /// [`CompileOptions::assert_messages`]: emit pytest-style introspected
+    /// [`CompileOptions::assert_message_annotations`]: emit pytest-style introspected
     /// failure messages for `assert` statements. Threaded into nested
     /// function/class-body compilers so `assert` behaves identically at
     /// every scope.
-    assert_messages: bool,
+    assert_message_annotations: bool,
 }
 
 /// Information about a loop for break/continue handling.
@@ -405,7 +405,7 @@ impl<'a> Compiler<'a> {
         functions: Vec<Function>,
         is_module_scope: bool,
         frame_locals: u16,
-        assert_messages: bool,
+        assert_message_annotations: bool,
     ) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
@@ -420,7 +420,7 @@ impl<'a> Compiler<'a> {
             frame_locals,
             slot_offsets: Vec::new(),
             bound_comp_slots: AHashSet::new(),
-            assert_messages,
+            assert_message_annotations,
         }
     }
 
@@ -454,7 +454,7 @@ impl<'a> Compiler<'a> {
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(interns, existing_functions, true, 0, options.assert_messages);
+        let mut compiler = Compiler::new(interns, existing_functions, true, 0, options.assert_message_annotations);
 
         // All globals are "local names" in the module
         for (slot, name_id) in globals.iter() {
@@ -486,12 +486,12 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
-        assert_messages: bool,
+        assert_message_annotations: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_messages);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -726,9 +726,15 @@ impl<'a> Compiler<'a> {
     /// namespace-size error message. Net stack effect is `+1`: even when free
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
-        let assert_messages = self.assert_messages;
+        let assert_message_annotations = self.assert_message_annotations;
         self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
-            Self::compile_function_body(&func_def.body, interns, functions, namespace_size, assert_messages)
+            Self::compile_function_body(
+                &func_def.body,
+                interns,
+                functions,
+                namespace_size,
+                assert_message_annotations,
+            )
         })
     }
 
@@ -853,7 +859,7 @@ impl<'a> Compiler<'a> {
         class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
-        let assert_messages = self.assert_messages;
+        let assert_message_annotations = self.assert_message_annotations;
         self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -863,7 +869,7 @@ impl<'a> Compiler<'a> {
                 interns,
                 functions,
                 namespace_size,
-                assert_messages,
+                assert_message_annotations,
             )
         })
     }
@@ -889,9 +895,9 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
-        assert_messages: bool,
+        assert_message_annotations: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_messages);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -3189,10 +3195,10 @@ impl<'a> Compiler<'a> {
 
     /// Compiles an assert statement.
     fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
-        if self.assert_messages {
+        if self.assert_message_annotations {
             return self.compile_assert_with_message(test, msg);
         }
-        // CPython-parity path (`CompileOptions::assert_messages` off): raise a
+        // CPython-parity path (`CompileOptions::assert_message_annotations` off): raise a
         // plain `AssertionError` / `AssertionError(msg)` with no introspection.
 
         // Compile test

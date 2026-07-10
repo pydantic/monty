@@ -75,7 +75,9 @@ fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException
         code.to_owned(),
         test_name,
         vec![],
-        CompileOptions { assert_messages: false },
+        CompileOptions {
+            assert_message_annotations: false,
+        },
     )
 }
 

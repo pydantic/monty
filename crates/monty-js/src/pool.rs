@@ -96,6 +96,9 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// Give failed `assert` statements pytest-style introspected messages
+    /// (see limitations/assert.md). On by default.
+    pub assert_message_annotations: bool,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -170,6 +173,7 @@ impl NativePool {
                 limits,
                 type_check: options.type_check,
                 type_check_stubs: options.type_check_stubs,
+                assert_message_annotations: options.assert_message_annotations,
             },
             checkout: Arc::new(Mutex::new(None)),
             pending_not_handled: Arc::new(Mutex::new(None)),

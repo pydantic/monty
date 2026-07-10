@@ -172,6 +172,9 @@ its `ResumeCall` arrives, so only one external call is outstanding at a time.
   `max_duration_micros` on events are always zero.
 - **Type checking** (`Configure.type_check`, `Feed.skip_type_check`) is
   ignored — snippets are always executed, never type-checked.
+- **Assert message annotations** (`Configure.assert_message_annotations`) are
+  ignored — real CPython raises its usual empty `AssertionError`, so failed
+  asserts behave as if the option were always `false`.
 - **`Configure.script_name`** is the filename reported for every sandbox frame
   in a traceback. Internally each feed compiles under a unique `<input-N>` name
   (with its source registered in `linecache`, so previews resolve even for a

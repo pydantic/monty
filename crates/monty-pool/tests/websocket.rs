@@ -51,6 +51,7 @@ fn drives_a_session_over_websocket() {
             limits: None,
             type_check: false,
             type_check_stubs: None,
+            assert_message_annotations: true,
         })
         .expect("checkout");
 

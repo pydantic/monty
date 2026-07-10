@@ -169,6 +169,16 @@ def test_assertion_error_comparison(monty_run: RunMonty):
     assert str(inner) == snapshot('assert 1 == 2')
 
 
+def test_assertion_error_annotations_disabled(pool: Monty):
+    # `assert_message_annotations=False` restores CPython's empty AssertionError.
+    with pool.checkout(assert_message_annotations=False) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('assert 1 == 2')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('')
+
+
 def test_assertion_error_with_message(monty_run: RunMonty):
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("assert False, 'custom message'")

@@ -383,6 +383,10 @@ message Configure {
   // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
   // than a silent source of frame desync.
   string monty_version = 5;
+  // Give failed `assert` statements pytest-style introspected messages
+  // (see limitations/assert.md). Optional so the default (missing = true)
+  // matches the feature being on by default.
+  optional bool assert_message_annotations = 6;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,

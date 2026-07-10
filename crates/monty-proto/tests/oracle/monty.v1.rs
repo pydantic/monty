@@ -502,6 +502,11 @@ pub struct Configure {
     /// than a silent source of frame desync.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
+    /// Give failed `assert` statements pytest-style introspected messages
+    /// (see limitations/assert.md). Optional so the default (missing = true)
+    /// matches the feature being on by default.
+    #[prost(bool, optional, tag = "6")]
+    pub assert_message_annotations: ::core::option::Option<bool>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

@@ -35,6 +35,8 @@ export interface WorkerSessionConfig {
   limits?: ResourceLimits
   typeCheck?: boolean
   typeCheckStubs?: string
+  /** Give failed `assert`s introspected messages. Absent means the child's default (true). */
+  assertMessageAnnotations?: boolean
 }
 
 // ParentRequest oneof field numbers (see proto/monty/v1/monty.proto). Note
@@ -97,6 +99,8 @@ export class WorkerTransport {
     if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // ReplCreate.limits
     if (config.typeCheck) create.bool(3, true) // ReplCreate.type_check
     if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // ReplCreate.type_check_stubs
+    // Configure.assert_message_annotations (field 6, optional): absent = child default (true).
+    if (config.assertMessageAnnotations !== undefined) create.bool(6, config.assertMessageAnnotations)
     await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')
     return transport
   }

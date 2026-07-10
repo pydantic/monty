@@ -202,6 +202,17 @@ remaining budget expires, covering cases where the in-sandbox limit cannot
 fire (e.g. a blocking syscall inside a mount). Set `durationLimitGrace: null`
 to disable it.
 
+## Assert message annotations
+
+Failed `assert` statements carry a pytest-style introspected message by
+default (`AssertionError: assert 2 == 5`) — a deliberate divergence from
+CPython's empty `AssertionError`. Disable it per session to restore CPython's
+behavior:
+
+```ts
+const session = await pool.checkout({ assertMessageAnnotations: false })
+```
+
 ## Type Checking
 
 ```ts

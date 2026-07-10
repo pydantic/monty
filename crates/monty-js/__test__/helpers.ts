@@ -35,12 +35,13 @@ export function setupPool(): PoolFixture {
     return pool
   }
   const run = async (code: string, options: RunOptions = {}) => {
-    const { scriptName, limits, typeCheck, typeCheckStubs, ...feed } = options
+    const { scriptName, limits, typeCheck, typeCheckStubs, assertMessageAnnotations, ...feed } = options
     const session = await get().checkout({
       ...(scriptName !== undefined ? { scriptName } : {}),
       ...(limits !== undefined ? { limits } : {}),
       ...(typeCheck !== undefined ? { typeCheck } : {}),
       ...(typeCheckStubs !== undefined ? { typeCheckStubs } : {}),
+      ...(assertMessageAnnotations !== undefined ? { assertMessageAnnotations } : {}),
     })
     try {
       return await session.feedRun(code, feed)

@@ -436,6 +436,7 @@ impl Child {
             limits,
             type_check,
             type_check_stubs,
+            assert_message_annotations,
             // already validated against our own version when `Configure` arrived
             monty_version: _,
         } = *config;
@@ -445,10 +446,14 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
         });
+        // Missing field means an older parent; the feature defaults to on.
+        let options = CompileOptions {
+            assert_message_annotations: assert_message_annotations.unwrap_or(true),
+        };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(
             &self.script_name,
             LimitedTracker::new(limits),
-            CompileOptions::default(),
+            options,
         )));
         Ok(())
     }

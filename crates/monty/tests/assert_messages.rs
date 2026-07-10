@@ -250,13 +250,17 @@ fn comparison_type_errors_still_raise() {
 
 #[test]
 fn opt_out_restores_cpython_behavior() {
-    let options = CompileOptions { assert_messages: false };
+    let options = CompileOptions {
+        assert_message_annotations: false,
+    };
     let run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 
-    let options = CompileOptions { assert_messages: false };
+    let options = CompileOptions {
+        assert_message_annotations: false,
+    };
     let run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.message(), Some("msg"));
@@ -277,7 +281,9 @@ fn assert_inside_repl_gets_messages() {
 
 #[test]
 fn repl_opt_out_applies_to_every_snippet() {
-    let options = CompileOptions { assert_messages: false };
+    let options = CompileOptions {
+        assert_message_annotations: false,
+    };
     let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl

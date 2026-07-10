@@ -85,6 +85,11 @@ test('assertion error with introspected detail', async () => {
   t.is(error.message, 'AssertionError: assert 1 == 2')
 })
 
+test('assertMessageAnnotations: false restores CPython behavior', async () => {
+  const error = await t.throwsAsync(() => run('assert 1 == 2', { assertMessageAnnotations: false }), isRuntimeError)
+  t.is(error.message, 'AssertionError')
+})
+
 test('runtime error', async () => {
   const error = await t.throwsAsync(() => run('raise RuntimeError("runtime error")'), isRuntimeError)
   t.is(error.message, 'RuntimeError: runtime error')

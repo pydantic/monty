@@ -55,6 +55,13 @@ export interface CheckoutOptions {
   typeCheck?: boolean
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
+  /**
+   * Give failed `assert` statements pytest-style introspected messages, e.g.
+   * `AssertionError: assert 2 == 5` — a deliberate divergence from CPython's
+   * empty `AssertionError` (see limitations/assert.md). Default true; set
+   * false to restore CPython's behavior.
+   */
+  assertMessageAnnotations?: boolean
 }
 
 /** Sandbox resource limits. Omitted fields mean "unlimited". */
@@ -117,6 +124,7 @@ export class Monty {
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      assertMessageAnnotations: options.assertMessageAnnotations ?? true,
     })
     await native.enter()
     return new MontySession(native)

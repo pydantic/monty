@@ -48,7 +48,12 @@ values involved instead of a blank `AssertionError`.
 
 ## Opt-out for embedders
 
-The Rust API can restore CPython's plain `AssertionError` behavior at compile
-time by passing `CompileOptions { assert_messages: false }` to `MontyRun::new`
-or `MontyRepl::new` — this is how Monty's own CPython-parity test harness
-runs. The Python and JavaScript packages always compile with messages on.
+CPython's plain `AssertionError` behavior can be restored per session — this
+is how Monty's own CPython-parity test harness runs:
+
+- Rust: pass `CompileOptions { assert_message_annotations: false }` to
+  `MontyRun::new` or `MontyRepl::new`.
+- Python: `pool.checkout(assert_message_annotations=False)`.
+- JavaScript: `pool.checkout({ assertMessageAnnotations: false })`.
+
+All surfaces default to messages on.
