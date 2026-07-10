@@ -522,8 +522,8 @@ pub enum Opcode {
 
     // === Assert failure messages ===
     // Pytest-style introspected messages for failing `assert` statements — a
-    // deliberate CPython divergence (see limitations/assert.md), disabled via
-    // `CompileOptions::assert_message_annotations` for the CPython-parity test harness.
+    // deliberate CPython divergence (see limitations/assert.md), can be disabled
+    // via `CompileOptions::assert_message_annotations`.
     /// Raise `AssertionError('assert {test!r}')` for a failed bare `assert test`.
     ///
     /// Stack: [..., test] -> (raises)

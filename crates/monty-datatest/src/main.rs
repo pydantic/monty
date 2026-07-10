@@ -67,18 +67,12 @@ fn default_test_limits() -> ResourceLimits {
     ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
 }
 
-/// Builds a `MontyRun` with pytest-style assert messages disabled, so bare
-/// `assert` fixtures keep raising CPython's plain `AssertionError` — the
-/// harness runs every fixture on both interpreters and diffs the output.
+/// Builds a `MontyRun` with production-default [`CompileOptions`] so fixtures
+/// exercise the same bytecode real embedders run. Fixtures with a *failing*
+/// assert whose message diverges from CPython can't live in `test_cases/` —
+/// they belong in `crates/monty/tests/assert_messages.rs`.
 fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
-    MontyRun::new(
-        code.to_owned(),
-        test_name,
-        vec![],
-        CompileOptions {
-            assert_message_annotations: false,
-        },
-    )
+    MontyRun::new(code.to_owned(), test_name, vec![], CompileOptions::default())
 }
 
 /// Test configuration parsed from directive comments.

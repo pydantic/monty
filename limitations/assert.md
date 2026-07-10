@@ -48,8 +48,7 @@ values involved instead of a blank `AssertionError`.
 
 ## Opt-out for embedders
 
-CPython's plain `AssertionError` behavior can be restored per session — this
-is how Monty's own CPython-parity test harness runs:
+CPython's plain `AssertionError` behavior can be restored per session:
 
 - Rust: pass `CompileOptions { assert_message_annotations: false }` to
   `MontyRun::new` or `MontyRepl::new`.
