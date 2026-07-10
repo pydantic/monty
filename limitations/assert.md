@@ -40,7 +40,6 @@ values involved instead of a blank `AssertionError`.
   the detail is shown: `assert 1 == 2, ''` raises `AssertionError('assert 1 == 2')`
   (CPython raises `AssertionError('')`), and `assert False, ''` raises a
   message-less `AssertionError`.
-- The message expression is still only evaluated on failure, as in CPython.
 
 ## Formatting edge cases
 
