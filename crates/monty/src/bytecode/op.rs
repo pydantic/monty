@@ -536,7 +536,7 @@ pub enum Opcode {
     /// Fused bare `assert lhs OP rhs` (no explicit message): pop both
     /// operands, run the comparison, and fall through if truthy; raise
     /// `AssertionError('assert {lhs!r} {op} {rhs!r}')` if falsy. Operand: u8
-    /// [`AssertCmpOp`] discriminant (via `FromRepr`).
+    /// comparison encoding (see `CmpOperator::as_operand`).
     ///
     /// Stack: [..., lhs, rhs] -> [...]
     /// Runs the same comparison semantics as the `Compare*` opcodes (including
@@ -555,48 +555,14 @@ pub enum Opcode {
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     AssertFailedMsg,
     /// Raise `AssertionError('{msg}\nassert {lhs!r} {op} {rhs!r}')` for a failed
-    /// `assert lhs OP rhs, msg`. Operand: u8 [`AssertCmpOp`] discriminant.
+    /// `assert lhs OP rhs, msg`. Operand: u8 comparison encoding
+    /// (see `CmpOperator::as_operand`).
     ///
     /// Stack: [..., lhs, rhs, msg] -> (raises)
     /// Combines [`Opcode::AssertCmp`] introspection with the explicit
     /// message on the first line. Always raises.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     AssertFailedCmpMsg,
-}
-
-/// Comparison operator carried as the u8 operand of [`Opcode::AssertCmp`] /
-/// [`Opcode::AssertFailedCmpMsg`].
-///
-/// A dedicated enum (rather than reusing `CmpOperator`) because the operand is
-/// part of the serialized `Code` format and needs a stable u8 repr, which
-/// `CmpOperator` does not have. Append new variants at the end to keep
-/// serialized bytes stable.
-///
-/// `Display` (via strum) renders the source-level symbol used in failure
-/// messages, e.g. `==` or `not in`.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr, strum::Display)]
-pub enum AssertCmpOp {
-    #[strum(serialize = "==")]
-    Eq,
-    #[strum(serialize = "!=")]
-    NotEq,
-    #[strum(serialize = "<")]
-    Lt,
-    #[strum(serialize = "<=")]
-    LtE,
-    #[strum(serialize = ">")]
-    Gt,
-    #[strum(serialize = ">=")]
-    GtE,
-    #[strum(serialize = "is")]
-    Is,
-    #[strum(serialize = "is not")]
-    IsNot,
-    #[strum(serialize = "in")]
-    In,
-    #[strum(serialize = "not in")]
-    NotIn,
 }
 
 impl TryFrom<u8> for Opcode {

@@ -3,9 +3,9 @@
 use super::VM;
 use crate::{
     builtins::Builtins,
-    bytecode::op::AssertCmpOp,
     defer_drop,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
@@ -143,25 +143,25 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// the `Compare*` opcodes — including their `TypeError` for incomparable
     /// ordering operands. Returns `Ok` when the comparison holds; otherwise
     /// raises `AssertionError('assert {lhs!r} {op} {rhs!r}')`.
-    pub(super) fn assert_cmp(&mut self, op: AssertCmpOp) -> Result<(), RunError> {
+    pub(super) fn assert_cmp(&mut self, op: CmpOperator) -> Result<(), RunError> {
         let this = self;
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
         let passed = match op {
-            AssertCmpOp::Eq => lhs.py_eq(rhs, this)?,
-            AssertCmpOp::NotEq => !lhs.py_eq(rhs, this)?,
-            AssertCmpOp::Is => lhs.is(rhs, this),
-            AssertCmpOp::IsNot => !lhs.is(rhs, this),
-            AssertCmpOp::In => rhs.py_contains(lhs, this)?,
-            AssertCmpOp::NotIn => !rhs.py_contains(lhs, this)?,
-            AssertCmpOp::Lt | AssertCmpOp::LtE | AssertCmpOp::Gt | AssertCmpOp::GtE => {
+            CmpOperator::Eq => lhs.py_eq(rhs, this)?,
+            CmpOperator::NotEq => !lhs.py_eq(rhs, this)?,
+            CmpOperator::Is => lhs.is(rhs, this),
+            CmpOperator::IsNot => !lhs.is(rhs, this),
+            CmpOperator::In => rhs.py_contains(lhs, this)?,
+            CmpOperator::NotIn => !rhs.py_contains(lhs, this)?,
+            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE => {
                 match lhs.py_cmp(rhs, this)? {
                     CmpOrder::Ordered(ordering) => match op {
-                        AssertCmpOp::Lt => ordering.is_lt(),
-                        AssertCmpOp::LtE => ordering.is_le(),
-                        AssertCmpOp::Gt => ordering.is_gt(),
+                        CmpOperator::Lt => ordering.is_lt(),
+                        CmpOperator::LtE => ordering.is_le(),
+                        CmpOperator::Gt => ordering.is_gt(),
                         _ => ordering.is_ge(),
                     },
                     // NaN involved: CPython yields False for every ordering
@@ -210,7 +210,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// [`assert_failure`](Self::assert_failure) — whichever of message/detail
     /// formats successfully is used, so a failing operand `__repr__` still
     /// surfaces the user's message (and vice versa).
-    pub(super) fn assert_failed_msg(&mut self, cmp_op: Option<AssertCmpOp>) -> RunError {
+    pub(super) fn assert_failed_msg(&mut self, cmp_op: Option<CmpOperator>) -> RunError {
         let this = self;
         let msg_value = this.pop();
         defer_drop!(msg_value, this);
@@ -246,7 +246,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     ///
     /// The operands are dropped on every path — including a mid-format `Err` —
     /// via `defer_drop!` guards.
-    fn assert_detail(&mut self, cmp_op: Option<AssertCmpOp>) -> RunResult<Option<String>> {
+    fn assert_detail(&mut self, cmp_op: Option<CmpOperator>) -> RunResult<Option<String>> {
         let this = self;
         if let Some(op) = cmp_op {
             let rhs = this.pop();

@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
-    op::{AssertCmpOp, FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -3242,7 +3242,6 @@ impl<'a> Compiler<'a> {
             self.compile_expr(right)?;
             // The caret/traceback range covers the whole comparison.
             self.code.set_location(test.position, None);
-            let assert_op = assert_cmp_op(op);
             if let Some(msg_expr) = msg {
                 self.code.emit(Opcode::Dup2)?;
                 self.code.emit(cmp_operator_to_opcode(op))?;
@@ -3250,13 +3249,13 @@ impl<'a> Compiler<'a> {
                 // Failure: [lhs, rhs] retained for the message.
                 self.compile_expr(msg_expr)?;
                 self.code.set_location(test.position, None);
-                self.code.emit_u8(Opcode::AssertFailedCmpMsg, assert_op as u8)?;
+                self.code.emit_u8(Opcode::AssertFailedCmpMsg, op.as_operand())?;
                 // Success: drop the retained operands.
                 self.code.patch_jump(pass)?;
                 self.code.emit(Opcode::Pop)?;
                 self.code.emit(Opcode::Pop)?;
             } else {
-                self.code.emit_u8(Opcode::AssertCmp, assert_op as u8)?;
+                self.code.emit_u8(Opcode::AssertCmp, op.as_operand())?;
             }
         } else {
             self.compile_expr(test)?;
@@ -4093,23 +4092,6 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::IsNot => Opcode::CompareIsNot,
         CmpOperator::In => Opcode::CompareIn,
         CmpOperator::NotIn => Opcode::CompareNotIn,
-    }
-}
-
-/// Maps a comparison operator to the [`AssertCmpOp`] operand of
-/// `AssertCmp`/`AssertFailedCmpMsg`.
-fn assert_cmp_op(op: &CmpOperator) -> AssertCmpOp {
-    match op {
-        CmpOperator::Eq => AssertCmpOp::Eq,
-        CmpOperator::NotEq => AssertCmpOp::NotEq,
-        CmpOperator::Lt => AssertCmpOp::Lt,
-        CmpOperator::LtE => AssertCmpOp::LtE,
-        CmpOperator::Gt => AssertCmpOp::Gt,
-        CmpOperator::GtE => AssertCmpOp::GtE,
-        CmpOperator::Is => AssertCmpOp::Is,
-        CmpOperator::IsNot => AssertCmpOp::IsNot,
-        CmpOperator::In => AssertCmpOp::In,
-        CmpOperator::NotIn => AssertCmpOp::NotIn,
     }
 }
 

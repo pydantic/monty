@@ -28,9 +28,10 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::{AssertCmpOp, Opcode},
+        op::Opcode,
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
+    expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
@@ -1625,7 +1626,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 }
                 Opcode::Assert => try_catch_sync!(self, cached_frame, self.assert_test()),
                 Opcode::AssertCmp => {
-                    let op = AssertCmpOp::from_repr(cached_frame.fetch_u8()).expect("invalid AssertCmpOp in bytecode");
+                    let op = CmpOperator::from_operand(cached_frame.fetch_u8())
+                        .expect("invalid comparison operand in bytecode");
                     try_catch_sync!(self, cached_frame, self.assert_cmp(op));
                 }
                 Opcode::AssertFailedMsg => {
@@ -1633,7 +1635,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::AssertFailedCmpMsg => {
-                    let op = AssertCmpOp::from_repr(cached_frame.fetch_u8()).expect("invalid AssertCmpOp in bytecode");
+                    let op = CmpOperator::from_operand(cached_frame.fetch_u8())
+                        .expect("invalid comparison operand in bytecode");
                     let error = self.assert_failed_msg(Some(op));
                     catch_sync!(self, cached_frame, error);
                 }

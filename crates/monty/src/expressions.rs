@@ -791,7 +791,7 @@ pub type PreparedNode = Node<PreparedFunctionDef>;
 
 /// Binary operators for arithmetic, bitwise, and boolean operations.
 ///
-/// Uses strum `Display` derive with per-variant serialization for operator symbols.
+/// The comment on each variant shows the source-level symbol.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Operator {
     // `+`
@@ -827,17 +827,69 @@ pub enum Operator {
     Or,
 }
 
-/// Defined separately since these operators always return a bool
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// Defined separately since these operators always return a bool.
+///
+/// `Display` (via strum) renders the source-level symbol used in assert
+/// failure messages, e.g. `==` or `not in`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, strum::Display)]
 pub enum CmpOperator {
+    #[strum(serialize = "==")]
     Eq,
+    #[strum(serialize = "!=")]
     NotEq,
+    #[strum(serialize = "<")]
     Lt,
+    #[strum(serialize = "<=")]
     LtE,
+    #[strum(serialize = ">")]
     Gt,
+    #[strum(serialize = ">=")]
     GtE,
+    #[strum(serialize = "is")]
     Is,
+    #[strum(serialize = "is not")]
     IsNot,
+    #[strum(serialize = "in")]
     In,
+    #[strum(serialize = "not in")]
     NotIn,
+}
+
+impl CmpOperator {
+    /// Stable u8 encoding used as the bytecode operand of the `AssertCmp` /
+    /// `AssertFailedCmpMsg` opcodes. Part of the serialized `Code` format, so
+    /// existing values must never change — hence a hand-written encoding rather
+    /// than a derived `FromRepr` that would follow declaration order.
+    pub fn as_operand(&self) -> u8 {
+        match self {
+            Self::Eq => 0,
+            Self::NotEq => 1,
+            Self::Lt => 2,
+            Self::LtE => 3,
+            Self::Gt => 4,
+            Self::GtE => 5,
+            Self::Is => 6,
+            Self::IsNot => 7,
+            Self::In => 8,
+            Self::NotIn => 9,
+        }
+    }
+
+    /// Decodes [`as_operand`](Self::as_operand)'s encoding, `None` for bytes
+    /// outside the encoded range.
+    pub fn from_operand(byte: u8) -> Option<Self> {
+        match byte {
+            0 => Some(Self::Eq),
+            1 => Some(Self::NotEq),
+            2 => Some(Self::Lt),
+            3 => Some(Self::LtE),
+            4 => Some(Self::Gt),
+            5 => Some(Self::GtE),
+            6 => Some(Self::Is),
+            7 => Some(Self::IsNot),
+            8 => Some(Self::In),
+            9 => Some(Self::NotIn),
+            _ => None,
+        }
+    }
 }
