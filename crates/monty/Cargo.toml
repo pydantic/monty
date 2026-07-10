@@ -42,6 +42,12 @@ speedate = "0.17.0"
 itertools = "0.14.0"
 jiter = { version = "0.15.0", features = ["num-bigint"] }
 monty-macros = { workspace = true }
+# Portable monotonic clock: a drop-in for `std::time::Instant` that re-exports
+# std unchanged on native and WASI, and is backed by `performance.now()` on
+# `wasm32-unknown-unknown` (where `std::time::Instant::now()` panics). Keeps the
+# `max_duration` resource limit usable when `monty` is embedded directly in a
+# browser wasm module rather than run over WASI.
+web-time = "1.1"
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct

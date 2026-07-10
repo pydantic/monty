@@ -1,9 +1,12 @@
-use std::{
-    cell::Cell,
-    error::Error,
-    fmt,
-    time::{Duration, Instant},
-};
+use std::{cell::Cell, error::Error, fmt, time::Duration};
+
+// `web_time::Instant` is `std::time::Instant` on native and WASI targets, and a
+// `performance.now()`-backed clock on `wasm32-unknown-unknown`, where the std
+// `Instant::now()` panics ("time not implemented on this platform"). This keeps
+// the `max_duration` time limit working when `monty` is embedded directly in a
+// browser wasm module. Time behavior on all currently-supported targets is
+// unchanged (it re-exports std verbatim there).
+use web_time::Instant;
 
 use crate::{
     ExcType, MontyException,
