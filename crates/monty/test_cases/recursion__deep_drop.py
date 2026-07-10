@@ -11,18 +11,18 @@ x = [1]
 for _ in range(10000):
     x = [x]
 x = None  # triggers recursive dec_ref chain
-assert True, 'survived deep list drop'
+assert True
 
 # === Deep tuple drop ===
 y = (1,)
 for _ in range(10000):
     y = (y,)
 y = None  # triggers recursive dec_ref chain
-assert True, 'survived deep tuple drop'
+assert True
 
 # === Deep dict drop ===
 z = {'a': 1}
 for _ in range(10000):
     z = {'a': z}
 z = None  # triggers recursive dec_ref chain
-assert True, 'survived deep dict drop'
+assert True

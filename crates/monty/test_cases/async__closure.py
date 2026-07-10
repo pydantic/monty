@@ -11,4 +11,4 @@ def make_adder(n):
 
 add_five = make_adder(5)
 result = await add_five(10)  # pyright: ignore
-assert result == 15, 'async closure should capture variables'
+assert result == 15

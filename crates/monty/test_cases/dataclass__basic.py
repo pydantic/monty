@@ -6,54 +6,54 @@ point = make_point()
 
 # === repr and str ===
 assert repr(point) == 'Point(x=1, y=2)', f'point repr {point=!r}'
-assert str(point) == 'Point(x=1, y=2)', 'point str'
+assert str(point) == 'Point(x=1, y=2)'
 
 # === Boolean truthiness ===
 # Dataclasses are always truthy (like Python class instances)
-assert bool(point), 'dataclass bool is True'
+assert bool(point)
 
 # === Hash for immutable dataclass ===
 # Immutable (frozen) dataclasses are hashable
 h1 = hash(point)
-assert h1 != 0, 'hash is not zero'
+assert h1 != 0
 
 # Hash is consistent - same object hashes to same value
 h2 = hash(point)
-assert h1 == h2, 'hash is consistent'
+assert h1 == h2
 
 # Equal frozen dataclasses hash to same value
 point2 = make_point()
-assert hash(point) == hash(point2), 'equal dataclasses have equal hash'
+assert hash(point) == hash(point2)
 
 # Frozen dataclass can be used as dict key
 d = {point: 'first'}
-assert d[point] == 'first', 'frozen dataclass as dict key'
-assert d[point2] == 'first', 'equal frozen dataclass looks up same value'
+assert d[point] == 'first'
+assert d[point2] == 'first'
 
 # Frozen dataclass can be added to set
 s = {point, point2}
-assert len(s) == 1, 'equal frozen dataclasses deduplicated in set'
+assert len(s) == 1
 
 # Different field values produce different hash
 alice = make_user('Alice')
 bob = make_user('Bob')
-assert hash(alice) != hash(bob), 'different field values have different hash'
+assert hash(alice) != hash(bob)
 
 # === Equality ===
-assert point == point2, 'equal frozen dataclasses compare equal'
-assert alice != bob, 'dataclasses with different field values not equal'
-assert point != alice, 'dataclasses of different types not equal'
+assert point == point2
+assert alice != bob
+assert point != alice
 # A dataclass is never equal to a non-dataclass, even with matching fields
-assert point != (1, 2), 'dataclass not equal to tuple'
-assert point != {'x': 1, 'y': 2}, 'dataclass not equal to dict'
+assert point != (1, 2)
+assert point != {'x': 1, 'y': 2}
 
 # === Mutable dataclass ===
 mut_point = make_mutable_point()
 assert repr(mut_point) == 'MutablePoint(x=1, y=2)', f'mutable point repr {mut_point=!r}'
 # Distinct classes are not equal even with identical field names and values
 # (Point and MutablePoint are both (x=1, y=2)).
-assert point != mut_point, 'different dataclass types with same fields not equal'
-assert mut_point != point, 'reflected: different dataclass types not equal'
+assert point != mut_point
+assert mut_point != point
 
 # === Dataclass with string argument ===
 alice = make_user('Alice')
@@ -61,105 +61,105 @@ assert repr(alice) == "User(name='Alice', active=True)", f'user repr with string
 
 # === Dataclass in list (using existing variables) ===
 points = [point, mut_point, alice]
-assert len(points) == 3, 'dataclass list length'
+assert len(points) == 3
 
 # === Attribute access (get) ===
 # Access fields on immutable dataclass
-assert point.x == 1, 'point.x is 1'
-assert point.y == 2, 'point.y is 2'
+assert point.x == 1
+assert point.y == 2
 
 # Access fields on mutable dataclass
-assert mut_point.x == 1, 'mut_point.x is 1'
-assert mut_point.y == 2, 'mut_point.y is 2'
+assert mut_point.x == 1
+assert mut_point.y == 2
 
 # Access fields on dataclass with string field
-assert alice.name == 'Alice', 'alice.name is Alice'
-assert alice.active == True, 'alice.active is True'
+assert alice.name == 'Alice'
+assert alice.active == True
 
 # === Attribute assignment (set) ===
 # Modify mutable dataclass
 mut_point.x = 10
-assert mut_point.x == 10, 'mut_point.x updated to 10'
+assert mut_point.x == 10
 mut_point.y = 20
-assert mut_point.y == 20, 'mut_point.y updated to 20'
+assert mut_point.y == 20
 assert repr(mut_point) == 'MutablePoint(x=10, y=20)', f'repr after attribute update {mut_point=!r}'
 
 # === set other attributes
 mut_point.z = 30
-assert mut_point.z == 30, 'mut_point.z updated to 30'
-assert repr(mut_point) == 'MutablePoint(x=10, y=20)', 'repr after attribute update'
+assert mut_point.z == 30
+assert repr(mut_point) == 'MutablePoint(x=10, y=20)'
 
 # === Augmented attribute assignment (+=, -=, etc.) ===
 aug_point = make_mutable_point()
 aug_point.x += 5
-assert aug_point.x == 6, 'augmented attr assign +='
+assert aug_point.x == 6
 aug_point.y -= 1
-assert aug_point.y == 1, 'augmented attr assign -='
+assert aug_point.y == 1
 aug_point.x *= 3
-assert aug_point.x == 18, 'augmented attr assign *='
+assert aug_point.x == 18
 
 # === Chained augmented attribute assignment ===
 outer_aug = make_mutable_point()
 inner_aug = make_mutable_point()
 outer_aug.x = inner_aug
 outer_aug.x.y += 100
-assert inner_aug.y == 102, 'chained augmented attr assign'
+assert inner_aug.y == 102
 
 # === Chained attribute assignment (a.x = b.x = value) ===
 ca = make_mutable_point()
 cb = make_mutable_point()
 ca.x = cb.x = 77
-assert ca.x == 77, 'chained attr assign ca.x'
-assert cb.x == 77, 'chained attr assign cb.x'
+assert ca.x == 77
+assert cb.x == 77
 
 # === Chained mixed attribute/name/subscript assignment ===
 # Attribute in the *middle* of a chain, between a name and a subscript target.
 holder = [0]
 cm = make_mutable_point()
 val = cm.y = holder[0] = 321
-assert val == 321, 'chain name gets value'
-assert cm.y == 321, 'chain attribute gets value'
-assert holder[0] == 321, 'chain subscript gets value'
+assert val == 321
+assert cm.y == 321
+assert holder[0] == 321
 
 # === Attribute as the *last* target of a chain ===
 attr_last_name_box = [0]
 attr_last_obj = make_mutable_point()
 attr_last_name = attr_last_name_box[0] = attr_last_obj.y = 555
-assert attr_last_name == 555, 'attr last: name'
-assert attr_last_name_box[0] == 555, 'attr last: subscript'
-assert attr_last_obj.y == 555, 'attr last: attribute'
+assert attr_last_name == 555
+assert attr_last_name_box[0] == 555
+assert attr_last_obj.y == 555
 
 # === Attribute as the *first* (non-last) target of a chain ===
 attr_first_obj = make_mutable_point()
 attr_first_obj.x = attr_first_name = 556
-assert attr_first_obj.x == 556, 'attr first: attribute'
-assert attr_first_name == 556, 'attr first: name'
+assert attr_first_obj.x == 556
+assert attr_first_name == 556
 
 # === Three attribute targets in one chain ===
 pa = make_mutable_point()
 pb = make_mutable_point()
 pc = make_mutable_point()
 pa.x = pb.x = pc.x = 999
-assert pa.x == 999, 'three-attr chain: pa'
-assert pb.x == 999, 'three-attr chain: pb'
-assert pc.x == 999, 'three-attr chain: pc'
+assert pa.x == 999
+assert pb.x == 999
+assert pc.x == 999
 
 # === Nested attribute target as part of a chain ===
 nest_outer = make_mutable_point()
 nest_inner = make_mutable_point()
 nest_outer.x = nest_inner
 nested_chain_name = nest_outer.x.y = 444
-assert nested_chain_name == 444, 'nested attr chain: name'
-assert nest_inner.y == 444, 'nested attr chain: inner.y'
-assert nest_outer.x.y == 444, 'nested attr chain: outer.x.y'
+assert nested_chain_name == 444
+assert nest_inner.y == 444
+assert nest_outer.x.y == 444
 
 # === Chain with attribute + tuple unpack into attribute values ===
 # Each chain step must see the same RHS value.
 unpack_dst = make_mutable_point()
 (ua1, ua2) = unpack_dst.x = unpack_chain_name = (13, 14)
 assert ua1 == 13 and ua2 == 14, 'attr-unpack chain: unpack'
-assert unpack_dst.x == (13, 14), 'attr-unpack chain: attribute'
-assert unpack_chain_name == (13, 14), 'attr-unpack chain: name'
+assert unpack_dst.x == (13, 14)
+assert unpack_chain_name == (13, 14)
 
 # === Nested attribute access (chained get) ===
 # Create outer dataclass with inner dataclass as field
@@ -170,19 +170,19 @@ inner.y = 200
 outer.x = inner
 
 # Chained attribute get: outer.x.y
-assert outer.x.x == 100, 'outer.x.x is 100'
-assert outer.x.y == 200, 'outer.x.y is 200'
+assert outer.x.x == 100
+assert outer.x.y == 200
 
 # === Nested attribute assignment (chained set) ===
 # Modify nested field via chained access
 outer.x.x = 999
-assert outer.x.x == 999, 'outer.x.x updated to 999'
+assert outer.x.x == 999
 outer.x.y = 888
-assert outer.x.y == 888, 'outer.x.y updated to 888'
+assert outer.x.y == 888
 
 # Verify inner was modified (same object)
-assert inner.x == 999, 'inner.x also updated to 999'
-assert inner.y == 888, 'inner.y also updated to 888'
+assert inner.x == 999
+assert inner.y == 888
 
 # === Deeper nesting (3 levels) ===
 level1 = make_mutable_point()
@@ -193,17 +193,17 @@ level2.x = level3
 level1.x = level2
 
 # 3-level chained get
-assert level1.x.x.x == 42, 'level1.x.x.x is 42'
+assert level1.x.x.x == 42
 
 # 3-level chained set
 level1.x.x.x = 7
-assert level1.x.x.x == 7, 'level1.x.x.x updated to 7'
-assert level3.x == 7, 'level3.x also updated to 7'
+assert level1.x.x.x == 7
+assert level3.x == 7
 
 # === Empty dataclass ===
 empty = make_empty()
-assert repr(empty) == 'Empty()', 'empty dataclass repr'
-assert str(empty) == 'Empty()', 'empty dataclass str'
+assert repr(empty) == 'Empty()'
+assert str(empty) == 'Empty()'
 
 # === FrozenInstanceError is subclass of AttributeError ===
 # Catching AttributeError should also catch FrozenInstanceError
@@ -213,7 +213,7 @@ try:
     frozen_point.x = 10
 except AttributeError:
     caught = True
-assert caught, 'FrozenInstanceError caught by AttributeError'
+assert caught
 
 # === Error: accessing non-existent attribute ===
 try:

@@ -15,13 +15,13 @@ class Accumulator:
 
 start = await async_call(7)  # pyright: ignore
 acc = Accumulator(start)
-assert acc.base == 7, 'awaited result passed into __init__'
-assert acc.total == 107, '__init__ external call resumed with the right value'
-assert type(acc) is Accumulator, 'construction yields the instance'
+assert acc.base == 7
+assert acc.total == 107
+assert type(acc) is Accumulator
 
 # === awaiting a non-awaitable instance names the class ===
 try:
     await acc  # pyright: ignore
     assert False, 'expected await to fail'
 except TypeError as exc:
-    assert str(exc) == "'Accumulator' object can't be awaited", 'await error names the class'
+    assert str(exc) == "'Accumulator' object can't be awaited"

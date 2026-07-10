@@ -18,5 +18,5 @@ def side_effect(val):
 # Expected: side_effect runs once, result is 10 + 3 = 13
 call_count = 0
 result = add_ints(side_effect(10), add_ints(1, 2))
-assert result == 13, 'ext call after side effect'
-assert call_count == 1, 'side effect should happen only once (before ext)'
+assert result == 13
+assert call_count == 1

@@ -6,7 +6,7 @@ def early_exit():
     return
 
 
-assert early_exit() is None, 'bare return returns None'
+assert early_exit() is None
 
 
 def conditional_early_exit(x):
@@ -15,8 +15,8 @@ def conditional_early_exit(x):
     return x * 2
 
 
-assert conditional_early_exit(-5) is None, 'conditional early return'
-assert conditional_early_exit(5) == 10, 'conditional normal return'
+assert conditional_early_exit(-5) is None
+assert conditional_early_exit(5) == 10
 
 
 def multiple_bare_returns(x):
@@ -27,9 +27,9 @@ def multiple_bare_returns(x):
     return x
 
 
-assert multiple_bare_returns(0) is None, 'first bare return'
-assert multiple_bare_returns(1) is None, 'second bare return'
-assert multiple_bare_returns(2) == 2, 'fall through to value return'
+assert multiple_bare_returns(0) is None
+assert multiple_bare_returns(1) is None
+assert multiple_bare_returns(2) == 2
 
 
 def nested_bare_return():
@@ -39,4 +39,4 @@ def nested_bare_return():
     return inner()
 
 
-assert nested_bare_return() is None, 'nested bare return'
+assert nested_bare_return() is None

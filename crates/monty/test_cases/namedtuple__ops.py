@@ -3,29 +3,29 @@ import sys
 vi = sys.version_info
 
 # === Equality: same object ===
-assert vi == vi, 'namedtuple equals itself'
+assert vi == vi
 
 # === Equality: two references ===
 vi2 = sys.version_info
-assert vi == vi2, 'two refs to same namedtuple are equal'
+assert vi == vi2
 
 # === Equality: namedtuple == equivalent tuple ===
 t = (vi.major, vi.minor, vi.micro, vi.releaselevel, vi.serial)
-assert vi == t, 'namedtuple equals equivalent tuple'
-assert t == vi, 'equivalent tuple equals namedtuple'
+assert vi == t
+assert t == vi
 
 # === Inequality: wrong length ===
-assert vi != (3,), 'namedtuple not equal to wrong-length tuple'
-assert (3,) != vi, 'wrong-length tuple not equal to namedtuple'
+assert vi != (3,)
+assert (3,) != vi
 
 # === Inequality: different values ===
-assert vi != (0, 0, 0, 'final', 0), 'namedtuple not equal to different values'
+assert vi != (0, 0, 0, 'final', 0)
 
 # === Inequality: non-tuple types ===
-assert vi != 42, 'namedtuple not equal to int'
-assert vi != 'hello', 'namedtuple not equal to str'
-assert vi != None, 'namedtuple not equal to None'
-assert vi != [3, 14], 'namedtuple not equal to list'
+assert vi != 42
+assert vi != 'hello'
+assert vi != None
+assert vi != [3, 14]
 
 # === repr ===
 r = repr(vi)

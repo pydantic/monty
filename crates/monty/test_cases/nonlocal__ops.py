@@ -8,7 +8,7 @@ def read_outer():
     return inner()
 
 
-assert read_outer() == 10, 'nonlocal read'
+assert read_outer() == 10
 
 
 def write_outer():
@@ -22,7 +22,7 @@ def write_outer():
     return x
 
 
-assert write_outer() == 20, 'nonlocal write'
+assert write_outer() == 20
 
 
 # === Classic counter pattern ===
@@ -38,9 +38,9 @@ def make_counter():
 
 
 counter2 = make_counter()
-assert counter2() == 1, 'counter first call'
-assert counter2() == 2, 'counter second call'
-assert counter2() == 3, 'counter third call'
+assert counter2() == 1
+assert counter2() == 2
+assert counter2() == 3
 
 
 # === Implicit capture (read without nonlocal) ===
@@ -54,7 +54,7 @@ def implicit_capture():
     return inner()
 
 
-assert implicit_capture() == 30, 'implicit capture multiple vars'
+assert implicit_capture() == 30
 
 
 # === Pass-through nesting ===
@@ -77,7 +77,7 @@ def pass_through():
     return middle()
 
 
-assert pass_through() == 222, 'nonlocal pass through'
+assert pass_through() == 222
 
 
 # === Deep nesting (3 levels) ===
@@ -98,7 +98,7 @@ def deep_nesting():
     return level2()
 
 
-assert deep_nesting() == 111, 'deep nesting'
+assert deep_nesting() == 111
 
 
 # === Deep nesting (4 levels) ===
@@ -126,7 +126,7 @@ def deep_pass_through():
     return (result, val)
 
 
-assert deep_pass_through() == (112, 112), 'deep pass through 4 levels'
+assert deep_pass_through() == (112, 112)
 
 
 # === Multiple independent cells ===
@@ -160,7 +160,7 @@ def multiple_cells():
     return (r1, r2, r3, r4)
 
 
-assert multiple_cells() == (20, 2, 200, 222), 'multiple independent cells'
+assert multiple_cells() == (20, 2, 200, 222)
 
 
 # === Shared cell (getter/setter pattern) ===
@@ -180,9 +180,9 @@ def shared_cell():
 pair = shared_cell()
 getter = pair[0]
 setter = pair[1]
-assert getter() == 0, 'shared cell initial'
+assert getter() == 0
 setter(42)
-assert getter() == 42, 'shared cell after setter'
+assert getter() == 42
 
 
 # === Shared multiple vars ===
@@ -222,7 +222,7 @@ add_x(5)  # x=5
 add_y(10)  # y=10
 add_x(3)  # x=8
 swap()  # x=10, y=8
-assert get() == (10, 8), 'shared multiple vars with swap'
+assert get() == (10, 8)
 
 
 # === Local and captured ===
@@ -241,7 +241,7 @@ def local_and_captured():
     return (before, middle, after, final, x)
 
 
-assert local_and_captured() == (1, 2, 2, 4, 4), 'local and captured'
+assert local_and_captured() == (1, 2, 2, 4, 4)
 
 
 # === Mixing global and nonlocal ===
@@ -261,7 +261,7 @@ def global_and_nonlocal():
     return inner()
 
 
-assert global_and_nonlocal() == 112, 'global and nonlocal together'
+assert global_and_nonlocal() == 112
 
 
 # === Closure with global and nonlocal ===
@@ -286,7 +286,7 @@ c = make_closure_global()
 r1 = c()  # returns 1001
 r2 = c()  # returns 1012
 r3 = c()  # returns 1023
-assert (r1, r2, r3, g2) == (1001, 1012, 1023, 1003), 'closure with global and nonlocal'
+assert (r1, r2, r3, g2) == (1001, 1012, 1023, 1003)
 
 
 # === Closure creates closure ===
@@ -315,7 +315,7 @@ r1 = closure1()  # 11
 r2 = closure1()  # 12
 r3 = closure2()  # 111
 r4 = closure1()  # 13
-assert (r1, r2, r3, r4) == (11, 12, 111, 13), 'closure creates closure'
+assert (r1, r2, r3, r4) == (11, 12, 111, 13)
 
 
 # === Augmented assignment with nonlocal ===
@@ -330,7 +330,7 @@ def augmented_assign():
     return x
 
 
-assert augmented_assign() == 15, 'augmented assign nonlocal'
+assert augmented_assign() == 15
 
 
 # === Cell contains closure ===
@@ -350,4 +350,4 @@ def cell_contains_closure():
     return f()
 
 
-assert cell_contains_closure() == 100, 'cell contains closure'
+assert cell_contains_closure() == 100

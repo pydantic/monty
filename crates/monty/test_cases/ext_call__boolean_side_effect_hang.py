@@ -13,5 +13,5 @@ def side_effect(val):
 
 # This specific pattern causes a hang in Monty
 result = return_value(True) and return_value(side_effect(42))
-assert result == 42, 'and: second runs when first truthy'
-assert call_count == 1, 'and: side effect runs when first is truthy'
+assert result == 42
+assert call_count == 1

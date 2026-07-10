@@ -1,10 +1,10 @@
 # === int-to-str: within limit ===
-assert str(10**4299) is not None, 'str(10**4299) should succeed (4300 digits)'
-assert len(str(10**4299)) == 4300, '10**4299 has 4300 digits'
-assert str(0) == '0', 'str(0) works'
-assert str(-1) == '-1', 'str(-1) works'
-assert str(10**18) == '1000000000000000000', 'str(10**18) works'
-assert repr(10**18) == '1000000000000000000', 'repr(10**18) works'
+assert str(10**4299) is not None
+assert len(str(10**4299)) == 4300
+assert str(0) == '0'
+assert str(-1) == '-1'
+assert str(10**18) == '1000000000000000000'
+assert repr(10**18) == '1000000000000000000'
 
 # === int-to-str: exceeds limit ===
 try:
@@ -42,7 +42,7 @@ except ValueError as e:
     assert str(e).startswith('Exceeds the limit (4300 digits) for integer string conversion'), f'wrong message: {e}'
 
 # === str-to-int: within limit ===
-assert int('1' * 4300) is not None, 'int() with 4300 digits should succeed'
+assert int('1' * 4300) is not None
 
 # === str-to-int: exceeds limit ===
 try:
@@ -60,9 +60,9 @@ except ValueError as e:
 
 # === non-decimal conversions are NOT limited ===
 big = 2**20000
-assert bin(big) is not None, 'bin() should not be limited'
-assert hex(big) is not None, 'hex() should not be limited'
-assert oct(big) is not None, 'oct() should not be limited'
+assert bin(big) is not None
+assert hex(big) is not None
+assert oct(big) is not None
 
 # === KeyError with huge int key ===
 # CPython raises KeyError (stores the key object). Monty falls back to the

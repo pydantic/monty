@@ -2,13 +2,13 @@ import datetime
 
 # === strftime ===
 
-assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-06-15', 'datetime.strftime date format'
-assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45', 'datetime.strftime time format'
-assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15', 'date.strftime'
-assert datetime.date(2024, 6, 15).strftime(format='%Y/%m/%d') == '2024/06/15', 'date.strftime accepts kwarg'
+assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%Y-%m-%d') == '2024-06-15'
+assert datetime.datetime(2024, 6, 15, 10, 30, 45).strftime('%H:%M:%S') == '10:30:45'
+assert datetime.date(2024, 6, 15).strftime('%Y/%m/%d') == '2024/06/15'
+assert datetime.date(2024, 6, 15).strftime(format='%Y/%m/%d') == '2024/06/15'
 assert datetime.datetime.strptime('2024-06-15 10:30:45.1', '%Y-%m-%d %H:%M:%S.%f') == datetime.datetime(
     2024, 6, 15, 10, 30, 45, 100000
-), 'strptime %f should accept 1 digit and right-pad to microseconds'
+)
 
 try:
     datetime.date(2024, 6, 15).strftime()
@@ -73,18 +73,18 @@ except TypeError as exc:
 _d = datetime.date(2024, 6, 15)
 _dt = datetime.datetime(2024, 6, 15, 10, 30, 45)
 # literal strftime spec
-assert f'{_d:%Y-%m-%d}' == '2024-06-15', 'date f-string strftime spec'
-assert f'{_dt:%Y-%m-%d %H:%M:%S}' == '2024-06-15 10:30:45', 'datetime f-string strftime spec'
-assert f'{_dt:%Y-%m-%dT%H:%M}' == '2024-06-15T10:30', 'datetime f-string with literal T'
-assert f'{_d:Year %Y!}' == 'Year 2024!', 'strftime spec with literal text'
+assert f'{_d:%Y-%m-%d}' == '2024-06-15'
+assert f'{_dt:%Y-%m-%d %H:%M:%S}' == '2024-06-15 10:30:45'
+assert f'{_dt:%Y-%m-%dT%H:%M}' == '2024-06-15T10:30'
+assert f'{_d:Year %Y!}' == 'Year 2024!'
 # no spec falls back to str()
-assert f'{_d}' == '2024-06-15', 'date f-string no spec uses str'
-assert f'{_dt}' == '2024-06-15 10:30:45', 'datetime f-string no spec uses str'
+assert f'{_d}' == '2024-06-15'
+assert f'{_dt}' == '2024-06-15 10:30:45'
 # dynamic spec (nested interpolation) carries the strftime string
 _fmt = '%Y/%m/%d'
-assert f'{_d:{_fmt}}' == '2024/06/15', 'date f-string dynamic strftime spec'
+assert f'{_d:{_fmt}}' == '2024/06/15'
 # empty dynamic spec behaves like str()
 _empty = ''
-assert f'{_dt:{_empty}}' == '2024-06-15 10:30:45', 'date f-string empty dynamic spec uses str'
+assert f'{_dt:{_empty}}' == '2024-06-15 10:30:45'
 # a conversion flag converts to a string first, so the spec formats that string
-assert f'{_d!s:>12}' == '  2024-06-15', 'conversion flag: spec applies to the string, not strftime'
+assert f'{_d!s:>12}' == '  2024-06-15'

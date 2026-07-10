@@ -2,21 +2,21 @@
 
 # === Basic with + open ===
 with open(root / 'open_with.txt', 'w') as f:
-    assert f.write('hello') == 5, 'write returns char count'
-    assert f.closed == False, 'file is open inside with'
-assert f.closed == True, 'file is closed after with'
-assert (root / 'open_with.txt').read_text() == 'hello', 'write committed after with'
+    assert f.write('hello') == 5
+    assert f.closed == False
+assert f.closed == True
+assert (root / 'open_with.txt').read_text() == 'hello'
 
 # === Read with `with` ===
 with open(root / 'hello.txt') as r:
-    assert r.read() == 'hello world\n', 'read works inside with'
-assert r.closed == True, 'reader closed after with'
+    assert r.read() == 'hello world\n'
+assert r.closed == True
 
 # === `__enter__` returns the file itself ===
 pre = open(root / 'hello.txt')
 with pre as bound:
-    assert bound is pre, '__enter__ returns the file itself'
-assert pre.closed == True, 'file closed after with even when ctx is precreated'
+    assert bound is pre
+assert pre.closed == True
 
 # === Closed on exception ===
 errfile = open(root / 'hello.txt')
@@ -26,8 +26,8 @@ try:
         raise ValueError('boom')
 except ValueError as e:
     caught = str(e)
-assert caught == 'boom', 'exception propagates out of with'
-assert errfile.closed == True, 'file closed even on exception'
+assert caught == 'boom'
+assert errfile.closed == True
 
 # === Without `as` target ===
 with open(root / 'hello.txt'):
@@ -38,19 +38,19 @@ with open(root / 'open_with_a.txt', 'w') as a:
     with open(root / 'open_with_b.txt', 'w') as b:
         a.write('A')
         b.write('B')
-assert a.closed == True, 'outer closed after nested with'
-assert b.closed == True, 'inner closed after nested with'
-assert (root / 'open_with_a.txt').read_text() == 'A', 'outer write persisted'
-assert (root / 'open_with_b.txt').read_text() == 'B', 'inner write persisted'
+assert a.closed == True
+assert b.closed == True
+assert (root / 'open_with_a.txt').read_text() == 'A'
+assert (root / 'open_with_b.txt').read_text() == 'B'
 
 # === Multi-item with (desugared to nested) ===
 with open(root / 'open_with_m1.txt', 'w') as m1, open(root / 'open_with_m2.txt', 'w') as m2:
     m1.write('M1')
     m2.write('M2')
-assert m1.closed == True, 'first manager closed after multi-item with'
-assert m2.closed == True, 'second manager closed after multi-item with'
-assert (root / 'open_with_m1.txt').read_text() == 'M1', 'first manager write persisted'
-assert (root / 'open_with_m2.txt').read_text() == 'M2', 'second manager write persisted'
+assert m1.closed == True
+assert m2.closed == True
+assert (root / 'open_with_m1.txt').read_text() == 'M1'
+assert (root / 'open_with_m2.txt').read_text() == 'M2'
 
 # === Multi-item with: exception inside body closes both ===
 mexa = open(root / 'hello.txt')
@@ -61,9 +61,9 @@ try:
         raise ValueError('multi-item-boom')
 except ValueError as e:
     caught = str(e)
-assert caught == 'multi-item-boom', 'exception in multi-item with propagates'
-assert mexa.closed == True, 'first manager closed on exception'
-assert mexb.closed == True, 'second manager closed on exception'
+assert caught == 'multi-item-boom'
+assert mexa.closed == True
+assert mexb.closed == True
 
 # === Multi-item with: bare items without `as` ===
 with open(root / 'hello.txt'), open(root / 'hello.txt'):
@@ -78,8 +78,8 @@ def write_and_return(path):
 
 
 returned = write_and_return(root / 'open_with_ret.txt')
-assert returned.closed == True, 'file closed when returning from inside with'
-assert (root / 'open_with_ret.txt').read_text() == 'via-return', 'write persisted on return path'
+assert returned.closed == True
+assert (root / 'open_with_ret.txt').read_text() == 'via-return'
 
 # === `break` inside with calls __exit__ ===
 break_file = None
@@ -88,8 +88,8 @@ for _ in range(1):
         break_file = bf
         bf.write('via-break')
         break
-assert break_file.closed == True, 'file closed when breaking from inside with'
-assert (root / 'open_with_break.txt').read_text() == 'via-break', 'write persisted on break path'
+assert break_file.closed == True
+assert (root / 'open_with_break.txt').read_text() == 'via-break'
 
 # === `continue` inside with calls __exit__ ===
 cont_files = []
@@ -99,16 +99,16 @@ for i in range(2):
         cont_files.append(cf)
         cf.write('iter-' + str(i))
         continue
-assert all(f.closed for f in cont_files), 'files closed when continuing from inside with'
-assert cont_paths[0].read_text() == 'iter-0', 'first iteration persisted'
-assert cont_paths[1].read_text() == 'iter-1', 'second iteration persisted'
+assert all(f.closed for f in cont_files)
+assert cont_paths[0].read_text() == 'iter-0'
+assert cont_paths[1].read_text() == 'iter-1'
 
 # === Direct `__enter__()` / `__exit__()` invocation ===
 direct = open(root / 'hello.txt')
 entered = direct.__enter__()
-assert entered is direct, '__enter__ direct call returns self'
-assert direct.__exit__(None, None, None) is None, '__exit__ returns None'
-assert direct.closed == True, 'direct __exit__ closes the file'
+assert entered is direct
+assert direct.__exit__(None, None, None) is None
+assert direct.closed == True
 
 # === `__enter__` on a closed file raises ===
 closed = open(root / 'hello.txt')
@@ -119,4 +119,4 @@ try:
         assert False, 'should not enter body when ctx is closed'
 except ValueError as e:
     err = str(e)
-assert err == 'I/O operation on closed file.', 'closed file rejected by __enter__'
+assert err == 'I/O operation on closed file.'

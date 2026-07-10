@@ -244,11 +244,11 @@ assert d == {'a': 1, 'b': 2, 'c': 3}, f'update named + multiple **kwargs: {d}'
 # in the compile_method_call GeneralizedCall branch.
 my_list = [2, 3]
 my_list.insert(*[0], 1)
-assert my_list == [1, 2, 3], 'insert: star index then positional value'
+assert my_list == [1, 2, 3]
 
 my_list2 = ['a', 'b', 'c', 'd']
 my_list2.insert(*[1], 'x')
-assert my_list2 == ['a', 'x', 'b', 'c', 'd'], 'insert: star index then positional string'
+assert my_list2 == ['a', 'x', 'b', 'c', 'd']
 
 # === *args + multiple **kwargs in method GeneralizedCall ===
 # d.update(*[...], **{...}, **{...}): two **unpacks → GeneralizedCall (not ArgsKargs).
@@ -256,4 +256,4 @@ assert my_list2 == ['a', 'x', 'b', 'c', 'd'], 'insert: star index then positiona
 # covering the kwargs dict-builder block in the compile_method_call GeneralizedCall branch.
 d = {}
 d.update(*[{}], **{'a': 1}, **{'b': 2})
-assert d == {'a': 1, 'b': 2}, 'update: star args + two star-star kwargs'
+assert d == {'a': 1, 'b': 2}

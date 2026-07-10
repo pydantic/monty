@@ -11,9 +11,9 @@ class Stepwise:
     c = a + b
 
 
-assert Stepwise.a == 1, 'first class var'
-assert Stepwise.b == 2, 'class var reads an earlier class var'
-assert Stepwise.c == 3, 'class var reads two earlier class vars'
+assert Stepwise.a == 1
+assert Stepwise.b == 2
+assert Stepwise.c == 3
 
 
 # === Class var as an arbitrary expression (call / comprehension) ===
@@ -23,9 +23,9 @@ class Computed:
     total = sum(squares)
 
 
-assert Computed.name == 'ABC', 'class var from a method call'
-assert Computed.squares == [0, 1, 4, 9], 'class var from a comprehension'
-assert Computed.total == 14, 'class var derived from an earlier class var'
+assert Computed.name == 'ABC'
+assert Computed.squares == [0, 1, 4, 9]
+assert Computed.total == 14
 
 
 # === Class var evaluation order is top-to-bottom ===
@@ -38,7 +38,7 @@ class Ordered:
     z = order.append('z')
 
 
-assert order == ['x', 'y', 'z'], 'class body runs statements in source order'
+assert order == ['x', 'y', 'z']
 
 
 # === A method does NOT see class members by bare name ===
@@ -60,10 +60,10 @@ class BareName:
 
 
 bn = BareName()
-assert bn.get_helper() == 'global-helper', 'method bare name resolves to global, not class member'
-assert bn.get_value() == 'global-value', 'second bare name also resolves to global'
-assert BareName.helper == 'member-helper', 'the class member itself is still accessible via the class'
-assert BareName.value == 'member-value', 'second class member accessible via the class'
+assert bn.get_helper() == 'global-helper'
+assert bn.get_value() == 'global-value'
+assert BareName.helper == 'member-helper'
+assert BareName.value == 'member-value'
 
 
 # === Class defined in a function captures enclosing locals (transitive) ===
@@ -79,11 +79,11 @@ def make_adder(n):
 
 
 Adder3 = make_adder(3)
-assert Adder3().add(10) == 13, 'method captures enclosing function local through class scope'
-assert Adder3.bias == 100, 'class member set in a nested class'
+assert Adder3().add(10) == 13
+assert Adder3.bias == 100
 Adder5 = make_adder(5)
-assert Adder5().add(10) == 15, 'each class instantiation captures its own enclosing value'
-assert Adder3().add(10) == 13, 'independent captures do not interfere'
+assert Adder5().add(10) == 15
+assert Adder3().add(10) == 13
 
 
 # === Distinct enclosing-local and class-member names coexist ===
@@ -99,8 +99,8 @@ def factory(scale):
 
 
 w = factory(4)()
-assert w.scaled(5) == 20, 'method captures enclosing local with a distinct name'
-assert factory(4)().kind == 'widget', 'class member with a distinct name is unaffected'
+assert w.scaled(5) == 20
+assert factory(4)().kind == 'widget'
 
 # The bare-name NameError case (a method referencing a class member by bare name)
 # is covered by the traceback test in class__name_error.py.
@@ -116,8 +116,8 @@ class ReadsGlobal:
     x = x + 1
 
 
-assert ReadsGlobal.x == 6, 'member read before binding sees the global'
-assert x == 5, 'the global is not modified by the class-body binding'
+assert ReadsGlobal.x == 6
+assert x == 5
 
 fwd = 10
 
@@ -127,9 +127,9 @@ class ForwardRef:
     fwd = 1
 
 
-assert ForwardRef.y == 10, 'forward member reference reads the global'
-assert ForwardRef.fwd == 1, 'the later binding still creates the member'
-assert fwd == 10, 'global unchanged'
+assert ForwardRef.y == 10
+assert ForwardRef.fwd == 1
+assert fwd == 10
 
 g_name = 'global'
 
@@ -140,11 +140,11 @@ def shadowed():
     class Inner:
         g_name = g_name
 
-    assert g_name == 'func', 'enclosing local untouched'
+    assert g_name == 'func'
     return Inner.g_name
 
 
-assert shadowed() == 'global', 'LOAD_NAME skips enclosing function locals'
+assert shadowed() == 'global'
 
 
 # A global created at runtime, mid-class-body, is visible to a later unbound-
@@ -160,8 +160,8 @@ class DynamicGlobal:
     dyn = 1
 
 
-assert DynamicGlobal.b == 99, 'fallback sees a global created mid-body'
-assert DynamicGlobal.dyn == 1, 'member binding wins afterwards'
+assert DynamicGlobal.b == 99
+assert DynamicGlobal.dyn == 1
 
 
 # Unbound-member reads fall through globals to builtins.
@@ -170,7 +170,7 @@ class BuiltinFallback:
     n = len('abc')
 
 
-assert BuiltinFallback.n == 3, 'unbound member read falls back to the builtin'
+assert BuiltinFallback.n == 3
 
 
 # Method parameter defaults evaluate in class scope at their statement's
@@ -189,8 +189,8 @@ class DefaultsScope:
 
 
 d = DefaultsScope()
-assert d.before() == 'module', 'default before the member binding reads the global'
-assert d.after() == 'member', 'default after the member binding reads the member'
+assert d.before() == 'module'
+assert d.after() == 'member'
 
 # A member with no global/builtin anywhere raises NameError (not
 # UnboundLocalError), matching CPython class bodies.
@@ -202,4 +202,4 @@ try:
 
     assert False, 'expected NameError'
 except NameError as e:
-    assert str(e) == "name 'missing_name' is not defined", 'unbound member read raises NameError'
+    assert str(e) == "name 'missing_name' is not defined"

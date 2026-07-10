@@ -16,4 +16,4 @@ def sum_with_ext(n):
 #   add_ints(3, add_ints(2, add_ints(1, 0)))
 #   = 3 + 2 + 1 = 6
 result = sum_with_ext(3)
-assert result == 6, 'recursive ext call: 1+2+3=6'
+assert result == 6

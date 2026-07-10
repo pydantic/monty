@@ -477,15 +477,21 @@ ALWAYS consolidate related tests into single files using multiple `assert` state
 ```python
 # === Section name ===
 # brief comment if needed
-assert condition, 'descriptive message'
-assert another_condition, 'another descriptive message'
+assert condition
+assert another_condition
 
 # === Next section ===
 x = setup_value
-assert x == expected, 'test description'
+assert x == expected
 ```
 
-Each `assert` should have a descriptive message.
+Do NOT add messages to `assert` statements — Monty's assert message annotations
+(see `limitations/assert.md`) already show the failing values, so a hand-written
+message is clutter. The ONE exception: tests whose failure would show nothing,
+i.e. `assert False` sentinels in try/except blocks (`assert False, 'expected
+TypeError'`) and tests that evaluate to a bare bool (`not` expressions, chained
+comparisons, boolean ops) — there a message is required since introspection
+shows nothing.
 
 Do NOT Write tests like `assert 'thing' in msg` it's lazy and inexact unless explicitly told to do so, instead write tests like `assert msg == 'expected message'` to ensure clarity and accuracy and most importantly, to identify differences between Monty and CPython.
 

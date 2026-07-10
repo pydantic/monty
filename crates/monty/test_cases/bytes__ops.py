@@ -1,97 +1,97 @@
 # === Bytes length ===
-assert len(b'') == 0, 'len empty'
-assert len(b'hello') == 5, 'len basic'
+assert len(b'') == 0
+assert len(b'hello') == 5
 
 # === Bytes repr/str ===
-assert repr(b'hello') == "b'hello'", 'bytes repr'
-assert str(b'hello') == "b'hello'", 'bytes str'
+assert repr(b'hello') == "b'hello'"
+assert str(b'hello') == "b'hello'"
 
 # === Various bytes repr cases ===
-assert repr(b'') == "b''", 'empty bytes repr'
-assert repr(b"it's") == 'b"it\'s"', 'single quote bytes repr'
-assert repr(b'l1\nl2') == "b'l1\\nl2'", 'newline bytes repr'
-assert repr(b'col1\tcol2') == "b'col1\\tcol2'", 'tab bytes repr'
-assert repr(b'\x00\xff') == "b'\\x00\\xff'", 'non-printable bytes repr'
-assert repr(b'back\\slash') == "b'back\\\\slash'", 'backslash bytes repr'
+assert repr(b'') == "b''"
+assert repr(b"it's") == 'b"it\'s"'
+assert repr(b'l1\nl2') == "b'l1\\nl2'"
+assert repr(b'col1\tcol2') == "b'col1\\tcol2'"
+assert repr(b'\x00\xff') == "b'\\x00\\xff'"
+assert repr(b'back\\slash') == "b'back\\\\slash'"
 
 # === Bytes repetition (*) ===
-assert b'ab' * 3 == b'ababab', 'bytes mult int'
-assert 3 * b'ab' == b'ababab', 'int mult bytes'
-assert b'x' * 0 == b'', 'bytes mult zero'
-assert b'x' * -1 == b'', 'bytes mult negative'
-assert b'' * 5 == b'', 'empty bytes mult'
-assert b'ab' * 1 == b'ab', 'bytes mult one'
+assert b'ab' * 3 == b'ababab'
+assert 3 * b'ab' == b'ababab'
+assert b'x' * 0 == b''
+assert b'x' * -1 == b''
+assert b'' * 5 == b''
+assert b'ab' * 1 == b'ab'
 
 # === Bytes indexing (getitem) ===
 # Basic indexing - returns integer byte values
-assert b'hello'[0] == 104, 'bytes getitem index 0 (h=104)'
-assert b'hello'[1] == 101, 'bytes getitem index 1 (e=101)'
-assert b'hello'[4] == 111, 'bytes getitem last index (o=111)'
+assert b'hello'[0] == 104
+assert b'hello'[1] == 101
+assert b'hello'[4] == 111
 
 # Negative indexing
-assert b'hello'[-1] == 111, 'bytes getitem -1 (o=111)'
-assert b'hello'[-2] == 108, 'bytes getitem -2 (l=108)'
-assert b'hello'[-5] == 104, 'bytes getitem -5 (h=104)'
+assert b'hello'[-1] == 111
+assert b'hello'[-2] == 108
+assert b'hello'[-5] == 104
 
 # Single byte
-assert b'x'[0] == 120, 'bytes getitem single byte at 0'
-assert b'x'[-1] == 120, 'bytes getitem single byte at -1'
+assert b'x'[0] == 120
+assert b'x'[-1] == 120
 
 # ASCII printable range
-assert b' '[0] == 32, 'bytes getitem space (32)'
-assert b'~'[0] == 126, 'bytes getitem tilde (126)'
+assert b' '[0] == 32
+assert b'~'[0] == 126
 
 # Non-printable bytes
-assert b'\x00'[0] == 0, 'bytes getitem null byte'
-assert b'\xff'[0] == 255, 'bytes getitem 0xff'
-assert b'\n'[0] == 10, 'bytes getitem newline'
-assert b'\t'[0] == 9, 'bytes getitem tab'
+assert b'\x00'[0] == 0
+assert b'\xff'[0] == 255
+assert b'\n'[0] == 10
+assert b'\t'[0] == 9
 
 # Heap-allocated bytes
 b = bytes(b'abc')
-assert b[0] == 97, 'heap bytes getitem 0'
-assert b[1] == 98, 'heap bytes getitem 1'
-assert b[-1] == 99, 'heap bytes negative getitem'
+assert b[0] == 97
+assert b[1] == 98
+assert b[-1] == 99
 
 # Variable index
 b = b'xyz'
 i = 1
-assert b[i] == 121, 'bytes getitem with variable index'
+assert b[i] == 121
 
 # Verify return type is int
 val = b'A'[0]
-assert type(val) == int, 'bytes getitem returns int'
-assert val == 65, 'bytes getitem value is correct'
+assert type(val) == int
+assert val == 65
 
 # Bool indices (True=1, False=0)
 b = b'abc'
-assert b[False] == 97, 'bytes getitem with False'
-assert b[True] == 98, 'bytes getitem with True'
+assert b[False] == 97
+assert b[True] == 98
 
 # === Bytes comparisons ===
-assert b'abc' < b'abd', 'bytes < bytes'
-assert b'abd' > b'abc', 'bytes > bytes'
-assert b'abc' <= b'abc', 'bytes <= bytes equal'
-assert b'abc' <= b'abd', 'bytes <= bytes less'
-assert b'abd' >= b'abd', 'bytes >= bytes equal'
-assert b'abd' >= b'abc', 'bytes >= bytes greater'
+assert b'abc' < b'abd'
+assert b'abd' > b'abc'
+assert b'abc' <= b'abc'
+assert b'abc' <= b'abd'
+assert b'abd' >= b'abd'
+assert b'abd' >= b'abc'
 
 # Different lengths
-assert b'ab' < b'abc', 'shorter prefix is less'
-assert b'' < b'a', 'empty bytes is less'
-assert b'abc' > b'ab', 'longer bytes with same prefix is greater'
+assert b'ab' < b'abc'
+assert b'' < b'a'
+assert b'abc' > b'ab'
 
 # Non-ASCII byte values
-assert b'\x00' < b'\xff', 'null byte < 0xff'
-assert b'\xfe' < b'\xff', '0xfe < 0xff'
+assert b'\x00' < b'\xff'
+assert b'\xfe' < b'\xff'
 
 # Sorting
-assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c'], 'sorted bytes list'
-assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb'], 'sorted different length bytes'
+assert sorted([b'c', b'a', b'b']) == [b'a', b'b', b'c']
+assert sorted([b'bb', b'a', b'ba']) == [b'a', b'ba', b'bb']
 
 # === bytes() constructor with keyword argument ===
-assert bytes(source=b'hello') == b'hello', 'bytes source kwarg bytes'
-assert bytes(source=3) == b'\x00\x00\x00', 'bytes source kwarg int'
+assert bytes(source=b'hello') == b'hello'
+assert bytes(source=3) == b'\x00\x00\x00'
 
 # bytes() constructor error cases
 try:

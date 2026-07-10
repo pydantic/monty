@@ -30,10 +30,10 @@ for alias in ('utf-16-be', 'utf-16be', 'UnicodeBigUnmarked'):
     assert 'a'.encode(alias) == b'\x00a', f'utf-16-be alias {alias}'
 for alias in ('utf-32', 'utf32', 'u32'):
     assert 'a'.encode(alias) == b'\xff\xfe\x00\x00a\x00\x00\x00', f'utf-32 alias {alias}'
-assert 'a'.encode('utf-32-le') == b'a\x00\x00\x00', 'utf-32-le'
-assert 'a'.encode('utf-32le') == b'a\x00\x00\x00', 'utf-32le alias'
-assert 'a'.encode('utf-32-be') == b'\x00\x00\x00a', 'utf-32-be'
-assert 'a'.encode('utf-32be') == b'\x00\x00\x00a', 'utf-32be alias'
+assert 'a'.encode('utf-32-le') == b'a\x00\x00\x00'
+assert 'a'.encode('utf-32le') == b'a\x00\x00\x00'
+assert 'a'.encode('utf-32-be') == b'\x00\x00\x00a'
+assert 'a'.encode('utf-32be') == b'\x00\x00\x00a'
 
 # Dots are preserved by normalization, so 'utf.8' is NOT an alias of utf-8.
 try:
@@ -50,22 +50,22 @@ except LookupError as e:
 
 # === utf-16 / utf-32 encode ===
 # The bare variants prepend a BOM (little-endian), even for an empty string.
-assert 'ab'.encode('utf-16') == b'\xff\xfea\x00b\x00', 'utf-16 encode with BOM'
-assert ''.encode('utf-16') == b'\xff\xfe', 'utf-16 encode empty is BOM only'
-assert ''.encode('utf-16-le') == b'', 'utf-16-le encode empty'
-assert ''.encode('utf-32') == b'\xff\xfe\x00\x00', 'utf-32 encode empty is BOM only'
+assert 'ab'.encode('utf-16') == b'\xff\xfea\x00b\x00'
+assert ''.encode('utf-16') == b'\xff\xfe'
+assert ''.encode('utf-16-le') == b''
+assert ''.encode('utf-32') == b'\xff\xfe\x00\x00'
 # Explicit -le/-be variants write no BOM.
-assert 'ab'.encode('utf-16-le') == b'a\x00b\x00', 'utf-16-le encode'
-assert 'ab'.encode('utf-16-be') == b'\x00a\x00b', 'utf-16-be encode'
+assert 'ab'.encode('utf-16-le') == b'a\x00b\x00'
+assert 'ab'.encode('utf-16-be') == b'\x00a\x00b'
 # Astral characters become surrogate pairs in utf-16, single units in utf-32.
-assert '\U0001f600'.encode('utf-16') == b'\xff\xfe=\xd8\x00\xde', 'utf-16 surrogate pair'
-assert '\U0001f600'.encode('utf-16-be') == b'\xd8=\xde\x00', 'utf-16-be surrogate pair'
-assert '\U0001f600'.encode('utf-32-le') == b'\x00\xf6\x01\x00', 'utf-32-le astral char'
-assert '\U0001f600'.encode('utf-32-be') == b'\x00\x01\xf6\x00', 'utf-32-be astral char'
+assert '\U0001f600'.encode('utf-16') == b'\xff\xfe=\xd8\x00\xde'
+assert '\U0001f600'.encode('utf-16-be') == b'\xd8=\xde\x00'
+assert '\U0001f600'.encode('utf-32-le') == b'\x00\xf6\x01\x00'
+assert '\U0001f600'.encode('utf-32-be') == b'\x00\x01\xf6\x00'
 # Encoding can never fail (no lone surrogates exist), so `errors` is never
 # consulted or validated, matching CPython's lazy handler lookup.
-assert 'héllo ⚡'.encode('utf-16', 'bogus') == 'héllo ⚡'.encode('utf-16'), 'utf-16 errors never validated'
-assert 'héllo'.encode('utf-32-be', 'strict') == 'héllo'.encode('utf-32-be'), 'utf-32 errors accepted'
+assert 'héllo ⚡'.encode('utf-16', 'bogus') == 'héllo ⚡'.encode('utf-16')
+assert 'héllo'.encode('utf-32-be', 'strict') == 'héllo'.encode('utf-32-be')
 
 # Round-trips through both endiannesses and the BOM variant.
 s = 'héllo wörld ⚡ 日本語 \U0001f600 test'
@@ -74,18 +74,18 @@ for enc in ('utf-16', 'utf-16-le', 'utf-16-be', 'utf-32', 'utf-32-le', 'utf-32-b
 
 # === utf-16 / utf-32 decode: BOM handling ===
 # The bare variants consume a BOM of either endianness.
-assert b'\xff\xfea\x00'.decode('utf-16') == 'a', 'utf-16 decode LE BOM'
-assert b'\xfe\xff\x00a'.decode('utf-16') == 'a', 'utf-16 decode BE BOM'
-assert b'\xff\xfe'.decode('utf-16') == '', 'utf-16 decode BOM only'
-assert b''.decode('utf-16') == '', 'utf-16 decode empty'
-assert b'\xff\xfe\x00\x00a\x00\x00\x00'.decode('utf-32') == 'a', 'utf-32 decode LE BOM'
-assert b'\x00\x00\xfe\xff\x00\x00\x00a'.decode('utf-32') == 'a', 'utf-32 decode BE BOM'
-assert b''.decode('utf-32') == '', 'utf-32 decode empty'
+assert b'\xff\xfea\x00'.decode('utf-16') == 'a'
+assert b'\xfe\xff\x00a'.decode('utf-16') == 'a'
+assert b'\xff\xfe'.decode('utf-16') == ''
+assert b''.decode('utf-16') == ''
+assert b'\xff\xfe\x00\x00a\x00\x00\x00'.decode('utf-32') == 'a'
+assert b'\x00\x00\xfe\xff\x00\x00\x00a'.decode('utf-32') == 'a'
+assert b''.decode('utf-32') == ''
 # A second BOM is real content (U+FEFF, zero width no-break space).
-assert b'\xff\xfe\xff\xfe'.decode('utf-16') == '﻿', 'utf-16 double BOM keeps second'
+assert b'\xff\xfe\xff\xfe'.decode('utf-16') == '﻿'
 # Explicit -le/-be variants never consume a BOM.
-assert b'\xff\xfea\x00'.decode('utf-16-le') == '﻿a', 'utf-16-le keeps BOM as U+FEFF'
-assert b'\x00\x00\xfe\xff'.decode('utf-32-be') == '﻿', 'utf-32-be keeps BOM as U+FEFF'
+assert b'\xff\xfea\x00'.decode('utf-16-le') == '﻿a'
+assert b'\x00\x00\xfe\xff'.decode('utf-32-be') == '﻿'
 
 # === utf-16 decode errors ===
 # Errors are reported under the resolved codec name ('utf-16-le', not
@@ -144,16 +144,14 @@ except UnicodeDecodeError as e:
     )
 
 # === utf-16 decode error handlers ===
-assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'replace') == 'a�b', 'utf-16 replace bad unit'
-assert b'a\x00\x00\xd8'.decode('utf-16-le', 'replace') == 'a�', 'utf-16 replace truncated tail'
-assert b'a\x00\x00\xd8a'.decode('utf-16-le', 'replace') == 'a�', 'utf-16 replace 3-byte tail is one U+FFFD'
-assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'ignore') == 'ab', 'utf-16 ignore bad unit'
-assert b'a\x00b'.decode('utf-16-le', 'ignore') == 'a', 'utf-16 ignore truncated byte'
-assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'backslashreplace') == 'a\\x00\\xd8b', (
-    'utf-16 backslashreplace escapes each byte of the bad unit'
-)
+assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'replace') == 'a�b'
+assert b'a\x00\x00\xd8'.decode('utf-16-le', 'replace') == 'a�'
+assert b'a\x00\x00\xd8a'.decode('utf-16-le', 'replace') == 'a�'
+assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'ignore') == 'ab'
+assert b'a\x00b'.decode('utf-16-le', 'ignore') == 'a'
+assert b'a\x00\x00\xd8b\x00'.decode('utf-16-le', 'backslashreplace') == 'a\\x00\\xd8b'
 # Handler names are validated lazily, and encode-only handlers raise TypeError.
-assert b'a\x00'.decode('utf-16-le', 'bogus') == 'a', 'utf-16 unused handler never validated'
+assert b'a\x00'.decode('utf-16-le', 'bogus') == 'a'
 try:
     b'a\x00b'.decode('utf-16-le', 'xmlcharrefreplace')
     assert False, 'encode-only handler on decode should error'
@@ -200,11 +198,9 @@ except UnicodeDecodeError as e:
     assert str(e) == "'utf-32-le' codec can't decode bytes in position 4-5: truncated data", (
         f'utf-32 position includes BOM: {e}'
     )
-assert b'\xff\xff\xff\x00a\x00\x00\x00'.decode('utf-32-le', 'replace') == '�a', 'utf-32 replace bad code point'
-assert b'\xff\xff\xff\x00a\x00\x00\x00'.decode('utf-32-le', 'ignore') == 'a', 'utf-32 ignore bad code point'
-assert b'\x00\xd8\x00\x00'.decode('utf-32-le', 'backslashreplace') == '\\x00\\xd8\\x00\\x00', (
-    'utf-32 backslashreplace escapes all four bytes'
-)
+assert b'\xff\xff\xff\x00a\x00\x00\x00'.decode('utf-32-le', 'replace') == '�a'
+assert b'\xff\xff\xff\x00a\x00\x00\x00'.decode('utf-32-le', 'ignore') == 'a'
+assert b'\x00\xd8\x00\x00'.decode('utf-32-le', 'backslashreplace') == '\\x00\\xd8\\x00\\x00'
 
 # === utf-8 decode: precise strict messages ===
 try:
@@ -261,13 +257,13 @@ except UnicodeDecodeError as e:
 
 # === utf-8 decode error handlers ===
 # replace substitutes one U+FFFD per maximal subpart (not per byte).
-assert b'a\xe2\x82b\xf0\x9f\x98'.decode('utf-8', 'replace') == 'a�b�', 'utf-8 replace maximal subparts'
-assert b'a\xf0\x28\x8c\x28b'.decode('utf-8', 'replace') == 'a�(�(b', 'utf-8 replace resumes after subpart'
-assert b'a\xed\xa0\x80b'.decode('utf-8', 'replace') == 'a���b', 'utf-8 replace CESU-8 surrogate is three subparts'
-assert b'a\xe2\x82b'.decode('utf-8', 'ignore') == 'ab', 'utf-8 ignore drops subpart'
-assert b'a\xe2\x82b'.decode('utf-8', 'backslashreplace') == 'a\\xe2\\x82b', 'utf-8 backslashreplace escapes each byte'
+assert b'a\xe2\x82b\xf0\x9f\x98'.decode('utf-8', 'replace') == 'a�b�'
+assert b'a\xf0\x28\x8c\x28b'.decode('utf-8', 'replace') == 'a�(�(b'
+assert b'a\xed\xa0\x80b'.decode('utf-8', 'replace') == 'a���b'
+assert b'a\xe2\x82b'.decode('utf-8', 'ignore') == 'ab'
+assert b'a\xe2\x82b'.decode('utf-8', 'backslashreplace') == 'a\\xe2\\x82b'
 # Handler validation stays lazy; surrogatepass re-raises for non-surrogate errors.
-assert b'hello'.decode('utf-8', 'bogus') == 'hello', 'utf-8 unused handler never validated'
+assert b'hello'.decode('utf-8', 'bogus') == 'hello'
 try:
     b'h\xffllo'.decode('utf-8', 'bogus')
     assert False, 'unknown handler should error once needed'

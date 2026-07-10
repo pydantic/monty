@@ -1,18 +1,18 @@
 # === Basic tuple unpacking ===
 a, b = (1, 2)
-assert a == 1, 'first element of tuple'
-assert b == 2, 'second element of tuple'
+assert a == 1
+assert b == 2
 
 # === Unpacking without parentheses ===
 x, y = 10, 20
-assert x == 10, 'first element without parens'
-assert y == 20, 'second element without parens'
+assert x == 10
+assert y == 20
 
 # === Three element unpacking ===
 a, b, c = (1, 2, 3)
-assert a == 1, 'three elements: first'
-assert b == 2, 'three elements: second'
-assert c == 3, 'three elements: third'
+assert a == 1
+assert b == 2
+assert c == 3
 
 
 # === Unpacking from function return ===
@@ -21,8 +21,8 @@ def returns_pair():
 
 
 x, y = returns_pair()
-assert x == 42, 'function return first'
-assert y == 37, 'function return second'
+assert x == 42
+assert y == 37
 
 
 def returns_triple():
@@ -30,124 +30,124 @@ def returns_triple():
 
 
 p, q, r = returns_triple()
-assert p == 'a', 'function return triple first'
-assert q == 'b', 'function return triple second'
-assert r == 'c', 'function return triple third'
+assert p == 'a'
+assert q == 'b'
+assert r == 'c'
 
 # === Unpacking list ===
 a, b = [100, 200]
-assert a == 100, 'list unpack first'
-assert b == 200, 'list unpack second'
+assert a == 100
+assert b == 200
 
 a, b, c, d = [1, 2, 3, 4]
-assert a == 1, 'four element list first'
-assert d == 4, 'four element list fourth'
+assert a == 1
+assert d == 4
 
 # === Unpacking string ===
 a, b = 'xy'
-assert a == 'x', 'string unpack first char'
-assert b == 'y', 'string unpack second char'
+assert a == 'x'
+assert b == 'y'
 
 p, q, r = 'abc'
-assert p == 'a', 'three char string first'
-assert q == 'b', 'three char string second'
-assert r == 'c', 'three char string third'
+assert p == 'a'
+assert q == 'b'
+assert r == 'c'
 
 # === Unpacking with different value types ===
 a, b = (True, False)
-assert a is True, 'bool tuple first'
-assert b is False, 'bool tuple second'
+assert a is True
+assert b is False
 
 a, b = (1.5, 2.5)
-assert a == 1.5, 'float tuple first'
-assert b == 2.5, 'float tuple second'
+assert a == 1.5
+assert b == 2.5
 
 a, b = (None, 42)
-assert a is None, 'mixed tuple None'
-assert b == 42, 'mixed tuple int'
+assert a is None
+assert b == 42
 
 # === Unpacking with nested containers ===
 a, b = ([1, 2], [3, 4])
-assert a == [1, 2], 'nested list first'
-assert b == [3, 4], 'nested list second'
+assert a == [1, 2]
+assert b == [3, 4]
 
 a, b = ((1, 2), (3, 4))
-assert a == (1, 2), 'nested tuple first'
-assert b == (3, 4), 'nested tuple second'
+assert a == (1, 2)
+assert b == (3, 4)
 
 # === Reassignment via unpacking ===
 x = 1
 y = 2
 x, y = y, x
-assert x == 2, 'swap first'
-assert y == 1, 'swap second'
+assert x == 2
+assert y == 1
 
 # === Single element tuple (edge case) ===
 # Note: (x,) = (1,) is valid Python
 (a,) = (42,)
-assert a == 42, 'single element tuple unpack'
+assert a == 42
 
 (a,) = [99]
-assert a == 99, 'single element list unpack'
+assert a == 99
 
 (a,) = 'z'
-assert a == 'z', 'single char string unpack'
+assert a == 'z'
 
 # === Star unpacking (extended unpacking) ===
 # Star at end
 first, *rest = [1, 2, 3, 4, 5]
-assert first == 1, 'star at end: first'
-assert rest == [2, 3, 4, 5], 'star at end: rest'
+assert first == 1
+assert rest == [2, 3, 4, 5]
 
 # Star at start
 *init, last = [1, 2, 3, 4, 5]
-assert init == [1, 2, 3, 4], 'star at start: init'
-assert last == 5, 'star at start: last'
+assert init == [1, 2, 3, 4]
+assert last == 5
 
 # Star in middle
 first, *middle, last = [1, 2, 3, 4, 5]
-assert first == 1, 'star in middle: first'
-assert middle == [2, 3, 4], 'star in middle: middle'
-assert last == 5, 'star in middle: last'
+assert first == 1
+assert middle == [2, 3, 4]
+assert last == 5
 
 # Empty rest (minimum values)
 first, *rest, last = [1, 2]
-assert first == 1, 'empty rest: first'
-assert rest == [], 'empty rest: rest is empty list'
-assert last == 2, 'empty rest: last'
+assert first == 1
+assert rest == []
+assert last == 2
 
 # From tuple
 a, *b = (10, 20, 30)
-assert a == 10, 'star from tuple: a'
-assert b == [20, 30], 'star from tuple: b is list'
+assert a == 10
+assert b == [20, 30]
 
 # From string
 first, *mid, last = 'abcde'
-assert first == 'a', 'star from string: first'
-assert mid == ['b', 'c', 'd'], 'star from string: mid'
-assert last == 'e', 'star from string: last'
+assert first == 'a'
+assert mid == ['b', 'c', 'd']
+assert last == 'e'
 
 # With more targets before star
 a, b, c, *rest = [1, 2, 3, 4, 5, 6]
-assert a == 1, 'multiple before star: a'
-assert b == 2, 'multiple before star: b'
-assert c == 3, 'multiple before star: c'
-assert rest == [4, 5, 6], 'multiple before star: rest'
+assert a == 1
+assert b == 2
+assert c == 3
+assert rest == [4, 5, 6]
 
 # With more targets after star
 *init, x, y, z = [1, 2, 3, 4, 5, 6]
-assert init == [1, 2, 3], 'multiple after star: init'
-assert x == 4, 'multiple after star: x'
-assert y == 5, 'multiple after star: y'
-assert z == 6, 'multiple after star: z'
+assert init == [1, 2, 3]
+assert x == 4
+assert y == 5
+assert z == 6
 
 # Star captures all but one
 head, *tail = [1]
-assert head == 1, 'single item: head'
-assert tail == [], 'single item: tail is empty'
+assert head == 1
+assert tail == []
 
 # Star with bracket syntax
 [a, *b, c] = [1, 2, 3, 4]
-assert a == 1, 'bracket syntax: a'
-assert b == [2, 3], 'bracket syntax: b'
-assert c == 4, 'bracket syntax: c'
+assert a == 1
+assert b == [2, 3]
+assert c == 4

@@ -1,97 +1,97 @@
 # === id() returns int type ===
-assert isinstance(id(None), int), 'id returns int type'
-assert isinstance(id([]), int), 'id of list returns int'
-assert isinstance(id('hello'), int), 'id of str returns int'
-assert isinstance(id(42), int), 'id of int returns int'
+assert isinstance(id(None), int)
+assert isinstance(id([]), int)
+assert isinstance(id('hello'), int)
+assert isinstance(id(42), int)
 
 # === Identity operator (is) ===
-assert (True is True) == True, 'is True'
-assert (False is False) == True, 'is False'
-assert (None is None) == True, 'is None'
-assert (... is ...) == True, 'is Ellipsis'
+assert (True is True) == True
+assert (False is False) == True
+assert (None is None) == True
+assert (... is ...) == True
 
 # === Identity operator (is not) ===
-assert (True is not True) == False, 'is not True'
-assert (True is not False) == True, 'is not False'
+assert (True is not True) == False
+assert (True is not False) == True
 
 # === Singleton identity ===
-assert id(None) == id(None), 'None singleton'
-assert id(True) == id(True), 'True singleton'
-assert id(False) == id(False), 'False singleton'
-assert id(...) == id(...), 'Ellipsis singleton'
+assert id(None) == id(None)
+assert id(True) == id(True)
+assert id(False) == id(False)
+assert id(...) == id(...)
 
 # bool and int are distinct
-assert id(True) != id(1), 'True is not 1'
-assert id(False) != id(0), 'False is not 0'
+assert id(True) != id(1)
+assert id(False) != id(0)
 
 # distinct singletons
-assert id(None) != id(True), 'None is not True'
-assert id(None) != id(False), 'None is not False'
-assert id(None) != id(...), 'None is not Ellipsis'
+assert id(None) != id(True)
+assert id(None) != id(False)
+assert id(None) != id(...)
 
 # === Integer identity ===
-assert id(10) != id(20), 'different ints distinct'
+assert id(10) != id(20)
 
 # === Float identity ===
-assert id(1.0) != id(2.0), 'different floats distinct'
+assert id(1.0) != id(2.0)
 
 # === List assignment shares identity ===
 lst = [1, 2]
 ref = lst
-assert id(lst) == id(ref), 'list assignment shared'
-assert lst is ref, 'list is same'
+assert id(lst) == id(ref)
+assert lst is ref
 
 # === Variable identity is stable ===
 lst = [1, 2]
-assert id(lst) == id(lst), 'var id stable'
+assert id(lst) == id(lst)
 
 # === List mutation preserves identity ===
 a = [1, 2]
 b = a
 b.append(3)
-assert a is b, 'list mutate preserves identity'
+assert a is b
 
 # === Mixed types have distinct ids ===
-assert id(1) != id('1'), 'int vs str distinct'
+assert id(1) != id('1')
 
 # === Tuple singleton is guaranteed to have a unique id ===
-assert id([]) != id(()), 'list vs tuple singleton distinct'
-assert id({}) != id(()), 'dict vs tuple singleton distinct'
-assert id(1) != id(()), 'int vs tuple singleton distinct'
+assert id([]) != id(())
+assert id({}) != id(())
+assert id(1) != id(())
 
 # === Multiple refs share id ===
 x = [1, 2]
 y = x
 z = y
-assert id(x) == id(y), 'multiple refs share id xy'
-assert id(y) == id(z), 'multiple refs share id yz'
+assert id(x) == id(y)
+assert id(y) == id(z)
 
 # === String assignment shares identity ===
 s = 'hello'
 r = s
-assert id(s) == id(r), 'str assignment shared'
+assert id(s) == id(r)
 
 # === Bytes assignment shares identity ===
 b = b'hello'
 r = b
-assert id(b) == id(r), 'bytes assignment shared'
+assert id(b) == id(r)
 
 # === Tuple assignment shares identity ===
 t = (1, 2)
 r = t
-assert id(t) == id(r), 'tuple assignment shared'
+assert id(t) == id(r)
 
 # === Boolean is tests ===
-assert (True is True) == True, 'bool is test'
-assert (False is False) == True, 'bool is test 2'
+assert (True is True) == True
+assert (False is False) == True
 
 # === Array is test ===
 a = [1, 2]
 b = a
-assert (a is b) == True, 'array is test'
-assert (a is [1, 2]) == False, 'array is new literal'
+assert (a is b) == True
+assert (a is [1, 2]) == False
 
 # === None is tests ===
 x = None
-assert (x is None) == True, 'var is None'
-assert (1 is None) == False, 'int is not None'
+assert (x is None) == True
+assert (1 is None) == False
