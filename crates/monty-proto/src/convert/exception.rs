@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use monty::{CodeLoc, ExcData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 
 use crate::{convert::ProtoConvertError, pb};
 
@@ -40,6 +40,7 @@ impl TryFrom<pb::RaisedException> for MontyException {
             Some(pb::exc_data::Kind::Unicode(unicode)) => {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
+            Some(pb::exc_data::Kind::Json(json)) => sanitize_json_data(json).map_or(ExcData::None, ExcData::Json),
             None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
@@ -56,7 +57,60 @@ fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
                 unicode.as_ref(),
             ))),
         }),
+        ExcData::Json(json) => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData::from(json.as_ref()))),
+        }),
     }
+}
+
+impl From<&JsonErrorData> for pb::JsonErrorData {
+    fn from(data: &JsonErrorData) -> Self {
+        Self {
+            msg: data.msg.clone(),
+            doc: data.doc.clone(),
+            pos: data.pos as u64,
+            lineno: data.lineno as u64,
+            colno: data.colno as u64,
+        }
+    }
+}
+
+/// Validates an untrusted wire `JsonErrorData`, returning `None` when any
+/// field is out of range. As with [`sanitize_unicode_data`], size caps stop a
+/// compromised child pinning large amounts of parent memory: legitimate `msg`
+/// values are short static phrases, and legitimate senders drop `doc` above
+/// [`JsonErrorData::MAX_DOC_LEN`].
+fn sanitize_json_data(data: pb::JsonErrorData) -> Option<Box<JsonErrorData>> {
+    if data.msg.len() > JsonErrorData::MAX_DOC_LEN {
+        return None;
+    }
+    if data
+        .doc
+        .as_ref()
+        .is_some_and(|doc| doc.len() > JsonErrorData::MAX_DOC_LEN)
+    {
+        return None;
+    }
+    let pos = usize::try_from(data.pos).ok()?;
+    let lineno = usize::try_from(data.lineno).ok()?;
+    let colno = usize::try_from(data.colno).ok()?;
+    // CPython's lineno/colno are 1-based; pos is a character index into doc
+    // and may equal its length (errors at end of input).
+    if lineno == 0 || colno == 0 {
+        return None;
+    }
+    if let Some(doc) = &data.doc
+        && pos > doc.chars().count()
+    {
+        return None;
+    }
+    Some(Box::new(JsonErrorData {
+        msg: data.msg,
+        doc: data.doc,
+        pos,
+        lineno,
+        colno,
+    }))
 }
 
 impl From<&UnicodeErrorData> for pb::UnicodeErrorData {

@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error,
     fmt::{self, Write},
-    mem,
+    mem, str,
     sync::Arc,
 };
 
@@ -31,10 +31,9 @@ pub struct MontyException {
 }
 
 /// Structured payload attached to exception types whose CPython counterparts
-/// carry more than a message. Currently only unicode errors have one; the
-/// enum leaves room for future variants (e.g. `OSError`'s `errno`/`filename`
-/// or `json.JSONDecodeError`'s `lineno`/`colno`/`pos`) without another
-/// field on every exception.
+/// carry more than a message. Currently unicode and json decode errors have
+/// one; the enum leaves room for future variants (e.g. `OSError`'s
+/// `errno`/`filename`) without another field on every exception.
 #[derive(Debug, Clone, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExcData {
     /// No structured payload — every exception type without a variant below.
@@ -44,6 +43,9 @@ pub enum ExcData {
     /// Boxed to keep the common `None` case (and every exception embedding
     /// this enum) small.
     Unicode(Box<UnicodeErrorData>),
+    /// `json.JSONDecodeError` attribute fields. Boxed like
+    /// [`ExcData::Unicode`] to keep the enum small.
+    Json(Box<JsonErrorData>),
 }
 
 impl ExcData {
@@ -52,7 +54,16 @@ impl ExcData {
     pub fn unicode(&self) -> Option<&UnicodeErrorData> {
         match self {
             Self::Unicode(data) => Some(data),
-            Self::None => None,
+            _ => None,
+        }
+    }
+
+    /// The json-error fields, if this is [`ExcData::Json`].
+    #[must_use]
+    pub fn json(&self) -> Option<&JsonErrorData> {
+        match self {
+            Self::Json(data) => Some(data),
+            _ => None,
         }
     }
 
@@ -63,6 +74,7 @@ impl ExcData {
         match self {
             Self::None => 0,
             Self::Unicode(data) => data.estimate_size(),
+            Self::Json(data) => data.estimate_size(),
         }
     }
 }
@@ -154,6 +166,63 @@ impl UnicodeErrorData {
             UnicodeErrorObject::Str(s) => s.len(),
         };
         mem::size_of::<Self>() + self.encoding.len() + object_len + self.reason.len()
+    }
+}
+
+/// Structured fields of a `json.JSONDecodeError`, mirroring CPython's `msg` /
+/// `doc` / `pos` / `lineno` / `colno` exception attributes.
+///
+/// As with [`UnicodeErrorData`], the payload exists so host bindings can
+/// construct a real `json.JSONDecodeError` instead of falling back to a plain
+/// `ValueError`; sandboxed code never sees these fields. `lineno`/`colno` are
+/// carried explicitly rather than recomputed from `doc` because `doc` may be
+/// absent (see [`JsonErrorData::MAX_DOC_LEN`]).
+#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct JsonErrorData {
+    /// The bare error message, without the `: line N column M (char K)`
+    /// suffix the formatted exception message carries.
+    pub msg: String,
+    /// The document being parsed, matching CPython's `exc.doc`. `None` when
+    /// the document exceeds [`JsonErrorData::MAX_DOC_LEN`] or is not valid
+    /// UTF-8 (`json.loads` on `bytes` input).
+    pub doc: Option<String>,
+    /// Character index of the error in `doc`, matching CPython's `exc.pos`.
+    pub pos: usize,
+    /// 1-based line of the error, matching CPython's `exc.lineno`.
+    pub lineno: usize,
+    /// 1-based column of the error, matching CPython's `exc.colno`.
+    pub colno: usize,
+}
+
+impl JsonErrorData {
+    /// Document size cap, mirroring [`UnicodeErrorData::MAX_OBJECT_LEN`]:
+    /// exception payloads live outside the sandbox's resource tracker once
+    /// the exception escapes, so `doc` is dropped (not truncated — a partial
+    /// document would misplace `pos`) for larger inputs.
+    pub const MAX_DOC_LEN: usize = 64 * 1024;
+
+    /// Builds the payload for a decode error on `doc`, omitting the document
+    /// when it exceeds [`Self::MAX_DOC_LEN`] or is not valid UTF-8.
+    pub(crate) fn build(msg: &str, doc: &[u8], pos: usize, lineno: usize, colno: usize) -> ExcData {
+        let doc = if doc.len() <= Self::MAX_DOC_LEN {
+            str::from_utf8(doc).ok().map(ToOwned::to_owned)
+        } else {
+            None
+        };
+        ExcData::Json(Box::new(Self {
+            msg: msg.to_owned(),
+            doc,
+            pos,
+            lineno,
+            colno,
+        }))
+    }
+
+    /// Approximate byte footprint, used by the heap's memory accounting when
+    /// an exception carrying this payload is stored on the sandbox heap.
+    #[must_use]
+    pub(crate) fn estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.msg.len() + self.doc.as_ref().map_or(0, String::len)
     }
 }
 
@@ -272,6 +341,13 @@ impl MontyException {
     #[must_use]
     pub fn unicode_data(&self) -> Option<&UnicodeErrorData> {
         self.data.unicode()
+    }
+
+    /// Structured `json.JSONDecodeError` fields, present only for decode
+    /// errors raised by `json.loads` (not for manually raised exceptions).
+    #[must_use]
+    pub fn json_data(&self) -> Option<&JsonErrorData> {
+        self.data.json()
     }
 
     /// Removes and returns the structured payload, for consumers (like the

@@ -7,7 +7,7 @@
 //! snapshots). The Python-facing `MontyError` class hierarchy stays in
 //! `pydantic-monty` — this module only maps values.
 
-use monty::{ExcData, ExcType, MontyException, MontyObject, UnicodeErrorObject};
+use monty::{ExcData, ExcType, JsonErrorData, MontyException, MontyObject, UnicodeErrorObject};
 use pyo3::{
     PyTypeCheck,
     exceptions::{self},
@@ -61,7 +61,7 @@ pub fn exc_monty_to_py(py: Python<'_>, mut exc: MontyException) -> PyErr {
         ExcType::TypeError => exceptions::PyTypeError::new_err(msg),
         ExcType::ValueError => exceptions::PyValueError::new_err(msg),
         ExcType::UnicodeDecodeError | ExcType::UnicodeEncodeError => unicode_error_to_py(py, exc_type, exc_data, msg),
-        ExcType::JsonDecodeError => json_decode_error_to_py(py, msg),
+        ExcType::JsonDecodeError => json_decode_error_to_py(py, exc_data, msg),
         ExcType::ImportError => exceptions::PyImportError::new_err(msg),
         ExcType::ModuleNotFoundError => exceptions::PyModuleNotFoundError::new_err(msg),
         ExcType::OSError => exceptions::PyOSError::new_err(msg),
@@ -120,39 +120,28 @@ fn unicode_error_to_py(py: Python<'_>, exc_type: ExcType, exc_data: ExcData, msg
     exceptions::PyValueError::new_err(msg)
 }
 
-/// Builds a real `json.JSONDecodeError` from Monty's formatted message.
+/// Builds a real `json.JSONDecodeError` from the structured [`JsonErrorData`]
+/// Monty attaches to decode errors.
 ///
-/// The constructor requires `(msg, doc, pos)` and rebuilds the message and
-/// `lineno`/`colno` itself, but Monty only carries the formatted message —
-/// so we parse the location back out, construct with a placeholder, and
-/// overwrite the location attributes. `doc` is left as `''` since the
-/// original document is not preserved. Falls back to a plain `ValueError`
-/// when the message doesn't match CPython's shape (e.g. an exception raised
-/// manually inside the sandbox) or construction fails.
-fn json_decode_error_to_py(py: Python<'_>, msg: String) -> PyErr {
-    if let Ok(exc_cls) = get_json_decode_error(py)
-        && let Some((short_msg, line, column, pos)) = parse_json_decode_msg(&msg)
-        && let Ok(exc_instance) = exc_cls.call1((short_msg, "", 0))
-        && exc_instance.setattr("lineno", line).is_ok()
-        && exc_instance.setattr("colno", column).is_ok()
-        && exc_instance.setattr("pos", pos).is_ok()
+/// The constructor requires `(msg, doc, pos)` and recomputes `lineno`/`colno`
+/// and the formatted message from `doc` — correct when the payload carries
+/// the document, but wrong when `doc` was dropped (documents over
+/// `JsonErrorData::MAX_DOC_LEN`). The location attributes and `args` are
+/// therefore overwritten with the payload/message values, which are right in
+/// both cases. Falls back to a plain `ValueError` when the payload is absent
+/// (an exception raised manually inside the sandbox) or construction fails.
+fn json_decode_error_to_py(py: Python<'_>, exc_data: ExcData, msg: String) -> PyErr {
+    if let ExcData::Json(data) = exc_data
+        && let Ok(exc_cls) = get_json_decode_error(py)
+        && let Ok(exc_instance) = exc_cls.call1((&data.msg, data.doc.as_deref().unwrap_or(""), data.pos))
+        && exc_instance.setattr("lineno", data.lineno).is_ok()
+        && exc_instance.setattr("colno", data.colno).is_ok()
         && exc_instance.setattr("args", (PyString::new(py, &msg),)).is_ok()
     {
         PyErr::from_value(exc_instance)
     } else {
         exceptions::PyValueError::new_err(msg)
     }
-}
-
-/// Splits a `JSONDecodeError` message formatted by Monty
-/// (`{msg}: line {lineno} column {colno} (char {pos})`, matching CPython)
-/// back into its parts. Returns `None` when the message doesn't match.
-fn parse_json_decode_msg(msg: &str) -> Option<(&str, u64, u64, u64)> {
-    let (short_msg, rest) = msg.rsplit_once(": line ")?;
-    let (line, rest) = rest.split_once(" column ")?;
-    let (column, rest) = rest.split_once(" (char ")?;
-    let pos = rest.strip_suffix(')')?;
-    Some((short_msg, line.parse().ok()?, column.parse().ok()?, pos.parse().ok()?))
 }
 
 /// Converts a python exception to monty.
@@ -162,8 +151,32 @@ pub fn exc_py_to_monty(py: Python<'_>, py_err: &PyErr) -> MontyException {
     let exc = py_err.value(py);
     let exc_type = py_err_to_exc_type(exc);
     let arg = exc.str().ok().map(|s| s.to_string_lossy().into_owned());
+    let data = if exc_type == ExcType::JsonDecodeError {
+        json_data_from_py(exc)
+    } else {
+        ExcData::None
+    };
 
-    MontyException::new(exc_type, arg)
+    MontyException::new(exc_type, arg).with_data(data)
+}
+
+/// Reads the structured `msg`/`doc`/`pos`/`lineno`/`colno` attributes off a
+/// host-raised `json.JSONDecodeError` so they survive the trip into the
+/// sandbox and back out as a real exception. Returns [`ExcData::None`] when
+/// any attribute is missing or mistyped; over-long documents are dropped
+/// (matching the cap Monty applies when raising) while the rest is kept.
+fn json_data_from_py(exc: &Bound<'_, exceptions::PyBaseException>) -> ExcData {
+    let extract = || -> PyResult<JsonErrorData> {
+        let doc: String = exc.getattr("doc")?.extract()?;
+        Ok(JsonErrorData {
+            msg: exc.getattr("msg")?.extract()?,
+            doc: (doc.len() <= JsonErrorData::MAX_DOC_LEN).then_some(doc),
+            pos: exc.getattr("pos")?.extract()?,
+            lineno: exc.getattr("lineno")?.extract()?,
+            colno: exc.getattr("colno")?.extract()?,
+        })
+    };
+    extract().map_or(ExcData::None, |data| ExcData::Json(Box::new(data)))
 }
 
 /// Converts a Python exception to Monty's `MontyObject::Exception`.

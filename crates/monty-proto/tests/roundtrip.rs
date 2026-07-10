@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use monty::{
-    CodeLoc, DictPairs, ExcData, ExcType, ExtFunctionResult, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult, ResourceLimits, StackFrame,
-    UnicodeErrorData,
+    CodeLoc, DictPairs, ExcData, ExcType, ExtFunctionResult, JsonErrorData, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult, ResourceLimits,
+    StackFrame, UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -343,6 +343,87 @@ fn bogus_unicode_payloads_are_dropped_not_trusted() {
     ))
     .unwrap();
     assert!(matches!(back.data(), ExcData::Unicode(data) if data.start == 1 && data.end == 2));
+}
+
+#[test]
+fn json_error_payload_round_trips() {
+    let data = JsonErrorData {
+        msg: "Expecting value".to_owned(),
+        doc: Some("[1,\n2,]".to_owned()),
+        pos: 6,
+        lineno: 2,
+        colno: 3,
+    };
+    let exc = MontyException::new(
+        ExcType::JsonDecodeError,
+        Some("Expecting value: line 2 column 3 (char 6)".to_owned()),
+    )
+    .with_data(ExcData::Json(Box::new(data)));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+
+    // A payload without a document (dropped for oversized inputs) also survives.
+    let exc = MontyException::new(ExcType::JsonDecodeError, Some("boom".to_owned())).with_data(ExcData::Json(
+        Box::new(JsonErrorData {
+            msg: "Expecting value".to_owned(),
+            doc: None,
+            pos: 100_000,
+            lineno: 5,
+            colno: 2,
+        }),
+    ));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+}
+
+/// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
+/// child controls, for probing the receive-side sanitizer.
+fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
+    pb::RaisedException {
+        exc_type: "json.JSONDecodeError".to_owned(),
+        message: Some("boom".to_owned()),
+        traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData {
+                msg,
+                doc,
+                pos,
+                lineno,
+                colno,
+            })),
+        }),
+    }
+}
+
+#[test]
+fn bogus_json_payloads_are_dropped_not_trusted() {
+    let oversized = "x".repeat(JsonErrorData::MAX_DOC_LEN + 1);
+    // As with unicode payloads, rejected data must not block conversion.
+    let bogus = [
+        json_exception(oversized.clone(), None, 0, 1, 1),
+        json_exception("msg".to_owned(), Some(oversized), 0, 1, 1),
+        // 0 is not a valid 1-based line/column
+        json_exception("msg".to_owned(), None, 0, 0, 1),
+        json_exception("msg".to_owned(), None, 0, 1, 0),
+        // pos beyond the document
+        json_exception("msg".to_owned(), Some("[]".to_owned()), 3, 1, 1),
+    ];
+    for proto in bogus {
+        let back = MontyException::try_from(proto).expect("malformed payload must not block conversion");
+        assert_eq!(back.data(), &ExcData::None);
+    }
+
+    // An in-bounds payload survives sanitization intact; pos may equal the
+    // document length (errors at end of input).
+    let back = MontyException::try_from(json_exception(
+        "Expecting value".to_owned(),
+        Some("[1,".to_owned()),
+        3,
+        1,
+        4,
+    ))
+    .unwrap();
+    assert!(matches!(back.data(), ExcData::Json(data) if data.pos == 3 && data.colno == 4));
 }
 
 #[test]

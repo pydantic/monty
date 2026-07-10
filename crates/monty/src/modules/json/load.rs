@@ -444,7 +444,7 @@ fn json_error_to_run_error(error: &JiterError, jiter: &Jiter<'_>, bytes: &[u8]) 
         position.column = 1;
     }
     position.column += column_offset;
-    ExcType::json_decode_error(&message, position.line, position.column, index)
+    ExcType::json_decode_error(&message, bytes, position.line, position.column, index)
 }
 
 /// Finds the opening quote for an unterminated JSON string.

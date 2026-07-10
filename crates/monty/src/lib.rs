@@ -38,7 +38,9 @@ mod value;
 pub use crate::run::RefCountOutput;
 pub use crate::{
     exception_private::ExcType,
-    exception_public::{CodeLoc, ExcData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject},
+    exception_public::{
+        CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+    },
     io::{PrintStream, PrintWriter, PrintWriterCallback},
     object::{
         DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,

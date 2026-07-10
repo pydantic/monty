@@ -341,6 +341,7 @@ except json.JSONDecodeError as e:
     assert (inner.msg, inner.lineno, inner.colno, inner.pos) == snapshot(
         ('Illegal trailing comma before end of array', 2, 2, 5)
     )
+    assert inner.doc == '[1,\n2,]'
 
 
 @pytest.mark.parametrize(

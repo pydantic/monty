@@ -45,6 +45,8 @@ Error messages use the same `line N column M (char K)` suffix as CPython.
 Inside the sandbox the exception is message-only: the `msg`, `doc`, `pos`,
 `lineno` and `colno` attributes CPython sets are not available. When a
 sandbox `JSONDecodeError` surfaces to the host (e.g. via `pydantic_monty`),
-it is rebuilt as a real `json.JSONDecodeError` with `msg`/`lineno`/`colno`/
-`pos` parsed back out of the message — but the original document is not
-preserved, so `doc` is always `''`.
+it is rebuilt as a real `json.JSONDecodeError` with all five attributes from
+a structured payload attached at raise time — except that documents larger
+than 64 KiB are not carried, in which case `doc` is `''`. A `JSONDecodeError`
+raised manually inside the sandbox has no payload and surfaces as a plain
+`ValueError` carrying the message.

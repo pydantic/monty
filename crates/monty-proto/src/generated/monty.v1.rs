@@ -181,7 +181,7 @@ pub struct RaisedException {
 /// payload" (`ExcData::None`).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExcData {
-    #[prost(oneof = "exc_data::Kind", tags = "1")]
+    #[prost(oneof = "exc_data::Kind", tags = "1, 2")]
     pub kind: ::core::option::Option<exc_data::Kind>,
 }
 /// Nested message and enum types in `ExcData`.
@@ -190,6 +190,8 @@ pub mod exc_data {
     pub enum Kind {
         #[prost(message, tag = "1")]
         Unicode(super::UnicodeErrorData),
+        #[prost(message, tag = "2")]
+        Json(super::JsonErrorData),
     }
 }
 /// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
@@ -224,6 +226,26 @@ pub mod unicode_error_data {
         #[prost(string, tag = "3")]
         ObjectStr(::prost::alloc::string::String),
     }
+}
+/// CPython's json.JSONDecodeError attribute fields (msg, doc, pos, lineno,
+/// colno), letting hosts rebuild the real exception instead of a message-only
+/// fallback. Mirrors monty's `JsonErrorData`.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct JsonErrorData {
+    /// Bare error message, without the ": line N column M (char K)" suffix.
+    #[prost(string, tag = "1")]
+    pub msg: ::prost::alloc::string::String,
+    /// The document being parsed; absent when larger than the sender's size cap.
+    #[prost(string, optional, tag = "2")]
+    pub doc: ::core::option::Option<::prost::alloc::string::String>,
+    /// Character index of the error in `doc`.
+    #[prost(uint64, tag = "3")]
+    pub pos: u64,
+    /// 1-based line and column of the error.
+    #[prost(uint64, tag = "4")]
+    pub lineno: u64,
+    #[prost(uint64, tag = "5")]
+    pub colno: u64,
 }
 /// 1-based line/column source position (columns count characters, not bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

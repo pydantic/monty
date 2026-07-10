@@ -219,6 +219,7 @@ message RaisedException {
 message ExcData {
   oneof kind {
     UnicodeErrorData unicode = 1;
+    JsonErrorData json = 2;
   }
 }
 
@@ -240,6 +241,21 @@ message UnicodeErrorData {
   uint64 end = 5;
   // CPython's reason wording, e.g. "ordinal not in range(128)".
   string reason = 6;
+}
+
+// CPython's json.JSONDecodeError attribute fields (msg, doc, pos, lineno,
+// colno), letting hosts rebuild the real exception instead of a message-only
+// fallback. Mirrors monty's `JsonErrorData`.
+message JsonErrorData {
+  // Bare error message, without the ": line N column M (char K)" suffix.
+  string msg = 1;
+  // The document being parsed; absent when larger than the sender's size cap.
+  optional string doc = 2;
+  // Character index of the error in `doc`.
+  uint64 pos = 3;
+  // 1-based line and column of the error.
+  uint64 lineno = 4;
+  uint64 colno = 5;
 }
 
 // 1-based line/column source position (columns count characters, not bytes).

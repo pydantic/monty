@@ -79,8 +79,8 @@ def test_unicode_error_message_only_fallback(monty_run: RunMonty):
 
 def test_json_decode_error(monty_run: RunMonty):
     # A `json.loads` failure inside the sandbox surfaces as a real
-    # `json.JSONDecodeError`: the location is parsed back out of the formatted
-    # message, but the original document is not preserved so `doc` is `''`.
+    # `json.JSONDecodeError`: the structured `msg`/`doc`/`pos`/`lineno`/`colno`
+    # fields travel with the exception, like unicode errors above.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run("import json\njson.loads('[1,\\n2,]')")
     inner = exc_info.value.exception()
@@ -91,7 +91,7 @@ def test_json_decode_error(monty_run: RunMonty):
     assert inner.lineno == snapshot(2)
     assert inner.colno == snapshot(2)
     assert inner.pos == snapshot(5)
-    assert inner.doc == ''
+    assert inner.doc == '[1,\n2,]'
 
 
 def test_json_decode_error_message_only_fallback(monty_run: RunMonty):
