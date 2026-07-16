@@ -53,10 +53,12 @@ values involved instead of a blank `AssertionError`.
 ## Opt-out for embedders
 
 CPython's plain `AssertionError` behavior can be restored per session, and the
-operand-repr truncation length can be customized (an int >= 1, in characters):
+operand-repr truncation length can be customized (an int >= 1, in characters;
+a length of 0 means "off", not "truncate everything away"):
 
 - Rust: pass `CompileOptions { assert_message_annotations:
-  AssertMessageAnnotations::Off }` (or `::MaxChars(n)`) to `MontyRun::new` or
+  AssertMessageAnnotations::Off }` (or `::MaxChars(n)`, a `NonZeroU32`;
+  `::from_max_chars(n)` maps 0 to `Off`) to `MontyRun::new` or
   `MontyRepl::new`.
 - Python: `pool.checkout(assert_message_annotations=False)` (or `=n`).
 - JavaScript: `pool.checkout({ assertMessageAnnotations: false })` (or `: n`;

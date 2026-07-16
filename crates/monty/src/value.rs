@@ -2831,7 +2831,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -2852,7 +2852,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -2875,7 +2875,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -2898,7 +2898,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_int(&vm)
         });
@@ -2920,7 +2920,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_int(&vm)
         });
@@ -2941,7 +2941,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -2962,7 +2962,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -2984,7 +2984,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });
@@ -3006,7 +3006,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
             );
             value.as_index(&vm, Type::List)
         });

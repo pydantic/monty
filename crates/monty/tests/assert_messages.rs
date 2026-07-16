@@ -241,7 +241,7 @@ fn operand_reprs_truncated() {
 #[test]
 fn custom_truncation_limit() {
     let options = CompileOptions {
-        assert_message_annotations: AssertMessageAnnotations::MaxChars(10),
+        assert_message_annotations: AssertMessageAnnotations::from_max_chars(10),
     };
     let run = MontyRun::new("assert list(range(200)) == []".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -250,7 +250,7 @@ fn custom_truncation_limit() {
 
     // A limit above the repr length leaves it untouched.
     let options = CompileOptions {
-        assert_message_annotations: AssertMessageAnnotations::MaxChars(10_000),
+        assert_message_annotations: AssertMessageAnnotations::from_max_chars(10_000),
     };
     let run = MontyRun::new("assert list(range(50)) == []".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -263,7 +263,7 @@ fn custom_limit_survives_repl_snippets() {
     // The runtime limit rides with the compiled program, so every snippet
     // fed to a session (and any snapshot of it) formats the same way.
     let options = CompileOptions {
-        assert_message_annotations: AssertMessageAnnotations::MaxChars(5),
+        assert_message_annotations: AssertMessageAnnotations::from_max_chars(5),
     };
     let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
     repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
@@ -271,6 +271,50 @@ fn custom_limit_survives_repl_snippets() {
         .feed_run("assert x == ''", vec![], PrintWriter::Stdout)
         .expect_err("assert should fail");
     assert_eq!(err.message(), Some("assert 'abcd… == ''"));
+}
+
+#[test]
+fn zero_limit_means_off_not_a_zero_length_repr() {
+    // `0` encodes `Off` on the wire, so it must never reach the compiler as an
+    // enabled-but-empty limit: that would annotate `assert … == …` in-process
+    // while a worker ran the same session with annotations off.
+    assert_eq!(
+        AssertMessageAnnotations::from_max_chars(0),
+        AssertMessageAnnotations::Off
+    );
+    assert!(!AssertMessageAnnotations::from_max_chars(0).enabled());
+    assert_eq!(AssertMessageAnnotations::Off.max_chars(), 0);
+
+    let options = CompileOptions {
+        assert_message_annotations: AssertMessageAnnotations::from_max_chars(0),
+    };
+    let run = MontyRun::new("assert 2 == 5".to_owned(), "test.py", vec![], options).unwrap();
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    assert_eq!(err.exc_type(), ExcType::AssertionError);
+    assert_eq!(err.message(), None);
+}
+
+#[test]
+fn forged_snapshot_cannot_smuggle_in_a_zero_limit() {
+    // Dumps are untrusted. The `MaxChars(1)` case pins the encoding (variant
+    // index 1, then the u32) so the rejection can't pass for another reason.
+    let valid: AssertMessageAnnotations = postcard::from_bytes(&[1u8, 1u8]).expect("MaxChars(1) should decode");
+    assert_eq!(valid, AssertMessageAnnotations::from_max_chars(1));
+    postcard::from_bytes::<AssertMessageAnnotations>(&[1u8, 0u8]).expect_err("MaxChars(0) must not decode");
+}
+
+#[test]
+fn max_chars_round_trips_through_the_wire_encoding() {
+    // Every representable value survives `Configure`, so in-process and worker
+    // sessions always agree.
+    for value in [
+        AssertMessageAnnotations::Off,
+        AssertMessageAnnotations::default(),
+        AssertMessageAnnotations::from_max_chars(1),
+        AssertMessageAnnotations::from_max_chars(u32::MAX),
+    ] {
+        assert_eq!(AssertMessageAnnotations::from_max_chars(value.max_chars()), value);
+    }
 }
 
 #[test]

@@ -1,5 +1,8 @@
 //! Public interface for running Monty code.
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    num::NonZeroU32,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -45,14 +48,15 @@ pub struct CompileOptions {
 pub enum AssertMessageAnnotations {
     /// CPython behavior: failed asserts raise a bare `AssertionError`.
     Off,
-    /// Introspected messages, with each operand's repr truncated to this many
-    /// characters (with a `…` suffix) so huge values stay readable.
-    MaxChars(u32),
+    /// Introspected messages, each operand's repr truncated to this many
+    /// characters (`…` suffix). Non-zero because `0` encodes [`Off`](Self::Off)
+    /// on the wire, so a zero limit would mean "on" in-process but "off" in a worker.
+    MaxChars(NonZeroU32),
 }
 
 impl AssertMessageAnnotations {
     /// Operand-repr truncation used by [`Default`] and `From<bool>`.
-    pub const DEFAULT_MAX_CHARS: u32 = 120;
+    pub const DEFAULT_MAX_CHARS: NonZeroU32 = NonZeroU32::new(120).expect("120 is non-zero");
 
     /// Whether introspected messages are enabled — the compiler emits the
     /// introspecting assert opcodes only when they are.
@@ -69,16 +73,19 @@ impl AssertMessageAnnotations {
     pub fn max_chars(self) -> u32 {
         match self {
             Self::Off => 0,
-            Self::MaxChars(n) => n,
+            Self::MaxChars(n) => n.get(),
         }
     }
 
     /// Decodes [`max_chars`](Self::max_chars): `0` = off, anything else =
-    /// `MaxChars` (so `MaxChars(0)` round-trips as `Off`; the language
-    /// bindings reject `0` before it gets here).
+    /// `MaxChars`. An exact inverse (`MaxChars(0)` is unrepresentable), and the
+    /// constructor to use when the limit may be zero.
     #[must_use]
     pub fn from_max_chars(value: u32) -> Self {
-        if value == 0 { Self::Off } else { Self::MaxChars(value) }
+        match NonZeroU32::new(value) {
+            Some(n) => Self::MaxChars(n),
+            None => Self::Off,
+        }
     }
 }
 

@@ -25,6 +25,7 @@
 //! `print_callback` — always execute in the host process.
 
 use std::{
+    num::NonZeroU32,
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError, TryLockError,
@@ -1048,9 +1049,11 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AssertAnnotationsArg {
         if let Ok(enabled) = ob.cast_exact::<PyBool>() {
             Ok(Self(enabled.is_true().into()))
         } else if ob.cast::<PyInt>().is_ok() {
-            match ob.extract::<u32>() {
-                Ok(n) if n >= 1 => Ok(Self(AssertMessageAnnotations::MaxChars(n))),
-                _ => Err(PyValueError::new_err(
+            // `NonZeroU32` rejects 0: it encodes `Off` on the wire, so a 0
+            // limit must be spelled `False`.
+            match ob.extract::<u32>().ok().and_then(NonZeroU32::new) {
+                Some(n) => Ok(Self(AssertMessageAnnotations::MaxChars(n))),
+                None => Err(PyValueError::new_err(
                     "assert_message_annotations int value must be between 1 and 2**32 - 1",
                 )),
             }
