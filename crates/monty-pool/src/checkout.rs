@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
+use monty::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
@@ -21,8 +21,9 @@ pub struct ReplConfig {
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
     /// Give failed `assert` statements pytest-style introspected messages
-    /// (see `limitations/assert.md`). On by default.
-    pub assert_message_annotations: bool,
+    /// (see `limitations/assert.md`). On by default with a 120-char
+    /// operand-repr truncation; `MaxChars` customizes the truncation.
+    pub assert_message_annotations: AssertMessageAnnotations,
 }
 
 impl Default for ReplConfig {
@@ -32,7 +33,7 @@ impl Default for ReplConfig {
             limits: None,
             type_check: false,
             type_check_stubs: None,
-            assert_message_annotations: true,
+            assert_message_annotations: AssertMessageAnnotations::default(),
         }
     }
 }
@@ -182,7 +183,7 @@ impl Checkout {
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
                 type_check_stubs: repl.type_check_stubs.clone(),
-                assert_message_annotations: Some(repl.assert_message_annotations),
+                assert_message_annotations: Some(repl.assert_message_annotations.max_chars()),
                 // This crate ships the matching `monty` binary, so our own
                 // version is always what the child expects. The child rejects a
                 // mismatch with a `FatalError` (relevant when a remote driver

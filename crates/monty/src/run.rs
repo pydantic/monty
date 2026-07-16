@@ -26,20 +26,72 @@ use crate::{
 /// Consumed when code is compiled: a [`MontyRun`] bakes the choices into the
 /// program at construction, while a `MontyRepl` stores them so every snippet
 /// fed to the session compiles the same way.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct CompileOptions {
     /// Give failed `assert` statements pytest-style introspected messages
     /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
     /// CPython's empty `AssertionError`; see `limitations/assert.md`.
-    /// Defaults to `true`; set to `false` to restore CPython's behavior.
-    pub assert_message_annotations: bool,
+    /// On by default with a 120-char operand-repr truncation.
+    pub assert_message_annotations: AssertMessageAnnotations,
 }
 
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self {
-            assert_message_annotations: true,
+/// Controls the pytest-style introspected `assert` failure messages of
+/// [`CompileOptions::assert_message_annotations`].
+///
+/// The choice is baked in at compile time (whether the introspecting opcodes
+/// are emitted) but the truncation limit is applied at runtime, so it also
+/// travels with serialized sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AssertMessageAnnotations {
+    /// CPython behavior: failed asserts raise a bare `AssertionError`.
+    Off,
+    /// Introspected messages, with each operand's repr truncated to this many
+    /// characters (with a `…` suffix) so huge values stay readable.
+    MaxChars(u32),
+}
+
+impl AssertMessageAnnotations {
+    /// Operand-repr truncation used by [`Default`] and `From<bool>`.
+    pub const DEFAULT_MAX_CHARS: u32 = 120;
+
+    /// Whether introspected messages are enabled — the compiler emits the
+    /// introspecting assert opcodes only when they are.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// The operand-repr truncation limit: `0` when off (no introspecting
+    /// opcodes are emitted then, so the limit is never consulted). Doubles as
+    /// the single-integer encoding of `monty-proto`'s `Configure` message,
+    /// where the default is represented by omitting the field entirely.
+    #[must_use]
+    pub fn max_chars(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::MaxChars(n) => n,
         }
+    }
+
+    /// Decodes [`max_chars`](Self::max_chars): `0` = off, anything else =
+    /// `MaxChars` (so `MaxChars(0)` round-trips as `Off`; the language
+    /// bindings reject `0` before it gets here).
+    #[must_use]
+    pub fn from_max_chars(value: u32) -> Self {
+        if value == 0 { Self::Off } else { Self::MaxChars(value) }
+    }
+}
+
+impl Default for AssertMessageAnnotations {
+    fn default() -> Self {
+        Self::MaxChars(Self::DEFAULT_MAX_CHARS)
+    }
+}
+
+impl From<bool> for AssertMessageAnnotations {
+    /// `true` is the 120-char default; `false` restores CPython behavior.
+    fn from(enabled: bool) -> Self {
+        if enabled { Self::default() } else { Self::Off }
     }
 }
 
@@ -198,7 +250,13 @@ impl MontyRun {
         let globals = executor.empty_globals();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
-                let mut vm = VM::new(globals, reader, &executor.interns, print.reborrow());
+                let mut vm = VM::new(
+                    globals,
+                    reader,
+                    &executor.interns,
+                    print.reborrow(),
+                    executor.assert_repr_max_chars,
+                );
                 executor.populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
@@ -235,6 +293,11 @@ pub(crate) struct Executor {
     /// One entry per input value, in the order the embedder passed them.
     /// Empty for the standard (non-REPL) execution path.
     pub(crate) input_slots: Vec<NamespaceId>,
+    /// Char-truncation limit for operand reprs in introspected assert failure
+    /// messages ([`CompileOptions::assert_message_annotations`]). Captured at
+    /// compile time but consumed at *runtime* — every VM constructed for this
+    /// program (fresh or snapshot-restored) receives it.
+    pub(crate) assert_repr_max_chars: u32,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -248,6 +311,7 @@ impl Clone for Executor {
             interns: self.interns.clone(),
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
+            assert_repr_max_chars: self.assert_repr_max_chars,
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -284,6 +348,7 @@ impl Executor {
             interns,
             code,
             input_slots: Vec::new(),
+            assert_repr_max_chars: options.assert_message_annotations.max_chars(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -356,6 +421,7 @@ impl Executor {
             interns,
             code,
             input_slots,
+            assert_repr_max_chars: options.assert_message_annotations.max_chars(),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -382,7 +448,13 @@ impl Executor {
 
         // Create VM first, then populate inputs with VM alive
         let result = HeapReader::with(&mut heap, &mut (self, print), |reader, (executor, print)| {
-            let mut vm = VM::new(globals, reader, &executor.interns, print.reborrow());
+            let mut vm = VM::new(
+                globals,
+                reader,
+                &executor.interns,
+                print.reborrow(),
+                executor.assert_repr_max_chars,
+            );
             executor.populate_inputs(inputs, &mut vm)?;
             executor.run_to_completion(&mut vm)
         });
@@ -473,7 +545,13 @@ impl Executor {
 
         HeapReader::with(&mut heap, &mut &*self, |reader, executor| {
             // Create VM, populate inputs, and run
-            let mut vm = VM::new(globals, reader, &executor.interns, PrintWriter::Stdout);
+            let mut vm = VM::new(
+                globals,
+                reader,
+                &executor.interns,
+                PrintWriter::Stdout,
+                executor.assert_repr_max_chars,
+            );
             executor.populate_inputs(inputs, &mut vm)?;
             let frame_exit_result = vm.run_module(&executor.module_code);
 

@@ -14,6 +14,7 @@
 // string is a follow-up); mounts are rejected (no host filesystem in a worker).
 
 import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn } from '../native.js'
+import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
 import type { Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, encodeMontyObject } from './value.js'
@@ -35,8 +36,12 @@ export interface WorkerSessionConfig {
   limits?: ResourceLimits
   typeCheck?: boolean
   typeCheckStubs?: string
-  /** Give failed `assert`s introspected messages. Absent means the child's default (true). */
-  assertMessageAnnotations?: boolean
+  /**
+   * Give failed `assert`s introspected messages. Absent/true means the
+   * child's default (a 120-char operand-repr truncation), false turns them
+   * off, an integer >= 1 customizes the truncation length.
+   */
+  assertMessageAnnotations?: AssertMessageAnnotations
 }
 
 // ParentRequest oneof field numbers (see proto/monty/v1/monty.proto). Note
@@ -99,8 +104,10 @@ export class WorkerTransport {
     if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // ReplCreate.limits
     if (config.typeCheck) create.bool(3, true) // ReplCreate.type_check
     if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // ReplCreate.type_check_stubs
-    // Configure.assert_message_annotations (field 6, optional): absent = child default (true).
-    if (config.assertMessageAnnotations !== undefined) create.bool(6, config.assertMessageAnnotations)
+    // Configure.assert_message_annotations (field 6, optional uint32):
+    // absent = child default (on, 120-char truncation), 0 = off, n = custom.
+    const assertAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
+    if (assertAnnotations !== undefined) create.uint(6, assertAnnotations)
     await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')
     return transport
   }

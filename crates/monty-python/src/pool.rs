@@ -33,13 +33,14 @@ use std::{
     time::Duration,
 };
 
-use ::monty::{ExcType, ExtFunctionResult, MontyException, MontyObject};
+use ::monty::{AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use pyo3::{
+    Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict, PyList, PyString, PyTuple},
+    types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::task::{JoinSet, spawn_blocking};
@@ -134,7 +135,7 @@ impl PyMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        assert_message_annotations = true,
+        assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
     #[expect(clippy::too_many_arguments)]
@@ -145,7 +146,7 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        assert_message_annotations: bool,
+        assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
@@ -513,7 +514,7 @@ impl PyAsyncMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        assert_message_annotations = true,
+        assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
     #[expect(clippy::too_many_arguments)]
@@ -524,7 +525,7 @@ impl PyAsyncMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        assert_message_annotations: bool,
+        assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
@@ -625,7 +626,7 @@ impl PyAsyncMontyWebsocket {
         limits = None,
         type_check = false,
         type_check_stubs = None,
-        assert_message_annotations = true,
+        assert_message_annotations = AssertAnnotationsArg::default(),
         dataclass_registry = None,
     ))]
     #[expect(clippy::too_many_arguments)]
@@ -636,7 +637,7 @@ impl PyAsyncMontyWebsocket {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
-        assert_message_annotations: bool,
+        assert_message_annotations: AssertAnnotationsArg,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
@@ -1022,15 +1023,43 @@ pub(crate) fn parse_repl_config(
     limits: Option<&Bound<'_, PyDict>>,
     type_check: bool,
     type_check_stubs: Option<&Bound<'_, PyString>>,
-    assert_message_annotations: bool,
+    assert_message_annotations: AssertAnnotationsArg,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
         limits: limits.map(extract_limits).transpose()?,
         type_check,
         type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
-        assert_message_annotations,
+        assert_message_annotations: assert_message_annotations.0,
     })
+}
+
+/// The `assert_message_annotations` checkout argument: `True`/`False`, or an
+/// int giving a custom operand-repr truncation length in characters.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct AssertAnnotationsArg(pub AssertMessageAnnotations);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for AssertAnnotationsArg {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        // Check bool before int — Python bools are ints, so the int branch
+        // would otherwise silently turn `True` into a 1-char limit.
+        if let Ok(enabled) = ob.cast_exact::<PyBool>() {
+            Ok(Self(enabled.is_true().into()))
+        } else if ob.cast::<PyInt>().is_ok() {
+            match ob.extract::<u32>() {
+                Ok(n) if n >= 1 => Ok(Self(AssertMessageAnnotations::MaxChars(n))),
+                _ => Err(PyValueError::new_err(
+                    "assert_message_annotations int value must be between 1 and 2**32 - 1",
+                )),
+            }
+        } else {
+            Err(PyTypeError::new_err(
+                "assert_message_annotations must be a bool or an int truncation length",
+            ))
+        }
+    }
 }
 
 /// Clones the live pool handle out of a shared slot, erroring when the

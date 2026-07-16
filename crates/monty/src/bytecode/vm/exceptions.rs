@@ -13,11 +13,6 @@ use crate::{
     value::Value,
 };
 
-/// Max chars of a single operand's repr in an assert failure message —
-/// keeps `assert huge_list == other` messages readable while still showing
-/// enough of each value to diagnose the failure.
-const MAX_ASSERT_REPR_CHARS: usize = 120;
-
 impl<T: ResourceTracker> VM<'_, T> {
     /// Returns the current frame's name for traceback generation: the
     /// function name for user-defined functions, or `<module>` for
@@ -513,13 +508,15 @@ impl<T: ResourceTracker> VM<'_, T> {
 }
 
 /// `repr()` of an assert operand for the failure message, char-truncated to
-/// [`MAX_ASSERT_REPR_CHARS`] with a `…` suffix so pathological operands
-/// (huge collections, long strings) keep the message readable.
+/// the compiled program's limit (`CompileOptions::assert_message_annotations`,
+/// default 120) with a `…` suffix so pathological operands (huge collections,
+/// long strings) keep the message readable.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    let max_chars = vm.assert_repr_max_chars as usize;
     let repr_value = value.py_repr(vm)?;
     defer_drop!(repr_value, vm);
     let repr = repr_value.to_str(vm)?;
-    Ok(truncate_chars(repr))
+    Ok(truncate_chars(repr, max_chars))
 }
 
 /// `str()` of an explicit assert message, matching how the message renders in
@@ -530,15 +527,15 @@ fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunRe
     Ok(str_value.to_str(vm)?.to_owned())
 }
 
-/// Truncates `s` after [`MAX_ASSERT_REPR_CHARS`] chars, appending `…`.
+/// Truncates `s` after `max_chars` chars, appending `…`.
 ///
 /// Short strings by byte length cannot exceed the char limit, so avoid scanning
 /// them. Longer strings are cut on the boundary reported by `char_indices`.
-fn truncate_chars(s: &str) -> String {
-    if s.len() <= MAX_ASSERT_REPR_CHARS {
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.len() <= max_chars {
         s.to_owned()
     } else {
-        match s.char_indices().nth(MAX_ASSERT_REPR_CHARS) {
+        match s.char_indices().nth(max_chars) {
             Some((idx, _)) => format!("{}…", &s[..idx]),
             None => s.to_owned(),
         }

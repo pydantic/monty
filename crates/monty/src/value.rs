@@ -2793,7 +2793,9 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker};
+    use crate::{
+        PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker, run::AssertMessageAnnotations,
+    };
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
@@ -2824,7 +2826,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
@@ -2839,7 +2847,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
@@ -2856,7 +2870,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
@@ -2873,7 +2893,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_int(&vm)
         });
         assert_eq!(result.unwrap(), 12345);
@@ -2889,7 +2915,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_int(&vm)
         });
         assert!(result.is_err());
@@ -2904,7 +2936,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
@@ -2919,7 +2957,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
@@ -2935,7 +2979,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
@@ -2951,7 +3001,13 @@ mod tests {
 
         let mut interns = create_test_interns();
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_CHARS,
+            );
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());

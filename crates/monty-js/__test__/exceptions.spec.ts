@@ -90,6 +90,23 @@ test('assertMessageAnnotations: false restores CPython behavior', async () => {
   t.is(error.message, 'AssertionError')
 })
 
+test('assertMessageAnnotations: integer customizes repr truncation', async () => {
+  const error = await t.throwsAsync(
+    () => run("assert 'abcdefghij' == ''", { assertMessageAnnotations: 6 }),
+    isRuntimeError,
+  )
+  t.is(error.message, "AssertionError: assert 'abcde… == ''")
+})
+
+test('assertMessageAnnotations: invalid numbers are rejected', async () => {
+  for (const value of [0, -1, 1.5, 2 ** 32]) {
+    await t.throwsAsync(() => run('assert True', { assertMessageAnnotations: value }), {
+      instanceOf: RangeError,
+      message: 'assertMessageAnnotations must be a boolean or an integer between 1 and 2**32 - 1',
+    })
+  }
+})
+
 test('runtime error', async () => {
   const error = await t.throwsAsync(() => run('raise RuntimeError("runtime error")'), isRuntimeError)
   t.is(error.message, 'RuntimeError: runtime error')

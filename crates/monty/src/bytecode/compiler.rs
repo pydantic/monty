@@ -454,7 +454,13 @@ impl<'a> Compiler<'a> {
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(interns, existing_functions, true, 0, options.assert_message_annotations);
+        let mut compiler = Compiler::new(
+            interns,
+            existing_functions,
+            true,
+            0,
+            options.assert_message_annotations.enabled(),
+        );
 
         // All globals are "local names" in the module
         for (slot, name_id) in globals.iter() {

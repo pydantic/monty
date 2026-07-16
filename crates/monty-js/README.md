@@ -206,11 +206,13 @@ to disable it.
 
 Failed `assert` statements carry a pytest-style introspected message by
 default (`AssertionError: assert 2 == 5`) — a deliberate divergence from
-CPython's empty `AssertionError`. Disable it per session to restore CPython's
-behavior:
+CPython's empty `AssertionError`. Each operand's repr is truncated to 120
+characters by default. Disable the messages per session to restore CPython's
+behavior, or pass an integer to customize the truncation length:
 
 ```ts
 const session = await pool.checkout({ assertMessageAnnotations: false })
+const verbose = await pool.checkout({ assertMessageAnnotations: 1000 })
 ```
 
 ## Type Checking

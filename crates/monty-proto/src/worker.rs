@@ -19,8 +19,8 @@
 use std::{borrow::Cow, mem};
 
 use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
-    PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
+    MontyRepl, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
@@ -55,8 +55,10 @@ type Tracker = LimitedTracker;
 ///
 /// The payload is monty's postcard format — only a monty child of the same
 /// version can restore it. Bumped to 3 when `MontyRepl` gained the serialized
-/// `CompileOptions` field (assert-message annotations).
-const DUMP_VERSION: u16 = 3;
+/// `CompileOptions` field (assert-message annotations), and to 4 when that
+/// field became the `AssertMessageAnnotations` enum and the executor gained
+/// the serialized assert repr truncation limit.
+const DUMP_VERSION: u16 = 4;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -449,7 +451,10 @@ impl Child {
         });
         // Missing field means an older parent; the feature defaults to on.
         let options = CompileOptions {
-            assert_message_annotations: assert_message_annotations.unwrap_or(true),
+            assert_message_annotations: assert_message_annotations.map_or_else(
+                AssertMessageAnnotations::default,
+                AssertMessageAnnotations::from_max_chars,
+            ),
         };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(
             &self.script_name,

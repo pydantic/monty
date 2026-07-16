@@ -405,10 +405,12 @@ pub struct Configure {
     /// than a silent source of frame desync.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
-    /// Give failed `assert` statements introspected messages (see limitations/assert.md).
-    /// The runtime treats an absent value as true; protobuf itself does not.
-    #[prost(bool, optional, tag = "6")]
-    pub assert_message_annotations: ::core::option::Option<bool>,
+    /// Introspected `assert` failure messages (see limitations/assert.md).
+    /// Absent = on with the default 120-char operand-repr truncation; 0 = off
+    /// (CPython behavior); any other value truncates each operand's repr to
+    /// that many characters.
+    #[prost(uint32, optional, tag = "6")]
+    pub assert_message_annotations: ::core::option::Option<u32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

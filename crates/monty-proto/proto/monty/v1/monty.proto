@@ -383,9 +383,11 @@ message Configure {
   // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
   // than a silent source of frame desync.
   string monty_version = 5;
-  // Give failed `assert` statements introspected messages (see limitations/assert.md).
-  // The runtime treats an absent value as true; protobuf itself does not.
-  optional bool assert_message_annotations = 6;
+  // Introspected `assert` failure messages (see limitations/assert.md).
+  // Absent = on with the default 120-char operand-repr truncation; 0 = off
+  // (CPython behavior); any other value truncates each operand's repr to
+  // that many characters.
+  optional uint32 assert_message_annotations = 6;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,

@@ -4,7 +4,10 @@
 //! See `limitations/assert.md`.
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyException, MontyObject, MontyRepl, MontyRun, NoLimitTracker, PrintWriter};
+use monty::{
+    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, MontyRepl, MontyRun,
+    NoLimitTracker, PrintWriter,
+};
 
 /// Runs `code` and returns the exception it raises.
 fn get_err(code: &str) -> MontyException {
@@ -236,6 +239,41 @@ fn operand_reprs_truncated() {
 }
 
 #[test]
+fn custom_truncation_limit() {
+    let options = CompileOptions {
+        assert_message_annotations: AssertMessageAnnotations::MaxChars(10),
+    };
+    let run = MontyRun::new("assert list(range(200)) == []".to_owned(), "test.py", vec![], options).unwrap();
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    assert_eq!(err.exc_type(), ExcType::AssertionError);
+    assert_snapshot!(err.message().unwrap(), @"assert [0, 1, 2, … == []");
+
+    // A limit above the repr length leaves it untouched.
+    let options = CompileOptions {
+        assert_message_annotations: AssertMessageAnnotations::MaxChars(10_000),
+    };
+    let run = MontyRun::new("assert list(range(50)) == []".to_owned(), "test.py", vec![], options).unwrap();
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let msg = err.message().unwrap();
+    assert!(msg.ends_with("48, 49] == []"), "{msg}");
+}
+
+#[test]
+fn custom_limit_survives_repl_snippets() {
+    // The runtime limit rides with the compiled program, so every snippet
+    // fed to a session (and any snapshot of it) formats the same way.
+    let options = CompileOptions {
+        assert_message_annotations: AssertMessageAnnotations::MaxChars(5),
+    };
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
+    let err = repl
+        .feed_run("assert x == ''", vec![], PrintWriter::Stdout)
+        .expect_err("assert should fail");
+    assert_eq!(err.message(), Some("assert 'abcd… == ''"));
+}
+
+#[test]
 fn comparison_type_errors_still_raise() {
     // The retained operands don't change comparison error behavior.
     let err = get_err("assert 1 < 'a'");
@@ -249,7 +287,7 @@ fn comparison_type_errors_still_raise() {
 #[test]
 fn opt_out_restores_cpython_behavior() {
     let options = CompileOptions {
-        assert_message_annotations: false,
+        assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -257,7 +295,7 @@ fn opt_out_restores_cpython_behavior() {
     assert_eq!(err.message(), None);
 
     let options = CompileOptions {
-        assert_message_annotations: false,
+        assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
@@ -278,7 +316,7 @@ fn assert_inside_repl_gets_messages() {
 #[test]
 fn repl_opt_out_applies_to_every_snippet() {
     let options = CompileOptions {
-        assert_message_annotations: false,
+        assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();

@@ -584,7 +584,8 @@ fn assert_annotation_option_survives_dump_and_load() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
-        assert_message_annotations: Some(false),
+        // 0 = annotations off on the wire.
+        assert_message_annotations: Some(0),
     });
     child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
     let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
@@ -605,6 +606,40 @@ fn assert_annotation_option_survives_dump_and_load() {
     let error = expect_error(event);
     assert_eq!(error.exc_type, "AssertionError");
     assert_eq!(error.message, None);
+    fresh.shutdown();
+}
+
+#[test]
+fn assert_annotation_custom_limit_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        // Non-zero = annotations on, truncating operand reprs to N chars.
+        assert_message_annotations: Some(6),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 'abcdefghij' == ''");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message.as_deref(), Some("assert 'abcde… == ''"));
     fresh.shutdown();
 }
 
