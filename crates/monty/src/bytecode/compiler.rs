@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -1021,7 +1021,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(right)?;
                 // Restore the full comparison expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                self.code.emit(cmp_operator_to_opcode(op))?;
+                self.code.emit(cmp_operator_to_opcode(*op))?;
             }
 
             Expr::ChainCmp { left, comparisons } => {
@@ -1553,7 +1553,7 @@ impl<'a> Compiler<'a> {
 
             // Emit comparison
             self.code.set_location(position, None);
-            self.code.emit(cmp_operator_to_opcode(op))?;
+            self.code.emit(cmp_operator_to_opcode(*op))?;
 
             if !is_last {
                 // Short-circuit: if false, jump to cleanup
@@ -3239,18 +3239,18 @@ impl<'a> Compiler<'a> {
             self.code.set_location(test.position, None);
             if let Some(msg_expr) = msg {
                 self.code.emit(Opcode::Dup2)?;
-                self.code.emit(cmp_operator_to_opcode(op))?;
+                self.code.emit(cmp_operator_to_opcode(*op))?;
                 let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
                 // Failure: [lhs, rhs] retained for the message.
                 self.compile_expr(msg_expr)?;
                 self.code.set_location(test.position, None);
-                self.code.emit_u8(Opcode::AssertFailedCmpMsg, op.as_operand())?;
+                self.code.emit_u8(Opcode::AssertFailed, assert_flags(Some(*op)))?;
                 // Success: drop the retained operands.
                 self.code.patch_jump(pass)?;
                 self.code.emit(Opcode::Pop)?;
                 self.code.emit(Opcode::Pop)?;
             } else {
-                self.code.emit_u8(Opcode::AssertCmp, op.as_operand())?;
+                self.code.emit_u8(Opcode::Assert, assert_flags(Some(*op)))?;
             }
         } else {
             self.compile_expr(test)?;
@@ -3262,10 +3262,10 @@ impl<'a> Compiler<'a> {
                 self.code.patch_jump(fail)?;
                 self.compile_expr(msg_expr)?;
                 self.code.set_location(test.position, None);
-                self.code.emit(Opcode::AssertFailedMsg)?;
+                self.code.emit_u8(Opcode::AssertFailed, assert_flags(None))?;
                 self.code.patch_jump(end)?;
             } else {
-                self.code.emit(Opcode::Assert)?;
+                self.code.emit_u8(Opcode::Assert, assert_flags(None))?;
             }
         }
         Ok(())
@@ -4074,7 +4074,7 @@ fn operator_to_inplace_opcode(op: &Operator) -> Option<Opcode> {
 }
 
 /// Maps a `CmpOperator` to its corresponding `Opcode`.
-fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
+fn cmp_operator_to_opcode(op: CmpOperator) -> Opcode {
     match op {
         CmpOperator::Eq => Opcode::CompareEq,
         CmpOperator::NotEq => Opcode::CompareNe,

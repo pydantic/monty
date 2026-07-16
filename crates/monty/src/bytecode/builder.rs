@@ -55,10 +55,10 @@ pub struct CodeBuilder {
     /// `None` if not emitting a code region.
     ///
     /// Unconditional terminators (`Jump`, `ReturnValue`, `Raise`, `Reraise`,
-    /// `RaiseImportError`, `RaiseUnboundLocal`, and the `AssertFailed*Msg`
-    /// raisers — the fused `Assert`/`AssertCmp` fall through on success, so
-    /// they are NOT terminators) finish code regions, transitioning the
-    /// builder to the dead-code state.
+    /// `RaiseImportError`, `RaiseUnboundLocal`, and the `AssertFailed`
+    /// raiser — the fused `Assert` falls through on success, so it is NOT a
+    /// terminator) finish code regions, transitioning the builder to the
+    /// dead-code state.
     current_stack_depth: Option<u16>,
 
     /// Maximum stack depth seen during compilation.
@@ -587,8 +587,7 @@ impl CodeBuilder {
                 | Opcode::Reraise
                 | Opcode::RaiseImportError
                 | Opcode::RaiseUnboundLocal
-                | Opcode::AssertFailedMsg
-                | Opcode::AssertFailedCmpMsg
+                | Opcode::AssertFailed
                 | Opcode::Jump
         ) {
             self.current_stack_depth = None;

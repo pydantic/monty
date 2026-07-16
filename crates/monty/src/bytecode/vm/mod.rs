@@ -28,10 +28,9 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::Opcode,
+        op::{Opcode, decode_assert_flags},
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
@@ -1624,20 +1623,16 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     catch_sync!(self, cached_frame, error);
                 }
-                Opcode::Assert => try_catch_sync!(self, cached_frame, self.assert_test()),
-                Opcode::AssertCmp => {
-                    let op = CmpOperator::from_operand(cached_frame.fetch_u8())
-                        .expect("invalid comparison operand in bytecode");
-                    try_catch_sync!(self, cached_frame, self.assert_cmp(op));
+                Opcode::Assert => {
+                    match decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode") {
+                        Some(op) => try_catch_sync!(self, cached_frame, self.assert_cmp(op)),
+                        None => try_catch_sync!(self, cached_frame, self.assert_test()),
+                    }
                 }
-                Opcode::AssertFailedMsg => {
-                    let error = self.assert_failed_msg(None);
-                    catch_sync!(self, cached_frame, error);
-                }
-                Opcode::AssertFailedCmpMsg => {
-                    let op = CmpOperator::from_operand(cached_frame.fetch_u8())
-                        .expect("invalid comparison operand in bytecode");
-                    let error = self.assert_failed_msg(Some(op));
+                Opcode::AssertFailed => {
+                    let cmp_op =
+                        decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode");
+                    let error = self.assert_failed_msg(cmp_op);
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {

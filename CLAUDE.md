@@ -113,6 +113,14 @@ The contract for crash detection: a child that exits or EOFs *without* a
 
 Monty is implemented as a bytecode VM, same as CPython.
 
+### Opcode space is scarce
+
+Opcodes serialize as a single byte, so the `Opcode` enum (`crates/monty/src/bytecode/op.rs`)
+is hard-capped at 256 variants and roughly half are already taken. Use slots sparingly:
+prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a family
+of near-identical opcodes, unless the instruction is hot enough that decoding the
+discriminating operand would cost measurable dispatch time.
+
 ### HeapReader API — Safe Heap Access
 
 All heap-allocated Python objects (lists, dicts, strings, etc.) are stored in a paged arena (`Heap`). The `HeapReader` API provides **compile-time safe** access to heap data. This is the primary mechanism for reading and mutating heap objects throughout the codebase.

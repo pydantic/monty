@@ -856,11 +856,12 @@ pub enum CmpOperator {
 }
 
 impl CmpOperator {
-    /// Stable u8 encoding used as the bytecode operand of the `AssertCmp` /
-    /// `AssertFailedCmpMsg` opcodes. Part of the serialized `Code` format, so
-    /// existing values must never change — hence a hand-written encoding rather
-    /// than a derived `FromRepr` that would follow declaration order.
-    pub fn as_operand(&self) -> u8 {
+    /// Stable u8 encoding used in the low nibble of the `Assert` /
+    /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`). Part
+    /// of the serialized `Code` format, so existing values must never change —
+    /// hence a hand-written encoding rather than a derived `FromRepr` that
+    /// would follow declaration order.
+    pub fn as_operand(self) -> u8 {
         match self {
             Self::Eq => 0,
             Self::NotEq => 1,
