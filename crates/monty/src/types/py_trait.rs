@@ -23,7 +23,7 @@ use crate::{
     intern::StringId,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
-    value::{EitherStr, Value},
+    value::{BinaryOp, EitherStr, Value},
 };
 
 /// Return type for attribute method calls on heap-allocated types.
@@ -335,6 +335,29 @@ pub(crate) trait PyTrait<'h> {
     /// Returns `Ok(None)` if not supported.
     /// Returns `Err(ZeroDivisionError)` for 0 ** negative.
     fn py_pow(&self, _other: &Self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided native binary operation slot used by `Value::py_binary`.
+    ///
+    /// Heap types can override this as operators migrate to the shared binary
+    /// protocol. Returning `Ok(None)` means the operation is `NotImplemented`.
+    fn py_binary_impl(
+        &self,
+        _other: &Value,
+        _op: BinaryOp,
+        _vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected native binary operation slot used by `Value::py_binary`.
+    fn py_rbinary_impl(
+        &self,
+        _other: &Value,
+        _op: BinaryOp,
+        _vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
         Ok(None)
     }
 

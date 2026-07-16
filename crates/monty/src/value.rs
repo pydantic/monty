@@ -1986,83 +1986,70 @@ impl Value {
         }
     }
 
-    /// Performs a binary bitwise operation on two values.
+    /// Performs a binary operation using Monty's native protocol fallback.
     ///
-    /// Python only supports bitwise operations on integers (and bools, which coerce to int).
-    /// Returns a `TypeError` if either operand is not an integer, bool, or LongInt.
-    ///
-    /// For shift operations:
-    /// - Negative shift counts raise `ValueError`
-    /// - Left shifts may produce LongInt results for large shifts
-    /// - Right shifts with large counts return 0 (or -1 for negative numbers)
-    pub fn py_bitwise(
+    /// This is the shared entry point for operators as they migrate away from
+    /// opcode-local dispatch. User-defined dunder lookup will be layered here;
+    /// today it centralizes native `PyTrait` dispatch and final `TypeError`s.
+    pub fn py_binary(&self, other: &Self, op: BinaryOp, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        if let Some(result) = self.py_binary_impl(other, op, vm)? {
+            Ok(result)
+        } else if let Some(result) = other.py_rbinary_impl(self, op, vm)? {
+            Ok(result)
+        } else {
+            let lhs_type = self.py_type(vm);
+            let lhs_name = self.py_type_name(vm);
+            Err(ExcType::binary_type_error(
+                op.as_str(),
+                lhs_type,
+                lhs_name,
+                other.py_type_name(vm),
+            ))
+        }
+    }
+
+    /// One-sided native binary operation implementation.
+    fn py_binary_impl(
         &self,
         other: &Self,
-        op: BitwiseOp,
+        op: BinaryOp,
         vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> Result<Self, RunError> {
-        // Capture types for error messages
-        let lhs_type = self.py_type(vm);
-        let lhs_name = self.py_type_name(vm);
-        let rhs_name = other.py_type_name(vm);
-
-        // Extract BigInt from all numeric types
-        let lhs_bigint = extract_bigint(self, vm.heap);
-        let rhs_bigint = extract_bigint(other, vm.heap);
-
-        if let (Some(l), Some(r)) = (lhs_bigint, rhs_bigint) {
-            let result = match op {
-                BitwiseOp::And => l & r,
-                BitwiseOp::Or => l | r,
-                BitwiseOp::Xor => l ^ r,
-                BitwiseOp::LShift => {
-                    // Get shift amount as i64 for validation
-                    let shift_amount = r.to_i64();
-                    if let Some(shift) = shift_amount {
-                        if shift < 0 {
-                            return Err(ExcType::value_error_negative_shift_count());
-                        }
-                        // Python allows arbitrarily large left shifts - use BigInt's shift
-                        // Safety: shift >= 0 is guaranteed by the check above
-                        #[expect(clippy::cast_sign_loss)]
-                        let shift_u64 = shift as u64;
-                        // Check size before computing to prevent DoS
-                        check_lshift_size(l.bits(), shift_u64, vm.heap.tracker())?;
-                        l << shift_u64
-                    } else if r.sign() == num_bigint::Sign::Minus {
-                        return Err(ExcType::value_error_negative_shift_count());
-                    } else {
-                        // Shift amount too large to fit in i64 - this would be astronomically large
-                        return Err(ExcType::overflow_c_ssize_t());
-                    }
-                }
-                BitwiseOp::RShift => {
-                    // Get shift amount as i64 for validation
-                    let shift_amount = r.to_i64();
-                    if let Some(shift) = shift_amount {
-                        if shift < 0 {
-                            return Err(ExcType::value_error_negative_shift_count());
-                        }
-                        // Safety: shift >= 0 is guaranteed by the check above
-                        #[expect(clippy::cast_sign_loss)]
-                        let shift_u64 = shift as u64;
-                        l >> shift_u64
-                    } else if r.sign() == num_bigint::Sign::Minus {
-                        return Err(ExcType::value_error_negative_shift_count());
-                    } else {
-                        // Shift amount too large - result is 0 or -1 depending on sign
-                        if l.sign() == num_bigint::Sign::Minus {
-                            BigInt::from(-1)
-                        } else {
-                            BigInt::from(0)
-                        }
-                    }
-                }
-            };
-            // Convert result back to Value, demoting to i64 if it fits
-            LongInt::new(result).into_value(vm.heap).map_err(Into::into)
+    ) -> RunResult<Option<Self>> {
+        let native = match op {
+            BinaryOp::Add => self.py_add(other, vm).map_err(RunError::from)?,
+            BinaryOp::Sub => self.py_sub(other, vm).map_err(RunError::from)?,
+            BinaryOp::Mul => self.py_mult(other, vm)?,
+            BinaryOp::TrueDiv => self.py_div(other, vm)?,
+            BinaryOp::FloorDiv => self.py_floordiv(other, vm)?,
+            BinaryOp::Mod => self.py_mod(other, vm)?,
+            BinaryOp::Pow => self.py_pow(other, vm)?,
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor | BinaryOp::LShift | BinaryOp::RShift => {
+                py_bitwise_native(self, other, op, vm)?
+            }
+            BinaryOp::MatMul => {
+                return Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into());
+            }
+        };
+        if native.is_some() {
+            Ok(native)
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_binary_impl(other, op, vm)
         } else {
-            Err(ExcType::binary_type_error(op.as_str(), lhs_type, lhs_name, rhs_name))
+            Ok(None)
+        }
+    }
+
+    /// Reflected native binary operation implementation.
+    fn py_rbinary_impl(
+        &self,
+        other: &Self,
+        op: BinaryOp,
+        vm: &mut VM<'_, impl ResourceTracker>,
+    ) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rbinary_impl(other, op, vm)
+        } else {
+            Ok(None)
         }
     }
 
@@ -2402,7 +2389,46 @@ impl EitherStr {
     }
 }
 
-/// Bitwise operation type for `py_bitwise`.
+/// Binary operation type for Python operator protocol dispatch.
+#[derive(Debug, Clone, Copy)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    MatMul,
+    TrueDiv,
+    FloorDiv,
+    Mod,
+    Pow,
+    And,
+    Or,
+    Xor,
+    LShift,
+    RShift,
+}
+
+impl BinaryOp {
+    /// Returns the operator symbol for error messages.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::MatMul => "@",
+            Self::TrueDiv => "/",
+            Self::FloorDiv => "//",
+            Self::Mod => "%",
+            Self::Pow => "** or pow()",
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Xor => "^",
+            Self::LShift => "<<",
+            Self::RShift => ">>",
+        }
+    }
+}
+
+/// Bitwise operation type retained while opcode call sites migrate to [`BinaryOp`].
 #[derive(Debug, Clone, Copy)]
 pub enum BitwiseOp {
     And,
@@ -2412,15 +2438,14 @@ pub enum BitwiseOp {
     RShift,
 }
 
-impl BitwiseOp {
-    /// Returns the operator symbol for error messages.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::And => "&",
-            Self::Or => "|",
-            Self::Xor => "^",
-            Self::LShift => "<<",
-            Self::RShift => ">>",
+impl From<BitwiseOp> for BinaryOp {
+    fn from(op: BitwiseOp) -> Self {
+        match op {
+            BitwiseOp::And => Self::And,
+            BitwiseOp::Or => Self::Or,
+            BitwiseOp::Xor => Self::Xor,
+            BitwiseOp::LShift => Self::LShift,
+            BitwiseOp::RShift => Self::RShift,
         }
     }
 }
@@ -2670,6 +2695,69 @@ fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
         Ok(count)
     } else {
         Err(ExcType::overflow_repeat_count().into())
+    }
+}
+
+/// Performs native integer bitwise operations for `int`, `bool`, and `LongInt`.
+fn py_bitwise_native(
+    lhs: &Value,
+    rhs: &Value,
+    op: BinaryOp,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Option<Value>> {
+    let lhs_bigint = extract_bigint(lhs, vm.heap);
+    let rhs_bigint = extract_bigint(rhs, vm.heap);
+
+    if let (Some(l), Some(r)) = (lhs_bigint, rhs_bigint) {
+        let result = match op {
+            BinaryOp::And => l & r,
+            BinaryOp::Or => l | r,
+            BinaryOp::Xor => l ^ r,
+            BinaryOp::LShift => {
+                let shift_amount = r.to_i64();
+                if let Some(shift) = shift_amount {
+                    if shift < 0 {
+                        return Err(ExcType::value_error_negative_shift_count());
+                    }
+                    #[expect(clippy::cast_sign_loss)]
+                    let shift_u64 = shift as u64;
+                    check_lshift_size(l.bits(), shift_u64, vm.heap.tracker())?;
+                    l << shift_u64
+                } else if r.sign() == num_bigint::Sign::Minus {
+                    return Err(ExcType::value_error_negative_shift_count());
+                } else {
+                    return Err(ExcType::overflow_c_ssize_t());
+                }
+            }
+            BinaryOp::RShift => {
+                let shift_amount = r.to_i64();
+                if let Some(shift) = shift_amount {
+                    if shift < 0 {
+                        return Err(ExcType::value_error_negative_shift_count());
+                    }
+                    #[expect(clippy::cast_sign_loss)]
+                    let shift_u64 = shift as u64;
+                    l >> shift_u64
+                } else if r.sign() == num_bigint::Sign::Minus {
+                    return Err(ExcType::value_error_negative_shift_count());
+                } else if l.sign() == num_bigint::Sign::Minus {
+                    BigInt::from(-1)
+                } else {
+                    BigInt::from(0)
+                }
+            }
+            BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::MatMul
+            | BinaryOp::TrueDiv
+            | BinaryOp::FloorDiv
+            | BinaryOp::Mod
+            | BinaryOp::Pow => unreachable!("non-bitwise op passed to py_bitwise_native"),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    } else {
+        Ok(None)
     }
 }
 

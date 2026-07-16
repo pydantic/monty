@@ -17,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{LazyHeapSet, Type},
-    value::{EitherStr, Value},
+    value::{BinaryOp, EitherStr, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -1000,6 +1000,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         !self.get(vm.heap).is_empty()
     }
 
+    fn py_binary_impl(
+        &self,
+        other: &Value,
+        op: BinaryOp,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        let Some(op) = set_binary_op(op) else {
+            return Ok(None);
+        };
+        let Some(result) = self.binary_op_value(other, op, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
@@ -1101,6 +1117,17 @@ pub(crate) enum SetBinaryOp {
     Or,
     Xor,
     Sub,
+}
+
+/// Converts a binary operator to the corresponding pure set operator.
+fn set_binary_op(op: BinaryOp) -> Option<SetBinaryOp> {
+    match op {
+        BinaryOp::And => Some(SetBinaryOp::And),
+        BinaryOp::Or => Some(SetBinaryOp::Or),
+        BinaryOp::Xor => Some(SetBinaryOp::Xor),
+        BinaryOp::Sub => Some(SetBinaryOp::Sub),
+        _ => None,
+    }
 }
 
 /// Helper methods for set operations with arbitrary iterables.
@@ -1289,6 +1316,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         !self.get(vm.heap).is_empty()
+    }
+
+    fn py_binary_impl(
+        &self,
+        other: &Value,
+        op: BinaryOp,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        let Some(op) = set_binary_op(op) else {
+            return Ok(None);
+        };
+        let Some(result) = self.binary_op_value(other, op, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
     }
 
     fn py_repr_fmt(

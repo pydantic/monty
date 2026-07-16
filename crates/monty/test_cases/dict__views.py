@@ -128,8 +128,13 @@ except TypeError as e:
 
 # === dict_keys set-like operators ===
 assert d.keys() | ('c', 'd') == {'a', 'b', 'c', 'd'}, 'keys view unions arbitrary iterables'
+assert ['c', 'd'] | d.keys() == {'a', 'b', 'c', 'd'}, 'keys reflected union accepts arbitrary iterables'
 assert d.keys() ^ ('b', 'd', 'e') == {'a', 'c', 'd', 'e'}, 'keys view symmetric difference works'
+assert ['b', 'd', 'e'] ^ d.keys() == {'a', 'c', 'd', 'e'}, (
+    'keys reflected symmetric difference accepts arbitrary iterables'
+)
 assert d.keys() - ('b', 'd') == {'a', 'c'}, 'keys view difference works'
+assert ['b', 'd'] - d.keys() == {'d'}, 'keys reflected difference preserves operand order'
 assert d.keys() & {'b': 0, 'z': 9}.keys() == {'b'}, 'keys view intersects other keys views'
 assert d.keys() | {'c': 0, 'd': 1}.keys() == {'a', 'b', 'c', 'd'}, 'keys view unions other keys views'
 assert d.keys().isdisjoint(['x', 'y']) is True, 'keys isdisjoint accepts arbitrary iterables'
@@ -138,9 +143,17 @@ assert d.keys().isdisjoint(iter(['x', 'a'])) is False, 'keys isdisjoint consumes
 # === dict_items set-like operators ===
 items_dict = {'a': 1, 'b': 2}
 assert items_dict.items() & [('a', 1), ('x', 9)] == {('a', 1)}, 'items view intersects iterables of pairs'
+assert [('a', 1), ('x', 9)] & items_dict.items() == {('a', 1)}, (
+    'items reflected intersection accepts iterables of pairs'
+)
 assert items_dict.items() | [('c', 3)] == {('a', 1), ('b', 2), ('c', 3)}, 'items view unions iterables of pairs'
+assert [('c', 3)] | items_dict.items() == {('a', 1), ('b', 2), ('c', 3)}, (
+    'items reflected union accepts iterables of pairs'
+)
 assert items_dict.items() ^ [('a', 1), ('c', 3)] == {('b', 2), ('c', 3)}, 'items view symmetric difference works'
+assert [('a', 1), ('c', 3)] ^ items_dict.items() == {('b', 2), ('c', 3)}, 'items reflected symmetric difference works'
 assert items_dict.items() - [('a', 1)] == {('b', 2)}, 'items view difference works'
+assert [('a', 1), ('c', 3)] - items_dict.items() == {('c', 3)}, 'items reflected difference preserves operand order'
 assert items_dict.items() & {'b': 2, 'x': 9}.items() == {('b', 2)}, 'items view intersects other items views'
 assert items_dict.items().isdisjoint([('x', 1)]) is True, 'items isdisjoint accepts arbitrary iterables'
 assert items_dict.items().isdisjoint(iter([('a', 1)])) is False, 'items isdisjoint consumes iterators'
@@ -158,7 +171,9 @@ try:
 except AttributeError:
     pass
 
-# === Motivating milestone example ===
+# === Motivating milestone examples ===
+assert ['foo', 'bar'] | {}.keys() == {'foo', 'bar'}, 'list union empty keys view returns set of list items'
+
 me_map = {'me': 1, 'you': 2, 'merve': 3}
 merve_set = {'merve', 'unknown'}
 common_ids = me_map.keys() & merve_set
