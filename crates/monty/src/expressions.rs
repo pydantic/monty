@@ -840,6 +840,4 @@ pub enum CmpOperator {
     IsNot,
     In,
     NotIn,
-    // we should support floats too, either via a Number type, or ModEqInt and ModEqFloat
-    ModEq(i64),
 }

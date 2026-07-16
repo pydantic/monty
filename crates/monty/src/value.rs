@@ -605,25 +605,6 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_mod_eq(&self, other: &Self, right_value: i64) -> Option<bool> {
-        match (self, other) {
-            (Self::Int(v1), Self::Int(v2)) => {
-                if let Some(r) = v1.checked_rem(*v2) {
-                    // Python modulo: result has same sign as divisor
-                    let result = if r != 0 && (*v1 < 0) != (*v2 < 0) { r + *v2 } else { r };
-                    Some(result == right_value)
-                } else {
-                    // checked_rem returns None for overflow (i64::MIN % -1) or zero division
-                    (*v2 != 0).then_some(0 == right_value)
-                }
-            }
-            (Self::Float(v1), Self::Float(v2)) => Some(v1 % v2 == right_value as f64),
-            (Self::Float(v1), Self::Int(v2)) => Some(v1 % (*v2 as f64) == right_value as f64),
-            (Self::Int(v1), Self::Float(v2)) => Some((*v1 as f64) % v2 == right_value as f64),
-            _ => None,
-        }
-    }
-
     fn py_iadd(
         &mut self,
         other: &Self,

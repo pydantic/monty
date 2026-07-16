@@ -993,13 +993,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(right)?;
                 // Restore the full comparison expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                // ModEq needs special handling - it has a constant operand
-                if let CmpOperator::ModEq(value) = op {
-                    let const_idx = self.code.add_const(Value::Int(*value))?;
-                    self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
-                } else {
-                    self.code.emit(cmp_operator_to_opcode(op))?;
-                }
+                self.code.emit(cmp_operator_to_opcode(op))?;
             }
 
             Expr::ChainCmp { left, comparisons } => {
@@ -1531,12 +1525,7 @@ impl<'a> Compiler<'a> {
 
             // Emit comparison
             self.code.set_location(position, None);
-            if let CmpOperator::ModEq(value) = op {
-                let const_idx = self.code.add_const(Value::Int(*value))?;
-                self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
-            } else {
-                self.code.emit(cmp_operator_to_opcode(op))?;
-            }
+            self.code.emit(cmp_operator_to_opcode(op))?;
 
             if !is_last {
                 // Short-circuit: if false, jump to cleanup
@@ -4018,8 +4007,6 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::IsNot => Opcode::CompareIsNot,
         CmpOperator::In => Opcode::CompareIn,
         CmpOperator::NotIn => Opcode::CompareNotIn,
-        // ModEq is handled specially at the call site (needs constant operand)
-        CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
     }
 }
 

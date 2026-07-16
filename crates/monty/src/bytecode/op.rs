@@ -151,10 +151,9 @@ pub enum Opcode {
     CompareIn,
     /// Not membership: a not in b.
     CompareNotIn,
-    /// Modulo equality: a % b == k (operand: u16 constant index for k).
+    /// Compatibility opcode for historical `a % b == k` bytecode.
     ///
-    /// This is an optimization for patterns like `x % 3 == 0` which are common
-    /// in Python code. Pops b then a, computes `a % b`, then compares with k.
+    /// New code should emit `BinaryMod`, `LoadConst`, and `CompareEq` instead.
     CompareModEq,
 
     // === Unary Operations (no operand) ===
@@ -717,10 +716,10 @@ impl Opcode {
 
             // === Fixed-effect, U16 operand ===
             (LoadConst, Operand::U16(_)) => 1,
+            (CompareModEq, Operand::U16(_)) => -1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal, Operand::U16(_)) => 0,
-            (CompareModEq, Operand::U16(_)) => -1,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for

@@ -283,11 +283,6 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// Optimized helper for `(a % b) == c` comparisons.
-    fn py_mod_eq(&self, _other: &Self, _right_value: i64) -> Option<bool> {
-        None
-    }
-
     /// Python in-place addition (`__iadd__`).
     ///
     /// # Returns

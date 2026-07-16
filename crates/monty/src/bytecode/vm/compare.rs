@@ -107,48 +107,15 @@ impl<T: ResourceTracker> VM<'_, T> {
         Ok(())
     }
 
-    /// Modulo equality comparison: a % b == k
+    /// Executes the legacy modulo-equality opcode as its component operations.
     ///
-    /// This is an optimization for patterns like `x % 3 == 0`. The constant k
-    /// is provided by the caller (fetched from the constant pool using the
-    /// cached code reference in the run loop).
-    ///
-    /// Uses a fast path for Int/Float types via `py_mod_eq`, and falls back to
-    /// computing `py_mod` then comparing with `py_eq` for other types (e.g., LongInt).
+    /// TODO: remove this opcode once serialized bytecode compatibility no longer
+    /// requires it; new compilation should emit the three ordinary operations.
     pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop(); // divisor (b)
-        defer_drop!(rhs, this);
-        let lhs = this.pop(); // dividend (a)
-        defer_drop!(lhs, this);
-
-        // Try fast path for Int/Float types
-        let mod_result = match k {
-            Value::Int(k_val) => lhs.py_mod_eq(rhs, *k_val),
-            _ => None,
-        };
-
-        if let Some(is_equal) = mod_result {
-            // Fast path succeeded
-            this.push(Value::Bool(is_equal));
-            Ok(())
-        } else {
-            // Fallback: compute py_mod then compare with py_eq
-            // This handles LongInt and other Ref types
-            let mod_value = lhs.py_mod(rhs, this);
-
-            match mod_value {
-                Ok(Some(v)) => {
-                    defer_drop!(v, this);
-
-                    let is_equal = v.py_eq(k, this)?;
-                    this.push(Value::Bool(is_equal));
-                    Ok(())
-                }
-                Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),
-                Err(e) => Err(e),
-            }
-        }
+        this.binary_mod()?;
+        this.push(k.clone_with_heap(this.heap));
+        this.compare_eq()
     }
 }
