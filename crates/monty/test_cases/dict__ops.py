@@ -136,3 +136,47 @@ except TypeError as e:
 dup = {'k': [1], 'k': [2]}
 assert dup == {'k': [2]}, 'duplicate literal key keeps the last value'
 assert len(dup) == 1, 'duplicate literal key produces a single entry'
+
+# === Cross-type numeric key equality (int/bool/float/big int hash and compare equal) ===
+d = {1: 'int'}
+assert d[1.0] == 'int', 'float key finds equal int key'
+assert d[True] == 'int', 'bool key finds equal int key'
+d[True] = 'bool'
+assert d == {1: 'bool'}, 'bool key overwrites equal int key in place'
+assert list(d.keys()) == [1], 'original int key object is kept on overwrite'
+d = {0: 'zero'}
+assert d[False] == 'zero', 'False finds key 0'
+assert d[0.0] == 'zero', 'float zero finds key 0'
+assert d[-0.0] == 'zero', 'negative float zero finds key 0'
+d = {1.5: 'half'}
+assert d[1.5] == 'half', 'float key roundtrip'
+assert 1 not in d, 'int does not match non-integral float key'
+big = 2**100
+d = {big: 'big'}
+assert d[2**100] == 'big', 'big int key roundtrip'
+assert d[2.0**100] == 'big', 'float finds exactly-equal big int key'
+assert 2.0**100 + 2.0**50 not in d, 'different float does not match big int key'
+d = {2.0**100: 'bigf'}
+assert d[2**100] == 'bigf', 'big int finds exactly-equal float key'
+huge = 2**64
+assert huge + 1 not in {huge: 1}, 'nearby big int keys are distinct'
+
+# === Runtime-built (non-interned) str keys compare by content ===
+d = {'hello_world': 1}
+built = 'hello' + '_' + 'world'
+assert d[built] == 1, 'runtime-built str finds literal key'
+d2 = {built: 2}
+assert d2['hello_world'] == 2, 'literal str finds runtime-built key'
+
+# === Keys of different simple types never collide ===
+d = {1: 'int', '1': 'str', b'1': 'bytes', (1,): 'tuple'}
+assert len(d) == 4, 'int, str, bytes and tuple keys are all distinct'
+assert d['1'] == 'str', 'str key lookup'
+assert d[b'1'] == 'bytes', 'bytes key lookup'
+assert d[(1,)] == 'tuple', 'tuple key lookup'
+
+# === float('nan') keys: not equal to themselves, still storable ===
+nan = float('nan')
+d = {nan: 'nan'}
+assert len(d) == 1, 'nan key stored'
+assert float('nan') not in d, 'a different nan value never matches'

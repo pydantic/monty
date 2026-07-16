@@ -19,7 +19,7 @@ use crate::{
     intern::{Interns, StaticStrings},
     resource::ResourceTracker,
     types::Type,
-    value::{EitherStr, VALUE_SIZE, Value},
+    value::{EitherStr, VALUE_SIZE, Value, eq_bigint, eq_bytes, eq_f64, eq_i64, eq_str},
 };
 
 /// Python dict type preserving insertion order.
@@ -218,6 +218,63 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTra
             HeapData::Str(string) => string.as_str() == expected,
             _ => false,
         },
+        _ => false,
+    }
+}
+
+/// Borrow-only equality between a lookup key and a stored dict key.
+///
+/// Returns `Some(eq)` when both keys are "simple" — `str`/`bytes`/`int`/`bool`/
+/// `float`/big `int` — whose equality is pure data comparison and can never invoke
+/// Python code. Returns `None` when either side could drive instance/reflected
+/// `__eq__`, in which case the caller must fall back to the clone + `py_eq` slow path.
+///
+/// This lets `find_index_hash` probe without the per-candidate `clone_with_heap` +
+/// `defer_drop` round trip, which exists only to release the heap borrow before
+/// `py_eq(&mut vm)`.
+///
+/// `#[inline]` matters: on the instrumented CodSpeed build this and the `eq_*`
+/// helpers stayed outlined, and the per-candidate call overhead showed up as a
+/// `find_index_hash` self-time regression (PR #536 flamegraphs).
+#[inline]
+fn simple_key_eq(key: &Value, stored: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
+    if !is_simple_key(stored, vm) {
+        return None;
+    }
+    // Both operands are simple, so `None` (NotImplemented) from the one-sided
+    // helpers means "different simple classes" (e.g. str vs int) — never equal.
+    match key {
+        Value::Int(i) => Some(eq_i64(*i, stored, vm).unwrap_or(false)),
+        Value::Bool(b) => Some(eq_i64(i64::from(*b), stored, vm).unwrap_or(false)),
+        Value::Float(f) => Some(eq_f64(*f, stored, vm).unwrap_or(false)),
+        Value::InternString(id) => Some(eq_str(vm.interns.get_str(*id), stored, vm).unwrap_or(false)),
+        Value::InternBytes(id) => Some(eq_bytes(vm.interns.get_bytes(*id), stored, vm).unwrap_or(false)),
+        Value::InternLongInt(id) => Some(eq_bigint(vm.interns.get_long_int(*id), stored, vm).unwrap_or(false)),
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::Str(s) => Some(eq_str(s.as_str(), stored, vm).unwrap_or(false)),
+            HeapData::Bytes(b) => Some(eq_bytes(b.as_slice(), stored, vm).unwrap_or(false)),
+            HeapData::LongInt(li) => Some(eq_bigint(li.inner(), stored, vm).unwrap_or(false)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether a dict key's equality is guaranteed to be pure data comparison
+/// (no instance `__eq__`, no reflected protocol) — see [`simple_key_eq`].
+#[inline]
+fn is_simple_key(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::Int(_)
+        | Value::Bool(_)
+        | Value::Float(_)
+        | Value::InternString(_)
+        | Value::InternBytes(_)
+        | Value::InternLongInt(_) => true,
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            HeapData::Str(_) | HeapData::Bytes(_) | HeapData::LongInt(_)
+        ),
         _ => false,
     }
 }
@@ -499,10 +556,20 @@ impl<'h> HeapRead<'h, Dict> {
         });
 
         for candidate_index in candidates {
-            let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
-            defer_drop!(candidate_key, vm);
-            if key.py_eq(candidate_key, vm)? {
-                return Ok((Some(candidate_index), hash));
+            // Fast path: when both keys are simple data types, equality cannot run
+            // arbitrary Python, so compare against the stored key borrowed in place.
+            match simple_key_eq(key, &self.get(vm.heap).entries[candidate_index].key, vm) {
+                Some(true) => return Ok((Some(candidate_index), hash)),
+                Some(false) => {}
+                // Slow path: instance/reflected equality may execute Python, which
+                // needs `&mut vm` — clone the stored key to release the heap borrow.
+                None => {
+                    let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
+                    defer_drop!(candidate_key, vm);
+                    if key.py_eq(candidate_key, vm)? {
+                        return Ok((Some(candidate_index), hash));
+                    }
+                }
             }
         }
 

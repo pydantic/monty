@@ -2248,6 +2248,7 @@ impl Value {
 // ---------------------------------------------------------------------------
 
 /// `a == other` over Python's numeric tower (`int`/`bool`/`float`/big `int`).
+#[inline]
 pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
         Value::Int(b) => Some(a == *b),
@@ -2260,6 +2261,7 @@ pub(crate) fn eq_i64(a: i64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -
 }
 
 /// `f == other`, comparing against ints/bools/big ints *exactly* (no rounding).
+#[inline]
 pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
         Value::Float(o) => Some(f == *o),
@@ -2274,6 +2276,7 @@ pub(crate) fn eq_f64(f: f64, other: &Value, vm: &VM<'_, impl ResourceTracker>) -
 /// `b == other` over the numeric tower, for heap `LongInt` / interned long-int
 /// operands. A heap `LongInt` is always outside i64 range, so it never equals
 /// an `Int`/`Bool` — but comparing exactly keeps the logic uniform.
+#[inline]
 pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
         Value::Int(o) => Some(bigint_eq_i64(b, *o)),
@@ -2286,6 +2289,7 @@ pub(crate) fn eq_bigint(b: &BigInt, other: &Value, vm: &VM<'_, impl ResourceTrac
 }
 
 /// `s == other`, resolving the other operand from an interned or heap string.
+#[inline]
 pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
         Value::InternString(id) => Some(s == vm.interns.get_str(*id)),
@@ -2295,6 +2299,7 @@ pub(crate) fn eq_str(s: &str, other: &Value, vm: &VM<'_, impl ResourceTracker>) 
 }
 
 /// `b == other`, resolving the other operand from interned or heap bytes.
+#[inline]
 pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     match other {
         Value::InternBytes(id) => Some(b == vm.interns.get_bytes(*id)),
