@@ -349,6 +349,42 @@ pub(crate) fn instance_getattr(
     }
 }
 
+/// Compares an instance by dispatching to a user `__eq__` if the class defines one.
+///
+/// `NotImplemented` is translated into the internal `None` sentinel so
+/// `Value::py_eq` can try reflected comparison or fall back to inequality.
+pub(crate) fn instance_eq(
+    self_id: HeapId,
+    other: &Value,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Option<bool>> {
+    let class_id = instance_class(self_id, vm);
+    let Some(func) = class_member(class_id, "__eq__", vm) else {
+        return Ok(None);
+    };
+    defer_drop!(func, vm);
+
+    let args = if is_method_value(func, vm) {
+        vm.heap.inc_ref(self_id);
+        vec![Value::Ref(self_id), other.clone_with_heap(vm.heap)]
+    } else {
+        vec![other.clone_with_heap(vm.heap)]
+    };
+    let args = ArgValues::ArgsKargs {
+        args,
+        kwargs: KwargsValues::Empty,
+    };
+    let result = vm.evaluate_function("__eq__", func, args)?;
+    if result.is_not_implemented() {
+        result.drop_with(vm);
+        Ok(None)
+    } else {
+        let eq = result.py_bool(vm);
+        result.drop_with(vm);
+        Ok(Some(eq))
+    }
+}
+
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {

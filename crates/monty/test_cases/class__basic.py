@@ -81,6 +81,42 @@ assert p == p, 'an instance equals itself'
 assert p != q, 'distinct instances are not equal'
 assert (p == q) is False, 'distinct instances compare unequal'
 
+# === Custom equality ===
+
+
+class EqPoint:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def __eq__(self, other):
+        if not isinstance(other, EqPoint):
+            return NotImplemented
+        return self.x == other.x and self.y == other.y
+
+
+ep1 = EqPoint(1, 2)
+ep2 = EqPoint(1, 2)
+ep3 = EqPoint(2, 1)
+assert ep1 == ep2, 'custom __eq__ compares instance attributes'
+assert ep1 != ep3, 'custom __eq__ false result is respected'
+assert (ep1 == 1) is False, 'NotImplemented from instance equality falls back to unequal'
+assert (1 == ep1) is False, 'NotImplemented works when reflected equality reaches the instance'
+
+
+class LeftEq:
+    def __eq__(self, other):
+        return NotImplemented
+
+
+class RightEq:
+    def __eq__(self, other):
+        return 'right handled'
+
+
+assert LeftEq() == RightEq(), 'left NotImplemented delegates to reflected __eq__'
+assert RightEq() == LeftEq(), 'truthy custom __eq__ result is converted to bool'
+
 # === Instances are always truthy ===
 assert bool(p) is True, 'instances are truthy'
 if q:

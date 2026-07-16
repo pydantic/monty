@@ -43,6 +43,8 @@ use crate::{
 )]
 pub enum Type {
     Ellipsis,
+    #[strum(serialize = "NotImplementedType")]
+    NotImplementedType,
     Type,
     #[strum(serialize = "NoneType")]
     NoneType,

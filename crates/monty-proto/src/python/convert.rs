@@ -140,6 +140,8 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
+    } else if obj.is(PyModule::import(obj.py(), "builtins")?.getattr("NotImplemented")?) {
+        Ok(MontyObject::NotImplemented)
     } else if let Ok(datetime) = obj.cast::<PyDateTime>() {
         py_datetime_to_monty(datetime)
     } else if let Ok(date) = obj.cast::<PyDate>() {
@@ -288,6 +290,7 @@ pub(crate) fn monty_to_py_inner(
     match obj {
         MontyObject::None => Ok(py.None()),
         MontyObject::Ellipsis => Ok(py.Ellipsis()),
+        MontyObject::NotImplemented => Ok(PyModule::import(py, "builtins")?.getattr("NotImplemented")?.unbind()),
         MontyObject::Bool(b) => Ok(PyBool::new(py, *b).to_owned().into_any().unbind()),
         MontyObject::Int(i) => Ok(i.into_pyobject(py)?.clone().into_any().unbind()),
         MontyObject::BigInt(bi) => Ok(bi.into_pyobject(py)?.clone().into_any().unbind()),

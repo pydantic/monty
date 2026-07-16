@@ -756,6 +756,8 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+    #[strum(serialize = "NotImplemented")]
+    NotImplementedRepr,
 }
 
 impl StaticStrings {

@@ -54,6 +54,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
     let unknown = match obj {
         MontyObject::None => create_js_null(env)?,
         MontyObject::Ellipsis => create_js_ellipsis(env)?,
+        MontyObject::NotImplemented => create_js_not_implemented(env)?,
         MontyObject::Bool(b) => create_js_bool(*b, env)?,
         MontyObject::Int(i) => create_js_int(*i, env)?,
         MontyObject::BigInt(bi) => create_js_bigint(bi, env)?,
@@ -234,6 +235,13 @@ fn create_js_set<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>>
 fn create_js_ellipsis(env: &Env) -> Result<Unknown<'_>> {
     let mut obj = Object::new(env)?;
     obj.set_named_property("__monty_type__", "Ellipsis")?;
+    obj.into_unknown(env)
+}
+
+/// Creates a JS object representing NotImplemented: `{ __monty_type__: 'NotImplemented' }`.
+fn create_js_not_implemented(env: &Env) -> Result<Unknown<'_>> {
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("__monty_type__", "NotImplemented")?;
     obj.into_unknown(env)
 }
 
@@ -583,6 +591,7 @@ fn js_array_to_monty(arr: Object, env: Env) -> Result<MontyObject> {
 fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result<MontyObject> {
     match monty_type {
         "Ellipsis" => Ok(MontyObject::Ellipsis),
+        "NotImplemented" => Ok(MontyObject::NotImplemented),
         "Exception" => {
             let exc_type_str: String = obj.get_named_property("excType")?;
             let message: String = obj.get_named_property("message")?;

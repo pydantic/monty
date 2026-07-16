@@ -221,6 +221,8 @@ fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
 pub enum MontyObject {
     /// Python's `Ellipsis` singleton (`...`).
     Ellipsis,
+    /// Python's `NotImplemented` singleton.
+    NotImplemented,
     /// Python's `None` singleton.
     None,
     /// Python boolean (`True` or `False`).
@@ -344,6 +346,7 @@ pub enum MontyObject {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumIter)]
 pub enum MontyType {
     Ellipsis,
+    NotImplementedType,
     Type,
     NoneType,
     Bool,
@@ -433,6 +436,7 @@ impl MontyType {
     pub(crate) fn to_internal(&self) -> Option<Type> {
         match self {
             Self::Ellipsis => Some(Type::Ellipsis),
+            Self::NotImplementedType => Some(Type::NotImplementedType),
             Self::Type => Some(Type::Type),
             Self::NoneType => Some(Type::NoneType),
             Self::Bool => Some(Type::Bool),
@@ -486,6 +490,7 @@ impl MontyType {
     pub(crate) fn from_internal_static(ty: Type) -> Self {
         match ty {
             Type::Ellipsis => Self::Ellipsis,
+            Type::NotImplementedType => Self::NotImplementedType,
             Type::Type => Self::Type,
             Type::NoneType => Self::NoneType,
             Type::Bool => Self::Bool,
@@ -592,6 +597,7 @@ impl MontyObject {
     pub(crate) fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
+            Self::NotImplemented => Ok(Value::NotImplemented),
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
@@ -828,6 +834,7 @@ impl MontyObject {
         match object {
             Value::Undefined => panic!("Undefined found while converting to MontyObject"),
             Value::Ellipsis => Self::Ellipsis,
+            Value::NotImplemented => Self::NotImplemented,
             Value::None => Self::None,
             Value::Bool(b) => Self::Bool(*b),
             Value::Int(i) => Self::Int(*i),
@@ -1133,6 +1140,7 @@ impl MontyObject {
     fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         match self {
             Self::Ellipsis => f.write_str("Ellipsis"),
+            Self::NotImplemented => f.write_str("NotImplemented"),
             Self::None => f.write_str("None"),
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
@@ -1356,7 +1364,7 @@ impl MontyObject {
     pub fn is_truthy(&self) -> bool {
         match self {
             Self::None => false,
-            Self::Ellipsis => true,
+            Self::Ellipsis | Self::NotImplemented => true,
             Self::Bool(b) => *b,
             Self::Int(i) => *i != 0,
             Self::BigInt(bi) => !bi.is_zero(),
@@ -1391,6 +1399,7 @@ impl MontyObject {
         match self {
             Self::None => "NoneType",
             Self::Ellipsis => "ellipsis",
+            Self::NotImplemented => "NotImplementedType",
             Self::Bool(_) => "bool",
             Self::Int(_) | Self::BigInt(_) => "int",
             Self::Float(_) => "float",
@@ -1431,7 +1440,7 @@ impl Hash for MontyObject {
         }
 
         match self {
-            Self::Ellipsis | Self::None => {}
+            Self::Ellipsis | Self::NotImplemented | Self::None => {}
             Self::Bool(bool) => bool.hash(state),
             Self::Int(i) => i.hash(state),
             Self::BigInt(bi) => {
@@ -1467,6 +1476,7 @@ impl PartialEq for MontyObject {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Ellipsis, Self::Ellipsis) => true,
+            (Self::NotImplemented, Self::NotImplemented) => true,
             (Self::None, Self::None) => true,
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,

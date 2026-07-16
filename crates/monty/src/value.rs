@@ -30,7 +30,7 @@ use crate::{
     types::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
-        instance::{instance_getattr, instance_repr, instance_str},
+        instance::{instance_eq, instance_getattr, instance_repr, instance_str},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
         },
@@ -57,6 +57,7 @@ pub(crate) enum Value {
     // Immediate values (stored inline, no heap allocation)
     Undefined,
     Ellipsis,
+    NotImplemented,
     None,
     Bool(bool),
     Int(i64),
@@ -130,6 +131,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
             Self::Ellipsis => Type::Ellipsis,
+            Self::NotImplemented => Type::NotImplementedType,
             Self::None => Type::NoneType,
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
@@ -164,6 +166,7 @@ impl<'h> PyTrait<'h> for Value {
 
             Self::None => Ok(matches!(other, Self::None).then_some(true)),
             Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
+            Self::NotImplemented => Ok(matches!(other, Self::NotImplemented).then_some(true)),
             Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
             Self::Int(a) => Ok(eq_i64(*a, other, vm)),
             Self::Float(f) => Ok(eq_f64(*f, other, vm)),
@@ -212,6 +215,8 @@ impl<'h> PyTrait<'h> for Value {
                     && id == other_id
                 {
                     Ok(Some(true))
+                } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
+                    instance_eq(*id, other, vm)
                 } else {
                     vm.heap.read(*id).py_eq_impl(other, vm)
                 }
@@ -319,6 +324,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             Self::Undefined => false,
             Self::Ellipsis => true,
+            Self::NotImplemented => true,
             Self::None => false,
             Self::Bool(b) => *b,
             Self::Int(v) => *v != 0,
@@ -347,6 +353,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             Self::Undefined => Ok(f.write_str("Undefined")?),
             Self::Ellipsis => Ok(f.write_str("Ellipsis")?),
+            Self::NotImplemented => Ok(f.write_str("NotImplemented")?),
             Self::None => Ok(f.write_str("None")?),
             Self::Bool(true) => Ok(f.write_str("True")?),
             Self::Bool(false) => Ok(f.write_str("False")?),
@@ -415,6 +422,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
             Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
             Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
+            Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)?),
             _ => {
                 let mut s = String::new();
@@ -1513,6 +1521,7 @@ impl Value {
         match self {
             Self::Undefined | Self::None => Type::NoneType,
             Self::Ellipsis => Type::Ellipsis,
+            Self::NotImplemented => Type::NotImplementedType,
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
@@ -1556,6 +1565,7 @@ impl Value {
             // Singletons have fixed tagged IDs
             Self::Undefined => singleton_id(SingletonSlot::Undefined),
             Self::Ellipsis => singleton_id(SingletonSlot::Ellipsis),
+            Self::NotImplemented => singleton_id(SingletonSlot::NotImplemented),
             Self::None => singleton_id(SingletonSlot::None),
             Self::Bool(b) => {
                 if *b {
@@ -1613,6 +1623,12 @@ impl Value {
     /// compare identical regardless of representation.
     pub fn is(&self, other: &Self, vm: &VM<'_, impl ResourceTracker>) -> bool {
         self.id(vm) == other.id(vm)
+    }
+
+    /// Whether this value is Python's `NotImplemented` singleton.
+    #[must_use]
+    pub(crate) fn is_not_implemented(&self) -> bool {
+        matches!(self, Self::NotImplemented)
     }
 
     /// Python `==`, resolved to a definite boolean.
@@ -1690,7 +1706,9 @@ impl Value {
             // cheap-to-hash types recompute each call.
             Self::Ref(id) => vm.heap.read(*id).py_hash(*id, vm),
             // Singleton values hash by discriminant
-            Self::Undefined | Self::Ellipsis | Self::None => Ok(Some(hash_one(discriminant(self)))),
+            Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => {
+                Ok(Some(hash_one(discriminant(self))))
+            }
             Self::Builtin(b) => Ok(Some(hash_one(b))),
             Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
             // Hash functions based on function ID
@@ -2133,6 +2151,7 @@ impl Value {
         match self {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
+            Self::NotImplemented => Self::NotImplemented,
             Self::None => Self::None,
             Self::Bool(b) => Self::Bool(*b),
             Self::Int(v) => Self::Int(*v),
@@ -2522,9 +2541,10 @@ const PROPERTY_ID_MASK: usize = PROPERTY_ID_TAG - 1;
 enum SingletonSlot {
     Undefined = 0,
     Ellipsis = 1,
-    None = 2,
-    False = 3,
-    True = 4,
+    NotImplemented = 2,
+    None = 3,
+    False = 4,
+    True = 5,
 }
 
 /// Returns the fully tagged `id()` value for the requested singleton literal.

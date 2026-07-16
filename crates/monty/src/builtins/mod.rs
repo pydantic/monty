@@ -45,6 +45,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     resource::ResourceTracker,
     types::Type,
+    value::Value,
 };
 
 /// Enumerates every interpreter-native Python builtins
@@ -62,6 +63,16 @@ pub(crate) enum Builtins {
 }
 
 impl Builtins {
+    /// Resolves builtin names that evaluate directly to singleton values.
+    #[must_use]
+    pub fn value_from_name(name: &str) -> Option<Value> {
+        match name {
+            "Ellipsis" => Some(Value::Ellipsis),
+            "NotImplemented" => Some(Value::NotImplemented),
+            _ => name.parse::<Self>().ok().map(Value::Builtin),
+        }
+    }
+
     /// Calls this builtin, allowing builtins that need host involvement to yield.
     ///
     /// Most builtins complete synchronously and produce a [`CallResult::Value`].

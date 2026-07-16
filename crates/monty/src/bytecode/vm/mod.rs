@@ -2121,7 +2121,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
                 return Ok(());
             }
             // A reserved module dunder (e.g. `__name__`) in call position resolves
@@ -2167,9 +2167,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
-    fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
-        let name = self.interns.get_str(name_id);
-        name.parse::<Builtins>().ok()
+    fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
+        Builtins::value_from_name(self.interns.get_str(name_id))
     }
 
     /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
@@ -2236,7 +2235,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 return Err(self.name_error(slot, None));
             };
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
                 return Ok(None);
             }
             if let Some(value) = self.module_dunder(name_id)? {
