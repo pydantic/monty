@@ -52,9 +52,19 @@ fn falsy_value_fallback() {
     // `not` / chained comparisons / boolean ops evaluate to a bool first.
     assert_snapshot!(assert_msg("assert not True"), @"assert False");
     assert_snapshot!(assert_msg("assert 1 < 2 > 3"), @"assert False");
-    // `x % n == k` is fused into a ModEq comparison during preparation, so it
-    // takes the generic path rather than showing lhs/rhs (see limitations).
-    assert_snapshot!(assert_msg("assert 5 % 3 == 0"), @"assert False");
+}
+
+#[test]
+fn computed_operands_show_their_values() {
+    // Operands are arbitrary expressions; the message shows what they
+    // evaluated to, not the source text that produced them.
+    assert_snapshot!(assert_msg("assert 5 % 3 == 0"), @"assert 2 == 0");
+    assert_snapshot!(assert_msg("x = 7\nassert x % 4 == 1"), @"assert 3 == 1");
+    assert_snapshot!(assert_msg("assert len('abc') == 4"), @"assert 3 == 4");
+    assert_snapshot!(assert_msg("assert 5 % 3 == 0, 'not divisible'"), @r"
+    not divisible
+    assert 2 == 0
+    ");
 }
 
 #[test]

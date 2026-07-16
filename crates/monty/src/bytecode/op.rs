@@ -562,9 +562,9 @@ pub enum Opcode {
 /// [`Opcode::AssertFailedCmpMsg`].
 ///
 /// A dedicated enum (rather than reusing `CmpOperator`) because the operand is
-/// part of the serialized `Code` format and needs a stable u8 repr —
-/// `CmpOperator` carries a data-bearing `ModEq(i64)` variant and has no such
-/// repr. Append new variants at the end to keep serialized bytes stable.
+/// part of the serialized `Code` format and needs a stable u8 repr, which
+/// `CmpOperator` does not have. Append new variants at the end to keep
+/// serialized bytes stable.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromRepr)]
 pub enum AssertCmpOp {

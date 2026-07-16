@@ -3248,16 +3248,12 @@ impl<'a> Compiler<'a> {
     /// failure path only (matching CPython's lazy evaluation) and rendered on
     /// the first line with the detail appended: `msg\nassert 2 == 5`.
     fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
-        // `x % n == k` is fused into `CmpOp { op: ModEq(k) }` by the prepare
-        // phase; `assert_cmp_op` returns `None` for it, routing such asserts
-        // to the generic falsy-value path rather than showing wrong operands.
-        if let Expr::CmpOp { left, op, right } = &test.expr
-            && let Some(assert_op) = assert_cmp_op(op)
-        {
+        if let Expr::CmpOp { left, op, right } = &test.expr {
             self.compile_expr(left)?;
             self.compile_expr(right)?;
             // The caret/traceback range covers the whole comparison.
             self.code.set_location(test.position, None);
+            let assert_op = assert_cmp_op(op);
             self.code.emit(Opcode::Dup2)?;
             self.code.emit(cmp_operator_to_opcode(op))?;
             let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
@@ -4112,22 +4108,19 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
 }
 
 /// Maps a comparison operator to the [`AssertCmpOp`] operand of
-/// `AssertFailedCmp`/`AssertFailedCmpMsg`, or `None` for `ModEq` — the fused
-/// `x % n == k` form has no meaningful lhs/rhs to show, so such asserts take
-/// the generic falsy-value message path.
-fn assert_cmp_op(op: &CmpOperator) -> Option<AssertCmpOp> {
+/// `AssertFailedCmp`/`AssertFailedCmpMsg`.
+fn assert_cmp_op(op: &CmpOperator) -> AssertCmpOp {
     match op {
-        CmpOperator::Eq => Some(AssertCmpOp::Eq),
-        CmpOperator::NotEq => Some(AssertCmpOp::NotEq),
-        CmpOperator::Lt => Some(AssertCmpOp::Lt),
-        CmpOperator::LtE => Some(AssertCmpOp::LtE),
-        CmpOperator::Gt => Some(AssertCmpOp::Gt),
-        CmpOperator::GtE => Some(AssertCmpOp::GtE),
-        CmpOperator::Is => Some(AssertCmpOp::Is),
-        CmpOperator::IsNot => Some(AssertCmpOp::IsNot),
-        CmpOperator::In => Some(AssertCmpOp::In),
-        CmpOperator::NotIn => Some(AssertCmpOp::NotIn),
-        CmpOperator::ModEq(_) => None,
+        CmpOperator::Eq => AssertCmpOp::Eq,
+        CmpOperator::NotEq => AssertCmpOp::NotEq,
+        CmpOperator::Lt => AssertCmpOp::Lt,
+        CmpOperator::LtE => AssertCmpOp::LtE,
+        CmpOperator::Gt => AssertCmpOp::Gt,
+        CmpOperator::GtE => AssertCmpOp::GtE,
+        CmpOperator::Is => AssertCmpOp::Is,
+        CmpOperator::IsNot => AssertCmpOp::IsNot,
+        CmpOperator::In => AssertCmpOp::In,
+        CmpOperator::NotIn => AssertCmpOp::NotIn,
     }
 }
 
