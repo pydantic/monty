@@ -55,10 +55,9 @@ type Tracker = LimitedTracker;
 ///
 /// The payload is monty's postcard format — only a monty child of the same
 /// version can restore it. Bumped to 3 when `MontyRepl` gained the serialized
-/// `CompileOptions` field (assert-message annotations), and to 4 when that
-/// field became the `AssertMessageAnnotations` enum and the executor gained
-/// the serialized assert repr truncation limit.
-const DUMP_VERSION: u16 = 4;
+/// `CompileOptions` field (the `AssertMessageAnnotations` enum) and the
+/// executor gained the serialized assert repr truncation limit.
+const DUMP_VERSION: u16 = 3;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
