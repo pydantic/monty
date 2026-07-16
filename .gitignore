@@ -26,3 +26,6 @@
 
 # Python virtualenvs (e.g. monty-cpython dev installs)
 .venv/
+
+# Local perf planning notes
+/perf-plan.md
