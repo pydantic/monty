@@ -344,7 +344,7 @@ class Monty:
                 `AssertionError: assert 2 == 5` — a deliberate divergence from
                 CPython's empty `AssertionError`. On by default; set to `False`
                 to restore CPython's behavior, or to an int >= 1 to customize
-                the per-operand repr truncation length (default 120 chars).
+                the per-operand repr truncation length (default 120 bytes).
             dataclass_registry: Dataclass types to register for proper
                 isinstance() support on output.
         """

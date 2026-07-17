@@ -98,8 +98,8 @@ pub struct NativeCheckoutOptions {
     pub type_check_stubs: Option<String>,
     /// Give failed `assert` statements pytest-style introspected messages
     /// (see limitations/assert.md), wire-encoded: absent = on with the
-    /// default 120-char operand-repr truncation, `0` = off, `n` = truncate
-    /// operand reprs to `n` chars. The TypeScript wrapper normalizes the
+    /// default 120-byte operand-repr truncation, `0` = off, `n` = truncate
+    /// operand reprs to `n` bytes. The TypeScript wrapper normalizes the
     /// public `boolean | number` option into this encoding.
     pub assert_message_annotations: Option<u32>,
 }

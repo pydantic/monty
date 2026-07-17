@@ -384,9 +384,9 @@ message Configure {
   // than a silent source of frame desync.
   string monty_version = 5;
   // Introspected `assert` failure messages (see limitations/assert.md).
-  // Absent = on with the default 120-char operand-repr truncation; 0 = off
+  // Absent = on with the default 120-byte operand-repr truncation; 0 = off
   // (CPython behavior); any other value truncates each operand's repr to
-  // that many characters.
+  // that many bytes (cut on a character boundary).
   optional uint32 assert_message_annotations = 6;
 }
 

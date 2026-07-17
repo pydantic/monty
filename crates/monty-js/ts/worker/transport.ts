@@ -38,7 +38,7 @@ export interface WorkerSessionConfig {
   typeCheckStubs?: string
   /**
    * Give failed `assert`s introspected messages. Absent/true means the
-   * child's default (a 120-char operand-repr truncation), false turns them
+   * child's default (a 120-byte operand-repr truncation), false turns them
    * off, an integer >= 1 customizes the truncation length.
    */
   assertMessageAnnotations?: AssertMessageAnnotations
@@ -105,7 +105,7 @@ export class WorkerTransport {
     if (config.typeCheck) create.bool(3, true) // ReplCreate.type_check
     if (config.typeCheckStubs !== undefined) create.string(4, config.typeCheckStubs) // ReplCreate.type_check_stubs
     // Configure.assert_message_annotations (field 6, optional uint32):
-    // absent = child default (on, 120-char truncation), 0 = off, n = custom.
+    // absent = child default (on, 120-byte truncation), 0 = off, n = custom.
     const assertAnnotations = encodeAssertMessageAnnotations(config.assertMessageAnnotations)
     if (assertAnnotations !== undefined) create.uint(6, assertAnnotations)
     await transport.control(Req.ReplCreate, create.finish(), Ev.Ok, 'ReplCreate')

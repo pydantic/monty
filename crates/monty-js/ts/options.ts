@@ -5,7 +5,7 @@
 
 /**
  * The `assertMessageAnnotations` checkout option: `true`/`false`, or an
- * integer customizing the per-operand repr truncation length (in characters,
+ * integer customizing the per-operand repr truncation length (in bytes,
  * default 120) of introspected `assert` failure messages.
  */
 export type AssertMessageAnnotations = boolean | number
@@ -13,7 +13,7 @@ export type AssertMessageAnnotations = boolean | number
 /**
  * Normalizes {@link AssertMessageAnnotations} to the wire encoding of
  * `Configure.assert_message_annotations`: `undefined`/`true` → absent (the
- * child's default, a 120-char truncation), `false` → `0` (off), an integer →
+ * child's default, a 120-byte truncation), `false` → `0` (off), an integer →
  * a custom truncation length. Throws `RangeError` for numbers the wire's
  * uint32 cannot carry (non-integers, `< 1`, `> 2**32 - 1`).
  */

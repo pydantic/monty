@@ -43,8 +43,14 @@ values involved instead of a blank `AssertionError`.
 
 ## Formatting edge cases
 
-- Each operand's repr is truncated to 120 characters with a `…` suffix
-  (configurable per session, see "Opt-out for embedders" below).
+- Each operand's repr is truncated to 120 bytes (cut on a character boundary)
+  with a `…` suffix (configurable per session, see "Opt-out for embedders"
+  below).
+- A failing assert calls `repr()` on its operands, which CPython never does:
+  user `__repr__` side effects run and their cost counts against resource
+  limits. Rendering streams and stops at the truncation cap, so parts of a
+  container beyond the cap are never repr'd — their `__repr__`s (and any side
+  effects) don't run at all.
 - If an operand's `__repr__` (or an explicit message's `__str__`) raises, that
   part is dropped rather than replacing the `AssertionError`: a bare assert
   falls back to a message-less `AssertionError`, an explicit-message assert
@@ -53,7 +59,7 @@ values involved instead of a blank `AssertionError`.
 ## Opt-out for embedders
 
 CPython's plain `AssertionError` behavior can be restored per session, and the
-operand-repr truncation length can be customized (an int >= 1, in characters;
+operand-repr truncation length can be customized (an int >= 1, in bytes;
 a length of 0 means "off", not "truncate everything away"):
 
 - Rust: pass `CompileOptions { assert_message_annotations:

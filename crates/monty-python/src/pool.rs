@@ -1036,7 +1036,7 @@ pub(crate) fn parse_repl_config(
 }
 
 /// The `assert_message_annotations` checkout argument: `True`/`False`, or an
-/// int giving a custom operand-repr truncation length in characters.
+/// int giving a custom operand-repr truncation length in bytes.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct AssertAnnotationsArg(pub AssertMessageAnnotations);
 

@@ -1,5 +1,7 @@
 //! Exception handling helpers for the VM.
 
+use std::fmt::{self, Write};
+
 use super::VM;
 use crate::{
     builtins::Builtins,
@@ -9,7 +11,7 @@ use crate::{
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
 
@@ -483,16 +485,21 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 }
 
-/// `repr()` of an assert operand for the failure message, char-truncated to
-/// the compiled program's limit (`CompileOptions::assert_message_annotations`,
-/// default 120) with a `…` suffix so pathological operands (huge collections,
-/// long strings) keep the message readable.
+/// `repr()` of an assert operand, streamed into a [`TruncatingWriter`] capped
+/// at the compiled program's limit (default 120 bytes, `…` suffix). Aborting
+/// at the cap keeps pathological operands `O(cap)` — a fully materialized
+/// repr could blow the memory limit and turn a catchable `AssertionError`
+/// into a terminal `MemoryError`.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
-    let max_chars = vm.assert_repr_max_chars as usize;
-    let repr_value = value.py_repr(vm)?;
-    defer_drop!(repr_value, vm);
-    let repr = repr_value.to_str(vm)?;
-    Ok(truncate_chars(repr, max_chars))
+    let mut writer = TruncatingWriter::new(vm.assert_repr_max_chars as usize);
+    let mut heap_ids = LazyHeapSet::default();
+    match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
+        Ok(()) => Ok(writer.into_string()),
+        // The cap abort is ours: the partial repr is the result. Genuine
+        // errors can only surface before the cap (post-cap writes do no VM work).
+        Err(_) if writer.truncated => Ok(writer.into_string()),
+        Err(e) => Err(e),
+    }
 }
 
 /// `str()` of an explicit assert message, matching how the message renders in
@@ -503,17 +510,55 @@ fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunRe
     Ok(str_value.to_str(vm)?.to_owned())
 }
 
-/// Truncates `s` after `max_chars` chars, appending `…`.
-///
-/// Short strings by byte length cannot exceed the char limit, so avoid scanning
-/// them. Longer strings are cut on the boundary reported by `char_indices`.
-fn truncate_chars(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_owned()
-    } else {
-        match s.char_indices().nth(max_chars) {
-            Some((idx, _)) => format!("{}…", &s[..idx]),
-            None => s.to_owned(),
+/// `fmt::Write` sink that rejects input past `max_bytes`, cutting on a char
+/// boundary: the cap sets `truncated` and returns `fmt::Error`, unwinding
+/// `py_repr_fmt` so nothing past the cap is repr'd. The untracked `String` is
+/// safe as it's bounded by the embedder-set cap; `StringBuilder` can't be used
+/// here — it'd borrow `vm.heap`'s tracker while `py_repr_fmt` needs `&mut vm`.
+struct TruncatingWriter {
+    buf: String,
+    /// Bytes still accepted before the cap.
+    remaining: usize,
+    /// Set when input was cut at the cap; `into_string` then appends `…`.
+    truncated: bool,
+}
+
+impl TruncatingWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            buf: String::new(),
+            remaining: max_bytes,
+            truncated: false,
+        }
+    }
+
+    /// Consumes the writer, appending `…` when input was cut at the cap.
+    fn into_string(mut self) -> String {
+        if self.truncated {
+            self.buf.push('…');
+        }
+        self.buf
+    }
+}
+
+impl Write for TruncatingWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.truncated {
+            Err(fmt::Error)
+        } else if let Some(remaining) = self.remaining.checked_sub(s.len()) {
+            self.remaining = remaining;
+            self.buf.push_str(s);
+            Ok(())
+        } else {
+            // Over budget: cut at the last char boundary in budget (≤3 steps back).
+            let mut idx = self.remaining;
+            while !s.is_char_boundary(idx) {
+                idx -= 1;
+            }
+            self.buf.push_str(&s[..idx]);
+            self.remaining = 0;
+            self.truncated = true;
+            Err(fmt::Error)
         }
     }
 }

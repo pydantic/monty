@@ -5,8 +5,8 @@
 
 use insta::assert_snapshot;
 use monty::{
-    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, MontyRepl, MontyRun,
-    NoLimitTracker, PrintWriter,
+    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, MontyRepl,
+    MontyRun, NoLimitTracker, PrintWriter, ResourceLimits,
 };
 
 /// Runs `code` and returns the exception it raises.
@@ -256,6 +256,56 @@ fn custom_truncation_limit() {
     let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     let msg = err.message().unwrap();
     assert!(msg.ends_with("48, 49] == []"), "{msg}");
+}
+
+#[test]
+fn huge_operand_repr_is_streamed_not_materialized() {
+    // A ~2MB repr under a 1MB memory limit: streaming stops at the cap, so
+    // the AssertionError stays catchable instead of a terminal MemoryError.
+    let code = "
+xs = ['x' * 500] * 4000
+try:
+    assert xs == []
+    r = 'no error'
+except AssertionError as e:
+    r = str(e)
+r[:10] + '|' + r[-9:] + '|' + str(len(r))
+";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = run
+        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .expect("AssertionError must stay catchable under the memory limit");
+    // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
+    assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
+}
+
+#[test]
+fn truncation_cuts_on_char_boundaries() {
+    // The cap is in bytes but never splits a char: a 5-byte budget keeps
+    // `'日` (4 bytes); the next 3-byte char is dropped whole.
+    let options = CompileOptions {
+        assert_message_annotations: AssertMessageAnnotations::from_max_chars(5),
+    };
+    let run = MontyRun::new("assert '日本語です' == ''".to_owned(), "test.py", vec![], options).unwrap();
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    assert_snapshot!(err.message().unwrap(), @"assert '日… == ''");
+}
+
+#[test]
+fn failing_repr_mid_stream_falls_back_to_bare_error() {
+    // A `__repr__` raising after `[1, ` was already written is a genuine
+    // error, not a truncation — the whole detail is dropped.
+    let code = "
+class Bad:
+    def __repr__(self):
+        raise ValueError('nope')
+
+assert [1, Bad()] == 2
+";
+    let err = get_err(code);
+    assert_eq!(err.exc_type(), ExcType::AssertionError);
+    assert_eq!(err.message(), None);
 }
 
 #[test]

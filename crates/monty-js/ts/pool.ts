@@ -61,7 +61,7 @@ export interface CheckoutOptions {
    * `AssertionError: assert 2 == 5` — a deliberate divergence from CPython's
    * empty `AssertionError` (see limitations/assert.md). Default true; set
    * false to restore CPython's behavior, or an integer >= 1 to customize the
-   * per-operand repr truncation length (default 120 chars).
+   * per-operand repr truncation length (default 120 bytes).
    */
   assertMessageAnnotations?: AssertMessageAnnotations
 }

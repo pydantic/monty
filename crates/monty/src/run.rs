@@ -34,7 +34,7 @@ pub struct CompileOptions {
     /// Give failed `assert` statements pytest-style introspected messages
     /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
     /// CPython's empty `AssertionError`; see `limitations/assert.md`.
-    /// On by default with a 120-char operand-repr truncation.
+    /// On by default with a 120-byte operand-repr truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
 }
 
@@ -49,8 +49,9 @@ pub enum AssertMessageAnnotations {
     /// CPython behavior: failed asserts raise a bare `AssertionError`.
     Off,
     /// Introspected messages, each operand's repr truncated to this many
-    /// characters (`…` suffix). Non-zero because `0` encodes [`Off`](Self::Off)
-    /// on the wire, so a zero limit would mean "on" in-process but "off" in a worker.
+    /// bytes (cut on a character boundary, `…` suffix). Non-zero because `0`
+    /// encodes [`Off`](Self::Off) on the wire, so a zero limit would mean
+    /// "on" in-process but "off" in a worker.
     MaxChars(NonZeroU32),
 }
 
@@ -96,7 +97,7 @@ impl Default for AssertMessageAnnotations {
 }
 
 impl From<bool> for AssertMessageAnnotations {
-    /// `true` is the 120-char default; `false` restores CPython behavior.
+    /// `true` is the 120-byte default; `false` restores CPython behavior.
     fn from(enabled: bool) -> Self {
         if enabled { Self::default() } else { Self::Off }
     }

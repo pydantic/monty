@@ -21,7 +21,7 @@ pub struct ReplConfig {
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
     /// Give failed `assert` statements pytest-style introspected messages
-    /// (see `limitations/assert.md`). On by default with a 120-char
+    /// (see `limitations/assert.md`). On by default with a 120-byte
     /// operand-repr truncation; `MaxChars` customizes the truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
 }
