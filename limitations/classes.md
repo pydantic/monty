@@ -101,10 +101,6 @@ order and error wording, but with these divergences:
   `__eq__` hash by identity. Defining `__eq__` makes instances unhashable,
   even if the class also defines `__hash__`; CPython would dispatch that
   explicit `__hash__` implementation.
-- **`__eq__` results are coerced to `bool`.** CPython returns an arbitrary
-  non-`NotImplemented` result unchanged from `a == b` (for example, an
-  `__eq__` returning `'equal'` makes the comparison evaluate to that string),
-  while Monty immediately truth-tests it and returns `True` or `False`.
 - **`__eq__` runs synchronously and cannot suspend.** An external/OS call from
   `__eq__` raises rather than yielding to the host. An exception raised by
   `__eq__` terminates the run instead of being catchable by a `try` around the

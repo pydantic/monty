@@ -21,8 +21,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        let result = lhs.py_rich_eq(rhs, this)?;
+        this.push(result);
         Ok(())
     }
 
@@ -35,8 +35,10 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = !lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        let result = lhs.py_rich_eq(rhs, this)?;
+        defer_drop!(result, this);
+        let is_not_equal = !result.py_bool(this)?;
+        this.push(Value::Bool(is_not_equal));
         Ok(())
     }
 
@@ -114,7 +116,7 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// cached code reference in the run loop).
     ///
     /// Uses a fast path for Int/Float types via `py_mod_eq`, and falls back to
-    /// computing `py_mod` then comparing with `py_eq` for other types (e.g., LongInt).
+    /// computing `py_mod` then rich-comparing other types (e.g., LongInt).
     pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
         let this = self;
 
@@ -142,8 +144,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 Ok(Some(v)) => {
                     defer_drop!(v, this);
 
-                    let is_equal = v.py_eq(k, this)?;
-                    this.push(Value::Bool(is_equal));
+                    let result = v.py_rich_eq(k, this)?;
+                    this.push(result);
                     Ok(())
                 }
                 Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),

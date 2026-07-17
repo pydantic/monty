@@ -209,21 +209,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => {
-                if matches!(vm.heap.get(*id), HeapData::Instance(_))
-                    && let Some(result) = instance_eq(*id, other, vm)?
-                {
-                    Ok(Some(result))
-                } else if let Self::Ref(other_id) = other
-                    && id == other_id
-                {
-                    // Identity is the fallback only after user equality declines
-                    // the comparison by returning `NotImplemented`.
-                    Ok(Some(true))
-                } else {
-                    vm.heap.read(*id).py_eq_impl(other, vm)
-                }
-            }
+            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -1636,21 +1622,44 @@ impl Value {
         matches!(self, Self::NotImplemented)
     }
 
-    /// Python `==`, resolved to a definite boolean.
+    /// Container equality, which accepts identical objects before calling `__eq__`.
     ///
-    /// Implements CPython's reflected comparison protocol on top of the
-    /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
-    /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
-    /// operand's type recognises the other, the values are unequal. This is the
-    /// entry point the VM `==`/`!=`/`in` operators and all container element
-    /// comparisons use; per-type `py_eq_impl` impls never drive reflection themselves.
+    /// Mirrors CPython's `PyObject_RichCompareBool`: sequence and mapping
+    /// operations use identity-or-equality so an object remains present in a
+    /// container even when its `__eq__` says it is unequal to itself.
     pub fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
-        if let Some(result) = self.py_eq_impl(other, vm)? {
+        if self.is(other, vm) {
+            Ok(true)
+        } else {
+            let result = self.py_rich_eq(other, vm)?;
+            let is_equal = result.py_bool(vm);
+            result.drop_with(vm);
+            is_equal
+        }
+    }
+
+    /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
+    ///
+    /// Tries the left operand, then reflected equality when it returns
+    /// `NotImplemented`; identity is only the final fallback after both decline.
+    pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        if let Some(result) = self.py_rich_eq_impl(other, vm)? {
             Ok(result)
-        } else if let Some(result) = other.py_eq_impl(self, vm)? {
+        } else if let Some(result) = other.py_rich_eq_impl(self, vm)? {
             Ok(result)
         } else {
-            Ok(false)
+            Ok(Self::Bool(self.is(other, vm)))
+        }
+    }
+
+    /// Runs one side of rich equality, preserving user-instance results.
+    fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self
+            && matches!(vm.heap.get(*id), HeapData::Instance(_))
+        {
+            instance_eq(*id, other, vm)
+        } else {
+            Ok(self.py_eq_impl(other, vm)?.map(Value::Bool))
         }
     }
 

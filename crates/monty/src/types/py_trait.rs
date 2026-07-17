@@ -168,16 +168,14 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// One-sided Python equality comparison (`self == other` from `self`'s side).
+    /// One-sided equality for interpreter-native types.
     ///
-    /// Mirrors CPython's `__eq__`/`tp_richcompare` protocol: returns
-    /// `Ok(Some(bool))` when `self`'s type knows how to compare itself against
-    /// `other`, or `Ok(None)` for `NotImplemented` — i.e. `self`'s type does not
-    /// recognise `other`, so the caller should try the reflected `other == self`.
-    /// The reflection and the final "unequal" fallback are driven by
-    /// [`Value::py_eq`]; implementations only handle their own side and must
-    /// not attempt reflection themselves. This mirrors the `NotImplemented`
-    /// half of [`py_cmp`](Self::py_cmp)'s [`CmpOrder::Incomparable`].
+    /// Returns `Some(bool)` when this type handles `other`, or `None` for
+    /// `NotImplemented`. [`Value::py_rich_eq`] drives reflection and the final
+    /// identity fallback; user instances bypass this method because their
+    /// `__eq__` may return an arbitrary [`Value`]. This mirrors the
+    /// `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
+    /// [`CmpOrder::Incomparable`].
     ///
     /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
     /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`

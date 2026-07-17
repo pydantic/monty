@@ -92,7 +92,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     }
 
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
-        // Identity equality, resolved by `Value::py_eq_impl` before reaching here.
+        // User instance equality is dispatched by `Value::py_rich_eq_impl`,
+        // which needs the instance ID to bind `self`.
         Ok(None)
     }
 
@@ -357,13 +358,13 @@ pub(crate) fn instance_getattr(
 
 /// Compares an instance by dispatching to a user `__eq__` if the class defines one.
 ///
-/// `NotImplemented` is translated into the internal `None` sentinel so
-/// `Value::py_eq` can try reflected comparison or fall back to inequality.
+/// Returns the user's value unchanged, except that `NotImplemented` becomes
+/// `None` so rich comparison can try the reflected operand.
 pub(crate) fn instance_eq(
     self_id: HeapId,
     other: &Value,
     vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Option<bool>> {
+) -> RunResult<Option<Value>> {
     let class_id = instance_class(self_id, vm);
     let Some(func) = class_member(class_id, "__eq__", vm) else {
         return Ok(None);
@@ -385,9 +386,7 @@ pub(crate) fn instance_eq(
         result.drop_with(vm);
         Ok(None)
     } else {
-        let eq = result.py_bool(vm);
-        result.drop_with(vm);
-        Ok(Some(eq?))
+        Ok(Some(result))
     }
 }
 

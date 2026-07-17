@@ -104,6 +104,18 @@ assert (ep1 == 1) is False, 'NotImplemented from instance equality falls back to
 assert (1 == ep1) is False, 'NotImplemented works when reflected equality reaches the instance'
 
 try:
+    {ep1: 'value'}
+    assert False, 'an instance with custom equality should be rejected as a dict key'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'EqPoint' as a dict key (unhashable type: 'EqPoint')", 'dict key error'
+
+try:
+    {ep1}
+    assert False, 'an instance with custom equality should be rejected as a set element'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'EqPoint' as a set element (unhashable type: 'EqPoint')", 'set element error'
+
+try:
     hash(ep1)
     assert False, 'an instance with custom equality should be unhashable'
 except TypeError as exc:
@@ -117,6 +129,11 @@ class NeverEqual:
 
 never_equal = NeverEqual()
 assert (never_equal == never_equal) is False, 'custom equality runs before the identity fallback'
+assert (never_equal != never_equal) is True, 'inequality negates custom equality for the same object'
+assert never_equal in [never_equal], 'list membership accepts an identical object before equality'
+assert [never_equal].count(never_equal) == 1, 'list.count accepts an identical object before equality'
+assert [never_equal].index(never_equal) == 0, 'list.index accepts an identical object before equality'
+assert [never_equal] == [never_equal], 'list equality accepts identical elements before equality'
 
 
 class LeftEq:
@@ -131,8 +148,8 @@ class RightEq:
 
 left_eq = LeftEq()
 assert left_eq == left_eq, 'NotImplemented falls back to identity for self-comparison'
-assert left_eq == RightEq(), 'left NotImplemented delegates to reflected __eq__'
-assert RightEq() == left_eq, 'truthy custom __eq__ result is converted to bool'
+assert (left_eq == RightEq()) == 'right handled', 'reflected __eq__ preserves its arbitrary result'
+assert (RightEq() == left_eq) == 'right handled', 'custom __eq__ preserves its arbitrary result'
 
 # === Instances are always truthy ===
 assert bool(p) is True, 'instances are truthy'
