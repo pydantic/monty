@@ -829,9 +829,9 @@ pub enum Operator {
 
 /// Defined separately since these operators always return a bool.
 ///
-/// `Display` (via strum) renders the source-level symbol used in assert
-/// failure messages, e.g. `==` or `not in`.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, strum::Display)]
+/// The strum `serialize` attribute on each variant is the source-level symbol,
+/// and drives both `Display` and [`as_str`](Self::as_str).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, strum::Display, strum::IntoStaticStr)]
 pub enum CmpOperator {
     #[strum(serialize = "==")]
     Eq,
@@ -856,12 +856,20 @@ pub enum CmpOperator {
 }
 
 impl CmpOperator {
+    /// The source-level symbol, e.g. `==` or `not in`. Same string `Display`
+    /// renders, but borrowed rather than formatted, so the error paths that
+    /// need it (incomparable ordering `TypeError`s, assert failure messages)
+    /// don't allocate.
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+
     /// Stable u8 encoding used in the low nibble of the `Assert` /
     /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`). Part
     /// of the serialized `Code` format, so existing values must never change —
     /// hence a hand-written encoding rather than a derived `FromRepr` that
     /// would follow declaration order.
-    pub fn as_operand(self) -> u8 {
+    pub const fn as_operand(self) -> u8 {
         match self {
             Self::Eq => 0,
             Self::NotEq => 1,
@@ -878,7 +886,7 @@ impl CmpOperator {
 
     /// Decodes [`as_operand`](Self::as_operand)'s encoding, `None` for bytes
     /// outside the encoded range.
-    pub fn from_operand(byte: u8) -> Option<Self> {
+    pub const fn from_operand(byte: u8) -> Option<Self> {
         match byte {
             0 => Some(Self::Eq),
             1 => Some(Self::NotEq),

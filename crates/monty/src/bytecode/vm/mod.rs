@@ -15,7 +15,7 @@ mod format;
 mod recursion;
 mod scheduler;
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 pub(crate) use call::CallResult;
 pub(crate) use recursion::{ContainsVM, RecursionToken};
@@ -1137,14 +1137,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Comparison Operations
                 Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
                 Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
-                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord("<", Ordering::is_lt)),
-                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord("<=", Ordering::is_le)),
-                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(">", Ordering::is_gt)),
-                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(">=", Ordering::is_ge)),
-                Opcode::CompareIs => self.compare_is(false),
-                Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
-                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_in(true)),
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_lt()),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_le()),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_gt()),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ge()),
+                Opcode::CompareIs => try_catch_sync!(self, cached_frame, self.compare_is()),
+                Opcode::CompareIsNot => try_catch_sync!(self, cached_frame, self.compare_is_not()),
+                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in()),
+                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_not_in()),
                 Opcode::CompareModEq => {
                     let const_idx = cached_frame.fetch_u16();
                     let k = cached_frame.code.constants().get(const_idx);

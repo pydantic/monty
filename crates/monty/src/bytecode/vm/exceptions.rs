@@ -9,7 +9,7 @@ use crate::{
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{CmpOrder, PyTrait, Type},
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -133,41 +133,17 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Runs fused bare `assert lhs OP rhs`.
     ///
-    /// Uses the same comparison semantics as `Compare*`; failed comparisons
-    /// raise with both operand reprs.
+    /// Shares [`cmp_values`](VM::cmp_values) with the `Compare*` opcodes, so
+    /// the comparison (and any `TypeError` it raises) behaves identically to
+    /// the unfused form; only a `false` result diverges, raising with both
+    /// operand reprs.
     pub(super) fn assert_cmp(&mut self, op: CmpOperator) -> Result<(), RunError> {
         let this = self;
         let rhs = this.pop();
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
-        let passed = match op {
-            CmpOperator::Eq => lhs.py_eq(rhs, this)?,
-            CmpOperator::NotEq => !lhs.py_eq(rhs, this)?,
-            CmpOperator::Is => lhs.is(rhs, this),
-            CmpOperator::IsNot => !lhs.is(rhs, this),
-            CmpOperator::In => rhs.py_contains(lhs, this)?,
-            CmpOperator::NotIn => !rhs.py_contains(lhs, this)?,
-            CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE => {
-                match lhs.py_cmp(rhs, this)? {
-                    CmpOrder::Ordered(ordering) => match op {
-                        CmpOperator::Lt => ordering.is_lt(),
-                        CmpOperator::LtE => ordering.is_le(),
-                        CmpOperator::Gt => ordering.is_gt(),
-                        _ => ordering.is_ge(),
-                    },
-                    // NaN involved: CPython yields False for every ordering
-                    // operator, so the assert fails and shows the operands.
-                    CmpOrder::Unordered => false,
-                    CmpOrder::Incomparable => {
-                        let left_type = lhs.py_type_name(this);
-                        let right_type = rhs.py_type_name(this);
-                        return Err(ExcType::type_error_ordering(&op.to_string(), &left_type, &right_type));
-                    }
-                }
-            }
-        };
-        if passed {
+        if this.cmp_values(op, lhs, rhs)? {
             Ok(())
         } else {
             let detail = assert_operand_repr(lhs, this).and_then(|lhs_repr| {
