@@ -974,7 +974,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -1013,7 +1013,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -1049,7 +1049,7 @@ mod tests {
                 reader,
                 interns,
                 PrintWriter::Disabled,
-                AssertMessageAnnotations::DEFAULT_MAX_CHARS.get(),
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
             );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");

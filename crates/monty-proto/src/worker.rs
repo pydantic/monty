@@ -452,7 +452,7 @@ impl Child {
         let options = CompileOptions {
             assert_message_annotations: assert_message_annotations.map_or_else(
                 AssertMessageAnnotations::default,
-                AssertMessageAnnotations::from_max_chars,
+                AssertMessageAnnotations::from_max_bytes,
             ),
         };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(

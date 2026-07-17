@@ -168,7 +168,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
 
             // Inject inputs with VM alive
@@ -239,7 +239,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
 
             if let Err(e) = inject_inputs_into_vm(executor, input_values, &mut vm) {
@@ -293,7 +293,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
 
-        let assert_repr_max_chars = self.options.assert_message_annotations.max_chars();
+        let assert_repr_max_bytes = self.options.assert_message_annotations.max_bytes();
         HeapReader::with(
             &mut self.heap,
             &mut (&self.interns, print),
@@ -303,7 +303,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
                     reader,
                     interns,
                     print.reborrow(),
-                    assert_repr_max_chars,
+                    assert_repr_max_bytes,
                 );
 
                 let callable = vm.globals[slot_idx.index()].clone_with_heap(vm);
@@ -714,7 +714,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
 
             // Resolve the name lookup result with the VM alive
@@ -839,7 +839,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
 
             if let Some(call_id) = invalid_call_id {
@@ -975,7 +975,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_chars,
+                    executor.assert_repr_max_bytes,
                 );
 
                 let vm_result = match ext_result {

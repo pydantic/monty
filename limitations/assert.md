@@ -50,7 +50,7 @@ values involved instead of a blank `AssertionError`.
   limit. The retained-byte limit is configurable per session; see "Opt-out for
   embedders" below.
 - A failing assert calls `repr()` on its operands, which CPython never does:
-  user `__repr__` side effects run. Rendering streams and stops at the
+  user `__repr__` side effects run. Rendering is streamed and stops at the
   truncation cap, so parts of a container beyond the cap are never repr'd —
   their `__repr__`s (and any side effects) don't run at all. The temporary repr
   buffer and its formatting loop are not charged to the `ResourceTracker`.
@@ -70,8 +70,8 @@ length can also be customized (an int >= 1, in bytes; 0 means "off", not
 "retain no bytes"):
 
 - Rust: pass `CompileOptions { assert_message_annotations:
-  AssertMessageAnnotations::Off }` (or `::MaxChars(n)`, a `NonZeroU32`;
-  `::from_max_chars(n)` maps 0 to `Off`) to `MontyRun::new` or
+  AssertMessageAnnotations::Off }` (or `::MaxBytes(n)`, a `NonZeroU32`;
+  `::from_max_bytes(n)` maps 0 to `Off`) to `MontyRun::new` or
   `MontyRepl::new`.
 - Python: `pool.checkout(assert_message_annotations=False)` (or `=n`).
 - JavaScript: `pool.checkout({ assertMessageAnnotations: false })` (or `: n`;

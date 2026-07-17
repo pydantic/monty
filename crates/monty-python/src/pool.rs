@@ -1051,7 +1051,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AssertAnnotationsArg {
             // `NonZeroU32` rejects 0: it encodes `Off` on the wire, so a 0
             // limit must be spelled `False`.
             match ob.extract::<u32>().ok().and_then(NonZeroU32::new) {
-                Some(n) => Ok(Self(AssertMessageAnnotations::MaxChars(n))),
+                Some(n) => Ok(Self(AssertMessageAnnotations::MaxBytes(n))),
                 None => Err(PyValueError::new_err(
                     "assert_message_annotations int value must be between 1 and 2**32 - 1",
                 )),

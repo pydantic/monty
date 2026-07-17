@@ -49,12 +49,12 @@ pub enum AssertMessageAnnotations {
     Off,
     /// Retain at most this many UTF-8 bytes per operand before any `…` suffix.
     /// Non-zero because `0` encodes [`Off`](Self::Off) on the wire.
-    MaxChars(NonZeroU32),
+    MaxBytes(NonZeroU32),
 }
 
 impl AssertMessageAnnotations {
     /// Operand-repr truncation used by [`Default`] and `From<bool>`.
-    pub const DEFAULT_MAX_CHARS: NonZeroU32 = NonZeroU32::new(120).expect("120 is non-zero");
+    pub const DEFAULT_MAX_BYTES: NonZeroU32 = NonZeroU32::new(120).expect("120 is non-zero");
 
     /// Whether the compiler should emit introspecting assert opcodes.
     #[must_use]
@@ -64,18 +64,18 @@ impl AssertMessageAnnotations {
 
     /// Returns the wire value: `0` when disabled, otherwise the UTF-8 byte cap.
     #[must_use]
-    pub fn max_chars(self) -> u32 {
+    pub fn max_bytes(self) -> u32 {
         match self {
             Self::Off => 0,
-            Self::MaxChars(n) => n.get(),
+            Self::MaxBytes(n) => n.get(),
         }
     }
 
     /// Decodes the wire value: `0` is off and any other value is the byte cap.
     #[must_use]
-    pub fn from_max_chars(value: u32) -> Self {
+    pub fn from_max_bytes(value: u32) -> Self {
         match NonZeroU32::new(value) {
-            Some(n) => Self::MaxChars(n),
+            Some(n) => Self::MaxBytes(n),
             None => Self::Off,
         }
     }
@@ -83,7 +83,7 @@ impl AssertMessageAnnotations {
 
 impl Default for AssertMessageAnnotations {
     fn default() -> Self {
-        Self::MaxChars(Self::DEFAULT_MAX_CHARS)
+        Self::MaxBytes(Self::DEFAULT_MAX_BYTES)
     }
 }
 
@@ -254,7 +254,7 @@ impl MontyRun {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_chars,
+                    executor.assert_repr_max_bytes,
                 );
                 executor.populate_inputs(inputs, &mut vm)?;
 
@@ -294,7 +294,7 @@ pub(crate) struct Executor {
     pub(crate) input_slots: Vec<NamespaceId>,
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Stored with the compiled program and passed to every VM.
-    pub(crate) assert_repr_max_chars: u32,
+    pub(crate) assert_repr_max_bytes: u32,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -308,7 +308,7 @@ impl Clone for Executor {
             interns: self.interns.clone(),
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
-            assert_repr_max_chars: self.assert_repr_max_chars,
+            assert_repr_max_bytes: self.assert_repr_max_bytes,
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
@@ -345,7 +345,7 @@ impl Executor {
             interns,
             code,
             input_slots: Vec::new(),
-            assert_repr_max_chars: options.assert_message_annotations.max_chars(),
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -418,7 +418,7 @@ impl Executor {
             interns,
             code,
             input_slots,
-            assert_repr_max_chars: options.assert_message_annotations.max_chars(),
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -450,7 +450,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 print.reborrow(),
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
             executor.run_to_completion(&mut vm)
@@ -547,7 +547,7 @@ impl Executor {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
             executor.populate_inputs(inputs, &mut vm)?;
             let frame_exit_result = vm.run_module(&executor.module_code);

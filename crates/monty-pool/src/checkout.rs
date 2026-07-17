@@ -22,7 +22,7 @@ pub struct ReplConfig {
     pub type_check_stubs: Option<String>,
     /// Give failed `assert` statements pytest-style introspected messages
     /// (see `limitations/assert.md`). On by default with a 120-byte
-    /// operand-repr truncation; `MaxChars` customizes the truncation.
+    /// operand-repr truncation; `MaxBytes` customizes the truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
 }
 
@@ -183,7 +183,7 @@ impl Checkout {
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
                 type_check_stubs: repl.type_check_stubs.clone(),
-                assert_message_annotations: Some(repl.assert_message_annotations.max_chars()),
+                assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
                 // This crate ships the matching `monty` binary, so our own
                 // version is always what the child expects. The child rejects a
                 // mismatch with a `FatalError` (relevant when a remote driver

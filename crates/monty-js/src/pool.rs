@@ -178,7 +178,7 @@ impl NativePool {
                 type_check_stubs: options.type_check_stubs,
                 assert_message_annotations: options.assert_message_annotations.map_or_else(
                     AssertMessageAnnotations::default,
-                    AssertMessageAnnotations::from_max_chars,
+                    AssertMessageAnnotations::from_max_bytes,
                 ),
             },
             checkout: Arc::new(Mutex::new(None)),

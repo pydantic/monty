@@ -348,7 +348,7 @@ impl<T: ResourceTracker> NameLookup<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_chars,
+                    executor.assert_repr_max_bytes,
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -453,7 +453,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
-                executor.assert_repr_max_chars,
+                executor.assert_repr_max_bytes,
             );
             vm.__force_gc_for_tests();
             vm.snapshot()
@@ -504,7 +504,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_chars,
+                    executor.assert_repr_max_bytes,
                 );
 
                 // Now check for invalid call_ids after VM is restored.
@@ -568,7 +568,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
-                    executor.assert_repr_max_chars,
+                    executor.assert_repr_max_bytes,
                 );
 
                 let vm_result = match ext_result {

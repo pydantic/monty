@@ -748,7 +748,7 @@ pub struct VM<'h, T: ResourceTracker> {
 
     /// UTF-8 byte cap for each operand repr in introspected assert messages.
     /// Supplied by the executor on construction, so it is not snapshotted.
-    pub(crate) assert_repr_max_chars: u32,
+    pub(crate) assert_repr_max_bytes: u32,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -758,7 +758,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         heap: &'h mut HeapReader<'h, T>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_chars: u32,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -778,7 +778,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_chars,
+            assert_repr_max_bytes,
         }
     }
 
@@ -794,14 +794,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
-    /// * `assert_repr_max_chars` - Operand-repr byte cap from the executor
+    /// * `assert_repr_max_bytes` - Operand-repr byte cap from the executor
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
         heap: &'h mut HeapReader<'h, T>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
-        assert_repr_max_chars: u32,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -850,7 +850,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
-            assert_repr_max_chars,
+            assert_repr_max_bytes,
         }
     }
 
