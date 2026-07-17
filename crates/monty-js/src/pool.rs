@@ -28,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-use monty::{ExcType, MontyException, MontyObject, PrintStream, StackFrame};
+use monty::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame};
 use monty_pool::{
     exceeds_max_value_depth, Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, ReplConfig,
     ResumeValue, TurnEvent,
@@ -96,6 +96,12 @@ pub struct NativeCheckoutOptions {
     pub type_check: bool,
     /// Stub declarations made available to type checking.
     pub type_check_stubs: Option<String>,
+    /// Give failed `assert` statements pytest-style introspected messages
+    /// (see limitations/assert.md), wire-encoded: absent = on with the
+    /// default 120-byte operand-repr truncation, `0` = off, `n` = truncate
+    /// operand reprs to `n` bytes. The TypeScript wrapper normalizes the
+    /// public `boolean | number` option into this encoding.
+    pub assert_message_annotations: Option<u32>,
 }
 
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
@@ -170,6 +176,10 @@ impl NativePool {
                 limits,
                 type_check: options.type_check,
                 type_check_stubs: options.type_check_stubs,
+                assert_message_annotations: options.assert_message_annotations.map_or_else(
+                    AssertMessageAnnotations::default,
+                    AssertMessageAnnotations::from_max_bytes,
+                ),
             },
             checkout: Arc::new(Mutex::new(None)),
             pending_not_handled: Arc::new(Mutex::new(None)),

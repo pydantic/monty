@@ -9,15 +9,15 @@ import re
 # Compile a pattern and run search — both pattern and match stay alive
 p = re.compile(r'(\w+)')
 m = p.search('hello world')
-assert m is not None, 'search finds match'
+assert m is not None
 group_str = m.group(0)
-assert group_str == 'hello', 'group(0) returns matched text'
+assert group_str == 'hello'
 
 # Run fullmatch — exercises the compiled_fullmatch regex path
 m2 = p.fullmatch('hello')
-assert m2 is not None, 'fullmatch finds match'
+assert m2 is not None
 full_str = m2.group(0)
-assert full_str == 'hello', 'fullmatch group(0) returns matched text'
+assert full_str == 'hello'
 
 # findall returns a list — keep individual elements in variables
 # so strict matching passes (all heap objects must be reachable).
@@ -25,7 +25,7 @@ assert full_str == 'hello', 'fullmatch group(0) returns matched text'
 # would be interned (see allocate_string), and interned values don't appear in
 # the ref-counts map.
 results = p.findall('aa bb cc')
-assert results == ['aa', 'bb', 'cc'], 'findall returns list of matches'
+assert results == ['aa', 'bb', 'cc']
 r0 = results[0]
 r1 = results[1]
 r2 = results[2]
@@ -70,11 +70,11 @@ except ValueError:
 
 # Compiled pattern used by a module function: p's refcount returns to 1
 m3 = re.search(p, subject)
-assert m3 is not None, 'compiled pattern search finds match'
+assert m3 is not None
 
 # Negative count returns the subject: subject gains a reference from the result
 sub_result = re.sub('h', 'X', subject, -1)
-assert sub_result == 'hello world', 'negative count returns subject unchanged'
+assert sub_result == 'hello world'
 
 # p: 1, m: 1, group_str: 1, m2: 1, full_str: 1
 # results: 1, r0: 2 (var + list), r1: 2 (var + list), r2: 2 (var + list + final expr)

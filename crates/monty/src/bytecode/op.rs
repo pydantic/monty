@@ -14,7 +14,7 @@ use std::{error, fmt};
 
 use strum::FromRepr;
 
-use crate::bytecode::builder::RelativeOffset;
+use crate::{bytecode::builder::RelativeOffset, expressions::CmpOperator};
 
 /// `FormatValue` flag: a format spec was pushed onto the stack ahead of the
 /// value. When set, the VM pops the spec before the value. See `Opcode::FormatValue`.
@@ -26,6 +26,34 @@ pub const FORMAT_VALUE_HAS_SPEC: u8 = 0x04;
 /// set. The compiler pairs this bit with a `LoadConst` of `Value::Int(encoded)`
 /// emitted before the value.
 pub const FORMAT_VALUE_STATIC_SPEC: u8 = 0x08;
+
+/// `Assert`/`AssertFailed` flag: the assert is a fused comparison. When set,
+/// the low nibble of the flags operand holds [`CmpOperator::as_operand`] and
+/// the opcode pops two comparison operands instead of one test value.
+pub const ASSERT_CMP_FLAG: u8 = 0x10;
+
+/// Encodes an optional fused comparison into the `Assert`/`AssertFailed`
+/// flags operand: `ASSERT_CMP_FLAG | as_operand` when present, `0` when not.
+pub fn assert_flags(cmp_op: Option<CmpOperator>) -> u8 {
+    cmp_op.map_or(0, |op| ASSERT_CMP_FLAG | op.as_operand())
+}
+
+/// Decodes [`assert_flags`]; `None` for bytes it can never produce (corrupt
+/// or hand-built bytecode — callers treat that as an internal error).
+#[expect(
+    clippy::option_option,
+    reason = "outer = valid encoding, inner = fused comparison present"
+)]
+pub fn decode_assert_flags(flags: u8) -> Option<Option<CmpOperator>> {
+    if flags == 0 {
+        Some(None)
+    } else if flags & ASSERT_CMP_FLAG != 0 {
+        // `!ASSERT_CMP_FLAG` keeps any stray high bits so they fail decoding.
+        CmpOperator::from_operand(flags & !ASSERT_CMP_FLAG).map(Some)
+    } else {
+        None
+    }
+}
 
 /// Opcode discriminant - just identifies the instruction type.
 ///
@@ -151,10 +179,9 @@ pub enum Opcode {
     CompareIn,
     /// Not membership: a not in b.
     CompareNotIn,
-    /// Modulo equality: a % b == k (operand: u16 constant index for k).
+    /// Compatibility opcode for historical `a % b == k` bytecode.
     ///
-    /// This is an optimization for patterns like `x % 3 == 0` which are common
-    /// in Python code. Pops b then a, computes `a % b`, then compares with k.
+    /// New code should emit `BinaryMod`, `LoadConst`, and `CompareEq` instead.
     CompareModEq,
 
     // === Unary Operations (no operand) ===
@@ -520,7 +547,25 @@ pub enum Opcode {
     /// available — we synthesise the equivalent by peeking the receiver.
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     MethodDictMerge,
+
+    // Both assert opcodes use `assert_flags`; `ASSERT_CMP_FLAG` selects the
+    // fused-comparison form and the low nibble stores the comparison operator.
+    /// Fused bare `assert`: stack [..., test] -> [...], or with
+    /// `ASSERT_CMP_FLAG` [..., lhs, rhs] -> [...]. Falls through on success;
+    /// failures raise `AssertionError` with the operand repr(s), except
+    /// literal `False` which has no detail. Comparison errors match `Compare*`.
+    Assert,
+    /// Raise for failed `assert test, msg`: stack [..., test, msg] -> raises,
+    /// or with `ASSERT_CMP_FLAG` [..., lhs, rhs, msg] -> raises. The message
+    /// comes first, with introspected detail appended when available.
+    AssertFailed,
 }
+// Samuel: do not remove this comment!
+// NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
+// variants — roughly half are already taken. Spend slots sparingly: prefer a
+// flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a
+// family of near-identical opcodes, unless the instruction is hot enough that
+// decoding the discriminating operand would cost measurable dispatch time.
 
 impl TryFrom<u8> for Opcode {
     type Error = InvalidOpcodeError;
@@ -617,6 +662,22 @@ impl Opcode {
                 if flags & FORMAT_VALUE_HAS_SPEC != 0 { -1 } else { 0 }
             }
             (UnpackSequence, Operand::U8(n)) => i32::from(n) - 1,
+            // Fused forms pop two test operands; `AssertFailed` also pops the
+            // explicit message before entering dead code.
+            (Assert, Operand::U8(flags)) => {
+                if flags & ASSERT_CMP_FLAG != 0 {
+                    -2
+                } else {
+                    -1
+                }
+            }
+            (AssertFailed, Operand::U8(flags)) => {
+                if flags & ASSERT_CMP_FLAG != 0 {
+                    -3
+                } else {
+                    -2
+                }
+            }
 
             // === Variable-effect: U16 operand ===
             (BuildList | BuildTuple | BuildSet | BuildFString, Operand::U16(n)) => 1 - i32::from(n),
@@ -717,10 +778,10 @@ impl Opcode {
 
             // === Fixed-effect, U16 operand ===
             (LoadConst, Operand::U16(_)) => 1,
+            (CompareModEq, Operand::U16(_)) => -1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
             (DeleteGlobal, Operand::U16(_)) => 0,
-            (CompareModEq, Operand::U16(_)) => -1,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for
@@ -734,7 +795,6 @@ impl Opcode {
             // code, but the tracker absorbs the bytes with effect 0 before the
             // following region starts.
             (RaiseUnboundLocal, Operand::U16(_)) => 0,
-
             // === Fixed-effect, U16U16 operand ===
             (LoadGlobalCallable, Operand::U16U16(..)) => 1,
 
@@ -802,7 +862,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::MethodDictMerge as u8 {
+        for byte in 0..=Opcode::AssertFailed as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -829,12 +889,16 @@ mod tests {
         // Method-call duplicate-kwarg qualifier; sister to `DictMerge` but appended at the
         // tail so older opcode bytes keep their discriminants.
         assert_eq!(Opcode::MethodDictMerge as u8, 118);
+        // Assert opcodes (pytest-style introspection): fused test-and-raise
+        // for bare asserts, raise-only for the lazy explicit-message forms.
+        assert_eq!(Opcode::Assert as u8, 119);
+        assert_eq!(Opcode::AssertFailed as u8, 120);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::MethodDictMerge as u8 + 1);
+        let result = Opcode::try_from(Opcode::AssertFailed as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);
@@ -845,5 +909,20 @@ mod tests {
     fn test_opcode_size() {
         // Verify opcode is 1 byte
         assert_eq!(mem::size_of::<Opcode>(), 1);
+    }
+
+    #[test]
+    fn test_assert_flags_roundtrip() {
+        // The bare form and every comparison operator must round-trip.
+        assert_eq!(decode_assert_flags(assert_flags(None)), Some(None));
+        for byte in 0..=9 {
+            let op = CmpOperator::from_operand(byte).unwrap();
+            assert_eq!(decode_assert_flags(assert_flags(Some(op))), Some(Some(op)));
+        }
+        // Bytes `assert_flags` can't produce are rejected: a cmp nibble
+        // without the flag, an out-of-range nibble, and stray high bits.
+        assert_eq!(decode_assert_flags(0x01), None);
+        assert_eq!(decode_assert_flags(ASSERT_CMP_FLAG | 0x0A), None);
+        assert_eq!(decode_assert_flags(0x20 | ASSERT_CMP_FLAG), None);
     }
 }

@@ -19,13 +19,13 @@ async def return_none():
 
 
 i = await return_int()  # pyright: ignore
-assert i == 42, 'should return int'
+assert i == 42
 
 s = await return_str()  # pyright: ignore
-assert s == 'hello', 'should return str'
+assert s == 'hello'
 
 lst = await return_list()  # pyright: ignore
-assert lst == [1, 2, 3], 'should return list'
+assert lst == [1, 2, 3]
 
 n = await return_none()  # pyright: ignore
-assert n is None, 'should return None implicitly'
+assert n is None

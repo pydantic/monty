@@ -30,7 +30,7 @@ except TypeError as exc:
         assert str(exc) == 'Path.mkdir() takes from 1 to 4 positional arguments but 5 were given', (
             f'unexpected message: {exc}'
         )
-assert too_many_path.exists() == False, 'mkdir too many args does not create directory'
+assert too_many_path.exists() == False
 
 # === TypeError on mkdir with unknown keyword argument ===
 unknown_kw_path = root / 'mkdir_unknown_kw'
@@ -39,7 +39,7 @@ try:
     assert False, 'expected TypeError on mkdir unknown kwarg'
 except TypeError as exc:
     assert str(exc) == "Path.mkdir() got an unexpected keyword argument 'bogus'", f'unexpected message: {exc}'
-assert unknown_kw_path.exists() == False, 'mkdir unknown kwarg does not create directory'
+assert unknown_kw_path.exists() == False
 
 # === TypeError on mkdir with duplicate parents argument ===
 duplicate_arg_path = root / 'mkdir_duplicate_arg'
@@ -48,7 +48,7 @@ try:
     assert False, 'expected TypeError on mkdir duplicate parents'
 except TypeError as exc:
     assert str(exc) == "Path.mkdir() got multiple values for argument 'parents'", f'unexpected message: {exc}'
-assert duplicate_arg_path.exists() == False, 'mkdir duplicate arg does not create directory'
+assert duplicate_arg_path.exists() == False
 
 # ============================================================================
 # FileNotFoundError — read/write/stat/unlink/rmdir on nonexistent paths
@@ -227,7 +227,7 @@ except OSError as exc:
 if not is_windows:
     (root / 'rename_dst_empty').mkdir()
     (root / 'rename_src_dir').rename(root / 'rename_dst_empty')
-    assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved', 'rename dir onto empty dir succeeds'
+    assert (root / 'rename_dst_empty' / 'moved.txt').read_text() == 'moved'
     assert not (root / 'rename_src_dir').exists(), 'source dir gone after rename'
 
 # ============================================================================
@@ -360,7 +360,7 @@ except OSError as exc:
 
 # === Component at exactly 255 bytes is accepted ===
 ok_name = 'b' * 255
-assert Path(str(root) + '/' + ok_name).exists() == False, '255-byte component should be accepted'
+assert Path(str(root) + '/' + ok_name).exists() == False
 
 # === OSError on total path too long (> 4096 bytes) ===
 long_path_str = str(root) + '/' + '/'.join(['x' * 200] * 21)

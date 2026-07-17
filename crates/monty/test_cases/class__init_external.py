@@ -16,10 +16,10 @@ class Accumulator:
 
 
 a = Accumulator(5)
-assert a.base == 5, 'attribute set before the external call'
-assert a.total == 105, '__init__ stored the external-call result'
-assert type(a) is Accumulator, 'construction yields the instance, not __init__ return'
+assert a.base == 5
+assert a.total == 105
+assert type(a) is Accumulator
 
 # A method that also suspends on an external call resumes correctly.
-assert a.bump(10) == 115, 'method external call result'
-assert a.total == 115, 'method mutated state via external call'
+assert a.bump(10) == 115
+assert a.total == 115

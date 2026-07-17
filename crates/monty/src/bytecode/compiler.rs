@@ -16,7 +16,7 @@ use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
     code::Code,
-    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode},
+    op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
@@ -33,6 +33,7 @@ use crate::{
     modules::StandardLib,
     name_map::NameMap,
     parse::{CodeRange, ExceptHandler, Try},
+    run::CompileOptions,
     value::{EitherStr, Value},
 };
 
@@ -297,6 +298,10 @@ pub struct Compiler<'a> {
     /// `RaiseUnboundLocal(name_id)`. The same comprehension's slots are
     /// removed at `exit_comprehension`, so sibling comps start fresh.
     bound_comp_slots: AHashSet<u16>,
+
+    /// Whether to compile pytest-style assert failure annotations.
+    /// Propagated to nested function and class-body compilers.
+    assert_message_annotations: bool,
 }
 
 /// Information about a loop for break/continue handling.
@@ -393,7 +398,13 @@ impl<'a> Compiler<'a> {
     /// load/store opcodes encode `frame_locals + offset` as their slot
     /// operand so plain `LoadLocal/W` and `StoreLocal/W` reach the correct
     /// operand-stack position at runtime.
-    fn new(interns: &'a Interns, functions: Vec<Function>, is_module_scope: bool, frame_locals: u16) -> Self {
+    fn new(
+        interns: &'a Interns,
+        functions: Vec<Function>,
+        is_module_scope: bool,
+        frame_locals: u16,
+        assert_message_annotations: bool,
+    ) -> Self {
         let mut code = CodeBuilder::new();
         code.new_code_region(0);
         Self {
@@ -407,6 +418,7 @@ impl<'a> Compiler<'a> {
             frame_locals,
             slot_offsets: Vec::new(),
             bound_comp_slots: AHashSet::new(),
+            assert_message_annotations,
         }
     }
 
@@ -419,8 +431,9 @@ impl<'a> Compiler<'a> {
         nodes: &[PreparedNode],
         interns: &Interns,
         globals: &NameMap,
+        options: CompileOptions,
     ) -> Result<CompileResult, CompileError> {
-        Self::compile_module_with_functions(nodes, interns, globals, Vec::new())
+        Self::compile_module_with_functions(nodes, interns, globals, Vec::new(), options)
     }
 
     /// Compiles module-level code while preserving an existing function table prefix.
@@ -433,12 +446,19 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         globals: &NameMap,
         existing_functions: Vec<Function>,
+        options: CompileOptions,
     ) -> Result<CompileResult, CompileError> {
         let num_locals = check_namespace_size_u16(globals.len(), "module")?;
         // Module frames have `locals_count = 0` at runtime (globals live in
         // `self.globals`), so comp-var offsets are emitted as plain operand-
         // stack indices.
-        let mut compiler = Compiler::new(interns, existing_functions, true, 0);
+        let mut compiler = Compiler::new(
+            interns,
+            existing_functions,
+            true,
+            0,
+            options.assert_message_annotations.enabled(),
+        );
 
         // All globals are "local names" in the module
         for (slot, name_id) in globals.iter() {
@@ -470,11 +490,12 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
+        assert_message_annotations: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
         // Function frames have `locals_count = num_locals` at runtime, so
         // comp-var load/store opcodes use `num_locals + offset` to skip past
         // the locals region into the operand-stack region.
-        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Implicit return None if no explicit return
@@ -709,8 +730,15 @@ impl<'a> Compiler<'a> {
     /// namespace-size error message. Net stack effect is `+1`: even when free
     /// variables are captured, the pushed cells are consumed by `MakeClosure`.
     fn emit_make_function(&mut self, func_def: &PreparedFunctionDef, what: &'static str) -> Result<(), CompileError> {
+        let assert_message_annotations = self.assert_message_annotations;
         self.emit_make_callable(func_def, what, |interns, functions, namespace_size| {
-            Self::compile_function_body(&func_def.body, interns, functions, namespace_size)
+            Self::compile_function_body(
+                &func_def.body,
+                interns,
+                functions,
+                namespace_size,
+                assert_message_annotations,
+            )
         })
     }
 
@@ -835,6 +863,7 @@ impl<'a> Compiler<'a> {
         class_name: &Identifier,
         position: CodeRange,
     ) -> Result<(), CompileError> {
+        let assert_message_annotations = self.assert_message_annotations;
         self.emit_make_callable(body, "class body", |interns, functions, namespace_size| {
             Self::compile_class_body(
                 &body.body,
@@ -844,6 +873,7 @@ impl<'a> Compiler<'a> {
                 interns,
                 functions,
                 namespace_size,
+                assert_message_annotations,
             )
         })
     }
@@ -860,6 +890,7 @@ impl<'a> Compiler<'a> {
     /// never be cells — see `prepare_class_def`), so [`compile_name`](Self::compile_name)
     /// emits `LoadLocal`; it would transparently emit `LoadCell` if that ever
     /// changed, so no assumption is hard-coded here.
+    #[expect(clippy::too_many_arguments)]
     fn compile_class_body(
         body: &[PreparedNode],
         members: &[Identifier],
@@ -868,8 +899,9 @@ impl<'a> Compiler<'a> {
         interns: &Interns,
         functions: Vec<Function>,
         num_locals: u16,
+        assert_message_annotations: bool,
     ) -> Result<(Code, Vec<Function>), CompileError> {
-        let mut compiler = Compiler::new(interns, functions, false, num_locals);
+        let mut compiler = Compiler::new(interns, functions, false, num_locals, assert_message_annotations);
         compiler.compile_block(body)?;
 
         // Assembly errors (e.g. resource limits while building the dict)
@@ -993,13 +1025,7 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(right)?;
                 // Restore the full comparison expression's position for traceback caret range
                 self.code.set_location(expr_loc.position, None);
-                // ModEq needs special handling - it has a constant operand
-                if let CmpOperator::ModEq(value) = op {
-                    let const_idx = self.code.add_const(Value::Int(*value))?;
-                    self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
-                } else {
-                    self.code.emit(cmp_operator_to_opcode(op))?;
-                }
+                self.code.emit(cmp_operator_to_opcode(*op))?;
             }
 
             Expr::ChainCmp { left, comparisons } => {
@@ -1531,12 +1557,7 @@ impl<'a> Compiler<'a> {
 
             // Emit comparison
             self.code.set_location(position, None);
-            if let CmpOperator::ModEq(value) = op {
-                let const_idx = self.code.add_const(Value::Int(*value))?;
-                self.code.emit_u16(Opcode::CompareModEq, const_idx)?;
-            } else {
-                self.code.emit(cmp_operator_to_opcode(op))?;
-            }
+            self.code.emit(cmp_operator_to_opcode(*op))?;
 
             if !is_last {
                 // Short-circuit: if false, jump to cleanup
@@ -3178,6 +3199,11 @@ impl<'a> Compiler<'a> {
 
     /// Compiles an assert statement.
     fn compile_assert(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
+        if self.assert_message_annotations {
+            return self.compile_assert_with_message(test, msg);
+        }
+        // Without annotations, compile the ordinary `AssertionError` path.
+
         // Compile test
         self.compile_expr(test)?;
         // Jump over raise if truthy
@@ -3200,6 +3226,50 @@ impl<'a> Compiler<'a> {
 
         self.code.emit(Opcode::Raise)?;
         self.code.patch_jump(skip_jump)?;
+        Ok(())
+    }
+
+    /// Compiles an assert with Monty's introspected failure messages.
+    ///
+    /// Bare asserts use fused opcodes. Explicit-message comparisons duplicate
+    /// operands so failures can format them without eagerly evaluating `msg`.
+    fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
+        if let Expr::CmpOp { left, op, right } = &test.expr {
+            self.compile_expr(left)?;
+            self.compile_expr(right)?;
+            // The caret/traceback range covers the whole comparison.
+            self.code.set_location(test.position, None);
+            if let Some(msg_expr) = msg {
+                self.code.emit(Opcode::Dup2)?;
+                self.code.emit(cmp_operator_to_opcode(*op))?;
+                let pass = self.code.emit_jump(Opcode::JumpIfTrue)?;
+                // Failure: [lhs, rhs] retained for the message.
+                self.compile_expr(msg_expr)?;
+                self.code.set_location(test.position, None);
+                self.code.emit_u8(Opcode::AssertFailed, assert_flags(Some(*op)))?;
+                // Success: drop the retained operands.
+                self.code.patch_jump(pass)?;
+                self.code.emit(Opcode::Pop)?;
+                self.code.emit(Opcode::Pop)?;
+            } else {
+                self.code.emit_u8(Opcode::Assert, assert_flags(Some(*op)))?;
+            }
+        } else {
+            self.compile_expr(test)?;
+            self.code.set_location(test.position, None);
+            if let Some(msg_expr) = msg {
+                // Keep the falsy test value for the failure message.
+                let fail = self.code.emit_jump(Opcode::JumpIfFalseOrPop)?;
+                let end = self.code.emit_jump(Opcode::Jump)?;
+                self.code.patch_jump(fail)?;
+                self.compile_expr(msg_expr)?;
+                self.code.set_location(test.position, None);
+                self.code.emit_u8(Opcode::AssertFailed, assert_flags(None))?;
+                self.code.patch_jump(end)?;
+            } else {
+                self.code.emit_u8(Opcode::Assert, assert_flags(None))?;
+            }
+        }
         Ok(())
     }
 
@@ -4006,7 +4076,7 @@ fn operator_to_inplace_opcode(op: &Operator) -> Option<Opcode> {
 }
 
 /// Maps a `CmpOperator` to its corresponding `Opcode`.
-fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
+fn cmp_operator_to_opcode(op: CmpOperator) -> Opcode {
     match op {
         CmpOperator::Eq => Opcode::CompareEq,
         CmpOperator::NotEq => Opcode::CompareNe,
@@ -4018,8 +4088,6 @@ fn cmp_operator_to_opcode(op: &CmpOperator) -> Opcode {
         CmpOperator::IsNot => Opcode::CompareIsNot,
         CmpOperator::In => Opcode::CompareIn,
         CmpOperator::NotIn => Opcode::CompareNotIn,
-        // ModEq is handled specially at the call site (needs constant operand)
-        CmpOperator::ModEq(_) => unreachable!("ModEq handled at call site"),
     }
 }
 

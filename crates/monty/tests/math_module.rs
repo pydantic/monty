@@ -1,15 +1,15 @@
-use monty::{MontyObject, MontyRun};
+use monty::{CompileOptions, MontyObject, MontyRun};
 
 /// Helper to run a Python expression and return the result.
 fn run_expr(code: &str) -> MontyObject {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }
 
 /// Helper to run Python code that is expected to raise an exception.
 /// Returns the exception message string.
 fn run_expect_error(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let err = ex.run_no_limits(vec![]).unwrap_err();
     err.to_string()
 }

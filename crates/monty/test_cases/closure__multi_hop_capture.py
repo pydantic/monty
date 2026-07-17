@@ -13,7 +13,7 @@ def two_hop():
     return middle()
 
 
-assert two_hop() == 1, 'inner should capture x through middle'
+assert two_hop() == 1
 
 
 # === Three-hop capture: f -> g -> h -> i ===
@@ -32,7 +32,7 @@ def three_hop():
     return g()
 
 
-assert three_hop() == 'deep', 'i should capture x through h and g'
+assert three_hop() == 'deep'
 
 
 # === Multiple captures across nested scopes ===
@@ -49,7 +49,7 @@ def multi_capture():
     return middle()
 
 
-assert multi_capture() == (1, 2), 'inner should capture both a and b'
+assert multi_capture() == (1, 2)
 
 
 # === Pass-through scope reads the captured name itself too ===
@@ -67,7 +67,7 @@ def pass_through_reads():
     return middle()
 
 
-assert pass_through_reads() == 10 + 10 + 1, 'middle reads x; inner captures x and middle.local_y'
+assert pass_through_reads() == 10 + 10 + 1
 
 
 # === Mixed nonlocal + implicit multi-hop ===
@@ -85,7 +85,7 @@ def nonlocal_through_pass_through():
     return middle()
 
 
-assert nonlocal_through_pass_through() == 200, 'nonlocal in inner reaches outermost x'
+assert nonlocal_through_pass_through() == 200
 
 
 # === Lambda captures through pass-through ===
@@ -98,7 +98,7 @@ def lambda_pass_through():
     return middle()()
 
 
-assert lambda_pass_through() == 'lambda', 'lambda captures x through middle'
+assert lambda_pass_through() == 'lambda'
 
 
 # === Multiple inner functions, only one captures ===
@@ -117,4 +117,4 @@ def selective_capture():
     return middle()
 
 
-assert selective_capture() == 'captured:unrelated', 'only reader captures x'
+assert selective_capture() == 'captured:unrelated'

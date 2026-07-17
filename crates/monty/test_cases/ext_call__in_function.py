@@ -7,7 +7,7 @@ def add_wrapper(a, b):
 
 
 result = add_wrapper(10, 20)
-assert result == 30, 'basic ext call in function'
+assert result == 30
 
 
 # Function with multiple external calls (sequential)
@@ -17,7 +17,7 @@ def multi_ext():
     return add_ints(x, y)
 
 
-assert multi_ext() == 10, 'multiple ext calls in function'
+assert multi_ext() == 10
 
 
 # External call in function with local variable usage
@@ -28,7 +28,7 @@ def with_locals():
     return z
 
 
-assert with_locals() == 300, 'ext call with locals'
+assert with_locals() == 300
 
 
 # Function returning external call result
@@ -37,4 +37,4 @@ def get_sum(a, b, c):
     return add_ints(temp, c)
 
 
-assert get_sum(1, 2, 3) == 6, 'chained ext calls in function'
+assert get_sum(1, 2, 3) == 6

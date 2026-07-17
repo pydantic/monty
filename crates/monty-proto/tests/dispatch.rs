@@ -50,6 +50,7 @@ fn create_repl(child: &mut Child) {
         limits: None,
         type_check: false,
         type_check_stubs: None,
+        assert_message_annotations: None,
         monty_version: MONTY_VERSION.to_owned(),
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);

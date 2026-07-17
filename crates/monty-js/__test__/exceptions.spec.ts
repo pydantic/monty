@@ -68,6 +68,8 @@ test('name error', async () => {
 })
 
 test('assertion error', async () => {
+  // `assert False` adds no information, so no pytest-style detail is added
+  // (see limitations/assert.md)
   const error = await t.throwsAsync(() => run('assert False'), isRuntimeError)
   t.is(error.message, 'AssertionError')
 })
@@ -75,6 +77,34 @@ test('assertion error', async () => {
 test('assertion error with message', async () => {
   const error = await t.throwsAsync(() => run('assert False, "custom message"'), isRuntimeError)
   t.is(error.message, 'AssertionError: custom message')
+})
+
+test('assertion error with introspected detail', async () => {
+  // failed comparisons get a pytest-style message (see limitations/assert.md)
+  const error = await t.throwsAsync(() => run('assert 1 == 2'), isRuntimeError)
+  t.is(error.message, 'AssertionError: assert 1 == 2')
+})
+
+test('assertMessageAnnotations: false restores CPython behavior', async () => {
+  const error = await t.throwsAsync(() => run('assert 1 == 2', { assertMessageAnnotations: false }), isRuntimeError)
+  t.is(error.message, 'AssertionError')
+})
+
+test('assertMessageAnnotations: integer customizes repr truncation', async () => {
+  const error = await t.throwsAsync(
+    () => run("assert 'abcdefghij' == ''", { assertMessageAnnotations: 6 }),
+    isRuntimeError,
+  )
+  t.is(error.message, "AssertionError: assert 'abcde… == ''")
+})
+
+test('assertMessageAnnotations: invalid numbers are rejected', async () => {
+  for (const value of [0, -1, 1.5, 2 ** 32]) {
+    await t.throwsAsync(() => run('assert True', { assertMessageAnnotations: value }), {
+      instanceOf: RangeError,
+      message: 'assertMessageAnnotations must be a boolean or an integer between 1 and 2**32 - 1',
+    })
+  }
 })
 
 test('runtime error', async () => {

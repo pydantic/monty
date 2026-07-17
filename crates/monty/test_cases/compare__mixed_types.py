@@ -1,185 +1,185 @@
 # === Bool == Int equality ===
-assert True == 1, 'True == 1'
-assert False == 0, 'False == 0'
-assert 1 == True, '1 == True'
-assert 0 == False, '0 == False'
-assert True != 2, 'True != 2'
-assert False != 1, 'False != 1'
+assert True == 1
+assert False == 0
+assert 1 == True
+assert 0 == False
+assert True != 2
+assert False != 1
 
 # === Bool == Float equality ===
-assert True == 1.0, 'True == 1.0'
-assert False == 0.0, 'False == 0.0'
-assert 1.0 == True, '1.0 == True'
-assert 0.0 == False, '0.0 == False'
-assert True != 2.0, 'True != 2.0'
-assert 0.5 != False, '0.5 != False'
+assert True == 1.0
+assert False == 0.0
+assert 1.0 == True
+assert 0.0 == False
+assert True != 2.0
+assert 0.5 != False
 
 # === Int == Float equality ===
-assert 5 == 5.0, '5 == 5.0'
-assert 5.0 == 5, '5.0 == 5'
-assert 5 != 5.5, '5 != 5.5'
-assert 0 == 0.0, '0 == 0.0'
-assert -3 == -3.0, '-3 == -3.0'
+assert 5 == 5.0
+assert 5.0 == 5
+assert 5 != 5.5
+assert 0 == 0.0
+assert -3 == -3.0
 
 # === Int/Float ordering ===
-assert 5 < 5.5, '5 < 5.5'
-assert 5.5 > 5, '5.5 > 5'
-assert 5 <= 5.0, '5 <= 5.0'
-assert 5.0 >= 5, '5.0 >= 5'
-assert 5 > 4.9, '5 > 4.9'
-assert 4.9 < 5, '4.9 < 5'
+assert 5 < 5.5
+assert 5.5 > 5
+assert 5 <= 5.0
+assert 5.0 >= 5
+assert 5 > 4.9
+assert 4.9 < 5
 
 # === Bool ordering (promotes to int) ===
-assert True > False, 'True > False'
-assert False < True, 'False < True'
-assert True >= 1, 'True >= 1'
-assert False <= 0, 'False <= 0'
-assert True > 0, 'True > 0'
-assert True < 2, 'True < 2'
-assert True > 0.5, 'True > 0.5'
-assert True < 1.5, 'True < 1.5'
-assert False < 0.5, 'False < 0.5'
-assert False >= -1, 'False >= -1'
+assert True > False
+assert False < True
+assert True >= 1
+assert False <= 0
+assert True > 0
+assert True < 2
+assert True > 0.5
+assert True < 1.5
+assert False < 0.5
+assert False >= -1
 
 # === Cross-type non-equality ===
-assert 'hello' != 42, 'str != int'
-assert 42 != 'hello', 'int != str'
-assert b'hello' != 'hello', 'bytes != str'
-assert 'hello' != b'hello', 'str != bytes'
-assert None != 0, 'None != 0'
-assert 0 != None, '0 != None'
-assert [] != 'list', 'list != str'
-assert {} != 0, 'dict != int'
+assert 'hello' != 42
+assert 42 != 'hello'
+assert b'hello' != 'hello'
+assert 'hello' != b'hello'
+assert None != 0
+assert 0 != None
+assert [] != 'list'
+assert {} != 0
 
 # === LongInt cross-type comparisons ===
 big = 2**100
 big2 = 2**100
-assert big == big2, 'LongInt == LongInt'
-assert big != 5, 'LongInt != int'
-assert big > 5, 'LongInt > int'
-assert 5 < big, 'int < LongInt'
-assert big >= 5, 'LongInt >= int'
-assert 5 <= big, 'int <= LongInt'
+assert big == big2
+assert big != 5
+assert big > 5
+assert 5 < big
+assert big >= 5
+assert 5 <= big
 small_big = 2**100
 large_big = 2**101
-assert small_big < large_big, 'LongInt < LongInt'
-assert large_big > small_big, 'LongInt > LongInt'
-assert big != 'hello', 'LongInt != str'
+assert small_big < large_big
+assert large_big > small_big
+assert big != 'hello'
 
 # === Float vs LongInt comparisons (exact, no precision loss) ===
 # Powers of two are exactly representable as f64, so these are exactly equal
-assert 2.0**100 == 2**100, 'float == LongInt (exact power of two)'
-assert 2**100 == 2.0**100, 'LongInt == float (exact power of two)'
-assert 2.0**100 != 2**100 + 1, 'float != LongInt off by one'
-assert 2**100 + 1 != 2.0**100, 'LongInt off by one != float'
+assert 2.0**100 == 2**100
+assert 2**100 == 2.0**100
+assert 2.0**100 != 2**100 + 1
+assert 2**100 + 1 != 2.0**100
 # Non-power-of-two big ints are not exactly representable; comparison is still exact
-assert 1e30 != 10**30, 'float != LongInt (inexact, not equal)'
-assert 10**30 != 1e30, 'LongInt != float (inexact, not equal)'
+assert 1e30 != 10**30
+assert 10**30 != 1e30
 # Non-integral float is never equal to any int
-assert 2.5 != 2**100, 'non-integral float != LongInt'
-assert 2**100 != 2.5, 'LongInt != non-integral float'
+assert 2.5 != 2**100
+assert 2**100 != 2.5
 # Ordering across float and LongInt
-assert 2.0**100 < 2**101, 'float < LongInt'
-assert 2**101 > 2.0**100, 'LongInt > float'
-assert 1e308 < 10**400, 'float < huge LongInt beyond f64 range'
-assert 10**400 > 1e308, 'huge LongInt > float'
-assert 2.5 < 2**100, 'non-integral float < LongInt'
-assert 2**100 > 2.5, 'LongInt > non-integral float'
+assert 2.0**100 < 2**101
+assert 2**101 > 2.0**100
+assert 1e308 < 10**400
+assert 10**400 > 1e308
+assert 2.5 < 2**100
+assert 2**100 > 2.5
 # Infinities compare against LongInt without overflow
-assert float('inf') > 10**400, 'inf > huge LongInt'
-assert 10**400 < float('inf'), 'huge LongInt < inf'
-assert float('-inf') < 10**400, '-inf < huge LongInt'
-assert 10**400 > float('-inf'), 'huge LongInt > -inf'
+assert float('inf') > 10**400
+assert 10**400 < float('inf')
+assert float('-inf') < 10**400
+assert 10**400 > float('-inf')
 
 # Equal float/LongInt pairs must hash equally and be interchangeable dict keys
-assert hash(2.0**100) == hash(2**100), 'equal float/LongInt hash the same'
-assert {2**100: 'a'}[2.0**100] == 'a', 'float finds LongInt dict key'
-assert {2.0**100: 'b'}[2**100] == 'b', 'LongInt finds float dict key'
-assert 2.0**100 in {2**100, 3}, 'float in LongInt set'
+assert hash(2.0**100) == hash(2**100)
+assert {2**100: 'a'}[2.0**100] == 'a'
+assert {2.0**100: 'b'}[2**100] == 'b'
+assert 2.0**100 in {2**100, 3}
 
 # === Bytes ordering ===
-assert b'abc' < b'abd', 'bytes lt'
-assert b'abc' <= b'abc', 'bytes le'
-assert b'abd' > b'abc', 'bytes gt'
-assert b'abc' >= b'abc', 'bytes ge'
-assert b'a' < b'b', 'single byte lt'
-assert b'' < b'a', 'empty bytes lt non-empty'
+assert b'abc' < b'abd'
+assert b'abc' <= b'abc'
+assert b'abd' > b'abc'
+assert b'abc' >= b'abc'
+assert b'a' < b'b'
+assert b'' < b'a'
 
 # === String ordering ===
-assert 'abc' < 'abd', 'str lt'
-assert 'abc' <= 'abc', 'str le'
-assert 'abd' > 'abc', 'str gt'
-assert 'abc' >= 'abc', 'str ge'
-assert 'a' < 'b', 'single char lt'
+assert 'abc' < 'abd'
+assert 'abc' <= 'abc'
+assert 'abd' > 'abc'
+assert 'abc' >= 'abc'
+assert 'a' < 'b'
 
 # === Heap-allocated string ordering (from split) ===
 parts = 'banana,apple'.split(',')
-assert parts[1] < parts[0], 'heap str lt'
-assert parts[0] > parts[1], 'heap str gt'
-assert parts[0] >= parts[0], 'heap str ge self'
-assert parts[0] <= parts[0], 'heap str le self'
+assert parts[1] < parts[0]
+assert parts[0] > parts[1]
+assert parts[0] >= parts[0]
+assert parts[0] <= parts[0]
 
 # === Cross-type string ordering (interned vs heap) ===
 heap_str = 'banana,apple'.split(',')[0]
-assert heap_str > 'apple', 'heap str gt interned'
-assert 'cherry' > heap_str, 'interned gt heap str'
-assert heap_str >= 'banana', 'heap str ge interned eq'
-assert 'banana' <= heap_str, 'interned le heap str eq'
+assert heap_str > 'apple'
+assert 'cherry' > heap_str
+assert heap_str >= 'banana'
+assert 'banana' <= heap_str
 
 # === Containment: not in list ===
-assert 999 not in [1, 2, 3], 'not in list'
-assert 0 not in [1, 2, 3], 'zero not in list'
+assert 999 not in [1, 2, 3]
+assert 0 not in [1, 2, 3]
 
 # === Containment: not in tuple ===
-assert 'z' not in ('a', 'b', 'c'), 'not in tuple'
-assert 0 not in (1, 2, 3), 'zero not in tuple'
+assert 'z' not in ('a', 'b', 'c')
+assert 0 not in (1, 2, 3)
 
 # === Containment: in/not in set ===
-assert 2 in {1, 2, 3}, 'in set'
-assert 99 not in {1, 2, 3}, 'not in set'
+assert 2 in {1, 2, 3}
+assert 99 not in {1, 2, 3}
 
 # === Containment: in/not in frozenset ===
-assert 2 in frozenset({1, 2, 3}), 'in frozenset'
-assert 99 not in frozenset({1, 2, 3}), 'not in frozenset'
+assert 2 in frozenset({1, 2, 3})
+assert 99 not in frozenset({1, 2, 3})
 
 # === Containment: in/not in list (found) ===
-assert 2 in [1, 2, 3], 'in list'
-assert 'b' in ['a', 'b', 'c'], 'str in list'
+assert 2 in [1, 2, 3]
+assert 'b' in ['a', 'b', 'c']
 
 # === Containment: in/not in tuple (found) ===
-assert 'b' in ('a', 'b', 'c'), 'str in tuple'
-assert 2 in (1, 2, 3), 'int in tuple'
+assert 'b' in ('a', 'b', 'c')
+assert 2 in (1, 2, 3)
 
 # === List ordering (lexicographic, like tuples) ===
-assert [1, 2] < [1, 3], 'list lt by element'
-assert [1, 2, 3] > [1, 2], 'longer list gt when prefix equal'
-assert [1] < [1, 2], 'shorter list lt when prefix equal'
-assert [1, 2] <= [1, 2], 'equal lists le'
-assert [1, 2] >= [1, 2], 'equal lists ge'
-assert ['a', 'b'] < ['a', 'c'], 'str-element list lt'
-assert [[1], [2]] < [[1], [3]], 'nested list lt'
+assert [1, 2] < [1, 3]
+assert [1, 2, 3] > [1, 2]
+assert [1] < [1, 2]
+assert [1, 2] <= [1, 2]
+assert [1, 2] >= [1, 2]
+assert ['a', 'b'] < ['a', 'c']
+assert [[1], [2]] < [[1], [3]]
 assert not ([2] < [1]), 'list not lt'
 # equal-but-unorderable elements don't block ordering (None == None), like CPython
-assert [None, 1] < [None, 2], 'None prefix does not block later ordering'
+assert [None, 1] < [None, 2]
 
 # === Unorderable comparisons raise TypeError (not silently False) ===
 try:
     1 < 'a'
     assert False, 'expected int < str to raise'
 except TypeError as exc:
-    assert str(exc) == "'<' not supported between instances of 'int' and 'str'", 'int < str message'
+    assert str(exc) == "'<' not supported between instances of 'int' and 'str'"
 
 try:
     None < None
     assert False, 'expected None < None to raise'
 except TypeError as exc:
-    assert str(exc) == "'<' not supported between instances of 'NoneType' and 'NoneType'", 'None < None message'
+    assert str(exc) == "'<' not supported between instances of 'NoneType' and 'NoneType'"
 
 try:
     [1] >= 'a'
     assert False, 'expected list >= str to raise'
 except TypeError as exc:
-    assert str(exc) == "'>=' not supported between instances of 'list' and 'str'", 'list >= str message'
+    assert str(exc) == "'>=' not supported between instances of 'list' and 'str'"
 
 # === NaN ordering returns False, never raises (NaN is unordered, not incomparable) ===
 # CPython: every ordering operator against a NaN yields False, for both directions
@@ -202,7 +202,7 @@ try:
     nan < 'a'
     assert False, 'expected nan < str to raise'
 except TypeError as exc:
-    assert str(exc) == "'<' not supported between instances of 'float' and 'str'", 'nan < str raises'
+    assert str(exc) == "'<' not supported between instances of 'float' and 'str'"
 
 # === NaN inside containers ===
 # The first differing element decides: a NaN element makes the container unordered
@@ -222,8 +222,8 @@ except TypeError:
 # === sorted / min / max with NaN do not raise ===
 # NaN compares as neither less nor greater, so it never triggers a swap; CPython
 # leaves such elements in place rather than erroring.
-assert sorted([3, 1, 2]) == [1, 2, 3], 'sorted without nan still works'
-assert sorted([nan, 1, 2, nan])[1:3] == [1, 2], 'sorted with nan does not raise'
-assert min([nan, 1, 2]) != min([nan, 1, 2]), 'min keeps leading nan (nan != nan)'
-assert max([1, nan, 2]) == 2, 'max skips nan'
-assert min([1, 2, nan]) == 1, 'min skips trailing nan'
+assert sorted([3, 1, 2]) == [1, 2, 3]
+assert sorted([nan, 1, 2, nan])[1:3] == [1, 2]
+assert min([nan, 1, 2]) != min([nan, 1, 2])
+assert max([1, nan, 2]) == 2
+assert min([1, 2, nan]) == 1

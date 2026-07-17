@@ -10,12 +10,18 @@
 //! conversion must agree on a single answer based on the name string, regardless
 //! of which path the conversion took.
 
-use monty::{MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty::{CompileOptions, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
 fn run_with_same_callable_inputs(code: &str) -> MontyObject {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec!["a".to_owned(), "b".to_owned()]).unwrap();
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["a".to_owned(), "b".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     runner
         .run_no_limits(vec![
             MontyObject::Function {
@@ -86,6 +92,7 @@ fn different_named_callables_remain_distinct() {
         "(a is b, a == b)".to_owned(),
         "test.py",
         vec!["a".to_owned(), "b".to_owned()],
+        CompileOptions::default(),
     )
     .unwrap();
     let result = runner
@@ -112,7 +119,13 @@ fn different_named_callables_remain_distinct() {
 /// After the fix the export representation must be the same as the heap path.
 #[test]
 fn inline_callable_exports_as_function_object() {
-    let runner = MontyRun::new("foo = None\nx".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+    let runner = MontyRun::new(
+        "foo = None\nx".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let result = runner
         .run_no_limits(vec![MontyObject::Function {
             name: "foo".to_owned(),
@@ -137,14 +150,24 @@ fn callable_export_stable_across_source_mention() {
             docstring: None,
         }]
     };
-    let r1 = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()])
-        .unwrap()
-        .run_no_limits(func_input())
-        .unwrap();
-    let r2 = MontyRun::new("foo = None\nx".to_owned(), "test.py", vec!["x".to_owned()])
-        .unwrap()
-        .run_no_limits(func_input())
-        .unwrap();
+    let r1 = MontyRun::new(
+        "x".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(func_input())
+    .unwrap();
+    let r2 = MontyRun::new(
+        "foo = None\nx".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap()
+    .run_no_limits(func_input())
+    .unwrap();
     assert_eq!(r1, r2);
 }
 
@@ -162,7 +185,7 @@ fn callable_export_stable_across_source_mention() {
 /// unit-input tests above cannot reach.
 #[test]
 fn repl_cross_representation_extfunction_identity() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker);
+    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
 
     // Feed 1: `x = foobar` triggers NameLookup for "foobar"; host returns a
     // `Function` whose `__name__` ("ext_fn") does not appear in feed 1's

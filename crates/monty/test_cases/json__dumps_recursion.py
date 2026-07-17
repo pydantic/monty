@@ -50,4 +50,4 @@ except RecursionError:
 # === Shallow nesting must still serialize cleanly under the same limit ===
 # Confirms the depth guard isn't trigger-happy — shouldn't reject all nesting.
 shallow = [1, [2, [3, [4, [5]]]]]
-assert json.dumps(shallow) == '[1, [2, [3, [4, [5]]]]]', 'shallow nesting must serialize'
+assert json.dumps(shallow) == '[1, [2, [3, [4, [5]]]]]'

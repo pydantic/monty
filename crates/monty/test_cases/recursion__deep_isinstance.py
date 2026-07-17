@@ -10,7 +10,7 @@ for _ in range(10000):
 
 try:
     result = isinstance(1, classinfo)
-    assert result == True, 'shallow enough nesting should still match int'
+    assert result == True
 except RecursionError:
     pass  # acceptable when depth guard triggers
 
@@ -21,6 +21,6 @@ for _ in range(10000):
 
 try:
     result2 = isinstance(1, classinfo2)
-    assert result2 == False, 'int does not match deeply-nested str classinfo'
+    assert result2 == False
 except RecursionError:
     pass  # acceptable when depth guard triggers

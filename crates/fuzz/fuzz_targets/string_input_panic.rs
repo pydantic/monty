@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
-use monty::{LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
+use monty::{CompileOptions, LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
 
 /// Resource limits for fuzzing - restrictive to prevent hangs and memory issues.
 fn fuzz_limits() -> LimitedTracker {
@@ -28,6 +28,7 @@ fuzz_target!(|code: String| {
         code.to_owned(),
         "fuzz.py",
         vec![], // no inputs
+        CompileOptions::default(),
     ) else {
         return; // Parse errors are expected for random input
     };

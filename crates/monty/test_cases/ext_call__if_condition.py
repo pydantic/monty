@@ -9,7 +9,7 @@ def check_positive():
 
 
 result = check_positive()
-assert result == 'positive', 'ext call in if condition'
+assert result == 'positive'
 
 
 def check_with_else():
@@ -20,7 +20,7 @@ def check_with_else():
 
 
 result = check_with_else()
-assert result == 'negative or zero', 'ext call in if condition with else'
+assert result == 'negative or zero'
 
 
 def check_elif():
@@ -34,4 +34,4 @@ def check_elif():
 
 
 result = check_elif()
-assert result == 'medium', 'ext call result used in elif chain'
+assert result == 'medium'

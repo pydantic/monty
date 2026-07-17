@@ -4,4 +4,4 @@
 # String += with external call causes reference counting error
 s = 'hello'
 s += concat_strings(' ', 'world')
-assert s == 'hello world', 'ext call in augmented string concat'
+assert s == 'hello world'

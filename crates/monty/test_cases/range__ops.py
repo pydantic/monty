@@ -1,100 +1,100 @@
 # === range() with one argument (stop) ===
-assert list(range(0)) == [], 'range(0) is empty'
-assert list(range(1)) == [0], 'range(1) is [0]'
-assert list(range(5)) == [0, 1, 2, 3, 4], 'range(5) is [0, 1, 2, 3, 4]'
-assert list(range(-3)) == [], 'range negative stop is empty'
+assert list(range(0)) == []
+assert list(range(1)) == [0]
+assert list(range(5)) == [0, 1, 2, 3, 4]
+assert list(range(-3)) == []
 
 # === range() with two arguments (start, stop) ===
-assert list(range(0, 3)) == [0, 1, 2], 'range(0, 3)'
-assert list(range(1, 5)) == [1, 2, 3, 4], 'range(1, 5)'
-assert list(range(5, 10)) == [5, 6, 7, 8, 9], 'range(5, 10)'
-assert list(range(3, 3)) == [], 'range equal start stop is empty'
-assert list(range(5, 3)) == [], 'range start > stop is empty'
-assert list(range(-5, -2)) == [-5, -4, -3], 'range negative to negative'
-assert list(range(-3, 2)) == [-3, -2, -1, 0, 1], 'range negative to positive'
+assert list(range(0, 3)) == [0, 1, 2]
+assert list(range(1, 5)) == [1, 2, 3, 4]
+assert list(range(5, 10)) == [5, 6, 7, 8, 9]
+assert list(range(3, 3)) == []
+assert list(range(5, 3)) == []
+assert list(range(-5, -2)) == [-5, -4, -3]
+assert list(range(-3, 2)) == [-3, -2, -1, 0, 1]
 
 # === range() with three arguments (start, stop, step) ===
-assert list(range(0, 10, 2)) == [0, 2, 4, 6, 8], 'range step 2'
-assert list(range(1, 10, 3)) == [1, 4, 7], 'range step 3'
-assert list(range(0, 10, 5)) == [0, 5], 'range step 5'
-assert list(range(0, 10, 10)) == [0], 'range step equals diff'
-assert list(range(0, 10, 20)) == [0], 'range step > diff'
+assert list(range(0, 10, 2)) == [0, 2, 4, 6, 8]
+assert list(range(1, 10, 3)) == [1, 4, 7]
+assert list(range(0, 10, 5)) == [0, 5]
+assert list(range(0, 10, 10)) == [0]
+assert list(range(0, 10, 20)) == [0]
 
 # === range() with negative step ===
-assert list(range(10, 0, -1)) == [10, 9, 8, 7, 6, 5, 4, 3, 2, 1], 'range step -1'
-assert list(range(10, 0, -2)) == [10, 8, 6, 4, 2], 'range step -2'
-assert list(range(5, 0, -1)) == [5, 4, 3, 2, 1], 'range 5 to 0 step -1'
-assert list(range(0, 5, -1)) == [], 'range start < stop with negative step is empty'
-assert list(range(-1, -5, -1)) == [-1, -2, -3, -4], 'range negative with negative step'
+assert list(range(10, 0, -1)) == [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+assert list(range(10, 0, -2)) == [10, 8, 6, 4, 2]
+assert list(range(5, 0, -1)) == [5, 4, 3, 2, 1]
+assert list(range(0, 5, -1)) == []
+assert list(range(-1, -5, -1)) == [-1, -2, -3, -4]
 
 # === tuple(range()) conversions ===
-assert tuple(range(3)) == (0, 1, 2), 'tuple(range(3))'
-assert tuple(range(1, 4)) == (1, 2, 3), 'tuple(range(1, 4))'
-assert tuple(range(0, 6, 2)) == (0, 2, 4), 'tuple(range(0, 6, 2))'
+assert tuple(range(3)) == (0, 1, 2)
+assert tuple(range(1, 4)) == (1, 2, 3)
+assert tuple(range(0, 6, 2)) == (0, 2, 4)
 
 # === range in for loops ===
 total = 0
 for i in range(5):
     total = total + i
-assert total == 10, 'for loop with range(5)'
+assert total == 10
 
 total2 = 0
 for i in range(1, 4):
     total2 = total2 + i
-assert total2 == 6, 'for loop with range(1, 4)'
+assert total2 == 6
 
 total3 = 0
 for i in range(0, 10, 2):
     total3 = total3 + i
-assert total3 == 20, 'for loop with range step 2'
+assert total3 == 20
 
 # count down
 countdown = []
 for i in range(3, 0, -1):
     countdown.append(i)
-assert countdown == [3, 2, 1], 'for loop countdown'
+assert countdown == [3, 2, 1]
 
 # === range repr ===
-assert repr(range(5)) == 'range(0, 5)', 'repr range one arg'
-assert repr(range(1, 5)) == 'range(1, 5)', 'repr range two args'
-assert repr(range(1, 5, 2)) == 'range(1, 5, 2)', 'repr range three args'
-assert repr(range(0, 10, 1)) == 'range(0, 10)', 'repr range step 1 omitted'
-assert repr(range(5, 0, -1)) == 'range(5, 0, -1)', 'repr range negative step'
+assert repr(range(5)) == 'range(0, 5)'
+assert repr(range(1, 5)) == 'range(1, 5)'
+assert repr(range(1, 5, 2)) == 'range(1, 5, 2)'
+assert repr(range(0, 10, 1)) == 'range(0, 10)'
+assert repr(range(5, 0, -1)) == 'range(5, 0, -1)'
 
 # === range type ===
-assert type(range(5)) == range, 'type of range'
-assert type(range(1, 5)) == range, 'type of range two args'
-assert type(range(1, 5, 2)) == range, 'type of range three args'
+assert type(range(5)) == range
+assert type(range(1, 5)) == range
+assert type(range(1, 5, 2)) == range
 
 # === range equality ===
-assert range(5) == range(5), 'range equality same'
-assert range(0, 5) == range(5), 'range(0, 5) == range(5)'
-assert range(1, 5) == range(1, 5), 'range equality two args'
-assert range(1, 5, 2) == range(1, 5, 2), 'range equality three args'
-assert range(5) != range(6), 'range inequality'
-assert range(1, 5) != range(2, 5), 'range inequality start differs'
-assert range(1, 5, 1) != range(1, 5, 2), 'range inequality step differs'
+assert range(5) == range(5)
+assert range(0, 5) == range(5)
+assert range(1, 5) == range(1, 5)
+assert range(1, 5, 2) == range(1, 5, 2)
+assert range(5) != range(6)
+assert range(1, 5) != range(2, 5)
+assert range(1, 5, 1) != range(1, 5, 2)
 
 # === range bool (truthiness) ===
-assert bool(range(5)) == True, 'non-empty range is truthy'
-assert bool(range(1, 5)) == True, 'range(1, 5) is truthy'
-assert bool(range(0)) == False, 'empty range(0) is falsy'
-assert bool(range(5, 5)) == False, 'empty range equal start stop is falsy'
-assert bool(range(5, 0)) == False, 'empty range start > stop is falsy'
-assert bool(range(5, 0, -1)) == True, 'range countdown is truthy'
-assert bool(range(0, 5, -1)) == False, 'empty range wrong direction is falsy'
+assert bool(range(5)) == True
+assert bool(range(1, 5)) == True
+assert bool(range(0)) == False
+assert bool(range(5, 5)) == False
+assert bool(range(5, 0)) == False
+assert bool(range(5, 0, -1)) == True
+assert bool(range(0, 5, -1)) == False
 
 # === range isinstance ===
-assert isinstance(range(5), range), 'isinstance range'
+assert isinstance(range(5), range)
 
 # === len(range()) ===
-assert len(range(5)) == 5, 'len(range(5))'
-assert len(range(0)) == 0, 'len(range(0))'
-assert len(range(1, 5)) == 4, 'len(range(1, 5))'
-assert len(range(0, 10, 2)) == 5, 'len(range step 2)'
-assert len(range(10, 0, -1)) == 10, 'len(range negative step)'
-assert len(range(0, 10, 3)) == 4, 'len(range step 3)'
-assert len(range(-(2**62), 2**62 - 1)) == 2**63 - 1, 'len(range large)'
+assert len(range(5)) == 5
+assert len(range(0)) == 0
+assert len(range(1, 5)) == 4
+assert len(range(0, 10, 2)) == 5
+assert len(range(10, 0, -1)) == 10
+assert len(range(0, 10, 3)) == 4
+assert len(range(-(2**62), 2**62 - 1)) == 2**63 - 1
 try:
     assert len(range(-(2**62), (2**62))) == 2**63
     assert False, 'len(range with bounds at int64 limits should raise OverflowError'
@@ -102,175 +102,175 @@ except OverflowError as e:
     assert str(e) == 'Python int too large to convert to C ssize_t', str(e)
 
 # === range equality by sequence (not parameters) ===
-assert range(0, 3, 2) == range(0, 4, 2), 'ranges with same sequence [0,2] are equal'
-assert range(0, 5, 2) == range(0, 6, 2), 'range(0,5,2) == range(0,6,2) both [0,2,4]'
-assert range(5, 0, -2) == range(5, -1, -2), 'negative step same sequence'
-assert range(0) == range(0), 'empty ranges equal'
-assert range(5, 5) == range(10, 10), 'different empty ranges equal'
-assert range(0, 0) == range(5, 5), 'empty ranges with different params equal'
+assert range(0, 3, 2) == range(0, 4, 2)
+assert range(0, 5, 2) == range(0, 6, 2)
+assert range(5, 0, -2) == range(5, -1, -2)
+assert range(0) == range(0)
+assert range(5, 5) == range(10, 10)
+assert range(0, 0) == range(5, 5)
 
 # === Range indexing (getitem) ===
 # Basic indexing for range(stop)
 r = range(5)
-assert r[0] == 0, 'range(5)[0]'
-assert r[1] == 1, 'range(5)[1]'
-assert r[4] == 4, 'range(5)[4]'
+assert r[0] == 0
+assert r[1] == 1
+assert r[4] == 4
 
 # Negative indexing
-assert r[-1] == 4, 'range(5)[-1]'
-assert r[-2] == 3, 'range(5)[-2]'
-assert r[-5] == 0, 'range(5)[-5]'
+assert r[-1] == 4
+assert r[-2] == 3
+assert r[-5] == 0
 
 # Range with start
 r = range(10, 15)
-assert r[0] == 10, 'range(10, 15)[0]'
-assert r[1] == 11, 'range(10, 15)[1]'
-assert r[4] == 14, 'range(10, 15)[4]'
-assert r[-1] == 14, 'range(10, 15)[-1]'
-assert r[-5] == 10, 'range(10, 15)[-5]'
+assert r[0] == 10
+assert r[1] == 11
+assert r[4] == 14
+assert r[-1] == 14
+assert r[-5] == 10
 
 # Range with step
 r = range(0, 10, 2)
-assert r[0] == 0, 'range(0, 10, 2)[0]'
-assert r[1] == 2, 'range(0, 10, 2)[1]'
-assert r[2] == 4, 'range(0, 10, 2)[2]'
-assert r[3] == 6, 'range(0, 10, 2)[3]'
-assert r[4] == 8, 'range(0, 10, 2)[4]'
-assert r[-1] == 8, 'range(0, 10, 2)[-1]'
-assert r[-2] == 6, 'range(0, 10, 2)[-2]'
+assert r[0] == 0
+assert r[1] == 2
+assert r[2] == 4
+assert r[3] == 6
+assert r[4] == 8
+assert r[-1] == 8
+assert r[-2] == 6
 
 # Range with step 3
 r = range(1, 10, 3)
-assert r[0] == 1, 'range(1, 10, 3)[0]'
-assert r[1] == 4, 'range(1, 10, 3)[1]'
-assert r[2] == 7, 'range(1, 10, 3)[2]'
-assert r[-1] == 7, 'range(1, 10, 3)[-1]'
+assert r[0] == 1
+assert r[1] == 4
+assert r[2] == 7
+assert r[-1] == 7
 
 # Range with negative step
 r = range(10, 0, -1)
-assert r[0] == 10, 'range(10, 0, -1)[0]'
-assert r[1] == 9, 'range(10, 0, -1)[1]'
-assert r[9] == 1, 'range(10, 0, -1)[9]'
-assert r[-1] == 1, 'range(10, 0, -1)[-1]'
-assert r[-10] == 10, 'range(10, 0, -1)[-10]'
+assert r[0] == 10
+assert r[1] == 9
+assert r[9] == 1
+assert r[-1] == 1
+assert r[-10] == 10
 
 # Range with negative step and larger step
 r = range(10, 0, -2)
-assert r[0] == 10, 'range(10, 0, -2)[0]'
-assert r[1] == 8, 'range(10, 0, -2)[1]'
-assert r[2] == 6, 'range(10, 0, -2)[2]'
-assert r[3] == 4, 'range(10, 0, -2)[3]'
-assert r[4] == 2, 'range(10, 0, -2)[4]'
-assert r[-1] == 2, 'range(10, 0, -2)[-1]'
+assert r[0] == 10
+assert r[1] == 8
+assert r[2] == 6
+assert r[3] == 4
+assert r[4] == 2
+assert r[-1] == 2
 
 # Range starting from negative
 r = range(-5, 0)
-assert r[0] == -5, 'range(-5, 0)[0]'
-assert r[2] == -3, 'range(-5, 0)[2]'
-assert r[-1] == -1, 'range(-5, 0)[-1]'
+assert r[0] == -5
+assert r[2] == -3
+assert r[-1] == -1
 
 # Single element range
 r = range(42, 43)
-assert r[0] == 42, 'single element range[0]'
-assert r[-1] == 42, 'single element range[-1]'
+assert r[0] == 42
+assert r[-1] == 42
 
 # Variable index
 r = range(100)
 i = 50
-assert r[i] == 50, 'range getitem with variable index'
+assert r[i] == 50
 
 # Bool indices (True=1, False=0)
 r = range(10, 15)
-assert r[False] == 10, 'range getitem with False'
-assert r[True] == 11, 'range getitem with True'
+assert r[False] == 10
+assert r[True] == 11
 
 # === Range containment ('in' operator) ===
 # Basic containment
-assert 0 in range(5), '0 in range(5)'
-assert 4 in range(5), '4 in range(5)'
-assert 5 not in range(5), '5 not in range(5)'
-assert -1 not in range(5), '-1 not in range(5)'
+assert 0 in range(5)
+assert 4 in range(5)
+assert 5 not in range(5)
+assert -1 not in range(5)
 
 # Range with start
-assert 10 in range(10, 15), '10 in range(10, 15)'
-assert 14 in range(10, 15), '14 in range(10, 15)'
-assert 15 not in range(10, 15), '15 not in range(10, 15)'
-assert 9 not in range(10, 15), '9 not in range(10, 15)'
+assert 10 in range(10, 15)
+assert 14 in range(10, 15)
+assert 15 not in range(10, 15)
+assert 9 not in range(10, 15)
 
 # Range with step
-assert 0 in range(0, 10, 2), '0 in range(0, 10, 2)'
-assert 2 in range(0, 10, 2), '2 in range(0, 10, 2)'
-assert 8 in range(0, 10, 2), '8 in range(0, 10, 2)'
-assert 3 not in range(0, 10, 2), '3 not in range(0, 10, 2)'
-assert 10 not in range(0, 10, 2), '10 not in range(0, 10, 2)'
+assert 0 in range(0, 10, 2)
+assert 2 in range(0, 10, 2)
+assert 8 in range(0, 10, 2)
+assert 3 not in range(0, 10, 2)
+assert 10 not in range(0, 10, 2)
 
 # Range with negative step
-assert 10 in range(10, 0, -1), '10 in countdown'
-assert 1 in range(10, 0, -1), '1 in countdown'
-assert 0 not in range(10, 0, -1), '0 not in countdown'
-assert 11 not in range(10, 0, -1), '11 not in countdown'
+assert 10 in range(10, 0, -1)
+assert 1 in range(10, 0, -1)
+assert 0 not in range(10, 0, -1)
+assert 11 not in range(10, 0, -1)
 
 # Negative step with step > 1
-assert 10 in range(10, 0, -2), '10 in range(10, 0, -2)'
-assert 8 in range(10, 0, -2), '8 in range(10, 0, -2)'
-assert 9 not in range(10, 0, -2), '9 not in range(10, 0, -2)'
+assert 10 in range(10, 0, -2)
+assert 8 in range(10, 0, -2)
+assert 9 not in range(10, 0, -2)
 
 # Negative ranges
-assert -3 in range(-5, 0), '-3 in range(-5, 0)'
-assert 0 not in range(-5, 0), '0 not in range(-5, 0)'
+assert -3 in range(-5, 0)
+assert 0 not in range(-5, 0)
 
 # Empty ranges
-assert 5 not in range(0), '5 not in empty range'
-assert 0 not in range(5, 5), '0 not in empty equal range'
+assert 5 not in range(0)
+assert 0 not in range(5, 5)
 
 # Non-int types return False (no TypeError)
-assert 'a' not in range(5), 'string not in range'
+assert 'a' not in range(5)
 
 # Float containment (floats equal to integers are contained)
-assert 3.0 in range(5), '3.0 in range(5)'
-assert 0.0 in range(5), '0.0 in range(5)'
-assert 4.0 in range(5), '4.0 in range(5)'
-assert 3.5 not in range(5), '3.5 not in range(5)'
-assert 5.0 not in range(5), '5.0 not in range(5)'
-assert 2.0 in range(0, 10, 2), '2.0 in even range'
-assert 3.0 not in range(0, 10, 2), '3.0 not in even range'
-assert -1.0 not in range(5), '-1.0 not in range(5)'
+assert 3.0 in range(5)
+assert 0.0 in range(5)
+assert 4.0 in range(5)
+assert 3.5 not in range(5)
+assert 5.0 not in range(5)
+assert 2.0 in range(0, 10, 2)
+assert 3.0 not in range(0, 10, 2)
+assert -1.0 not in range(5)
 
 # Bool as container element (True=1, False=0 for comparison)
-assert True in range(5), 'True in range(5)'
-assert False in range(5), 'False in range(5)'
-assert True not in range(0), 'True not in empty range'
+assert True in range(5)
+assert False in range(5)
+assert True not in range(0)
 
 # Large ranges which can hit monty's range i64 limits should not panic
-assert range(-(2**63), 2**63 - 1)[0] == -(2**63), 'range with len exceeding i64::MAX get first item'
-assert range(-(2**63), 2**63 - 1, 2**63 - 1)[2] == 2**63 - 2, 'range with step exceeding i64::MAX get last item'
+assert range(-(2**63), 2**63 - 1)[0] == -(2**63)
+assert range(-(2**63), 2**63 - 1, 2**63 - 1)[2] == 2**63 - 2
 
 # === Check that containment doesn't overflow i64 calculation ===
-assert 100 in range(-(2**63), 2**63 - 1, 3), '100 in range across full i64 span step 3'
-assert 101 not in range(-(2**63), 2**63 - 1, 3), '101 not in range across full i64 span step 3'
-assert -(2**63) in range(-(2**63), 2**63 - 1, 1), 'i64::MIN in range(i64::MIN, i64::MAX)'
-assert (2**63 - 2) in range(-(2**63), 2**63 - 1, 1), 'last element in range(i64::MIN, i64::MAX)'
-assert (2**63 - 1) not in range(-(2**63), 2**63 - 1, 1), 'stop excluded from range(i64::MIN, i64::MAX)'
-assert -1 in range(2**63 - 1, -(2**63), -1), '-1 in backward span'
-assert (2**63 - 1) in range(2**63 - 1, -(2**63), -1), 'start in backward span'
-assert -(2**63) not in range(2**63 - 1, -(2**63), -1), 'stop excluded from backward span'
+assert 100 in range(-(2**63), 2**63 - 1, 3)
+assert 101 not in range(-(2**63), 2**63 - 1, 3)
+assert -(2**63) in range(-(2**63), 2**63 - 1, 1)
+assert (2**63 - 2) in range(-(2**63), 2**63 - 1, 1)
+assert (2**63 - 1) not in range(-(2**63), 2**63 - 1, 1)
+assert -1 in range(2**63 - 1, -(2**63), -1)
+assert (2**63 - 1) in range(2**63 - 1, -(2**63), -1)
+assert -(2**63) not in range(2**63 - 1, -(2**63), -1)
 
 # === Equality: ranges compare by the sequence they produce ===
-assert range(0, 3) == range(0, 3), 'identical ranges equal'
-assert range(0, 3) != range(0, 4), 'different length ranges not equal'
+assert range(0, 3) == range(0, 3)
+assert range(0, 3) != range(0, 4)
 # Empty ranges are equal regardless of start/stop/step
-assert range(0, 0) == range(5, 5), 'empty ranges equal regardless of bounds'
-assert range(0, 0, 1) == range(10, 5, 3), 'empty ranges equal regardless of step'
+assert range(0, 0) == range(5, 5)
+assert range(0, 0, 1) == range(10, 5, 3)
 # Single-element ranges are equal when their one element matches, regardless of step
-assert range(0, 1, 1) == range(0, 2, 2), 'singleton ranges equal regardless of step'
-assert range(5, 6) == range(5, 7, 100), 'singleton ranges equal with different step'
-assert range(0, 1) != range(1, 2), 'singleton ranges with different element not equal'
+assert range(0, 1, 1) == range(0, 2, 2)
+assert range(5, 6) == range(5, 7, 100)
+assert range(0, 1) != range(1, 2)
 # Multi-element ranges must match start and step (stop may differ if sequence matches)
-assert range(0, 4, 2) == range(0, 3, 2), 'equal multi-element ranges (same sequence [0, 2])'
-assert range(0, 4, 2) != range(0, 4, 1), 'different step multi-element ranges not equal'
+assert range(0, 4, 2) == range(0, 3, 2)
+assert range(0, 4, 2) != range(0, 4, 1)
 
 # === Hash consistency: equal ranges must hash equally (dict-key invariant) ===
-assert hash(range(0, 1, 1)) == hash(range(0, 2, 2)), 'equal singleton ranges hash the same'
-assert hash(range(0, 0)) == hash(range(5, 5)), 'equal empty ranges hash the same'
-assert hash(range(0, 4, 2)) == hash(range(0, 3, 2)), 'equal multi-element ranges hash the same'
-assert {range(0, 1, 1): 'a'}[range(0, 2, 2)] == 'a', 'equal ranges interchangeable as dict keys'
+assert hash(range(0, 1, 1)) == hash(range(0, 2, 2))
+assert hash(range(0, 0)) == hash(range(5, 5))
+assert hash(range(0, 4, 2)) == hash(range(0, 3, 2))
+assert {range(0, 1, 1): 'a'}[range(0, 2, 2)] == 'a'

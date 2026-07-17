@@ -130,6 +130,8 @@ Cargo.lock
 /npm
 
 # napi generated js files
+/index.js
+/index.d.ts
 browser.js
 native-addon.js
 native-addon.generated.d.ts

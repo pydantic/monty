@@ -5,7 +5,7 @@
 
 use std::{net::TcpListener, thread, time::Duration};
 
-use monty::MontyObject;
+use monty::{AssertMessageAnnotations, MontyObject};
 use monty_pool::{Pool, PoolConfig, ReplConfig, TurnEvent};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
 use tungstenite::Message;
@@ -51,6 +51,7 @@ fn drives_a_session_over_websocket() {
             limits: None,
             type_check: false,
             type_check_stubs: None,
+            assert_message_annotations: AssertMessageAnnotations::default(),
         })
         .expect("checkout");
 

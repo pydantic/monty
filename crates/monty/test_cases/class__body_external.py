@@ -15,6 +15,6 @@ class Config:
         return self.limit
 
 
-assert Config.limit == 42, 'class-body external call result stored as a class var'
-assert Config.doubled == 84, 'later class var derives from the external-call result'
-assert Config().describe() == 42, 'instance reads the class var set via the external call'
+assert Config.limit == 42
+assert Config.doubled == 84
+assert Config().describe() == 42

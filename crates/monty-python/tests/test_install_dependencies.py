@@ -1,9 +1,8 @@
 """`session.install_dependencies` tests.
 
 These run against the default `monty` *sandbox* worker, which has no host
-interpreter to install for and rejects the request. A real install end-to-end is
-covered by the `monty-cpython` Rust tests (an embedded-CPython worker). Here we
-assert the rejection, the empty-list no-op, and that the session survives.
+interpreter to install for and rejects the request. Here we assert the
+rejection, the empty-list no-op, and that the session survives.
 """
 
 from __future__ import annotations

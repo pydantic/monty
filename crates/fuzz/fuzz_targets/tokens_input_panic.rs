@@ -12,7 +12,7 @@ use std::{
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use monty::{LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
+use monty::{CompileOptions, LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
 
 /// A token representing a piece of Python syntax.
 #[derive(Debug, Clone, Arbitrary)]
@@ -543,7 +543,7 @@ fuzz_target!(|tokens: Tokens| {
     let code = tokens.to_code();
 
     // Try to parse the code
-    let Ok(runner) = MontyRun::new(code, "fuzz.py", vec![]) else {
+    let Ok(runner) = MontyRun::new(code, "fuzz.py", vec![], CompileOptions::default()) else {
         return; // Parse errors are expected
     };
 

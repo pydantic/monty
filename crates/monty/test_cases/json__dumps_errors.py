@@ -5,60 +5,58 @@ try:
     json.dumps(float('inf'), allow_nan=False)
     assert False, 'should raise ValueError for inf'
 except ValueError as exc:
-    assert str(exc) == 'Out of range float values are not JSON compliant: inf', 'inf error message'
+    assert str(exc) == 'Out of range float values are not JSON compliant: inf'
 
 try:
     json.dumps(float('-inf'), allow_nan=False)
     assert False, 'should raise ValueError for -inf'
 except ValueError as exc:
-    assert str(exc) == 'Out of range float values are not JSON compliant: -inf', '-inf error message'
+    assert str(exc) == 'Out of range float values are not JSON compliant: -inf'
 
 # === not JSON serializable errors ===
 try:
     json.dumps({1})
     assert False, 'set should not be serializable'
 except TypeError as exc:
-    assert str(exc) == 'Object of type set is not JSON serializable', 'set error message'
+    assert str(exc) == 'Object of type set is not JSON serializable'
 
 # === separators errors ===
 try:
     json.dumps(1, separators=[',', ':', 'x'])
     assert False, 'list of 3 separators should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'too many values to unpack (expected 2, got 3)', 'sep list of 3 error message'
+    assert str(exc) == 'too many values to unpack (expected 2, got 3)'
 
 try:
     json.dumps(1, separators=[','])
     assert False, 'list of 1 separator should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'not enough values to unpack (expected 2, got 1)', 'sep list of 1 error message'
+    assert str(exc) == 'not enough values to unpack (expected 2, got 1)'
 
 try:
     json.dumps(1, separators=42)
     assert False, 'int separators should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == 'cannot unpack non-iterable int object', 'int separators error message'
+    assert str(exc) == 'cannot unpack non-iterable int object'
 
 try:
     json.dumps(1, separators=[1, ':'])
     assert False, 'non-string first separator should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == 'make_encoder() argument 6 must be str, not int', 'non-string item_separator error'
+    assert str(exc) == 'make_encoder() argument 6 must be str, not int'
 
 try:
     json.dumps(1, separators=[',', 2])
     assert False, 'non-string second separator should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == 'make_encoder() argument 5 must be str, not int', 'non-string key_separator error'
+    assert str(exc) == 'make_encoder() argument 5 must be str, not int'
 
 # === unexpected keyword argument ===
 try:
     json.dumps(None, foobar_not_static=True)
     assert False, 'unexpected kwarg should raise TypeError'
 except TypeError as exc:
-    assert str(exc) == "JSONEncoder.__init__() got an unexpected keyword argument 'foobar_not_static'", (
-        'unexpected kwarg error message'
-    )
+    assert str(exc) == "JSONEncoder.__init__() got an unexpected keyword argument 'foobar_not_static'"
 
 try:
     json.dumps(1, 2)
@@ -83,7 +81,7 @@ try:
     json.dumps(circular_list)
     assert False, 'circular list should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'Circular reference detected', 'circular list error'
+    assert str(exc) == 'Circular reference detected'
 
 circular_dict = {}
 circular_dict['self'] = circular_dict
@@ -91,7 +89,7 @@ try:
     json.dumps(circular_dict)
     assert False, 'circular dict should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'Circular reference detected', 'circular dict error'
+    assert str(exc) == 'Circular reference detected'
 
 # === nested circular reference ===
 outer = []
@@ -101,7 +99,7 @@ try:
     json.dumps(outer)
     assert False, 'nested circular should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'Circular reference detected', 'nested circular error'
+    assert str(exc) == 'Circular reference detected'
 
 # === circular reference in dict value ===
 d = {}
@@ -110,23 +108,23 @@ try:
     json.dumps(d)
     assert False, 'circular dict in list should raise ValueError'
 except ValueError as exc:
-    assert str(exc) == 'Circular reference detected', 'circular dict-in-list error'
+    assert str(exc) == 'Circular reference detected'
 
 # === allow_nan=False with float dict keys ===
 try:
     json.dumps({float('nan'): 1}, allow_nan=False)
     assert False, 'should raise ValueError for NaN key'
 except ValueError as exc:
-    assert str(exc) == 'Out of range float values are not JSON compliant: nan', 'NaN key error message'
+    assert str(exc) == 'Out of range float values are not JSON compliant: nan'
 
 try:
     json.dumps({float('inf'): 1}, allow_nan=False)
     assert False, 'should raise ValueError for inf key'
 except ValueError as exc:
-    assert str(exc) == 'Out of range float values are not JSON compliant: inf', 'inf key error message'
+    assert str(exc) == 'Out of range float values are not JSON compliant: inf'
 
 try:
     json.dumps({float('-inf'): 1}, allow_nan=False)
     assert False, 'should raise ValueError for -inf key'
 except ValueError as exc:
-    assert str(exc) == 'Out of range float values are not JSON compliant: -inf', '-inf key error message'
+    assert str(exc) == 'Out of range float values are not JSON compliant: -inf'

@@ -5,13 +5,13 @@
 
 use insta::assert_snapshot;
 use monty::{
-    ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
+    CompileOptions, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter,
+    ReplContinuationMode, ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
 };
 
 #[test]
 fn repl_executes_only_new_code() {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
     assert_eq!(init_output, MontyObject::None);
 
@@ -29,7 +29,7 @@ fn feed_run_print(repl: &mut MontyRepl<impl ResourceTracker>, code: &str) -> Res
 }
 
 fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
     let output = feed_run_print(&mut repl, code).unwrap();
     (repl, output)
 }
@@ -404,7 +404,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         frozen: true,
     };
 
-    let repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
 
     // Calling point.sum() should yield a FunctionCall with method_call=true.
     // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
@@ -456,7 +456,7 @@ fn repl_start_new_external_function_in_later_block() {
 
 /// Helper to create a REPL session pre-seeded with code for function calling.
 fn repl_with_code(code: &str) -> MontyRepl<NoLimitTracker> {
-    let mut repl = MontyRepl::new("session_test.py", NoLimitTracker);
+    let mut repl = MontyRepl::new("session_test.py", NoLimitTracker, CompileOptions::default());
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
     repl
 }

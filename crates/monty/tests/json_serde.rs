@@ -10,11 +10,11 @@
 //! structural values, not strings.
 
 use insta::assert_snapshot;
-use monty::{ExcType, MontyObject, MontyRun};
+use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap()
 }
 
@@ -160,6 +160,7 @@ fn json_roundtrip() {
         "{'items': [1, 'two', None], 'flag': True}".to_owned(),
         "test.py",
         vec![],
+        CompileOptions::default(),
     )
     .unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
@@ -182,7 +183,13 @@ fn json_roundtrip_empty() {
 #[test]
 fn cycle_equality_same_id() {
     // Multiple references to the same cyclic object should produce equal Cycle values
-    let ex = MontyRun::new("a = []; a.append(a); [a, a]".to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(
+        "a = []; a.append(a); [a, a]".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();
 
     if let MontyObject::List(outer) = &result {
@@ -208,6 +215,7 @@ fn cycle_equality_different_ids() {
         "a = []; a.append(a); b = []; b.append(b); [a, b]".to_owned(),
         "test.py",
         vec![],
+        CompileOptions::default(),
     )
     .unwrap();
     let result = ex.run_no_limits(vec![]).unwrap();

@@ -1,8 +1,8 @@
 error: lifetime may not live long enough
    --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:157:36
     |
-157 |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow()),
-    |          ------                  - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
+157 |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
+    |          ------                  - ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ returning this value requires that `'1` must outlive `'2`
     |          |                       |
     |          |                       return type of closure is VM<'2, T>
     |          has type `&'1 mut heap::HeapReader<'1, T>`
@@ -19,7 +19,7 @@ error: lifetime may not live long enough
 154 | /     HeapReader::with(
 155 | |         heap,
 156 | |         &mut (interns, crate::io::PrintWriter::Disabled),
-157 | |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow()),
+157 | |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
 158 | |     )
     | |_____^ returning this value requires that `'1` must outlive `'static`
     |

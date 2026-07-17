@@ -15,7 +15,7 @@ def outer(a):
     return mid()
 
 
-assert (await outer(7)) == 21, 'async two-level read'  # pyright: ignore
+assert (await outer(7)) == 21  # pyright: ignore
 
 
 # === Async coroutine writes a grandparent local via nonlocal ===
@@ -34,8 +34,8 @@ def counter():
 
 
 c = counter()
-assert (await c()) == 1, 'async nonlocal write, first call'  # pyright: ignore
-assert (await c()) == 2, 'async nonlocal write, second call'  # pyright: ignore
+assert (await c()) == 1  # pyright: ignore
+assert (await c()) == 2  # pyright: ignore
 
 
 # === Each async closure instance captures its own cell ===
@@ -49,5 +49,5 @@ def make(n):
     return mid()
 
 
-assert (await make(3)(10)) == 13, 'first async closure captures n=3'  # pyright: ignore
-assert (await make(5)(10)) == 15, 'second async closure captures n=5'  # pyright: ignore
+assert (await make(3)(10)) == 13  # pyright: ignore
+assert (await make(5)(10)) == 15  # pyright: ignore

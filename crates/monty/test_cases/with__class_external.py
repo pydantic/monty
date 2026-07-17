@@ -24,9 +24,9 @@ class Resource:
 
 r = Resource(7)
 with r as v:
-    assert v == 107, '__enter__ external call resumed with the right value'
-    assert r.value == 107, 'instance state survives the suspension'
-assert r.closed == 'closed:None', '__exit__ external call ran on the normal path'
+    assert v == 107
+    assert r.value == 107
+assert r.closed == 'closed:None'
 
 # Exception path: __exit__ still suspends and sees the exception type.
 r2 = Resource(1)
@@ -36,8 +36,8 @@ try:
         raise ValueError('boom')
 except ValueError as e:
     caught = str(e)
-assert caught == 'boom', 'exception propagates after a suspending __exit__'
-assert r2.closed == "closed:<class 'ValueError'>", '__exit__ suspended on the exception path too'
+assert caught == 'boom'
+assert r2.closed == "closed:<class 'ValueError'>"
 
 
 # A suspending __exit__ that swallows the exception.
@@ -53,7 +53,7 @@ class Swallow:
 s = Swallow()
 with s:
     raise ValueError('to-swallow')
-assert s.note == 42, '__exit__ resumed before deciding to suppress'
+assert s.note == 42
 
 
 # Host name lookup (not a call) inside the dunders: resolving an unknown
@@ -71,5 +71,5 @@ class NameLookupCm:
 
 n = NameLookupCm()
 with n as v:
-    assert v == 43, '__enter__ resolved a host name via NameLookup'
-assert n.closed_with == 'hello', '__exit__ resolved a host name via NameLookup'
+    assert v == 43
+assert n.closed_with == 'hello'

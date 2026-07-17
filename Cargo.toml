@@ -7,7 +7,6 @@ members = [
     "crates/monty-pool",
     "crates/monty-wasm-runtime",
     "crates/monty-python",
-    "crates/monty-cpython",
     "crates/monty-js",
     "crates/monty-datatest",
     "crates/monty-bench",
@@ -111,10 +110,10 @@ sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# Blocking WebSocket client with rustls for `wss://`, shared by the pool's
-# remote transport (monty-pool) and the relay child (monty-cpython).
+# Blocking WebSocket client with rustls for `wss://`, used by the pool's
+# remote transport (monty-pool).
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
-# Unique, exclusively-created temp dirs (monty-cpython install dirs; pool tests).
+# Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a

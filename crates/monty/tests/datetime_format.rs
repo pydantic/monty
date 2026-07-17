@@ -8,11 +8,11 @@
 //! test_case would fail on a macOS CI runner. They live here instead. See
 //! limitations/datetime.md.
 
-use monty::{MontyObject, MontyRun};
+use monty::{CompileOptions, MontyObject, MontyRun};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let obj: MontyObject = ex.run_no_limits(vec![]).unwrap();
     (&obj).try_into().unwrap()
 }
@@ -21,7 +21,7 @@ fn run_str(code: &str) -> String {
 /// `unwrap_err()` would itself panic if the snippet panicked the interpreter,
 /// so reaching the assert proves "no host panic".
 fn run_err(code: &str) -> String {
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     ex.run_no_limits(vec![]).unwrap_err().to_string()
 }
 

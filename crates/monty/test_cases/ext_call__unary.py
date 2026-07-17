@@ -3,11 +3,11 @@
 
 # Negation of external call result
 result = -add_ints(3, 4)
-assert result == -7, 'negation of ext call'
+assert result == -7
 
 # Not of external call
 result = not return_value(False)
-assert result == True, 'not of ext call returning False'
+assert result == True
 
 result = not return_value(True)
-assert result == False, 'not of ext call returning True'
+assert result == False

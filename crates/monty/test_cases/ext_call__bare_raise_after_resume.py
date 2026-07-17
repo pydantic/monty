@@ -15,7 +15,7 @@ try:
 except ValueError as outer_e:
     caught_reraised = repr(outer_e) == "ValueError('original error')"
 
-assert caught_reraised, 'bare raise after external call should re-raise original exception'
+assert caught_reraised
 
 # === Nested handler bare raise after resumption ===
 outer_nested_reraise = False
@@ -31,4 +31,4 @@ try:
 except ValueError as reraised:
     outer_nested_reraise = repr(reraised) == "ValueError('outer error')"
 
-assert outer_nested_reraise, 'bare raise in outer handler should re-raise original exception after nested resumption'
+assert outer_nested_reraise

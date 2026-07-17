@@ -126,8 +126,8 @@ except ValueError as exc:
     assert str(exc) == 'Format specifier missing precision', str(exc)
 
 # A `.` followed by a grouping option is valid (not missing precision).
-assert f'{1.5:._f}' == '1.500_000', 'dot then grouping is valid'
-assert f'{1.5:.,f}' == '1.500,000', 'dot then comma grouping is valid'
+assert f'{1.5:._f}' == '1.500_000'
+assert f'{1.5:.,f}' == '1.500,000'
 
 # === Grouping conflicts with an unknown trailing char ===
 # A grouping option next to an unrecognised char reports the grouping conflict

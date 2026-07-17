@@ -323,6 +323,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,
     ) -> MontySession:
         """
@@ -338,6 +339,12 @@ class Monty:
                 successfully executed snippet is appended to the accumulated
                 context used for type-checking subsequent snippets.
             type_check_stubs: Stub declarations made available to type checking.
+            assert_message_annotations: Give failed `assert` statements
+                pytest-style introspected messages, e.g.
+                `AssertionError: assert 2 == 5` — a deliberate divergence from
+                CPython's empty `AssertionError`. On by default; set to `False`
+                to restore CPython's behavior, or to an int >= 1 to customize
+                the per-operand repr truncation length (default 120 bytes).
             dataclass_registry: Dataclass types to register for proper
                 isinstance() support on output.
         """
@@ -523,7 +530,7 @@ class MontySession:
         importable by subsequent `feed_run` calls. Session-scoped and
         repeatable; an empty list is a no-op.
 
-        Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+        Only supported by an embedded-CPython worker.
         Against the pure-Monty sandbox worker, or on a `uv` install failure
         (the error carries uv's stderr), raises `MontyRuntimeError`; the
         session stays usable. Bounded by the pool's `request_timeout`, so raise
@@ -582,6 +589,7 @@ class AsyncMonty:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,
     ) -> AsyncMontySession:
         """
@@ -597,9 +605,8 @@ class AsyncMontyWebsocket:
     """
     Async context manager owning a pool of remote `monty` workers reached over a
     WebSocket. The dialed peer is the server side — a relay that pairs this
-    connection with a child (such as `monty-cpython websocket`, which dials the
-    relay from the other end), or any server that accepts the connection and
-    bridges to a worker.
+    connection with a child dialing in from the other end, or any server that
+    accepts the connection and bridges to a worker.
 
     Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
     dials the configured URL. There is no sync counterpart — remote turns are
@@ -654,6 +661,7 @@ class AsyncMontyWebsocket:
         limits: ResourceLimits | None = None,
         type_check: bool = False,
         type_check_stubs: str | None = None,
+        assert_message_annotations: bool | int = ...,
         dataclass_registry: list[type] | None = None,
     ) -> AsyncMontySession:
         """

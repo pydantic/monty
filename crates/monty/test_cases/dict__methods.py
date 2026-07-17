@@ -1,139 +1,139 @@
 # === dict.clear() ===
 d = {'a': 1, 'b': 2}
 d.clear()
-assert d == {}, 'clear empties the dict'
+assert d == {}
 
 d = {}
 d.clear()
-assert d == {}, 'clear on empty dict is no-op'
+assert d == {}
 
 # === dict.copy() ===
 d = {'a': 1, 'b': 2}
 copy = d.copy()
-assert copy == {'a': 1, 'b': 2}, 'copy creates equal dict'
-assert copy is not d, 'copy creates new dict object'
+assert copy == {'a': 1, 'b': 2}
+assert copy is not d
 d['c'] = 3
-assert 'c' not in copy, 'copy is independent'
+assert 'c' not in copy
 
 d = {}
 copy = d.copy()
-assert copy == {}, 'copy empty dict'
+assert copy == {}
 
 # === dict.update() ===
 d = {'a': 1}
 d.update({'b': 2})
-assert d == {'a': 1, 'b': 2}, 'update with dict'
+assert d == {'a': 1, 'b': 2}
 
 d = {'a': 1}
 d.update({'a': 10})
-assert d == {'a': 10}, 'update overwrites existing key'
+assert d == {'a': 10}
 
 d = {'a': 1}
 d.update()
-assert d == {'a': 1}, 'update with no args is no-op'
+assert d == {'a': 1}
 
 d = {}
 d.update([('a', 1), ('b', 2)])
-assert d == {'a': 1, 'b': 2}, 'update with list of tuples'
+assert d == {'a': 1, 'b': 2}
 
 # === dict.setdefault() ===
 d = {'a': 1}
 result = d.setdefault('a', 10)
-assert result == 1, 'setdefault returns existing value'
-assert d == {'a': 1}, 'setdefault does not overwrite'
+assert result == 1
+assert d == {'a': 1}
 
 d = {'a': 1}
 result = d.setdefault('b', 2)
-assert result == 2, 'setdefault returns default for new key'
-assert d == {'a': 1, 'b': 2}, 'setdefault inserts new key'
+assert result == 2
+assert d == {'a': 1, 'b': 2}
 
 d = {'a': 1}
 result = d.setdefault('b')
-assert result is None, 'setdefault default is None'
-assert d == {'a': 1, 'b': None}, 'setdefault inserts None'
+assert result is None
+assert d == {'a': 1, 'b': None}
 
 # === dict.popitem() ===
 d = {'a': 1, 'b': 2}
 item = d.popitem()
-assert item == ('b', 2), 'popitem returns last inserted item'
-assert d == {'a': 1}, 'popitem removes item'
+assert item == ('b', 2)
+assert d == {'a': 1}
 
 d = {'x': 10}
 item = d.popitem()
-assert item == ('x', 10), 'popitem on single-item dict'
-assert d == {}, 'dict is now empty'
+assert item == ('x', 10)
+assert d == {}
 
 # === dict.fromkeys() ===
 d = dict.fromkeys(['a', 'b', 'c'])
-assert d == {'a': None, 'b': None, 'c': None}, 'fromkeys with list, default None'
+assert d == {'a': None, 'b': None, 'c': None}
 
 d = dict.fromkeys(['a', 'b'], 0)
-assert d == {'a': 0, 'b': 0}, 'fromkeys with default value'
+assert d == {'a': 0, 'b': 0}
 
 d = dict.fromkeys([])
-assert d == {}, 'fromkeys with empty iterable'
+assert d == {}
 
 d = dict.fromkeys('abc')
-assert d == {'a': None, 'b': None, 'c': None}, 'fromkeys with string iterable'
+assert d == {'a': None, 'b': None, 'c': None}
 
 d = dict.fromkeys(range(3), 'x')
-assert d == {0: 'x', 1: 'x', 2: 'x'}, 'fromkeys with range iterable'
+assert d == {0: 'x', 1: 'x', 2: 'x'}
 
 d = dict.fromkeys((1, 2, 3), [])
 assert d[1] is d[2] and d[2] is d[3], 'fromkeys shares same value object for all keys'
 
 # Duplicate keys - later occurrence wins
 d = dict.fromkeys(['a', 'b', 'a'], 1)
-assert d == {'a': 1, 'b': 1}, 'fromkeys with duplicate keys'
-assert list(d.keys()) == ['a', 'b'], 'fromkeys preserves first occurrence order'
+assert d == {'a': 1, 'b': 1}
+assert list(d.keys()) == ['a', 'b']
 
 # === dict.fromkeys() instance access ===
 # fromkeys is a classmethod but should also work on instances
 d = {}.fromkeys(['a', 'b'])
-assert d == {'a': None, 'b': None}, 'fromkeys on empty dict instance'
+assert d == {'a': None, 'b': None}
 
 d = {'x': 1}.fromkeys(['a', 'b'], 0)
-assert d == {'a': 0, 'b': 0}, 'fromkeys on non-empty dict instance (ignores original)'
+assert d == {'a': 0, 'b': 0}
 
 # === dict.update() with keyword arguments ===
 d = {'a': 1}
 d.update(b=2)
-assert d == {'a': 1, 'b': 2}, 'update with single kwarg'
+assert d == {'a': 1, 'b': 2}
 
 d = {'a': 1}
 d.update(b=2, c=3)
-assert d == {'a': 1, 'b': 2, 'c': 3}, 'update with multiple kwargs'
+assert d == {'a': 1, 'b': 2, 'c': 3}
 
 d = {'a': 1}
 d.update(a=10)
-assert d == {'a': 10}, 'update kwarg overwrites existing key'
+assert d == {'a': 10}
 
 d = {}
 d.update(a=1, b=2)
-assert d == {'a': 1, 'b': 2}, 'update empty dict with kwargs'
+assert d == {'a': 1, 'b': 2}
 
 # update with both positional dict and kwargs
 d = {'a': 1}
 d.update({'b': 2}, c=3)
-assert d == {'a': 1, 'b': 2, 'c': 3}, 'update with dict and kwargs'
+assert d == {'a': 1, 'b': 2, 'c': 3}
 
 # kwargs overwrite positional dict values
 d = {'a': 1}
 d.update({'b': 2}, b=20)
-assert d == {'a': 1, 'b': 20}, 'update kwargs overwrite positional dict'
+assert d == {'a': 1, 'b': 20}
 
 # update with iterable and kwargs
 d = {}
 d.update([('a', 1)], b=2)
-assert d == {'a': 1, 'b': 2}, 'update with iterable and kwargs'
+assert d == {'a': 1, 'b': 2}
 
 # `**` unpacking with a runtime-built (non-interned) string key must still
 # reach **kwargs — only genuinely non-string keys are rejected.
 runtime_key = 'zzz' + 'qqq'
 d = dict(**{runtime_key: 1})
-assert d == {'zzzqqq': 1}, 'dict(**) with runtime-built string key'
+assert d == {'zzzqqq': 1}
 d.update(**{runtime_key: 2})
-assert d == {'zzzqqq': 2}, 'dict.update(**) with runtime-built string key'
+assert d == {'zzzqqq': 2}
 
 # === Error message for unknown classmethod ===
 # Error message should say 'dict' not 'type'
