@@ -376,7 +376,7 @@ impl Checkout {
     /// importable by subsequent feeds. Session-scoped and repeatable; an empty
     /// `requirements` list is a no-op.
     ///
-    /// Only the embedded-CPython worker (`monty-cpython`) honors this. The
+    /// Only an embedded-CPython worker honors this. The
     /// `monty` sandbox worker has no host interpreter to install for and a uv
     /// install failure both surface as [`PoolError::Runtime`] (the latter
     /// carrying uv's stderr); the session stays usable in either case. Bounded

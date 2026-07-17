@@ -24,7 +24,7 @@
 .DS_Store
 /.codex/
 
-# Python virtualenvs (e.g. monty-cpython dev installs)
+# Python virtualenvs
 .venv/
 
 # Local perf planning notes

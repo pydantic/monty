@@ -417,41 +417,6 @@ jobs:
           # catching panics, not memory bugs.
           cargo fuzz run --fuzz-dir crates/fuzz --sanitizer none ${{ matrix.target }} -- -max_total_time=60
 
-  build-cpython-image:
-    name: build monty-cpython image
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-
-      # OCI labels (source repo, revision, licence) are baked in at build time
-      # since the release job pushes this image as-is
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/pydantic/monty-cpython
-
-      # `type=docker` produces a `docker load`-able tarball under the fixed
-      # `monty-cpython:ci` name; the release job retags it for publishing
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: .
-          file: crates/monty-cpython/Dockerfile
-          platforms: linux/amd64
-          tags: monty-cpython:ci
-          labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=docker,dest=/tmp/monty-cpython-image.tar
-
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: cpython-image
-          path: /tmp/monty-cpython-image.tar
-          if-no-files-found: error
-
   # https://github.com/marketplace/actions/alls-green#why used for branch protection checks
   check:
     if: always()
@@ -466,7 +431,6 @@ jobs:
       - test-browser
       - bench-test
       - fuzz
-      - build-cpython-image
     runs-on: ubuntu-latest
     steps:
       - name: Decide whether the needed jobs succeeded or failed
@@ -1222,62 +1186,3 @@ jobs:
             npm publish "$tarball" --provenance --access public "${TAG_ARG[@]}"
           done
           npm publish package-tarballs/monty-main.tgz --provenance --access public "${TAG_ARG[@]}"
-
-  # Publishes the exact image tarball built and smoke-tested by
-  # `build-cpython-image` — no rebuild, same pattern as the wheel/npm releases.
-  release-containers:
-    name: release monty-cpython image to GHCR
-    needs: [check, build-cpython-image, release-python]
-    if: success() && (startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.run_release))
-    runs-on: ubuntu-latest
-
-    environment:
-      name: release-containers
-      url: https://github.com/pydantic/monty/pkgs/container/monty-cpython
-
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      # guard against the git tag and the workspace Cargo.toml version drifting apart
-      - id: check-version
-        uses: samuelcolvin/check-python-version@ee87cddb8049d2694cc03badc8569765a05cef00 # v5
-        with:
-          version_file_path: 'Cargo.toml'
-
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # derives the image tag (`vX.Y.Z[-pre]`) from the git tag; `latest` is
-      # added automatically only for stable (non-prerelease) releases
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/pydantic/monty-cpython
-          tags: type=semver,pattern=v{{version}}
-
-      - name: Download tested image tarball
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: cpython-image
-          path: /tmp
-
-      # push the tested tarball under each release tag; layers upload once,
-      # subsequent tags are metadata-only
-      - name: Load, retag and push tested image
-        env:
-          TAGS: ${{ steps.meta.outputs.tags }}
-        run: |
-          docker load --input /tmp/monty-cpython-image.tar
-          while read -r tag; do
-            docker tag monty-cpython:ci "$tag"
-            docker push "$tag"
-          done <<< "$TAGS"

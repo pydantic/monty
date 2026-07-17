@@ -548,8 +548,8 @@ impl PyAsyncMonty {
 
 /// Async context manager owning a pool of remote `monty` workers reached over a
 /// WebSocket. The dialed peer is the server side: a relay that pairs this
-/// connection with a child (e.g. `monty-cpython websocket`, which dials in from
-/// the other end), or any server that bridges to a worker.
+/// connection with a child dialing in from the other end, or any server that
+/// bridges to a worker.
 ///
 /// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
 /// checkout dials the configured URL; `checkout()` yields the same

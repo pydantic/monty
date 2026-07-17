@@ -344,7 +344,7 @@ export class MontySession {
    * `uv`, making them importable by later `feedRun` calls. Session-scoped and
    * repeatable; an empty list is a no-op.
    *
-   * Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+   * Only supported by an embedded-CPython worker.
    * Against the pure-Monty sandbox worker, or on a `uv` install failure (the
    * error carries uv's stderr), throws `MontyRuntimeError`; the session stays
    * usable. Dependencies a script declares inline via PEP 723 (`# /// script`)

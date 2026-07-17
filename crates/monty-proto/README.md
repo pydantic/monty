@@ -14,10 +14,7 @@ defines the protocol both sides speak.
 The protocol is protobuf (rather than Monty's internal postcard format) so a
 parent or child can be implemented in any language — see
 [`proto/monty/v1/monty.proto`](https://github.com/pydantic/monty/blob/main/crates/monty-proto/proto/monty/v1/monty.proto)
-for the schema and the protocol rules documented alongside it. The
-[`monty-cpython`](https://github.com/pydantic/monty/tree/main/crates/monty-cpython)
-worker, which executes fed code in embedded CPython instead of Monty, speaks
-this same protocol.
+for the schema and the protocol rules documented alongside it.
 
 ## What the crate provides
 
@@ -33,8 +30,7 @@ this same protocol.
   be deployed in lockstep.
 - `python` (cargo feature, off by default) — the `python` module: PyO3-based
   conversions between live Python objects and `MontyObject`/`MontyException`,
-  shared by the `pydantic-monty` extension module and the `monty-cpython`
-  embedded-CPython worker. The feature pulls in `pyo3` (but never its
+  used by the `pydantic-monty` extension module. The feature pulls in `pyo3` (but never its
   `extension-module` feature — how libpython is linked stays the top crate's
   decision), so pure-Rust consumers pay nothing for it.
 

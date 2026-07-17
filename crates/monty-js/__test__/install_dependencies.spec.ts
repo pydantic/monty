@@ -4,8 +4,7 @@ import { t } from './assertions.js'
 import { Monty, MontyRuntimeError } from '@pydantic/monty'
 
 // These run against the default `monty` *sandbox* worker, which has no host
-// interpreter to install for and rejects the request. A real install
-// end-to-end is covered by the `monty-cpython` Rust tests.
+// interpreter to install for and rejects the request.
 
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 

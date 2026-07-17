@@ -530,7 +530,7 @@ class MontySession:
         importable by subsequent `feed_run` calls. Session-scoped and
         repeatable; an empty list is a no-op.
 
-        Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+        Only supported by an embedded-CPython worker.
         Against the pure-Monty sandbox worker, or on a `uv` install failure
         (the error carries uv's stderr), raises `MontyRuntimeError`; the
         session stays usable. Bounded by the pool's `request_timeout`, so raise
@@ -605,9 +605,8 @@ class AsyncMontyWebsocket:
     """
     Async context manager owning a pool of remote `monty` workers reached over a
     WebSocket. The dialed peer is the server side — a relay that pairs this
-    connection with a child (such as `monty-cpython websocket`, which dials the
-    relay from the other end), or any server that accepts the connection and
-    bridges to a worker.
+    connection with a child dialing in from the other end, or any server that
+    accepts the connection and bridges to a worker.
 
     Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
     dials the configured URL. There is no sync counterpart — remote turns are

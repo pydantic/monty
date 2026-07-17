@@ -2038,22 +2038,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monty-cpython"
-version = "0.0.19-beta.4"
-dependencies = [
- "ahash",
- "clap",
- "monty",
- "monty-proto",
- "pyo3",
- "pyo3-build-config",
- "regex",
- "rustls",
- "toml",
- "tungstenite",
-]
-
-[[package]]
 name = "monty-datatest"
 version = "0.0.19-beta.4"
 dependencies = [
