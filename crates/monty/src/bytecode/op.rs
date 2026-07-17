@@ -548,12 +548,8 @@ pub enum Opcode {
     /// Appended at the end to preserve the serialized byte values of all older opcodes.
     MethodDictMerge,
 
-    // === Assert statements ===
-    // Introspected assert failures are a deliberate CPython divergence; see
-    // `CompileOptions::assert_message_annotations` and limitations/assert.md.
-    // Both opcodes take a u8 flags operand built by `assert_flags`:
-    // `ASSERT_CMP_FLAG` selects the fused-comparison form, with the low
-    // nibble holding `CmpOperator::as_operand`.
+    // Both assert opcodes use `assert_flags`; `ASSERT_CMP_FLAG` selects the
+    // fused-comparison form and the low nibble stores the comparison operator.
     /// Fused bare `assert`: stack [..., test] -> [...], or with
     /// `ASSERT_CMP_FLAG` [..., lhs, rhs] -> [...]. Falls through on success;
     /// failures raise `AssertionError` with the operand repr(s), except
@@ -564,6 +560,7 @@ pub enum Opcode {
     /// comes first, with introspected detail appended when available.
     AssertFailed,
 }
+// Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
 // variants — roughly half are already taken. Spend slots sparingly: prefer a
 // flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a
@@ -665,11 +662,8 @@ impl Opcode {
                 if flags & FORMAT_VALUE_HAS_SPEC != 0 { -1 } else { 0 }
             }
             (UnpackSequence, Operand::U8(n)) => i32::from(n) - 1,
-            // Fused asserts pop their operands and fall through on success;
-            // the message-carrying raiser always raises (fall-through is dead
-            // code, like `RaiseUnboundLocal`) but pops the same way.
-            // `ASSERT_CMP_FLAG` means two comparison operands are popped in
-            // place of the single test value.
+            // Fused forms pop two test operands; `AssertFailed` also pops the
+            // explicit message before entering dead code.
             (Assert, Operand::U8(flags)) => {
                 if flags & ASSERT_CMP_FLAG != 0 {
                     -2

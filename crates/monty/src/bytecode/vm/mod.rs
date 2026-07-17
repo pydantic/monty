@@ -746,10 +746,8 @@ pub struct VM<'h, T: ResourceTracker> {
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
 
-    /// Char-truncation limit for operand reprs in introspected assert failure
-    /// messages. Comes from the executor (which captured
-    /// `CompileOptions::assert_message_annotations` at compile time) on every
-    /// construction path, so it needs no place in `VMSnapshot`.
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    /// Supplied by the executor on construction, so it is not snapshotted.
     pub(crate) assert_repr_max_chars: u32,
 }
 
@@ -796,7 +794,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
-    /// * `assert_repr_max_chars` - Assert failure repr truncation limit (from the executor)
+    /// * `assert_repr_max_chars` - Operand-repr byte cap from the executor
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,

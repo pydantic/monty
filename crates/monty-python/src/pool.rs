@@ -1044,8 +1044,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for AssertAnnotationsArg {
     type Error = PyErr;
 
     fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
-        // Check bool before int — Python bools are ints, so the int branch
-        // would otherwise silently turn `True` into a 1-char limit.
+        // Check bool before int because `True` must not become a one-byte cap.
         if let Ok(enabled) = ob.cast_exact::<PyBool>() {
             Ok(Self(enabled.is_true().into()))
         } else if ob.cast::<PyInt>().is_ok() {

@@ -31,9 +31,8 @@ use crate::{
 /// fed to the session compiles the same way.
 #[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
 pub struct CompileOptions {
-    /// Give failed `assert` statements pytest-style introspected messages
-    /// (`AssertionError: assert 2 == 5`) — a deliberate divergence from
-    /// CPython's empty `AssertionError`; see `limitations/assert.md`.
+    /// Give failed `assert` statements pytest-style introspected messages,
+    /// deliberately diverging from CPython; see `limitations/assert.md`.
     /// On by default with a 120-byte operand-repr truncation.
     pub assert_message_annotations: AssertMessageAnnotations,
 }
@@ -46,12 +45,10 @@ pub struct CompileOptions {
 /// travels with serialized sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AssertMessageAnnotations {
-    /// CPython behavior: failed asserts raise a bare `AssertionError`.
+    /// Disable introspection; bare asserts use CPython's empty message.
     Off,
-    /// Introspected messages, each operand's repr truncated to this many
-    /// bytes (cut on a character boundary, `…` suffix). Non-zero because `0`
-    /// encodes [`Off`](Self::Off) on the wire, so a zero limit would mean
-    /// "on" in-process but "off" in a worker.
+    /// Retain at most this many UTF-8 bytes per operand before any `…` suffix.
+    /// Non-zero because `0` encodes [`Off`](Self::Off) on the wire.
     MaxChars(NonZeroU32),
 }
 
@@ -59,17 +56,13 @@ impl AssertMessageAnnotations {
     /// Operand-repr truncation used by [`Default`] and `From<bool>`.
     pub const DEFAULT_MAX_CHARS: NonZeroU32 = NonZeroU32::new(120).expect("120 is non-zero");
 
-    /// Whether introspected messages are enabled — the compiler emits the
-    /// introspecting assert opcodes only when they are.
+    /// Whether the compiler should emit introspecting assert opcodes.
     #[must_use]
     pub fn enabled(self) -> bool {
         !matches!(self, Self::Off)
     }
 
-    /// The operand-repr truncation limit: `0` when off (no introspecting
-    /// opcodes are emitted then, so the limit is never consulted). Doubles as
-    /// the single-integer encoding of `monty-proto`'s `Configure` message,
-    /// where the default is represented by omitting the field entirely.
+    /// Returns the wire value: `0` when disabled, otherwise the UTF-8 byte cap.
     #[must_use]
     pub fn max_chars(self) -> u32 {
         match self {
@@ -78,9 +71,7 @@ impl AssertMessageAnnotations {
         }
     }
 
-    /// Decodes [`max_chars`](Self::max_chars): `0` = off, anything else =
-    /// `MaxChars`. An exact inverse (`MaxChars(0)` is unrepresentable), and the
-    /// constructor to use when the limit may be zero.
+    /// Decodes the wire value: `0` is off and any other value is the byte cap.
     #[must_use]
     pub fn from_max_chars(value: u32) -> Self {
         match NonZeroU32::new(value) {
@@ -97,7 +88,7 @@ impl Default for AssertMessageAnnotations {
 }
 
 impl From<bool> for AssertMessageAnnotations {
-    /// `true` is the 120-byte default; `false` restores CPython behavior.
+    /// `true` enables the 120-byte default; `false` disables annotations.
     fn from(enabled: bool) -> Self {
         if enabled { Self::default() } else { Self::Off }
     }
@@ -301,10 +292,8 @@ pub(crate) struct Executor {
     /// One entry per input value, in the order the embedder passed them.
     /// Empty for the standard (non-REPL) execution path.
     pub(crate) input_slots: Vec<NamespaceId>,
-    /// Char-truncation limit for operand reprs in introspected assert failure
-    /// messages ([`CompileOptions::assert_message_annotations`]). Captured at
-    /// compile time but consumed at *runtime* — every VM constructed for this
-    /// program (fresh or snapshot-restored) receives it.
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    /// Stored with the compiled program and passed to every VM.
     pub(crate) assert_repr_max_chars: u32,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).

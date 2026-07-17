@@ -299,10 +299,8 @@ pub struct Compiler<'a> {
     /// removed at `exit_comprehension`, so sibling comps start fresh.
     bound_comp_slots: AHashSet<u16>,
 
-    /// [`CompileOptions::assert_message_annotations`]: emit pytest-style introspected
-    /// failure messages for `assert` statements. Threaded into nested
-    /// function/class-body compilers so `assert` behaves identically at
-    /// every scope.
+    /// Whether to compile pytest-style assert failure annotations.
+    /// Propagated to nested function and class-body compilers.
     assert_message_annotations: bool,
 }
 
@@ -3204,8 +3202,7 @@ impl<'a> Compiler<'a> {
         if self.assert_message_annotations {
             return self.compile_assert_with_message(test, msg);
         }
-        // CPython-parity path (`CompileOptions::assert_message_annotations` off): raise a
-        // plain `AssertionError` / `AssertionError(msg)` with no introspection.
+        // Without annotations, compile the ordinary `AssertionError` path.
 
         // Compile test
         self.compile_expr(test)?;
@@ -3234,9 +3231,8 @@ impl<'a> Compiler<'a> {
 
     /// Compiles an assert with Monty's introspected failure messages.
     ///
-    /// Bare asserts use fused opcodes on the passing path; explicit-message
-    /// asserts keep CPython's lazy message evaluation and retain operands only
-    /// on the failure path.
+    /// Bare asserts use fused opcodes. Explicit-message comparisons duplicate
+    /// operands so failures can format them without eagerly evaluating `msg`.
     fn compile_assert_with_message(&mut self, test: &ExprLoc, msg: Option<&ExprLoc>) -> Result<(), CompileError> {
         if let Expr::CmpOp { left, op, right } = &test.expr {
             self.compile_expr(left)?;

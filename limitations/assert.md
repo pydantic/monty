@@ -20,9 +20,11 @@ values involved instead of a blank `AssertionError`.
   `assert 0` → `assert 0` — except `False` itself, which adds no information:
   `assert False` raises a plain message-less `AssertionError`, exactly like
   CPython.
-- Consequently chained comparisons (`assert 1 < 2 > 3`), `not` expressions,
-  and boolean operators — which evaluate to a `bool` first — carry no message
-  when they fail, matching CPython.
+- Chained comparisons (`assert 1 < 2 > 3`) and `not` expressions produce
+  `False` when they fail, so they carry no introspected message. `and` and `or`
+  return an operand rather than coercing it to `bool`, so they show that final
+  falsy operand unless it is literally `False`: `assert 1 and []` shows
+  `assert []`.
 
 ## `assert test, msg` appends the detail on a new line
 
@@ -43,24 +45,29 @@ values involved instead of a blank `AssertionError`.
 
 ## Formatting edge cases
 
-- Each operand's repr is truncated to 120 bytes (cut on a character boundary)
-  with a `…` suffix (configurable per session, see "Opt-out for embedders"
-  below).
+- At most 120 bytes of each operand's repr are retained, cut on a character
+  boundary. A truncated repr gets a three-byte `…` suffix in addition to that
+  limit. The retained-byte limit is configurable per session; see "Opt-out for
+  embedders" below.
 - A failing assert calls `repr()` on its operands, which CPython never does:
-  user `__repr__` side effects run and their cost counts against resource
-  limits. Rendering streams and stops at the truncation cap, so parts of a
-  container beyond the cap are never repr'd — their `__repr__`s (and any side
-  effects) don't run at all.
-- If an operand's `__repr__` (or an explicit message's `__str__`) raises, that
-  part is dropped rather than replacing the `AssertionError`: a bare assert
-  falls back to a message-less `AssertionError`, an explicit-message assert
-  keeps whichever of message/detail rendered successfully.
+  user `__repr__` side effects run. Rendering streams and stops at the
+  truncation cap, so parts of a container beyond the cap are never repr'd —
+  their `__repr__`s (and any side effects) don't run at all. The temporary repr
+  buffer and its formatting loop are not charged to the `ResourceTracker`.
+- If an operand's `__repr__` (or an explicit message's `__str__`) raises a
+  catchable Python exception, that part is dropped: a bare assert falls back to
+  a message-less `AssertionError`, while an explicit-message assert keeps
+  whichever of message/detail rendered successfully. Terminal internal and
+  resource errors propagate instead.
 
 ## Opt-out for embedders
 
-CPython's plain `AssertionError` behavior can be restored per session, and the
-operand-repr truncation length can be customized (an int >= 1, in bytes;
-a length of 0 means "off", not "truncate everything away"):
+Introspected annotations can be disabled per session, restoring CPython's empty
+message for bare asserts. This does not remove Monty's other exception
+constructor differences: with annotations disabled, an explicit assert message
+must still be a string; see [exceptions](exceptions.md). The retained repr
+length can also be customized (an int >= 1, in bytes; 0 means "off", not
+"retain no bytes"):
 
 - Rust: pass `CompileOptions { assert_message_annotations:
   AssertMessageAnnotations::Off }` (or `::MaxChars(n)`, a `NonZeroU32`;

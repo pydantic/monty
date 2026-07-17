@@ -156,12 +156,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Wraps a formatted assert detail into the raised `AssertionError`:
-    /// `Ok(Some(detail))` becomes `assert {detail}`, while a no-information
-    /// detail or a catchable formatting failure (user `__repr__` raised,
-    /// recursion) falls back to a message-less `AssertionError` — the repr is
-    /// best-effort and must never replace the assertion failure itself.
-    /// Terminal errors (`Internal`, resource exhaustion) propagate instead.
+    /// Converts best-effort detail into an `AssertionError` message.
+    /// Catchable formatting errors fall back to no detail; terminal errors propagate.
     fn assert_failure(&self, detail: RunResult<Option<String>>) -> RunError {
         match detail {
             Ok(Some(detail)) => self.assertion_error(Some(format!("assert {detail}"))),
@@ -485,11 +481,8 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 }
 
-/// `repr()` of an assert operand, streamed into a [`TruncatingWriter`] capped
-/// at the compiled program's limit (default 120 bytes, `…` suffix). Aborting
-/// at the cap keeps pathological operands `O(cap)` — a fully materialized
-/// repr could blow the memory limit and turn a catchable `AssertionError`
-/// into a terminal `MemoryError`.
+/// Streams an assert operand's repr into the configured byte-capped writer.
+/// Reaching the cap stops formatting the remainder and appends `…`.
 fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
     let mut writer = TruncatingWriter::new(vm.assert_repr_max_chars as usize);
     let mut heap_ids = LazyHeapSet::default();
@@ -510,11 +503,8 @@ fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunRe
     Ok(str_value.to_str(vm)?.to_owned())
 }
 
-/// `fmt::Write` sink that rejects input past `max_bytes`, cutting on a char
-/// boundary: the cap sets `truncated` and returns `fmt::Error`, unwinding
-/// `py_repr_fmt` so nothing past the cap is repr'd. The untracked `String` is
-/// safe as it's bounded by the embedder-set cap; `StringBuilder` can't be used
-/// here — it'd borrow `vm.heap`'s tracker while `py_repr_fmt` needs `&mut vm`.
+/// Byte-capped sink that stops repr formatting on a character boundary.
+/// Its buffer is untracked because `py_repr_fmt` also needs mutable VM access.
 struct TruncatingWriter {
     buf: String,
     /// Bytes still accepted before the cap.
