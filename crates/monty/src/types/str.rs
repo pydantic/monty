@@ -241,8 +241,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).0.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).0.is_empty())
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {

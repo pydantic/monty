@@ -1,8 +1,8 @@
 # Classes
 
 Sandboxed Python code in Monty can define simple classes. A `class`
-statement with instance methods, `__init__`, `__repr__`/`__str__`, and
-class variables works. The class body has a real scope (like CPython's
+statement with instance methods, `__init__`, `__eq__`, `__repr__`/`__str__`,
+and class variables works. The class body has a real scope (like CPython's
 class-body code object), so class variables may be arbitrary expressions
 and may reference earlier class variables:
 
@@ -35,9 +35,10 @@ methods, `__init__` (full parameter shapes), instance and class attribute
 get/set (including `setattr(Foo, ...)` and function-attributes-become-methods),
 bound methods, class variables (arbitrary expressions, evaluated in a real
 suspendable class-body scope), `__repr__`/`__str__`/`__enter__`/`__exit__`
-dispatch, `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
-`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg `type()` constructor. The
-`__enter__`/`__exit__` divergences are in [with.md](with.md). Everything else
+dispatch, user-defined `__eq__`, `obj.__class__`, `Foo.__name__`,
+`Foo.__doc__`/`obj.__doc__`, `type(obj)`/`isinstance(obj, Foo)`, and the
+3-arg `type()` constructor. The `__enter__`/`__exit__` divergences are in
+[with.md](with.md). Everything else
 below is where Monty differs from or does not implement CPython behaviour.
 
 ## Dynamic class creation — `type(name, bases, dict)`
@@ -96,9 +97,19 @@ order and error wording, but with these divergences:
   runs to completion synchronously, so it cannot yield to the host, and an
   external-function `__init__` raises `NotImplementedError` rather than
   suspending.
-- **Equality and hashing are identity-only**: a user `__eq__`/`__hash__` is
-  not dispatched. `a == b` is true only when `a is b`; instances hash by
-  identity. Instances are always truthy (no `__bool__`/`__len__` dispatch).
+- **User `__hash__` is not dispatched.** Instances of classes without
+  `__eq__` hash by identity. Defining `__eq__` makes instances unhashable,
+  even if the class also defines `__hash__`; CPython would dispatch that
+  explicit `__hash__` implementation.
+- **`__eq__` results are coerced to `bool`.** CPython returns an arbitrary
+  non-`NotImplemented` result unchanged from `a == b` (for example, an
+  `__eq__` returning `'equal'` makes the comparison evaluate to that string),
+  while Monty immediately truth-tests it and returns `True` or `False`.
+- **`__eq__` runs synchronously and cannot suspend.** An external/OS call from
+  `__eq__` raises rather than yielding to the host. An exception raised by
+  `__eq__` terminates the run instead of being catchable by a `try` around the
+  comparison.
+- **Instances are always truthy**: `__bool__` and `__len__` are not dispatched.
 - **Bound methods compare and hash by identity**: each `obj.method` access
   creates a fresh object, so `obj.method == obj.method` is `False` and two
   accesses hash differently. CPython compares/hashes bound methods by
@@ -179,11 +190,10 @@ e.g. return a `dict` of the fields.
 - Abstract base classes (`abc.ABC`, `@abstractmethod`).
 - `@classmethod`, `@staticmethod`, `@property`, and any other class/method
   decorators (rejected at parse time).
-- Dunder protocols other than `__init__`, `__repr__`, `__str__`,
+- Dunder protocols other than `__init__`, `__eq__`, `__repr__`, `__str__`,
   `__enter__`, and `__exit__`: `__new__`, `__call__`, `__iter__`,
   `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,
-  `__eq__`, `__hash__`, `__bool__`, etc. are not dispatched for
-  user-defined instances.
+  `__hash__`, `__bool__`, etc. are not dispatched for user-defined instances.
 - Attribute-access hooks are **never** dispatched: `__getattr__`,
   `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
   attribute always raises the default `AttributeError` even when the class

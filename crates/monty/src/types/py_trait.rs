@@ -209,9 +209,10 @@ pub(crate) trait PyTrait<'h> {
 
     /// Returns the truthiness of the value following Python semantics.
     ///
-    /// Container types should typically report `false` when empty.
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        self.py_len(vm) != Some(0)
+    /// Container types should typically report `false` when empty. Truth
+    /// testing may raise, notably for Python 3.14's `NotImplemented` singleton.
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(self.py_len(vm) != Some(0))
     }
 
     /// Writes the Python `repr()` string for this value to a formatter.

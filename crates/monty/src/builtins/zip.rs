@@ -20,10 +20,10 @@ use crate::{
 pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
-    // CPython's `strict` is truthy-checked (not strict typed), so use `py_bool`
-    // on the raw value rather than asking the macro to coerce to `bool`.
+    // CPython's `strict` is truthy-checked (not strict typed), so test the raw
+    // value rather than asking the macro to coerce to a strict `bool`.
     defer_drop!(strict, vm);
-    let strict = strict.py_bool(vm);
+    let strict = strict.py_bool(vm)?;
 
     if iterables.is_empty() {
         // zip() with no arguments returns empty list

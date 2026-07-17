@@ -529,8 +529,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         Ok(None)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(true)
     }
 
     fn py_repr_fmt(

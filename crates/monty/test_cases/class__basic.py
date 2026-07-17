@@ -103,6 +103,21 @@ assert ep1 != ep3, 'custom __eq__ false result is respected'
 assert (ep1 == 1) is False, 'NotImplemented from instance equality falls back to unequal'
 assert (1 == ep1) is False, 'NotImplemented works when reflected equality reaches the instance'
 
+try:
+    hash(ep1)
+    assert False, 'an instance with custom equality should be unhashable'
+except TypeError as exc:
+    assert str(exc) == "unhashable type: 'EqPoint'", 'custom equality disables identity hashing'
+
+
+class NeverEqual:
+    def __eq__(self, other):
+        return False
+
+
+never_equal = NeverEqual()
+assert (never_equal == never_equal) is False, 'custom equality runs before the identity fallback'
+
 
 class LeftEq:
     def __eq__(self, other):
@@ -114,8 +129,10 @@ class RightEq:
         return 'right handled'
 
 
-assert LeftEq() == RightEq(), 'left NotImplemented delegates to reflected __eq__'
-assert RightEq() == LeftEq(), 'truthy custom __eq__ result is converted to bool'
+left_eq = LeftEq()
+assert left_eq == left_eq, 'NotImplemented falls back to identity for self-comparison'
+assert left_eq == RightEq(), 'left NotImplemented delegates to reflected __eq__'
+assert RightEq() == left_eq, 'truthy custom __eq__ result is converted to bool'
 
 # === Instances are always truthy ===
 assert bool(p) is True, 'instances are truthy'

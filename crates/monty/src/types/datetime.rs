@@ -934,8 +934,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(CmpOrder::Ordered(local_micros(a).cmp(&local_micros(b))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(true)
     }
 
     fn py_repr_fmt(

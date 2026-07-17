@@ -1142,9 +1142,12 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
-                    let result = !value.py_bool(self);
+                    let result = value.py_bool(self);
                     value.drop_with(self);
-                    self.push(Value::Bool(result));
+                    match result {
+                        Ok(value) => self.push(Value::Bool(!value)),
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::UnaryNeg => {
                     // Unary minus - negate numeric value
@@ -1381,37 +1384,53 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::JumpIfTrue => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
-                    }
+                    let result = cond.py_bool(self);
                     cond.drop_with(self);
+                    match result {
+                        Ok(true) => jump_relative!(cached_frame.ip, offset),
+                        Ok(false) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::JumpIfFalse => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if !cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
-                    }
+                    let result = cond.py_bool(self);
                     cond.drop_with(self);
+                    match result {
+                        Ok(false) => jump_relative!(cached_frame.ip, offset),
+                        Ok(true) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
-                    } else {
-                        value.drop_with(self);
+                    match value.py_bool(self) {
+                        Ok(true) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Ok(false) => value.drop_with(self),
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        value.drop_with(self);
-                    } else {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
+                    match value.py_bool(self) {
+                        Ok(true) => value.drop_with(self),
+                        Ok(false) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 // Iteration - route through exception handling

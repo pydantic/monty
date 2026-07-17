@@ -208,9 +208,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Dataclass instances are always truthy (like Python objects)
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(

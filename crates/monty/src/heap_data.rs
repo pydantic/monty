@@ -456,7 +456,7 @@ impl HeapItem for ExternalFuture {
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         match self {
             Self::Str(s) => s.py_bool(vm),
             Self::Bytes(b) => b.py_bool(vm),
@@ -469,26 +469,23 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValuesView(view) => view.py_bool(vm),
             Self::Set(s) => s.py_bool(vm),
             Self::FrozenSet(fs) => fs.py_bool(vm),
-            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => true,
-            Self::Cell(_) => true,
+            Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Ok(true),
+            Self::Cell(_) => Ok(true),
             Self::Range(r) => r.py_bool(vm),
             Self::Slice(s) => s.py_bool(vm),
-            Self::Exception(_) => true,
+            Self::Exception(_) => Ok(true),
             Self::Dataclass(dc) => dc.py_bool(vm),
             // Classes, instances and bound methods are always truthy.
-            Self::Class(_) | Self::Instance(_) | Self::BoundMethod(_) => true,
-            Self::Iter(_) => true,
-            Self::LongInt(li) => !li.get(vm.heap).is_zero(),
-            Self::Module(_) => true,
-            Self::Coroutine(_) => true,
-            Self::GatherFuture(_) => true,
-            Self::ExternalFuture(_) => true,
+            Self::Class(_) | Self::Instance(_) | Self::BoundMethod(_) => Ok(true),
+            Self::Iter(_) => Ok(true),
+            Self::LongInt(li) => Ok(!li.get(vm.heap).is_zero()),
+            Self::Module(_) | Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Ok(true),
             Self::Path(p) => p.py_bool(vm),
             Self::OpenFile(file) => file.py_bool(vm),
             Self::ReMatch(m) => m.py_bool(vm),
             Self::RePattern(p) => p.py_bool(vm),
             Self::TimeDelta(td) => td.py_bool(vm),
-            Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => true,
+            Self::Date(_) | Self::DateTime(_) | Self::TimeZone(_) => Ok(true),
         }
     }
 

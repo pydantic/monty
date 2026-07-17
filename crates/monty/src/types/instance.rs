@@ -96,9 +96,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
-        // Instances hash by identity (CPython's default for objects without `__hash__`).
-        Ok(Some(identity_hash(self_id)))
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        let class_id = self.get(vm.heap).class;
+        if class_has_member(class_id, "__eq__", vm) {
+            // User `__hash__` dispatch is not supported, so defining equality
+            // implicitly makes the class unhashable as it does in CPython.
+            Ok(None)
+        } else {
+            Ok(Some(identity_hash(self_id)))
+        }
     }
 
     /// Heap-level `repr` fallback.
@@ -381,7 +387,7 @@ pub(crate) fn instance_eq(
     } else {
         let eq = result.py_bool(vm);
         result.drop_with(vm);
-        Ok(Some(eq))
+        Ok(Some(eq?))
     }
 }
 
@@ -462,6 +468,14 @@ fn instance_class(self_id: HeapId, vm: &VM<'_, impl ResourceTracker>) -> HeapId 
     match vm.heap.get(self_id) {
         HeapData::Instance(inst) => inst.class,
         _ => unreachable!("instance_class called on non-instance heap value"),
+    }
+}
+
+/// Checks whether a class namespace defines `name` without cloning its value.
+fn class_has_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match vm.heap.get(class_id) {
+        HeapData::Class(class) => class.namespace().get_by_str(name, vm.heap, vm.interns).is_some(),
+        _ => false,
     }
 }
 

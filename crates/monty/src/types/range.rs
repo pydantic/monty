@@ -276,8 +276,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).is_empty())
     }
 
     fn py_repr_fmt(

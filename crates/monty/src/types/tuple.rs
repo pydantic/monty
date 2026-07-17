@@ -437,8 +437,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         }
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).items.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).items.is_empty())
     }
 
     fn py_repr_fmt(

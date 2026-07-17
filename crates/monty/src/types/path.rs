@@ -488,9 +488,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Paths are always truthy (even empty paths)
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(

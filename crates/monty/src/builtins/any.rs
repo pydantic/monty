@@ -21,7 +21,7 @@ pub fn builtin_any(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
 
     while let Some(item) = iter.for_next(vm)? {
         defer_drop!(item, vm);
-        if item.py_bool(vm) {
+        if item.py_bool(vm)? {
             return Ok(Value::Bool(true));
         }
     }

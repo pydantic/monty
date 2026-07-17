@@ -436,7 +436,7 @@ impl Type {
                     return Ok(Value::Bool(false));
                 };
                 defer_drop!(v, vm);
-                Ok(Value::Bool(v.py_bool(vm)))
+                Ok(Value::Bool(v.py_bool(vm)?))
             }
 
             // Non-callable types - raise TypeError

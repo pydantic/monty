@@ -106,10 +106,10 @@ impl JsonDumpsConfig {
         let indent = parse_indent_value(indent, vm)?;
         config.indent = indent;
 
-        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm);
-        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm);
-        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm);
-        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm);
+        config.flags = apply_bool_flag(config.flags, Self::SORT_KEYS, sort_keys, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ENSURE_ASCII, ensure_ascii, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::ALLOW_NAN, allow_nan, vm)?;
+        config.flags = apply_bool_flag(config.flags, Self::SKIPKEYS, skipkeys, vm)?;
 
         // `separators=None` is documented as equivalent to "use the indent-
         // aware defaults", so we only override the per-instance separators
@@ -195,10 +195,13 @@ struct JsonDumpsArgs {
 /// Sets `bit` in `flags` when `value` is truthy, clearing it otherwise. The
 /// value is dropped afterwards. Used by the json.dumps kwarg pipeline so each
 /// boolean-style flag is handled with a single line.
-fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> u8 {
-    let new_flags = if value.py_bool(vm) { flags | bit } else { flags & !bit };
-    value.drop_with(vm);
-    new_flags
+fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u8> {
+    defer_drop!(value, vm);
+    if value.py_bool(vm)? {
+        Ok(flags | bit)
+    } else {
+        Ok(flags & !bit)
+    }
 }
 
 /// Parses the `indent=` value for `json.dumps()`.

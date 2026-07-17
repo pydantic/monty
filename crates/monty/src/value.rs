@@ -210,13 +210,16 @@ impl<'h> PyTrait<'h> for Value {
                 _ => None,
             }),
             Self::Ref(id) => {
-                // Identity short-circuit: a heap object always equals itself.
-                if let Self::Ref(other_id) = other
+                if matches!(vm.heap.get(*id), HeapData::Instance(_))
+                    && let Some(result) = instance_eq(*id, other, vm)?
+                {
+                    Ok(Some(result))
+                } else if let Self::Ref(other_id) = other
                     && id == other_id
                 {
+                    // Identity is the fallback only after user equality declines
+                    // the comparison by returning `NotImplemented`.
                     Ok(Some(true))
-                } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
-                    instance_eq(*id, other, vm)
                 } else {
                     vm.heap.read(*id).py_eq_impl(other, vm)
                 }
@@ -320,24 +323,26 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_bool(&self, vm: &mut VM<'_, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         match self {
-            Self::Undefined => false,
-            Self::Ellipsis => true,
-            Self::NotImplemented => true,
-            Self::None => false,
-            Self::Bool(b) => *b,
-            Self::Int(v) => *v != 0,
-            Self::Float(f) => *f != 0.0,
-            // InternLongInt is always truthy (if it were zero, it would fit in i64)
-            Self::InternLongInt(_) => true,
-            Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
-            Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
-            Self::Marker(_) => true,                            // Markers are always truthy
-            Self::Property(_) => true,                          // Properties are always truthy
-            Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
-            Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
+            Self::NotImplemented => Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "NotImplemented should not be used in a boolean context",
+            )
+            .into()),
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
+            Self::Undefined | Self::None => Ok(false),
+            Self::Ellipsis => Ok(true),
+            Self::Bool(b) => Ok(*b),
+            Self::Int(v) => Ok(*v != 0),
+            Self::Float(f) => Ok(*f != 0.0),
+            // InternLongInt is always truthy (if it were zero, it would fit in i64).
+            Self::InternLongInt(_) => Ok(true),
+            Self::Builtin(_) | Self::ModuleFunction(_) => Ok(true),
+            Self::DefFunction(_) | Self::ExtFunction(_) => Ok(true),
+            Self::Marker(_) | Self::Property(_) => Ok(true),
+            Self::InternString(string_id) => Ok(!vm.interns.get_str(*string_id).is_empty()),
+            Self::InternBytes(bytes_id) => Ok(!vm.interns.get_bytes(*bytes_id).is_empty()),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }

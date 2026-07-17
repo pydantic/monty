@@ -246,8 +246,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(true)
     }
 
     fn py_repr_fmt(

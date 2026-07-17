@@ -332,8 +332,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         ))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        total_microseconds(self.get(vm.heap)) != 0
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+        Ok(total_microseconds(self.get(vm.heap)) != 0)
     }
 
     fn py_repr_fmt(

@@ -55,7 +55,7 @@ type Tracker = LimitedTracker;
 ///
 /// The payload is monty's postcard format — only a monty child of the same
 /// version can restore it.
-const DUMP_VERSION: u16 = 2;
+const DUMP_VERSION: u16 = 3;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.

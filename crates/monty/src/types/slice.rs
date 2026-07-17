@@ -184,9 +184,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Slice always truthy
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(

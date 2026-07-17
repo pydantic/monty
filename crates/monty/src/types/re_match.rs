@@ -324,9 +324,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         Ok(None)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
         // Match objects are always truthy
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(
