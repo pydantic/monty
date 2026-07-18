@@ -22,7 +22,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
-    resource::{ResourceError, ResourceTracker, check_estimated_size},
+    resource::{ResourceError, ResourceTracker, check_estimated_size, safe_preallocation_hint},
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
     value::{VALUE_SIZE, Value},
 };
@@ -232,15 +232,7 @@ impl MontyIter {
         elem_size: usize,
         vm: &VM<'_, impl ResourceTracker>,
     ) -> Result<usize, ResourceError> {
-        /// Upper bound on the number of slots we are willing to reserve up front.
-        ///
-        /// Chosen so the worst-case pre-allocation (a few MiB) is small relative
-        /// to any realistic memory budget, while still avoiding repeated
-        /// reallocations for the common case of building moderate containers.
-        const MAX_PREALLOCATION_HINT: usize = 65_536;
-        let hint = self.size_hint(vm.heap);
-        check_estimated_size(hint.saturating_mul(elem_size), vm.heap.tracker())?;
-        Ok(hint.min(MAX_PREALLOCATION_HINT))
+        safe_preallocation_hint(self.size_hint(vm.heap), elem_size, vm.heap.tracker())
     }
 
     /// Materializes all remaining items into a `T` (typically `Vec<Value>`).

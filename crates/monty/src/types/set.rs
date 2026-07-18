@@ -15,7 +15,7 @@ use crate::{
         HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    resource::ResourceTracker,
+    resource::{ResourceError, ResourceTracker, safe_preallocation_hint},
     types::{LazyHeapSet, Type},
     value::{EitherStr, Value},
 };
@@ -585,6 +585,14 @@ impl Set {
     #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         Self(SetStorage::with_capacity(capacity))
+    }
+
+    /// Validates and clamps a capacity before native set preallocation.
+    pub(crate) fn preallocation_capacity(
+        requested: usize,
+        tracker: &impl ResourceTracker,
+    ) -> Result<usize, ResourceError> {
+        safe_preallocation_hint(requested, mem::size_of::<SetEntry>(), tracker)
     }
 
     /// Returns the number of elements in the set.

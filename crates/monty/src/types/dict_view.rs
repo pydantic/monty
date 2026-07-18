@@ -96,9 +96,10 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// and for `isdisjoint(...)`.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
-        let mut result_guard = DropGuard::new(Set::new(), vm);
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
         let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             value.drop_with(vm);
@@ -285,9 +286,10 @@ impl<'h> HeapRead<'h, DictItemsView> {
     /// membership checks observe standard Python tuple semantics.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
-        let mut result_guard = DropGuard::new(Set::new(), vm);
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
         let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             let item = allocate_tuple(smallvec![key, value], vm.heap)?;
@@ -635,7 +637,14 @@ fn apply_dict_view_binary_op(
     op: BinaryOp,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Set> {
-    let mut result_guard = DropGuard::new(Set::new(), vm);
+    let requested_capacity = match op {
+        BinaryOp::And => lhs.len().min(rhs.len()),
+        BinaryOp::Or | BinaryOp::Xor => lhs.len().saturating_add(rhs.len()),
+        BinaryOp::Sub => lhs.len(),
+        _ => unreachable!("non-set op rejected before materializing the view"),
+    };
+    let capacity = Set::preallocation_capacity(requested_capacity, vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
 
     match op {

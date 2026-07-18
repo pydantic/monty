@@ -18,6 +18,21 @@ use crate::{
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 
+/// Validates and clamps a native container's preallocation capacity.
+///
+/// The full requested size is checked against the tracker, while the returned
+/// hint is capped so unlimited execution cannot request an unsafe allocation.
+pub(crate) fn safe_preallocation_hint(
+    requested: usize,
+    element_size: usize,
+    tracker: &impl ResourceTracker,
+) -> Result<usize, ResourceError> {
+    const MAX_PREALLOCATION_HINT: usize = 65_536;
+
+    check_estimated_size(requested.saturating_mul(element_size), tracker)?;
+    Ok(requested.min(MAX_PREALLOCATION_HINT))
+}
+
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
 /// Used for sequence repeats (`'x' * 999_999_999`), padding operations
