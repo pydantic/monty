@@ -603,50 +603,47 @@ impl Checkout {
                     // blocked on our reply — a slow host filesystem must not
                     // count against its deadline) and re-armed per exchange so
                     // a feed doing many fs ops never outlives one timeout.
-                    if self.feed_mounts.is_some() {
-                        deadline_guard = None;
-                        if let Some(result) = self.try_mount_call(&call) {
-                            let next_deadline =
-                                min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-                            self.armed_deadline = next_deadline;
-                            let worker = self.worker.as_mut().expect("checked above");
-                            deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
-                            if let Err(err) = send_internal_resume(worker, call.call_id, result) {
-                                // an oversize result frame is rejected before any
-                                // bytes are written, so the stream is intact and
-                                // the suspended child can be resumed with a small,
-                                // catchable error instead; anything else is a real
-                                // I/O break
-                                let FrameError::FrameTooLarge { len, max } = err else {
-                                    break Err(self.poison("resuming a mount-covered OS call"));
-                                };
-                                let exc = MontyException::new(
-                                    ExcType::RuntimeError,
-                                    Some(format!(
-                                        "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
-                                    )),
-                                );
-                                let error_result = pb::ext_function_result::Kind::Error((&exc).into());
-                                if send_internal_resume(worker, call.call_id, error_result).is_err() {
-                                    break Err(self.poison("resuming a mount-covered OS call"));
-                                }
+                    deadline_guard = None;
+                    if let Some(result) = self.try_mount_call(&call) {
+                        let next_deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+                        self.armed_deadline = next_deadline;
+                        let worker = self.worker.as_mut().expect("checked above");
+                        deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
+                        if let Err(err) = send_internal_resume(worker, call.call_id, result) {
+                            // an oversize result frame is rejected before any
+                            // bytes are written, so the stream is intact and
+                            // the suspended child can be resumed with a small,
+                            // catchable error instead; anything else is a real
+                            // I/O break
+                            let FrameError::FrameTooLarge { len, max } = err else {
+                                break Err(self.poison("resuming a mount-covered OS call"));
+                            };
+                            let exc = MontyException::new(
+                                ExcType::RuntimeError,
+                                Some(format!(
+                                    "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
+                                )),
+                            );
+                            let error_result = pb::ext_function_result::Kind::Error((&exc).into());
+                            if send_internal_resume(worker, call.call_id, error_result).is_err() {
+                                break Err(self.poison("resuming a mount-covered OS call"));
                             }
-                            continue;
                         }
-                    }
-                    self.pending = Some(Pending::Call {
-                        call_id: call.call_id,
-                        function_name: call.function_name.clone(),
-                    });
-                    break self.convert_turn(|| {
-                        Ok(TurnEvent::OsCall {
-                            function_name: call.function_name,
-                            args: call.args,
-                            kwargs: call.kwargs,
+                    } else {
+                        self.pending = Some(Pending::Call {
                             call_id: call.call_id,
-                            not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
-                        })
-                    });
+                            function_name: call.function_name.clone(),
+                        });
+                        break self.convert_turn(|| {
+                            Ok(TurnEvent::OsCall {
+                                function_name: call.function_name,
+                                args: call.args,
+                                kwargs: call.kwargs,
+                                call_id: call.call_id,
+                                not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
+                            })
+                        });
+                    }
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
