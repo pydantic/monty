@@ -96,14 +96,15 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// and for `isdisjoint(...)`.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
+        let mut result_guard = DropGuard::new(Set::new(), vm);
+        let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             value.drop_with(vm);
             result.add(key, vm)?;
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
 
     /// Implements `dict_keys.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -284,14 +285,15 @@ impl<'h> HeapRead<'h, DictItemsView> {
     /// membership checks observe standard Python tuple semantics.
     pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let mut result = Set::with_capacity(dict.get(vm.heap).len());
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
+        let mut result_guard = DropGuard::new(Set::new(), vm);
+        let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             let item = allocate_tuple(smallvec![key, value], vm.heap)?;
             result.add(item, vm)?;
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
     }
 
     /// Implements `dict_items.isdisjoint(iterable)` with CPython's iterable semantics.
@@ -633,13 +635,8 @@ fn apply_dict_view_binary_op(
     op: BinaryOp,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Set> {
-    let mut result = match op {
-        BinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),
-        BinaryOp::Or => Set::with_capacity(lhs.len() + rhs.len()),
-        BinaryOp::Xor => Set::with_capacity(lhs.len() + rhs.len()),
-        BinaryOp::Sub => Set::with_capacity(lhs.len()),
-        _ => unreachable!("non-set op rejected before materializing the view"),
-    };
+    let mut result_guard = DropGuard::new(Set::new(), vm);
+    let (result, vm) = result_guard.as_parts_mut();
 
     match op {
         BinaryOp::And => {
@@ -680,7 +677,7 @@ fn apply_dict_view_binary_op(
         _ => unreachable!("non-set op rejected before materializing the view"),
     }
 
-    Ok(result)
+    Ok(result_guard.into_inner())
 }
 
 /// Collects an arbitrary iterable into a temporary `set`.
