@@ -95,3 +95,10 @@ mechanism beyond dataclass field inheritance.
     `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
     class) is not preserved as a type — it degrades to a callable, appearing inside
     the sandbox as a `function` rather than a `type`.
+
+- **Iterator delegation depth** — re-iterating an existing iterator (`for x in
+  iter(it)`, `list(iter(it))`) wraps it in a delegating iterator rather than
+  returning it unchanged. Chains deeper than 1000 raise
+  `RuntimeError: iterator delegation nested too deeply`; CPython builds no chain
+  at all and has no such limit. Only reachable by repeatedly re-wrapping an
+  iterator, which normal code does not do.

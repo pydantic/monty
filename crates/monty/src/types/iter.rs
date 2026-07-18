@@ -188,6 +188,19 @@ impl MontyIter {
                 self.index += 1;
                 Ok(Some(item))
             }
+            IterValue::IterHeapRef { iter_id } => {
+                // Delegate to the terminal iterator so a wrapped iterator (from
+                // `list(iter(x))`, `for _ in iter(x)`, ...) advances the SAME
+                // iterator and shares its position. `self.value` keeps it alive
+                // and GC-traced, so `iter_id` always resolves to an Iter.
+                let Some(target) = resolve_delegate(*iter_id, vm.heap) else {
+                    return Err(ExcType::runtime_error_iter_delegation_too_deep());
+                };
+                let HeapReadOutput::Iter(mut inner) = vm.heap.read(target) else {
+                    panic!("IterHeapRef: underlying value is not an iterator")
+                };
+                inner.advance(vm)
+            }
         }
     }
 
@@ -208,6 +221,16 @@ impl MontyIter {
                     list.len()
                 })
             }
+            // The wrapper's own index is unused; report the terminal iterator's
+            // remaining length. A cyclic/over-deep chain degrades to 0, which is
+            // safe: this is only a capacity hint.
+            IterValue::IterHeapRef { iter_id } => match resolve_delegate(*iter_id, heap) {
+                Some(target) => match heap.get(target) {
+                    HeapData::Iter(inner) => inner.size_hint(heap),
+                    _ => 0,
+                },
+                None => 0,
+            },
         };
         len.saturating_sub(self.index)
     }
@@ -401,8 +424,57 @@ impl<'h> HeapRead<'h, MontyIter> {
                 self.get_mut(vm.heap).index += 1;
                 Ok(Some(item))
             }
+            IterValue::IterHeapRef { iter_id } => {
+                // Delegate to the terminal iterator (see `for_next`).
+                let iter_id = *iter_id;
+                let Some(target) = resolve_delegate(iter_id, vm.heap) else {
+                    return Err(ExcType::runtime_error_iter_delegation_too_deep());
+                };
+                let HeapReadOutput::Iter(mut inner) = vm.heap.read(target) else {
+                    panic!("IterHeapRef: underlying value is not an iterator")
+                };
+                inner.advance(vm)
+            }
         }
     }
+}
+
+/// The most `IterHeapRef` links [`resolve_delegate`] will follow before giving up.
+///
+/// Chains deeper than this are pathological — normal code produces depth 1 (a
+/// wrapper over a real iterator). The cap exists only to bound the walk against
+/// a cyclic chain, which cannot occur by construction but could in principle be
+/// reconstructed from an untrusted snapshot.
+const MAX_DELEGATION_DEPTH: usize = 1000;
+
+/// Follows a chain of delegating (`IterHeapRef`) iterators to the terminal
+/// iterator that actually holds the iteration state. Returns `None` if the chain
+/// exceeds [`MAX_DELEGATION_DEPTH`] (i.e. is cyclic or absurdly deep).
+///
+/// Delegation MUST be resolved iteratively like this, never by recursing into
+/// `advance`/`for_next`: chain depth is attacker-controlled (each `iter()` on a
+/// user iterator allocates a fresh wrapper, so `for _ in range(n): o = iter(W(o))`
+/// builds a chain of length `n`), and native recursion would overflow the stack
+/// and abort the process — a crash the sandbox can neither catch nor bound with
+/// a `ResourceTracker` limit.
+///
+/// Resolving to the terminal is equivalent to forwarding step by step, because a
+/// delegating arm does nothing but forward: it keeps no index of its own.
+fn resolve_delegate(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<HeapId> {
+    let mut current = start;
+    for _ in 0..MAX_DELEGATION_DEPTH {
+        let HeapData::Iter(inner) = heap.get(current) else {
+            // Not an iterator: by construction unreachable (a delegating
+            // iterator's target is always an `Iter`), so let the caller's
+            // `heap.read` tripwire report it.
+            return Some(current);
+        };
+        match inner.iter_value {
+            IterValue::IterHeapRef { iter_id } => current = iter_id,
+            _ => return Some(current),
+        }
+    }
+    None
 }
 
 /// Gets an item from a heap-allocated container at the given index.
@@ -577,6 +649,17 @@ enum IterValue {
     },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
+    /// Delegating iterator: drives another heap-resident iterator by id.
+    ///
+    /// Produced when an existing iterator is (re)iterated (`for _ in iter(x)`,
+    /// `list(iter(x))`), since an iterator is its own iterator. `for_next` /
+    /// `advance` forward to the underlying iterator, so iteration state is
+    /// shared. The parent `MontyIter`'s `value` holds the same iterator ref
+    /// (keeping it alive and GC-traced), and the parent's own `index` is unused.
+    ///
+    /// Chains of these are resolved iteratively by [`resolve_delegate`] — never
+    /// by recursing, see that function for why.
+    IterHeapRef { iter_id: HeapId },
     /// Iterating over a heap-allocated container (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
     ///
     /// - `len`: `None` for List (checked dynamically since lists can mutate during iteration),
@@ -690,6 +773,10 @@ impl IterValue {
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
+            // An existing iterator is its own iterator: delegate to it so
+            // `for`/`list`/`sum`/comprehensions drive the SAME object and share
+            // its position, rather than restarting it.
+            HeapData::Iter(_) => Some(Self::IterHeapRef { iter_id: heap_id }),
             // other types are not iterable
             _ => None,
         }
