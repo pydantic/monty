@@ -3,7 +3,7 @@
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::RunResult,
+    exception_private::{ExcType, RunResult},
     heap::HeapData,
     resource::ResourceTracker,
     types::{List, MontyIter},
@@ -17,6 +17,15 @@ use crate::{
 pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("reversed", vm.heap)?;
 
+    // Being iterable is not enough: CPython needs `__reversed__`, or
+    // `__len__` + `__getitem__`. Check before iterating so unordered and
+    // one-shot iterables are rejected rather than silently reversed.
+    if !is_reversible(&value, vm) {
+        let err = ExcType::type_error_not_reversible(&value.py_type_name(vm));
+        value.drop_with(vm);
+        return Err(err);
+    }
+
     // Collect all items
     let mut items: Vec<_> = MontyIter::new(value, vm)?.collect(vm)?;
 
@@ -25,4 +34,31 @@ pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) 
 
     let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Whether `reversed()` accepts this value, mirroring CPython's requirement of
+/// `__reversed__` or `__len__` + `__getitem__`.
+///
+/// Deliberately a positive allowlist: a newly iterable type must opt in here
+/// rather than becoming reversible by accident. Sets and iterators are excluded
+/// (no ordering / one-shot), as are user instances — `__reversed__` is not
+/// dispatched, see `limitations/classes.md`.
+fn is_reversible(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::InternString(_) | Value::InternBytes(_) => true,
+        Value::Ref(id) => matches!(
+            vm.heap.get(*id),
+            HeapData::List(_)
+                | HeapData::Tuple(_)
+                | HeapData::NamedTuple(_)
+                | HeapData::Str(_)
+                | HeapData::Bytes(_)
+                | HeapData::Range(_)
+                | HeapData::Dict(_)
+                | HeapData::DictKeysView(_)
+                | HeapData::DictItemsView(_)
+                | HeapData::DictValuesView(_)
+        ),
+        _ => false,
+    }
 }

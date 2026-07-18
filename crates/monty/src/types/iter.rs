@@ -189,10 +189,8 @@ impl MontyIter {
                 Ok(Some(item))
             }
             IterValue::IterHeapRef { iter_id } => {
-                // Delegate to the terminal iterator so a wrapped iterator (from
-                // `list(iter(x))`, `for _ in iter(x)`, ...) advances the SAME
-                // iterator and shares its position. `self.value` keeps it alive
-                // and GC-traced, so `iter_id` always resolves to an Iter.
+                // Delegate to the terminal iterator so position is shared;
+                // `self.value` keeps it alive, so this always resolves to an Iter.
                 let Some(target) = resolve_delegate(*iter_id, vm.heap) else {
                     return Err(ExcType::runtime_error_iter_delegation_too_deep());
                 };
@@ -439,27 +437,59 @@ impl<'h> HeapRead<'h, MontyIter> {
     }
 }
 
+/// Collects every remaining item of an iterable into a `Vec`.
+///
+/// For the sites that need all items at once (sequence unpacking, `*` literal
+/// unpack). Clones `value`, so callers holding a borrowed value — e.g. behind
+/// `defer_drop!` — can use it without giving up ownership.
+pub fn collect_iterable(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+    let cloned = value.clone_with_heap(vm.heap);
+    MontyIter::new(cloned, vm)?.collect(vm)
+}
+
+/// Pulls at most `limit` items from an iterable, stopping early.
+///
+/// Sequence unpacking only needs to know whether there is one item too many, and
+/// CPython stops consuming there. Draining instead would over-consume a shared
+/// iterator and change the error message.
+pub fn collect_iterable_bounded(
+    value: &Value,
+    limit: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<Value>> {
+    let cloned = value.clone_with_heap(vm.heap);
+    let iter = MontyIter::new(cloned, vm)?;
+    let mut guard = DropGuard::new(iter, vm);
+    let (iter, vm) = guard.as_parts_mut();
+    let mut items = Vec::new();
+    while items.len() < limit {
+        match iter.for_next(vm) {
+            Ok(Some(value)) => items.push(value),
+            Ok(None) => break,
+            Err(e) => {
+                for item in items {
+                    item.drop_with(vm);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(items)
+}
+
 /// The most `IterHeapRef` links [`resolve_delegate`] will follow before giving up.
 ///
-/// Chains deeper than this are pathological — normal code produces depth 1 (a
-/// wrapper over a real iterator). The cap exists only to bound the walk against
-/// a cyclic chain, which cannot occur by construction but could in principle be
-/// reconstructed from an untrusted snapshot.
+/// Normal code produces depth 1; the cap only bounds the walk against a cyclic
+/// chain, which is unreachable by construction but not from an untrusted snapshot.
 const MAX_DELEGATION_DEPTH: usize = 1000;
 
 /// Follows a chain of delegating (`IterHeapRef`) iterators to the terminal
-/// iterator that actually holds the iteration state. Returns `None` if the chain
-/// exceeds [`MAX_DELEGATION_DEPTH`] (i.e. is cyclic or absurdly deep).
+/// iterator holding the iteration state. `None` if the chain exceeds
+/// [`MAX_DELEGATION_DEPTH`] (cyclic or absurdly deep).
 ///
-/// Delegation MUST be resolved iteratively like this, never by recursing into
-/// `advance`/`for_next`: chain depth is attacker-controlled (each `iter()` on a
-/// user iterator allocates a fresh wrapper, so `for _ in range(n): o = iter(W(o))`
-/// builds a chain of length `n`), and native recursion would overflow the stack
-/// and abort the process — a crash the sandbox can neither catch nor bound with
-/// a `ResourceTracker` limit.
-///
-/// Resolving to the terminal is equivalent to forwarding step by step, because a
-/// delegating arm does nothing but forward: it keeps no index of its own.
+/// MUST stay iterative, never recursing into `advance`: chain depth is
+/// attacker-controlled, and native recursion would overflow the stack and abort
+/// the process — uncatchable, and beyond any `ResourceTracker` limit.
 fn resolve_delegate(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<HeapId> {
     let mut current = start;
     for _ in 0..MAX_DELEGATION_DEPTH {
@@ -649,16 +679,11 @@ enum IterValue {
     },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
-    /// Delegating iterator: drives another heap-resident iterator by id.
+    /// Delegating iterator: drives another heap-resident iterator by id, so
+    /// re-iterating an iterator (`list(iter(x))`) shares its position.
     ///
-    /// Produced when an existing iterator is (re)iterated (`for _ in iter(x)`,
-    /// `list(iter(x))`), since an iterator is its own iterator. `for_next` /
-    /// `advance` forward to the underlying iterator, so iteration state is
-    /// shared. The parent `MontyIter`'s `value` holds the same iterator ref
-    /// (keeping it alive and GC-traced), and the parent's own `index` is unused.
-    ///
-    /// Chains of these are resolved iteratively by [`resolve_delegate`] — never
-    /// by recursing, see that function for why.
+    /// The parent's `value` holds the same ref (so it is GC-traced) and the
+    /// parent's `index` is unused.
     IterHeapRef { iter_id: HeapId },
     /// Iterating over a heap-allocated container (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
     ///

@@ -1126,6 +1126,14 @@ impl ExcType {
         SimpleException::new_msg(Self::RuntimeError, "dictionary changed size during iteration").into()
     }
 
+    /// Creates a TypeError for `reversed()` on a non-reversible object.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object is not reversible`
+    #[must_use]
+    pub(crate) fn type_error_not_reversible(type_: &str) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not reversible")).into()
+    }
+
     /// Creates a RuntimeError for an over-deep iterator delegation chain.
     ///
     /// Monty-specific (CPython builds no delegation chain at all) — see

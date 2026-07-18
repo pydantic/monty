@@ -7,7 +7,10 @@ use crate::{
     heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StringId,
     resource::ResourceTracker,
-    types::{Dict, List, Set, Slice, allocate_tuple, slice::value_to_option_i64, str::allocate_char},
+    types::{
+        Dict, List, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded, slice::value_to_option_i64,
+        str::allocate_char,
+    },
     value::{VALUE_SIZE, Value},
 };
 
@@ -120,6 +123,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     items
                 }
+                // An iterator is drained, as CPython does.
+                HeapData::Iter(_) => collect_iterable(iterable, this)?,
                 _ => {
                     let type_ = iterable.py_type_name(this);
                     return Err(ExcType::type_error_value_after_star(&type_));
@@ -383,6 +388,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     items
                 }
+                // An iterator is drained, as CPython does.
+                HeapData::Iter(_) => collect_iterable(iterable, this)?,
                 _ => {
                     let type_ = iterable.py_type_name(this);
                     return Err(ExcType::type_error_not_iterable(&type_));
@@ -577,6 +584,24 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         return Ok(());
                     }
+                    // Pull one past `count` so a too-long iterator is detected
+                    // without draining it — CPython stops consuming there too,
+                    // and so reports no total in the "too many" message.
+                    HeapData::Iter(_) => {
+                        let items = collect_iterable_bounded(value, count + 1, this)?;
+                        if items.len() != count {
+                            let err = if items.len() > count {
+                                unpack_too_many_unknown_error(count)
+                            } else {
+                                unpack_size_error(count, items.len())
+                            };
+                            for item in items {
+                                item.drop_with(this);
+                            }
+                            return Err(err);
+                        }
+                        items
+                    }
                     _ => {
                         let type_name = value.py_type_name(this);
                         return Err(unpack_type_error(&type_name));
@@ -656,6 +681,18 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         items
                     }
+                    // An iterator is drained to unpack it, as CPython does.
+                    HeapData::Iter(_) => {
+                        let items = collect_iterable(value, this)?;
+                        if items.len() < min_items {
+                            let err = unpack_ex_too_few_error(min_items, items.len());
+                            for item in items {
+                                item.drop_with(this);
+                            }
+                            return Err(err);
+                        }
+                        items
+                    }
                     _ => {
                         let type_name = value.py_type_name(this);
                         return Err(unpack_type_error(&type_name));
@@ -727,6 +764,18 @@ fn unpack_size_error(expected: usize, actual: usize) -> RunError {
         format!("too many values to unpack (expected {expected}, got {actual})")
     };
     SimpleException::new_msg(ExcType::ValueError, message).into()
+}
+
+/// Creates the "too many values" ValueError when the total is unknown.
+///
+/// Unpacking an iterator stops at the first surplus item, so unlike
+/// [`unpack_size_error`] there is no total to report — matching CPython.
+fn unpack_too_many_unknown_error(expected: usize) -> RunError {
+    SimpleException::new_msg(
+        ExcType::ValueError,
+        format!("too many values to unpack (expected {expected})"),
+    )
+    .into()
 }
 
 /// Creates a TypeError for attempting to unpack a non-iterable type.

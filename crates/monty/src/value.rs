@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
@@ -28,7 +28,7 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        Bytes, CmpOrder, LazyHeapSet, List, LongInt, MontyIter, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{
@@ -1811,6 +1811,22 @@ impl Value {
                             _ => return Ok(false),
                         };
                         Ok(range.contains(n))
+                    }
+                    // An iterator is consumed until the item is found, as
+                    // CPython's `in` does for any iterable without `__contains__`.
+                    HeapReadOutput::Iter(_) => {
+                        let iter = MontyIter::new(self.clone_with_heap(vm.heap), vm)?;
+                        defer_drop_mut!(iter, vm);
+                        loop {
+                            let Some(el) = iter.for_next(vm)? else {
+                                break Ok(false);
+                            };
+                            let eq = item.py_eq(&el, vm);
+                            el.drop_with(vm);
+                            if eq? {
+                                break Ok(true);
+                            }
+                        }
                     }
                     _ => {
                         let type_name = self.py_type_name(vm);

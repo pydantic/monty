@@ -102,3 +102,6 @@ mechanism beyond dataclass field inheritance.
   `RuntimeError: iterator delegation nested too deeply`; CPython builds no chain
   at all and has no such limit. Only reachable by repeatedly re-wrapping an
   iterator, which normal code does not do.
+- **`reversed(x)`** — the `TypeError` for a non-reversible argument names Monty's
+  single `iterator` type rather than CPython's specific one, e.g.
+  `'iterator' object is not reversible` where CPython says `'list_iterator'`.
