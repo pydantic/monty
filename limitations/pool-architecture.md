@@ -164,6 +164,14 @@ properties that real CPython does not provide, per the caveat above.
   `PermissionError` instead of blocking — CPython would block until a peer
   appears, but mount I/O runs on the host thread driving the session and must
   never block on sandbox-reachable input.
+- **Mount I/O is not covered by `request_timeout`.** Covered filesystem calls
+  run synchronously on the host thread driving the session; the watchdog's
+  only lever is killing the worker, which cannot interrupt host-side I/O.
+  Sandbox code cannot exploit this (special files are rejected, above), but a
+  mount on a pathological host filesystem — a stalled NFS or FUSE volume —
+  blocks the feed with no timeout. Like a blocking `print_callback` or
+  external function, hang-free host I/O is the embedder's responsibility:
+  do not mount directories on filesystems that can hang.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are serviced by the pool and never reach the callback.
 - **A mounted file's contents must fit the wire frame limit.** A mounted read
