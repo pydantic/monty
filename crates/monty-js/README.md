@@ -204,8 +204,8 @@ external function or between feeds. Sessions with the limit also get an
 automatic backstop: the worker reports its execution time on every protocol
 turn and the host kills it `durationLimitGrace` (default 1s) after the
 remaining budget expires, covering cases where the in-sandbox limit cannot
-fire (e.g. a blocking syscall inside a mount). Set `durationLimitGrace: null`
-to disable it.
+fire (its check only runs at interpreter checkpoints). Set
+`durationLimitGrace: null` to disable it.
 
 ## Assert message annotations
 

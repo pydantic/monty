@@ -274,8 +274,8 @@ export class MontySession {
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
-   * in the dump); a missing, extra, or altered mount throws. Throws if the dump
-   * is actually an idle session.
+   * in the dump), or its filesystem calls degrade into unhandled OS calls.
+   * Throws if the dump is actually an idle session.
    */
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()

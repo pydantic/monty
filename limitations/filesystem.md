@@ -23,8 +23,9 @@ Each mount is configured by the host as one of:
   `unlink`, `write_text`, ...) raises `PermissionError`.
 - **`ReadWrite`** — full read/write into the underlying host directory.
 - **`OverlayMemory`** — copy-on-write: reads fall through to the host
-  directory, writes are captured in memory and never touch the host. The
-  changes vanish when the VM is discarded.
+  directory, writes are captured in memory and never touch the host. Via the
+  pool, the changes are discarded when the feed ends — each feed starts with
+  a fresh overlay.
 
 ## Only regular files can be read, written, or opened
 
