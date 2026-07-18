@@ -14,7 +14,7 @@ use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
-use monty_fs::{MountError, MountMode, MountTable, OverlayState};
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -1636,6 +1636,98 @@ fn windows_style_write_paths_do_not_touch_host_mount() {
         !dir.path().join("created.txt").exists(),
         "the host mount should not be modified for an unhandled windows-style path"
     );
+}
+
+// =============================================================================
+// Mount memory usage limit
+// =============================================================================
+
+/// Creates a mount table with a small memory budget so tests can hit the
+/// limit without large allocations.
+fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64) -> MountTable {
+    let mount = Mount::new("/mnt", tmpdir.path(), mode, None)
+        .unwrap()
+        .with_memory_usage_limit(limit);
+    let mut table = MountTable::new();
+    table.push_mount(mount);
+    table
+}
+
+#[test]
+fn mount_memory_usage_limit_defaults_to_100_mb() {
+    let dir = create_test_dir();
+    let mount = Mount::new("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
+
+    assert_eq!(DEFAULT_MEMORY_USAGE_LIMIT, 100_000_000);
+    assert_eq!(mount.memory_usage_limit(), DEFAULT_MEMORY_USAGE_LIMIT);
+    assert_eq!(mount.memory_usage(), 0);
+}
+
+#[test]
+fn direct_reads_accept_exact_limit_and_reject_one_byte_over() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("exact.txt"), b"12345").unwrap();
+    fs::write(dir.path().join("large.txt"), b"123456").unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::ReadOnly, 5);
+
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/exact.txt".into())),
+        MontyObject::Bytes(b"12345".to_vec())
+    );
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 5 bytes exceeded",
+    );
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/large.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 5 bytes exceeded",
+    );
+}
+
+#[test]
+fn directory_results_obey_mount_memory_budget() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("one"), b"").unwrap();
+    fs::write(dir.path().join("two"), b"").unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::ReadOnly, 100);
+
+    let exc = call_err(&mut mt, &OsFunctionCall::Iterdir("/mnt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 100 bytes exceeded",
+    );
+}
+
+#[test]
+fn overlay_retained_data_and_reads_share_one_memory_budget() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("large.bin"), vec![b'x'; 800]).unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call(&mut mt, &write_bytes("/mnt/overlay.bin", vec![b'a'; 500]))
+        .unwrap()
+        .unwrap();
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/overlay.bin".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+
+    let exc = call_err(&mut mt, &append_bytes("/mnt/large.bin", b"7".to_vec()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+    assert_eq!(fs::read(dir.path().join("large.bin")).unwrap(), vec![b'x'; 800]);
+}
+
+#[test]
+fn separate_overlay_files_share_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/one.bin", vec![b'a'; 300]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/two.bin", vec![b'b'; 300]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
 }
 
 // =============================================================================

@@ -36,6 +36,27 @@ sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
 Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
 still work on special files.
 
+## Mount memory limits
+
+Each mount has a configurable `memory_usage_limit`, defaulting to 100 MB
+(100,000,000 bytes). Retained in-memory overlay entries and transient
+filesystem results share the budget. Host files are read incrementally up to
+the remaining budget without trusting file-size metadata; an operation that
+would exceed it raises
+`MemoryError: mount memory usage limit of 100 MB exceeded`. CPython has no
+equivalent default limit.
+
+Consequences of the shared budget that have no CPython analogue:
+
+- Reading a file back needs transient budget for the result alongside the
+  retained copy, so an overlay file larger than roughly half the budget can be
+  written but not read back.
+- Overlay deletions (`unlink`, `rmdir`, and the tombstones a `rename` leaves
+  behind) record in-memory entries, so they too can raise `MemoryError` when
+  the budget is exhausted.
+- The `monty` CLI's `-m` mounts always use the default limit; there is no CLI
+  flag to change it.
+
 ## Write limits
 
 Hosts can configure a cumulative `write_bytes_limit` per mount. In

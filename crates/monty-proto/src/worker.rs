@@ -198,7 +198,7 @@ struct TypeCheckState {
 }
 
 /// The child-side session state that lives *outside* the repl/progress payload
-/// and so must travel in the dump envelope explicitly: the script name, the
+/// and so must travel in the dump envelope explicitly: the script name and the
 /// type-check state. Serialized by [`push_session_meta`] and parsed by
 /// [`take_session_meta`].
 struct SessionMeta {

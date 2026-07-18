@@ -60,6 +60,10 @@ pub enum MountError {
     /// Cumulative write bytes exceeded the configured per-mount limit.
     /// The configured byte limit that was exceeded.
     WriteLimitExceeded(u64),
+
+    /// An operation would exceed the mount's aggregate memory budget.
+    /// The configured byte limit that was exceeded.
+    MemoryUsageLimitExceeded(u64),
 }
 
 impl MountError {
@@ -138,6 +142,13 @@ impl MountError {
                 ExcType::OSError,
                 Some(format!("disk write limit of {} exceeded", format_bytes_pretty(limit))),
             ),
+            Self::MemoryUsageLimitExceeded(limit) => MontyException::new(
+                ExcType::MemoryError,
+                Some(format!(
+                    "mount memory usage limit of {} exceeded",
+                    format_bytes_pretty(limit)
+                )),
+            ),
         }
     }
 
@@ -166,6 +177,13 @@ impl fmt::Display for MountError {
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
             Self::WriteLimitExceeded(limit) => {
                 write!(f, "disk write limit of {} exceeded", format_bytes_pretty(*limit))
+            }
+            Self::MemoryUsageLimitExceeded(limit) => {
+                write!(
+                    f,
+                    "mount memory usage limit of {} exceeded",
+                    format_bytes_pretty(*limit)
+                )
             }
         }
     }

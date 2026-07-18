@@ -18,6 +18,9 @@ use super::{
     path_security::normalize_virtual_path,
 };
 
+/// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
+pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 100_000_000;
+
 /// A collection of mount points mapping virtual paths to host directories.
 ///
 /// Mounts are checked in longest-prefix-first order so that more specific
@@ -38,7 +41,8 @@ impl MountTable {
     /// Adds a mount point mapping a virtual path to a host directory.
     ///
     /// The host path is canonicalized at mount time so that all subsequent
-    /// boundary checks compare canonical-to-canonical.
+    /// boundary checks compare canonical-to-canonical. Mount memory uses
+    /// [`DEFAULT_MEMORY_USAGE_LIMIT`] unless a pre-built [`Mount`] overrides it.
     ///
     /// # Errors
     ///
@@ -146,10 +150,13 @@ pub struct Mount {
     write_bytes_used: u64,
     /// Optional cap on cumulative bytes written. When exceeded, writes raise `OSError`.
     write_bytes_limit: Option<u64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    memory_usage_limit: u64,
 }
 
 impl Mount {
     /// Creates a new mount point, canonicalizing the host path.
+    /// Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`].
     ///
     /// # Errors
     ///
@@ -188,6 +195,7 @@ impl Mount {
             mode,
             write_bytes_used: 0,
             write_bytes_limit,
+            memory_usage_limit: DEFAULT_MEMORY_USAGE_LIMIT,
         })
     }
 
@@ -215,6 +223,28 @@ impl Mount {
         self.write_bytes_limit
     }
 
+    /// Returns the aggregate mount memory budget.
+    #[must_use]
+    pub fn memory_usage_limit(&self) -> u64 {
+        self.memory_usage_limit
+    }
+
+    /// Overrides the aggregate mount memory budget.
+    #[must_use]
+    pub fn with_memory_usage_limit(mut self, limit: u64) -> Self {
+        self.memory_usage_limit = limit;
+        self
+    }
+
+    /// Returns memory currently retained by this mount's overlay.
+    #[must_use]
+    pub fn memory_usage(&self) -> u64 {
+        match &self.mode {
+            MountMode::OverlayMemory(state) => state.memory_usage(),
+            MountMode::ReadWrite | MountMode::ReadOnly => 0,
+        }
+    }
+
     /// Returns the cumulative number of bytes written through this mount.
     #[must_use]
     pub fn write_bytes_used(&self) -> u64 {
@@ -228,6 +258,7 @@ impl Mount {
             mount_host: &self.host_path,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
+            memory_usage_limit: self.memory_usage_limit,
         };
         dispatch::execute(request, &mut ctx, &mut self.mode)
     }

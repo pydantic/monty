@@ -19,6 +19,8 @@
 //!
 //! Enforced by `path_security::resolve_path` via path canonicalization,
 //! boundary checks, and symlink escape detection.
+//! Each mount has an aggregate memory budget, defaulting to
+//! [`DEFAULT_MEMORY_USAGE_LIMIT`], for retained overlay data and results.
 //!
 //! # Mount Modes
 //!
@@ -28,7 +30,7 @@
 
 pub use error::MountError;
 pub use mount_mode::MountMode;
-pub use mount_table::{Mount, MountTable};
+pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountTable};
 pub use overlay_state::OverlayState;
 
 mod common;

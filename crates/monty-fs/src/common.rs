@@ -5,8 +5,8 @@
 //! byte decoding, stat conversion, and quota bookkeeping logic.
 
 use std::{
-    fs::{self, OpenOptions},
-    io::{ErrorKind, Write},
+    fs::{self, File, OpenOptions},
+    io::{ErrorKind, Read, Write},
     path::Path,
     time::SystemTime,
 };
@@ -15,10 +15,71 @@ use monty::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reaso
 
 use super::error::MountError;
 
+/// Conservative per-item charge for transient listing bookkeeping: string
+/// headers, container slots, and dedup-set entries. Variable-size name and
+/// path bytes are charged separately.
+pub(super) const LISTING_ENTRY_MEMORY_USAGE: u64 = 128;
+
+/// Saturating `usize` → `u64` conversion for memory bookkeeping arithmetic.
+pub(super) fn as_u64(bytes: usize) -> u64 {
+    u64::try_from(bytes).unwrap_or(u64::MAX)
+}
+
+/// Memory still available to one operation, plus the configured per-mount
+/// limit for error reporting.
+///
+/// `available` is what enforcement compares against (the limit minus any
+/// already-retained overlay data); `limit` only feeds the `MemoryError`
+/// message so users see the configured value, not the residual.
+#[derive(Clone, Copy)]
+pub(super) struct MemoryBudget {
+    /// Bytes still available before the mount's limit is exceeded.
+    pub available: u64,
+    /// The configured per-mount limit, reported in errors.
+    pub limit: u64,
+}
+
+impl MemoryBudget {
+    /// Budget for a mount with nothing retained (direct read-only/read-write modes).
+    pub fn full(limit: u64) -> Self {
+        Self {
+            available: limit,
+            limit,
+        }
+    }
+
+    /// Errors if `bytes` exceeds the available budget.
+    pub fn check(self, bytes: u64) -> Result<(), MountError> {
+        if bytes > self.available {
+            Err(MountError::MemoryUsageLimitExceeded(self.limit))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns the budget with `bytes` fewer available, erroring if `bytes`
+    /// exceeds what is available.
+    pub fn shrink(self, bytes: u64) -> Result<Self, MountError> {
+        match self.available.checked_sub(bytes) {
+            Some(available) => Ok(Self { available, ..self }),
+            None => Err(MountError::MemoryUsageLimitExceeded(self.limit)),
+        }
+    }
+
+    /// Halves the available budget, for a listing phase that must leave room
+    /// for a similarly-sized result phase built from it.
+    pub fn halved(self) -> Self {
+        Self {
+            available: self.available / 2,
+            ..self
+        }
+    }
+}
+
 /// Per-call mount context shared by the filesystem backends.
 ///
-/// The context carries immutable mount identity and mutable write accounting so
-/// the backends do not need long parameter lists or ad hoc state threading.
+/// The context carries mount identity and resource limits so the backends do
+/// not need long parameter lists or ad hoc state threading.
 pub(super) struct MountContext<'a> {
     /// Virtual mount prefix such as `"/mnt/data"`.
     pub mount_virtual: &'a str,
@@ -28,27 +89,52 @@ pub(super) struct MountContext<'a> {
     pub write_bytes_used: &'a mut u64,
     /// Optional cumulative write cap for the mount.
     pub write_bytes_limit: Option<u64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    pub memory_usage_limit: u64,
 }
 
 /// Reads a file as UTF-8 text, preserving `UnicodeDecodeError` semantics.
 ///
-/// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
-/// `IsADirectory`, so we check explicitly before reading.
-pub(super) fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_non_regular(path, vpath)?;
-    let bytes = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+/// Directory-read errors differ across platforms, so the target is checked
+/// explicitly before reading.
+pub(super) fn read_text_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+    let bytes = read_file_limited(path, vpath, budget)?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
 }
 
 /// Reads a file as raw bytes.
 ///
-/// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
-/// `IsADirectory`, so we check explicitly before reading.
-pub(super) fn read_bytes_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
+/// Directory-read errors differ across platforms, so the target is checked
+/// explicitly before reading.
+pub(super) fn read_bytes_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
+    Ok(MontyObject::Bytes(read_file_limited(path, vpath, budget)?))
+}
+
+/// Reads at most `budget + 1` bytes so an oversized file is rejected before it
+/// can create an unbounded host allocation. The extra byte distinguishes a
+/// file exactly at the limit from one that is larger without trusting metadata.
+///
+/// Metadata only serves the fast path: rejecting an obviously oversized file
+/// with one `stat`, and pre-sizing the buffer (capped by the budget) to avoid
+/// `read_to_end`'s doubling reallocations. Enforcement is always the byte
+/// count actually read, so lying or racing metadata cannot evade the limit.
+fn read_file_limited(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
     reject_non_regular(path, vpath)?;
-    let content = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
-    Ok(MontyObject::Bytes(content))
+    let file = File::open(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    let meta_len = file
+        .metadata()
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))?
+        .len();
+    budget.check(meta_len)?;
+    // The check above bounds `meta_len` by the budget, so this pre-allocation
+    // can never exceed the limit being enforced.
+    let mut content = Vec::with_capacity(usize::try_from(meta_len).unwrap_or(0));
+    file.take(budget.available.saturating_add(1))
+        .read_to_end(&mut content)
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    budget.check(as_u64(content.len()))?;
+    Ok(content)
 }
 
 /// Writes text to a file and returns the number of characters written.
@@ -169,11 +255,27 @@ pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErro
     }
 }
 
-/// Lists visible directory entries from the real filesystem.
-pub(super) fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<MontyObject, MountError> {
+/// Lists visible directory entries within the mount memory budget.
+pub(super) fn iterdir_fs(
+    host_path: &Path,
+    vpath: &str,
+    mount_host_path: &Path,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
+    let names = list_visible_real_dir_entry_names(host_path, mount_host_path, vpath, budget.halved())?;
+    let mut memory_usage = names.iter().fold(0_u64, |usage, name| {
+        usage
+            .saturating_add(as_u64(name.len()))
+            .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
+    });
     let mut result = Vec::new();
-    for name in list_visible_real_dir_entry_names(host_path, mount_host_path, vpath)? {
-        result.push(MontyObject::Path(format_child_path(vpath, &name)));
+    for name in names {
+        let path = format_child_path(vpath, &name);
+        memory_usage = memory_usage
+            .saturating_add(as_u64(path.len()))
+            .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+        budget.check(memory_usage)?;
+        result.push(MontyObject::Path(path));
     }
     Ok(MontyObject::List(result))
 }
@@ -205,9 +307,11 @@ pub(super) fn list_visible_real_dir_entry_names(
     host_path: &Path,
     mount_host_path: &Path,
     vpath: &str,
+    budget: MemoryBudget,
 ) -> Result<Vec<String>, MountError> {
     let read_dir = fs::read_dir(host_path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     let mut names = Vec::new();
+    let mut memory_usage = 0_u64;
 
     for entry in read_dir {
         let entry = entry.map_err(|err| MountError::Io(err, vpath.to_owned()))?;
@@ -221,7 +325,12 @@ pub(super) fn list_visible_real_dir_entry_names(
             }
         }
 
-        names.push(entry.file_name().to_string_lossy().to_string());
+        let name = entry.file_name().to_string_lossy().to_string();
+        memory_usage = memory_usage
+            .saturating_add(as_u64(name.len()))
+            .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+        budget.check(memory_usage)?;
+        names.push(name);
     }
 
     Ok(names)

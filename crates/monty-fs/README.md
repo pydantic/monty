@@ -19,6 +19,10 @@ All path resolution goes through a single security boundary
 checks, and symlink escape detection: the sandbox can never read, write, or
 learn anything about files outside the mounted directories.
 
+Each mount has a configurable aggregate memory budget that defaults to 100 MB.
+Retained in-memory overlay data and transient filesystem results share that
+budget; oversized operations return `MemoryError` before an unbounded read.
+
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.

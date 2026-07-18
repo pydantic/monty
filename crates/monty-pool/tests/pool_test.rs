@@ -175,6 +175,7 @@ fn non_utf8_mount_path_works() {
                 host_path: weird_dir,
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
@@ -202,6 +203,7 @@ fn invalid_mount_host_path_is_rejected_cleanly() {
                 host_path: PathBuf::from("/nonexistent/monty/mount/dir"),
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
@@ -236,6 +238,7 @@ fn mounted_filesystem_ops_are_serviced_by_the_parent() {
             host_path: dir.path().to_path_buf(),
             mode: MountSpecMode::ReadWrite,
             write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }]
     };
     let pool = Pool::new(config()).unwrap();
@@ -282,6 +285,7 @@ fn read_only_and_overlay_mount_semantics() {
             host_path: dir.path().to_path_buf(),
             mode,
             write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }]
     };
     let pool = Pool::new(config()).unwrap();
@@ -347,6 +351,7 @@ msg";
                 host_path: dir.path().to_path_buf(),
                 mode: MountSpecMode::ReadWrite,
                 write_bytes_limit: Some(10),
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
@@ -381,6 +386,7 @@ covered + ':' + Path('/elsewhere/file.txt').read_text()";
                 host_path: dir.path().to_path_buf(),
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
@@ -420,6 +426,7 @@ fn suspended_feed_restores_with_mounts_re_supplied() {
             host_path: dir.path().to_path_buf(),
             mode: MountSpecMode::ReadOnly,
             write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }]
     };
     let pool = Pool::new(config()).unwrap();
@@ -741,6 +748,7 @@ fn special_files_in_mounts_are_rejected_without_blocking() {
                 host_path: dir.path().to_path_buf(),
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,

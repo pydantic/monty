@@ -115,6 +115,8 @@ pub struct NativeMount {
     pub mode: String,
     /// Cap on total bytes written through this mount.
     pub write_bytes_limit: Option<f64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    pub memory_usage_limit: f64,
 }
 
 /// A pool of `monty` worker subprocesses. Wrapped by the TypeScript `Monty`
@@ -824,21 +826,26 @@ impl TryFrom<NativeMount> for MountSpec {
         };
         let write_bytes_limit = mount
             .write_bytes_limit
-            .map(|limit| {
-                if limit.is_finite() && limit >= 0.0 && limit.fract() == 0.0 {
-                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    Ok(limit as u64)
-                } else {
-                    Err(invalid("writeBytesLimit must be a non-negative integer"))
-                }
-            })
+            .map(|limit| bytes_limit(limit, "writeBytesLimit"))
             .transpose()?;
+        let memory_usage_limit = bytes_limit(mount.memory_usage_limit, "memoryUsageLimit")?;
         Ok(Self {
             virtual_path: mount.virtual_path,
             host_path: mount.host_path.into(),
             mode,
             write_bytes_limit,
+            memory_usage_limit,
         })
+    }
+}
+
+/// Validates and narrows a JavaScript byte limit.
+fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
+    if limit.is_finite() && limit >= 0.0 && limit.fract() == 0.0 {
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(limit as u64)
+    } else {
+        Err(invalid(&format!("{name} must be a non-negative integer")))
     }
 }
 

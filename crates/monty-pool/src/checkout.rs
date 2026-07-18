@@ -56,6 +56,23 @@ pub struct MountSpec {
     pub mode: MountSpecMode,
     /// Cap on total bytes written through this mount.
     pub write_bytes_limit: Option<u64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    pub memory_usage_limit: u64,
+}
+
+impl MountSpec {
+    /// Creates mount configuration with the default 100 MB memory budget and
+    /// no cumulative write limit.
+    #[must_use]
+    pub fn new(virtual_path: String, host_path: PathBuf, mode: MountSpecMode) -> Self {
+        Self {
+            virtual_path,
+            host_path,
+            mode,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }
+    }
 }
 
 /// Access mode for a [`MountSpec`].
@@ -871,9 +888,10 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolE
             // long as the feed and are discarded with it.
             MountSpecMode::Overlay => MountMode::OverlayMemory(OverlayState::new()),
         };
-        table
-            .mount(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
-            .map_err(|err| PoolError::Runtime(err.into_exception()))?;
+        let mount = monty_fs::Mount::new(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
+            .map_err(|err| PoolError::Runtime(err.into_exception()))?
+            .with_memory_usage_limit(mount.memory_usage_limit);
+        table.push_mount(mount);
     }
     Ok(Some(table))
 }

@@ -6,6 +6,9 @@
 
 import type { NativeMount } from '../native-addon.js'
 
+// Mirrors monty-fs's DEFAULT_MEMORY_USAGE_LIMIT (100 MB in decimal bytes).
+const DEFAULT_MEMORY_USAGE_LIMIT = 100_000_000
+
 /** Sandbox access mode for a mounted directory. */
 export type MountDirMode = 'read-only' | 'read-write' | 'overlay'
 
@@ -19,6 +22,8 @@ export interface MountDirOptions {
   mode?: MountDirMode
   /** Cap on total bytes written through this mount. */
   writeBytesLimit?: number
+  /** Aggregate mount memory budget in bytes (default 100 MB). */
+  memoryUsageLimit?: number
 }
 
 const VALID_MODES: Record<MountDirMode, true> = {
@@ -29,6 +34,7 @@ const VALID_MODES: Record<MountDirMode, true> = {
 
 /**
  * Mounts a real host directory into the sandbox at a virtual path.
+ * Retained overlay data and filesystem results share a 100 MB memory budget.
  *
  * ```ts
  * const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
@@ -40,6 +46,7 @@ export class MountDir {
   readonly hostPath: string
   readonly mode: MountDirMode
   readonly writeBytesLimit: number | null
+  readonly memoryUsageLimit: number
 
   constructor(virtualPath: string, hostPath: string, options: MountDirOptions = {}) {
     const mode = options.mode ?? 'overlay'
@@ -51,6 +58,10 @@ export class MountDir {
     this.hostPath = hostPath
     this.mode = mode
     this.writeBytesLimit = options.writeBytesLimit ?? null
+    this.memoryUsageLimit = options.memoryUsageLimit ?? DEFAULT_MEMORY_USAGE_LIMIT
+    if (!Number.isSafeInteger(this.memoryUsageLimit) || this.memoryUsageLimit < 0) {
+      throw new Error('memoryUsageLimit must be a non-negative safe integer')
+    }
   }
 
   /** Returns a string representation of the mount. */
@@ -69,6 +80,7 @@ export function mountsToNative(mount: MountDir | MountDir[] | undefined): Native
     virtualPath: m.virtualPath,
     hostPath: m.hostPath,
     mode: m.mode,
+    memoryUsageLimit: m.memoryUsageLimit,
     ...(m.writeBytesLimit !== null ? { writeBytesLimit: m.writeBytesLimit } : {}),
   }))
 }

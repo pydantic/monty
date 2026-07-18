@@ -167,6 +167,10 @@ const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
+Each mount has a 100 MB aggregate memory budget by default. Configure it with
+`memoryUsageLimit`; retained overlay data and filesystem results share it, and
+operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
+
 Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
 kept in memory and discarded at the end of the feed). Mount I/O is serviced
 on the host side of the pool, so mounts work even for remote workers. OS

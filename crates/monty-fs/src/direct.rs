@@ -9,8 +9,9 @@ use monty::{FileMode, MontyObject};
 
 use super::{
     common::{
-        MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
-        read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        MemoryBudget, MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs,
+        mkdir_fs, read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs,
+        write_text_fs,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -34,11 +35,11 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         FsRequest::IsSymlink { path } => is_symlink(path, ctx),
         FsRequest::ReadText { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, path)
+            read_text_fs(&resolved.host_path, path, MemoryBudget::full(ctx.memory_usage_limit))
         }
         FsRequest::ReadBytes { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, path)
+            read_bytes_fs(&resolved.host_path, path, MemoryBudget::full(ctx.memory_usage_limit))
         }
         FsRequest::WriteText { path, data } => write_text(path, data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(path, data, ctx),
@@ -56,7 +57,12 @@ pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Res
         }
         FsRequest::Iterdir { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            iterdir_fs(&resolved.host_path, path, ctx.mount_host)
+            iterdir_fs(
+                &resolved.host_path,
+                path,
+                ctx.mount_host,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::Stat { path } => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;

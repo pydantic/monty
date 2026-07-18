@@ -65,12 +65,16 @@ class CollectString:
 
 @final
 class MountDir:
-    """A single mount point configuration mapping a virtual path to a host directory."""
+    """A mount point mapping a virtual path to a host directory.
+
+    Retained overlay data and filesystem results share a 100 MB memory budget.
+    """
 
     virtual_path: str
     host_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
     write_bytes_limit: int | None
+    memory_usage_limit: int
 
     def __new__(
         cls,
@@ -79,6 +83,8 @@ class MountDir:
         *,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
+        # mirrors monty-fs's DEFAULT_MEMORY_USAGE_LIMIT
+        memory_usage_limit: int = 100_000_000,
     ) -> MountDir: ...
 
 class MontyError(Exception):

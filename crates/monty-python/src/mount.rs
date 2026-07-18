@@ -19,6 +19,8 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 ///
 /// Passing one instance to multiple feeds reuses only its configuration;
 /// `'overlay'` writes live in each feed's parent-side mount table.
+/// Retained overlay data and filesystem results share a configurable memory
+/// budget, which defaults to 100 MB.
 ///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write
@@ -43,7 +45,16 @@ impl PyMountDir {
     /// `ValueError` if `mode` is not one of the allowed values, the virtual path
     /// is not absolute, or the host path doesn't exist or isn't a directory.
     #[new]
-    #[pyo3(signature = (virtual_path, host_path, *, mode = "overlay", write_bytes_limit = None))]
+    #[pyo3(signature = (
+        virtual_path,
+        host_path,
+        *,
+        mode = "overlay",
+        // must stay a literal mirroring monty_fs::DEFAULT_MEMORY_USAGE_LIMIT: a
+        // const default renders as `...` in the text signature, breaking stubtest
+        write_bytes_limit = None,
+        memory_usage_limit = 100_000_000,
+    ))]
     #[expect(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf for conversion from Python str/Path
     fn new(
         py: Python<'_>,
@@ -51,6 +62,7 @@ impl PyMountDir {
         host_path: PathBuf,
         mode: &str,
         write_bytes_limit: Option<u64>,
+        memory_usage_limit: u64,
     ) -> PyResult<Self> {
         let mount_mode = MountMode::from_mode_str(mode).map_err(PyValueError::new_err)?;
         let mount = Mount::new(virtual_path, &host_path, mount_mode, write_bytes_limit)
@@ -65,6 +77,7 @@ impl PyMountDir {
                     MountMode::OverlayMemory(_) => MountSpecMode::Overlay,
                 },
                 write_bytes_limit: mount.write_bytes_limit(),
+                memory_usage_limit,
             },
         })
     }
@@ -91,6 +104,12 @@ impl PyMountDir {
     #[getter]
     fn write_bytes_limit(&self) -> Option<u64> {
         self.spec.write_bytes_limit
+    }
+
+    /// The aggregate memory budget for this mount.
+    #[getter]
+    fn memory_usage_limit(&self) -> u64 {
+        self.spec.memory_usage_limit
     }
 
     fn __repr__(&self) -> String {

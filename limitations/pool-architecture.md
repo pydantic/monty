@@ -177,12 +177,13 @@ properties that real CPython does not provide, per the caveat above.
   not the whole feed; repeated covered calls can keep one feed alive longer.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are serviced by the pool and never reach the callback.
-- **A mounted file's contents must fit the wire frame limit.** A mounted read
-  whose result would exceed the 256 MiB frame cap raises `RuntimeError`
-  inside the sandbox instead of returning the data. The pool currently reads
-  the whole regular file before checking that cap, and mount buffers are not
-  charged to sandbox `max_memory`; bound exposed file sizes and set
-  `write_bytes_limit` for overlays to limit trusted-parent memory exposure.
+- **Mounts have a 100 MB memory budget by default.** Retained overlay data and
+  transient filesystem results share the configurable per-mount budget.
+  Oversized operations raise `MemoryError` inside the sandbox before protocol
+  encoding. CPython has no equivalent default limit. Raising the budget above
+  256 MiB re-exposes the wire frame cap: a mounted read whose result exceeds
+  one 256 MiB frame raises `RuntimeError` inside the sandbox instead of
+  returning the data.
 - **`external_lookup` resolves undefined names lazily.** `feed_run` /
   `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
   leaves undefined is resolved on first reference against this dict — a

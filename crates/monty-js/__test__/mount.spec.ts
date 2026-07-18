@@ -70,6 +70,10 @@ test('MountDir attributes', (ctx) => {
     t.is(md.virtualPath, '/data')
     t.is(md.hostPath, dir)
     t.is(md.mode, 'read-only')
+    t.is(md.memoryUsageLimit, 100_000_000)
+
+    const limited = new MountDir('/limited', dir, { memoryUsageLimit: 1234 })
+    t.is(limited.memoryUsageLimit, 1234)
   } finally {
     cleanup()
   }
@@ -306,6 +310,24 @@ test('overlay writes do not persist across runs', async (ctx) => {
       { instanceOf: MontyRuntimeError },
     )
     t.is(error.message, "FileNotFoundError: [Errno 2] No such file or directory: '/data/persistent.txt'")
+  } finally {
+    cleanup()
+  }
+})
+
+test('overlay memory usage limit is aggregate', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDir('/data', dir, { mode: 'overlay', memoryUsageLimit: 1000 })
+    const code = `
+from pathlib import Path
+p = Path('/data/retained.bin')
+p.write_bytes(b'a' * 500)
+p.read_bytes()
+`
+    const error = await t.throwsAsync(() => run(code, { mount: md }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, 'MemoryError: mount memory usage limit of 1 KB exceeded')
   } finally {
     cleanup()
   }
