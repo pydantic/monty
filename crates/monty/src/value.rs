@@ -1371,6 +1371,51 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    /// One-sided native binary operation implementation.
+    fn py_binary_impl(
+        &self,
+        other: &Self,
+        op: BinaryOp,
+        vm: &mut VM<'_, impl ResourceTracker>,
+    ) -> RunResult<Option<Self>> {
+        let native = match op {
+            BinaryOp::Add => self.py_add(other, vm).map_err(RunError::from)?,
+            BinaryOp::Sub => self.py_sub(other, vm).map_err(RunError::from)?,
+            BinaryOp::Mul => self.py_mult(other, vm)?,
+            BinaryOp::TrueDiv => self.py_div(other, vm)?,
+            BinaryOp::FloorDiv => self.py_floordiv(other, vm)?,
+            BinaryOp::Mod => self.py_mod(other, vm)?,
+            BinaryOp::Pow => self.py_pow(other, vm)?,
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor | BinaryOp::LShift | BinaryOp::RShift => {
+                py_bitwise_native(self, other, op, vm)?
+            }
+            BinaryOp::MatMul => {
+                return Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into());
+            }
+        };
+        if native.is_some() {
+            Ok(native)
+        } else if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_binary_impl(other, op, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reflected native binary operation implementation.
+    fn py_rbinary_impl(
+        &self,
+        other: &Self,
+        op: BinaryOp,
+        vm: &mut VM<'_, impl ResourceTracker>,
+    ) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_rbinary_impl(other, op, vm)
+        } else {
+            Ok(None)
+        }
+    }
+
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
@@ -1986,51 +2031,6 @@ impl Value {
                 lhs_name,
                 other.py_type_name(vm),
             ))
-        }
-    }
-
-    /// One-sided native binary operation implementation.
-    fn py_binary_impl(
-        &self,
-        other: &Self,
-        op: BinaryOp,
-        vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> RunResult<Option<Self>> {
-        let native = match op {
-            BinaryOp::Add => self.py_add(other, vm).map_err(RunError::from)?,
-            BinaryOp::Sub => self.py_sub(other, vm).map_err(RunError::from)?,
-            BinaryOp::Mul => self.py_mult(other, vm)?,
-            BinaryOp::TrueDiv => self.py_div(other, vm)?,
-            BinaryOp::FloorDiv => self.py_floordiv(other, vm)?,
-            BinaryOp::Mod => self.py_mod(other, vm)?,
-            BinaryOp::Pow => self.py_pow(other, vm)?,
-            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor | BinaryOp::LShift | BinaryOp::RShift => {
-                py_bitwise_native(self, other, op, vm)?
-            }
-            BinaryOp::MatMul => {
-                return Err(ExcType::not_implemented("matrix multiplication (@) is not supported").into());
-            }
-        };
-        if native.is_some() {
-            Ok(native)
-        } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_binary_impl(other, op, vm)
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Reflected native binary operation implementation.
-    fn py_rbinary_impl(
-        &self,
-        other: &Self,
-        op: BinaryOp,
-        vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> RunResult<Option<Self>> {
-        if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_rbinary_impl(other, op, vm)
-        } else {
-            Ok(None)
         }
     }
 
