@@ -376,15 +376,12 @@ impl ExcType {
         .into()
     }
 
-    /// Creates a TypeError for unhashable types used as set elements.
-    ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
+    /// Creates a TypeError for an unhashable value used as a set element.
     #[must_use]
-    pub(crate) fn type_error_unhashable_set_element(type_: &str) -> RunError {
+    pub(crate) fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
         SimpleException::new_msg(
             Self::TypeError,
-            format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
+            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
         )
         .into()
     }

@@ -1466,8 +1466,41 @@ impl<'de> serde::Deserialize<'de> for FrozenSet {
 }
 
 fn set_element_hash(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u64> {
-    match value.py_hash(vm)? {
-        Some(h) => Ok(h.raw()),
-        None => Err(ExcType::type_error_unhashable_set_element(&value.py_type_name(vm))),
+    if let Some(hash) = value.py_hash(vm)? {
+        Ok(hash.raw())
+    } else {
+        let element_type = value.py_type_name(vm).into_owned();
+        let unhashable_type = unhashable_type_name(value, vm)?;
+        Err(ExcType::type_error_unhashable_set_element(
+            &element_type,
+            &unhashable_type,
+        ))
     }
+}
+
+/// Finds the nested value responsible for a tuple-like element being unhashable.
+fn unhashable_type_name(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+    let Value::Ref(id) = value else {
+        return Ok(value.py_type_name(vm).into_owned());
+    };
+    let len = match vm.heap.get(*id) {
+        HeapData::Tuple(tuple) => tuple.as_slice().len(),
+        HeapData::NamedTuple(namedtuple) => namedtuple.as_vec().len(),
+        _ => return Ok(value.py_type_name(vm).into_owned()),
+    };
+
+    for index in 0..len {
+        let item = match vm.heap.get(*id) {
+            HeapData::Tuple(tuple) => tuple.as_slice()[index].clone_with_heap(vm.heap),
+            HeapData::NamedTuple(namedtuple) => namedtuple.as_vec()[index].clone_with_heap(vm.heap),
+            _ => unreachable!("tuple-like heap value changed type"),
+        };
+        let mut item_guard = DropGuard::new(item, vm);
+        let (item, vm) = item_guard.as_parts_mut();
+        if item.py_hash(vm)?.is_none() {
+            return unhashable_type_name(item, vm);
+        }
+    }
+
+    Ok(value.py_type_name(vm).into_owned())
 }

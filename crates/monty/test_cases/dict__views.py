@@ -113,6 +113,59 @@ try:
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration', 'values iteration error matches CPython'
 
+# === Unsupported operators do not materialize views ===
+# `dict_items` materialization hashes its pairs, so unsupported operators must
+# reject the operand types before encountering an unhashable value.
+unhashable_values = {'a': [1]}
+
+try:
+    unhashable_values.items() + 1
+    assert False, 'dict_items should not support +'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for +: 'dict_items' and 'int'", 'items + int names the operand types'
+
+try:
+    unhashable_values.items() * 2
+    assert False, 'dict_items should not support *'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for *: 'dict_items' and 'int'", 'items * int names the operand types'
+
+try:
+    unhashable_values.items() << 1
+    assert False, 'dict_items should not support <<'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for <<: 'dict_items' and 'int'", (
+        'items << int names the operand types'
+    )
+
+try:
+    unhashable_values.items() >> 1
+    assert False, 'dict_items should not support >>'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for >>: 'dict_items' and 'int'", (
+        'items >> int names the operand types'
+    )
+
+try:
+    1 + unhashable_values.items()
+    assert False, 'int + dict_items should not be supported'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for +: 'int' and 'dict_items'", 'reflected + names the operand types'
+
+try:
+    2 * unhashable_values.items()
+    assert False, 'int * dict_items should not be supported'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for *: 'int' and 'dict_items'", 'reflected * names the operand types'
+
+try:
+    unhashable_values.items() - [1]
+    assert False, 'items difference over unhashable values should raise'
+except TypeError as e:
+    assert str(e) == "cannot use 'tuple' as a set element (unhashable type: 'list')", (
+        'supported items difference materializes the view'
+    )
+
 # === dict_keys & iterable ===
 d = {'a': 1, 'b': 2, 'c': 3}
 assert d.keys() & {'b', 'c', 'x'} == {'b', 'c'}, 'keys view intersects sets'
