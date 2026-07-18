@@ -9,6 +9,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use monty::{MontyObject, OsFunctionCall};
+
 use super::{
     common::MountContext,
     dispatch::{self, FsRequest},
@@ -16,7 +18,6 @@ use super::{
     mount_mode::MountMode,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, os::OsFunctionCall};
 
 /// A collection of mount points mapping virtual paths to host directories.
 ///
@@ -79,7 +80,7 @@ impl MountTable {
     ///
     /// Each slot is `Arc<Mutex<Option<Mount>>>`. The mount is taken via
     /// `Option::take` so the slot becomes `None` during execution. Use
-    /// [`put_back_shared_mounts`] to restore them after the run completes.
+    /// [`Self::put_back_shared_mounts`] to restore them after the run completes.
     ///
     /// # Errors
     ///

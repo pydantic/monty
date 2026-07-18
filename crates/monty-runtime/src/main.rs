@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use monty::{
     CompileOptions, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
-    fs::{MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountMode, MountTable, OverlayState};
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!

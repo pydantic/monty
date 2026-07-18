@@ -28,8 +28,8 @@ use monty::{
     CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
     MontyFileHandle, MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress,
     dir_stat, file_stat,
-    fs::{MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountMode, MountTable, OverlayState};
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 

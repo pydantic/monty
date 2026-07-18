@@ -5,6 +5,8 @@
 
 use std::{fs, path::PathBuf};
 
+use monty::{FileMode, MontyObject};
+
 use super::{
     common::{
         MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
@@ -14,7 +16,6 @@ use super::{
     error::MountError,
     path_security::{ResolveMode, resolve_path},
 };
-use crate::{MontyObject, types::file::FileMode};
 
 /// Internal result used for existence-style queries where "missing" is not an error.
 enum ResolvedPathState {

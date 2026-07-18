@@ -27,9 +27,11 @@ Key rules:
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
-- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
-  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
+- Tests in `crates/*/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
+  `crates/monty-fs/tests/fs_security.rs`)
+- CI runs `cargo test -p monty --features memory-model-checks` and `cargo test -p monty-fs`
+  on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -54,10 +56,15 @@ Possible security risks to consider:
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
 
-## Filesystem Mounts (`crates/monty/src/fs/`)
+## Filesystem Mounts (`crates/monty-fs/`)
 
 The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
 with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+Mounts are HOST-side code: the `monty` interpreter crate performs no filesystem
+I/O and does not depend on `monty-fs`. Sandboxed code suspends with an
+`OsFunctionCall`, which a host holding a `MountTable` (the pool parent, the CLI,
+bindings) services via `MountTable::handle_os_call`.
 
 **CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
 obtain any information about any file or directory outside the specific directory
@@ -70,8 +77,9 @@ that is mounted. This is enforced by:
 - `Resolve` and `Absolute` returning virtual paths, never host paths
 - Null byte rejection in all paths
 
-All path resolution goes through `fs::path_security::resolve_path()` which is
-the sole security boundary. **Changes to `path_security.rs` require careful security review.**
+All path resolution goes through `path_security::resolve_path()` (in
+`crates/monty-fs/src/path_security.rs`) which is the sole security boundary.
+**Changes to `path_security.rs` require careful security review.**
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 

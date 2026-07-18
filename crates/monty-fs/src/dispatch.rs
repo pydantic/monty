@@ -5,11 +5,12 @@
 //! onward the backends operate on semantic requests with `&str` / `FileMode`
 //! fields rather than re-parsing `MontyObject` arrays or walking kwargs.
 
+use monty::{FileMode, MontyFileHandle, MontyObject, OsFunctionCall};
+
 use super::{
     common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyFileHandle, MontyObject, os::OsFunctionCall, types::file::FileMode};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Clone, Copy, Debug)]

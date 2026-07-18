@@ -17,8 +17,8 @@ use std::{
 use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
-    fs::{Mount, MountError, MountMode, MountTable, OverlayState},
 };
+use monty_fs::{Mount, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================

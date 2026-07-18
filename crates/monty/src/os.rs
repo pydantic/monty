@@ -181,7 +181,7 @@ impl OsFunctionCall {
 
     /// Inverse of [`Self::to_args`] for filesystem variants: reconstructs the
     /// typed call from the generic `(positional, keyword)` wire projection so
-    /// a host holding a [`MountTable`](crate::fs::MountTable) can service
+    /// a host holding a `MountTable` (in the `monty-fs` crate) can service
     /// mount-covered OS calls itself (e.g. for a sandbox on a remote worker).
     ///
     /// Strict by design: non-filesystem names and any arity/type/kwarg
@@ -289,7 +289,7 @@ impl OsFunctionCall {
         Some(call)
     }
 
-    /// Whether this call can be handled by a [`MountTable`](crate::fs::MountTable).
+    /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
     /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
     /// must fall through to the host callback.
     #[must_use]

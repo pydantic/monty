@@ -1,5 +1,5 @@
 [package]
-name = "monty-runtime"
+name = "monty-fs"
 readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }
@@ -12,20 +12,15 @@ categories = { workspace = true }
 homepage = { workspace = true }
 repository = { workspace = true }
 
-[[bin]]
-name = "monty"
-path = "src/main.rs"
+[lib]
+name = "monty_fs"
 
 [dependencies]
-clap = { workspace = true }
 monty = { workspace = true }
-monty-fs = { workspace = true }
-monty-proto = { workspace = true, features = ["worker"] }
-monty-type-checking = { workspace = true }
-rustyline = "15"
+ahash = { workspace = true }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

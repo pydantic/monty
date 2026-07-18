@@ -1797,10 +1797,12 @@ impl ExcType {
 /// position {start}`) when the range is one byte, otherwise the range form
 /// (`bytes in position {start}-{end - 1}`).
 ///
-/// A free function (rather than folded into [`ExcType::unicode_decode_error`])
-/// so the fs layer can produce the identical wording when converting a
-/// `MountError::InvalidUtf8` from a text-mode file read into an exception.
-pub(crate) fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
+/// A free function (rather than folded into `ExcType::unicode_decode_error`),
+/// public and re-exported at the crate root, so `monty-fs` can produce the
+/// identical wording when converting a `MountError::InvalidUtf8` from a
+/// text-mode file read into an exception.
+#[must_use]
+pub fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
     // Callers must pass a non-empty range; checked in debug builds only so a
     // wrong caller can't panic the VM in release (it gets a garbled message
     // position instead, which is harmless).

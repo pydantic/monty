@@ -13,8 +13,8 @@ use std::{fmt, fs, path::Path};
 use monty::{
     FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs,
-    fs::{MountError, MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================

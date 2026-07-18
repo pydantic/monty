@@ -2,8 +2,8 @@
 //!
 //! Exposes [`PyMountDir`] (a single mount point with shared overlay state)
 //! and [`OsHandler`] (a collection of mounts with optional fallback callback).
-//! Filesystem operations are handled entirely in Rust via the core
-//! [`monty::fs::MountTable`], with no Python round-trip.
+//! Filesystem operations are handled entirely in Rust via
+//! [`monty_fs::MountTable`], with no Python round-trip.
 //!
 //! # Take/put pattern
 //!
@@ -19,7 +19,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use monty::fs::{Mount, MountMode};
+use monty_fs::{Mount, MountMode};
 use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*};
 

@@ -117,7 +117,7 @@ jobs:
       - run: cargo llvm-cov clean --workspace
 
       # coverage for `make test-no-features`
-      - run: cargo llvm-cov --no-report -p monty
+      - run: cargo llvm-cov --no-report -p monty -p monty-fs
       - run: cargo llvm-cov run --no-report -p monty-datatest
       # coverage for `make test-memory-model-checks`
       - run: cargo llvm-cov --no-report -p monty --features memory-model-checks
@@ -317,6 +317,10 @@ jobs:
           python-version: '3.14'
 
       - run: cargo test -p monty --features memory-model-checks
+      # monty-fs does host filesystem I/O, so its mount/path-security tests must
+      # pass on all three OSes (it has no memory-model-checks feature — the
+      # mount table never touches the interpreter heap).
+      - run: cargo test -p monty-fs
       - run: cargo run -p monty-datatest --features memory-model-checks
       - run: cargo build -p monty-runtime
       - name: Test subprocess crates (Unix)

@@ -4,8 +4,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
-    fs::{MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, WireOsCall, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
