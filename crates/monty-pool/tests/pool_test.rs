@@ -364,6 +364,34 @@ msg";
     session.finish().unwrap();
 }
 
+/// A custom `MountSpec::memory_usage_limit` reaches the parent-side table and
+/// surfaces as a catchable `MemoryError` inside the sandbox.
+#[test]
+fn mount_memory_usage_limit_is_enforced() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // the retained overlay write and the transient read-back share the budget
+    let code = "\
+from pathlib import Path
+p = Path('/mnt/f.bin')
+p.write_bytes(b'a' * 600)
+msg = ''
+try:
+    p.read_bytes()
+except MemoryError as exc:
+    msg = str(exc)
+msg";
+    let mut spec = MountSpec::new("/mnt".to_owned(), dir.path().to_path_buf(), MountSpecMode::Overlay);
+    spec.memory_usage_limit = 1_000;
+    let event = session.feed(code, vec![], vec![spec], false, &mut no_print).unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("mount memory usage limit of 1 KB exceeded".to_owned())
+    );
+    session.finish().unwrap();
+}
+
 /// OS calls no mount covers still surface as `TurnEvent::OsCall`, while
 /// covered ones are serviced silently within the same feed.
 #[test]

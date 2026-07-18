@@ -1730,6 +1730,184 @@ fn separate_overlay_files_share_memory_budget() {
     assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
 }
 
+/// Replacing an overlay file must release the old entry's usage first: a
+/// same-path replacement larger than the original fits, while a *new* file of
+/// the replacement's size does not.
+#[test]
+fn overwriting_an_overlay_file_reuses_its_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 2_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/f.bin", vec![b'a'; 1_200]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/g.bin", vec![b'b'; 1_200]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 2 KB exceeded");
+
+    // the replacement releases the 1200 retained bytes, so 1400 fits...
+    // (write_text so the text path's replacement accounting is covered too)
+    call_ok(&mut mt, &write_text("/mnt/f.bin", "a".repeat(1_400)));
+    // ...while a second 1400-byte file alongside it does not
+    let exc = call_err(&mut mt, &write_bytes("/mnt/h.bin", vec![b'c'; 1_400]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 2 KB exceeded");
+}
+
+/// In-place appends to an existing overlay file are charged against the
+/// budget, and a rejected append leaves the content untouched.
+#[test]
+fn in_place_append_obeys_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 3_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/a.bin", vec![b'a'; 400]));
+    call_ok(&mut mt, &append_bytes("/mnt/a.bin", vec![b'b'; 200]));
+    let mut expected = vec![b'a'; 400];
+    expected.extend(vec![b'b'; 200]);
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
+        MontyObject::Bytes(expected.clone())
+    );
+
+    let exc = call_err(&mut mt, &append_bytes("/mnt/a.bin", vec![b'c'; 3_000]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 3 KB exceeded");
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
+        MontyObject::Bytes(expected)
+    );
+}
+
+/// Deleting an overlay file swaps it for a small tombstone, freeing budget
+/// for later writes.
+#[test]
+fn deleting_an_overlay_file_frees_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_600);
+
+    call_ok(&mut mt, &write_bytes("/mnt/big.bin", vec![b'a'; 600]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/b2.bin", vec![b'b'; 600]));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 1.6 KB exceeded",
+    );
+
+    call_ok(&mut mt, &OsFunctionCall::Unlink("/mnt/big.bin".into()));
+    call_ok(&mut mt, &write_bytes("/mnt/b2.bin", vec![b'b'; 600]));
+}
+
+/// Deleting a *real* mounted file records an in-memory tombstone, so even
+/// `unlink` raises `MemoryError` once the budget is exhausted.
+#[test]
+fn tombstones_are_charged_to_the_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/x.bin", vec![b'a'; 600]));
+    let exc = call_err(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+}
+
+/// Overlay `iterdir` results are transient allocations charged against the
+/// budget remaining after the retained entries themselves.
+#[test]
+fn overlay_iterdir_obeys_memory_budget() {
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 4_500);
+
+    for i in 0..10 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/f{i}"), vec![b'x']));
+    }
+    let exc = call_err(&mut mt, &OsFunctionCall::Iterdir("/mnt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 4.5 KB exceeded",
+    );
+}
+
+/// A fall-through read of a real mounted file only gets the budget left over
+/// after retained overlay data.
+#[test]
+fn fall_through_reads_share_budget_with_retained_data() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("large.bin"), vec![b'x'; 800]).unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    // with nothing retained the 800-byte host file fits...
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into())),
+        MontyObject::Bytes(vec![b'x'; 800])
+    );
+    // ...but after retaining overlay data it no longer does
+    call_ok(&mut mt, &write_bytes("/mnt/keep.bin", vec![b'k'; 100]));
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+}
+
+/// Renaming an overlay directory tombstones every source entry, and the whole
+/// batch is checked atomically: it fits within a loose budget and is rejected
+/// under a tight one before any entry moves.
+#[test]
+fn overlay_directory_rename_obeys_memory_budget() {
+    // loose budget: the rename succeeds and the tree is intact at the new path
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 10_000);
+    call_ok(&mut mt, &mkdir("/mnt/d", false, false));
+    for i in 0..8 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/d/f{i}"), vec![b'x']));
+    }
+    call_ok(&mut mt, &rename("/mnt/d", "/mnt/e"));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/d".into())),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/e/f0".into())),
+        MontyObject::Bytes(vec![b'x'])
+    );
+
+    // tight budget: the added tombstones and destination entries do not fit,
+    // and the atomic preflight leaves the source untouched
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 5_000);
+    call_ok(&mut mt, &mkdir("/mnt/d", false, false));
+    for i in 0..8 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/d/f{i}"), vec![b'x']));
+    }
+    let exc = call_err(&mut mt, &rename("/mnt/d", "/mnt/e"));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 5 KB exceeded");
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/d/f0".into())),
+        MontyObject::Bytes(vec![b'x'])
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/e".into())),
+        MontyObject::Bool(false)
+    );
+}
+
+/// Renaming a real mounted directory captures its descendants into the
+/// overlay; that capture is bounded by the memory budget.
+#[test]
+fn real_directory_rename_capture_obeys_memory_budget() {
+    let dir = create_test_dir();
+    // 1500 is below the fixed per-entry capture charge for subdir's three
+    // descendants alone, so the capture must be rejected regardless of
+    // host path lengths
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_500);
+
+    let exc = call_err(&mut mt, &rename("/mnt/subdir", "/mnt/moved"));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 1.5 KB exceeded",
+    );
+    // the source is untouched in the overlay and on the host
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into())),
+        MontyObject::Bool(true)
+    );
+    assert!(dir.path().join("subdir/nested.txt").is_file());
+}
+
 // =============================================================================
 // Write bytes limit
 // =============================================================================
