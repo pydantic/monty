@@ -179,114 +179,104 @@ impl OsFunctionCall {
         }
     }
 
-    /// Inverse of [`Self::to_args`] for filesystem variants: reconstructs the
-    /// typed call from the generic `(positional, keyword)` wire projection so
-    /// a host holding a `MountTable` (in the `monty-fs` crate) can service
-    /// mount-covered OS calls itself (e.g. for a sandbox on a remote worker).
+    /// Inverse of [`Self::to_args`] for filesystem variants (round-trip
+    /// enforced by `tests/os_tests.rs`), so a host holding a `MountTable`
+    /// (`monty-fs`) can service mount-covered OS calls itself.
     ///
-    /// Strict by design: non-filesystem names and any arity/type/kwarg
-    /// mismatch return `None` — the call then surfaces to the outer handler
-    /// unhandled, so a malformed frame from an untrusted child never triggers
-    /// host I/O. Must stay in sync with [`Self::to_args`]; the round-trip is
-    /// enforced by `tests/os_tests.rs`.
-    #[must_use]
-    pub fn from_wire_args(name: &str, args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<Self> {
-        /// `MontyObject::Path` → owned [`MontyPath`], the shape every fs arg uses.
-        fn path(obj: &MontyObject) -> Option<MontyPath> {
-            match obj {
-                MontyObject::Path(p) => Some(MontyPath::new(p.clone())),
-                _ => None,
-            }
-        }
-        /// Exactly one positional, no kwargs.
-        fn one<'a>(args: &'a [MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<&'a MontyObject> {
-            match (args, kwargs) {
-                ([a], []) => Some(a),
-                _ => None,
-            }
-        }
-        /// Exactly two positionals, no kwargs.
-        fn two<'a>(
-            args: &'a [MontyObject],
-            kwargs: &[(MontyObject, MontyObject)],
-        ) -> Option<(&'a MontyObject, &'a MontyObject)> {
-            match (args, kwargs) {
-                ([a, b], []) => Some((a, b)),
-                _ => None,
-            }
-        }
-        /// `(path, str)` positional pair — `WriteText` / `AppendText` payload.
-        fn path_str(args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<PathStringDataArgs> {
-            match two(args, kwargs)? {
-                (p, MontyObject::String(data)) => Some(PathStringDataArgs {
-                    path: path(p)?,
-                    data: data.clone(),
-                }),
-                _ => None,
-            }
-        }
-        /// `(path, bytes)` positional pair — `WriteBytes` / `AppendBytes` payload.
-        fn path_bytes(args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<PathBytesDataArgs> {
-            match two(args, kwargs)? {
-                (p, MontyObject::Bytes(data)) => Some(PathBytesDataArgs {
-                    path: path(p)?,
-                    data: data.clone(),
-                }),
-                _ => None,
-            }
-        }
-        /// A `name=bool` kwarg pair with the expected key.
-        fn kw_bool(pair: &(MontyObject, MontyObject), key: &str) -> Option<bool> {
-            match pair {
-                (MontyObject::String(k), MontyObject::Bool(b)) if k == key => Some(*b),
-                _ => None,
-            }
-        }
+    /// `Ok(None)` = not a filesystem name (incl. the empty name of a call
+    /// re-announced after restore): surface the call to the outer handler.
+    /// `Err` = a filesystem name with args the child could never legitimately
+    /// produce: treat as a protocol violation and discard the worker.
+    pub fn from_wire_args(
+        name: &str,
+        args: &[MontyObject],
+        kwargs: &[(MontyObject, MontyObject)],
+    ) -> Result<Option<Self>, String> {
+        // Shape helpers are closures (capturing `name`/`args`/`kwargs`) that
+        // error with the canonical message, so every match arm below can use
+        // `?` directly.
+        let invalid = || format!("invalid arguments for OS call '{name}'");
+        // `MontyObject::Path` → owned `MontyPath`, the shape every fs arg uses.
+        let path = |obj: &MontyObject| match obj {
+            MontyObject::Path(p) => Ok(MontyPath::new(p.clone())),
+            _ => Err(invalid()),
+        };
+        // Exactly one positional, no kwargs.
+        let one = || match (args, kwargs) {
+            ([a], []) => Ok(a),
+            _ => Err(invalid()),
+        };
+        // Exactly two positionals, no kwargs.
+        let two = || match (args, kwargs) {
+            ([a, b], []) => Ok((a, b)),
+            _ => Err(invalid()),
+        };
+        // `(path, str)` positional pair — `WriteText` / `AppendText` payload.
+        let path_str = || match two()? {
+            (p, MontyObject::String(data)) => Ok(PathStringDataArgs {
+                path: path(p)?,
+                data: data.clone(),
+            }),
+            _ => Err(invalid()),
+        };
+        // `(path, bytes)` positional pair — `WriteBytes` / `AppendBytes` payload.
+        let path_bytes = || match two()? {
+            (p, MontyObject::Bytes(data)) => Ok(PathBytesDataArgs {
+                path: path(p)?,
+                data: data.clone(),
+            }),
+            _ => Err(invalid()),
+        };
+        // A `name=bool` kwarg pair with the expected key.
+        let kw_bool = |pair: &(MontyObject, MontyObject), key: &str| match pair {
+            (MontyObject::String(k), MontyObject::Bool(b)) if k == key => Ok(*b),
+            _ => Err(invalid()),
+        };
 
-        let call = match name {
-            "Path.exists" => Self::Exists(path(one(args, kwargs)?)?),
-            "Path.is_file" => Self::IsFile(path(one(args, kwargs)?)?),
-            "Path.is_dir" => Self::IsDir(path(one(args, kwargs)?)?),
-            "Path.is_symlink" => Self::IsSymlink(path(one(args, kwargs)?)?),
-            "Path.read_text" => Self::ReadText(path(one(args, kwargs)?)?),
-            "Path.read_bytes" => Self::ReadBytes(path(one(args, kwargs)?)?),
-            "Path.stat" => Self::Stat(path(one(args, kwargs)?)?),
-            "Path.iterdir" => Self::Iterdir(path(one(args, kwargs)?)?),
-            "Path.resolve" => Self::Resolve(path(one(args, kwargs)?)?),
-            "Path.absolute" => Self::Absolute(path(one(args, kwargs)?)?),
-            "Path.unlink" => Self::Unlink(path(one(args, kwargs)?)?),
-            "Path.rmdir" => Self::Rmdir(path(one(args, kwargs)?)?),
-            "Path.write_text" => Self::WriteText(path_str(args, kwargs)?),
-            "Path.append_text" => Self::AppendText(path_str(args, kwargs)?),
-            "Path.write_bytes" => Self::WriteBytes(path_bytes(args, kwargs)?),
-            "Path.append_bytes" => Self::AppendBytes(path_bytes(args, kwargs)?),
-            "Open" => match two(args, kwargs)? {
-                (p, MontyObject::String(mode)) => Self::Open(OpenCallArgs {
+        match name {
+            "Path.exists" => Ok(Some(Self::Exists(path(one()?)?))),
+            "Path.is_file" => Ok(Some(Self::IsFile(path(one()?)?))),
+            "Path.is_dir" => Ok(Some(Self::IsDir(path(one()?)?))),
+            "Path.is_symlink" => Ok(Some(Self::IsSymlink(path(one()?)?))),
+            "Path.read_text" => Ok(Some(Self::ReadText(path(one()?)?))),
+            "Path.read_bytes" => Ok(Some(Self::ReadBytes(path(one()?)?))),
+            "Path.stat" => Ok(Some(Self::Stat(path(one()?)?))),
+            "Path.iterdir" => Ok(Some(Self::Iterdir(path(one()?)?))),
+            "Path.resolve" => Ok(Some(Self::Resolve(path(one()?)?))),
+            "Path.absolute" => Ok(Some(Self::Absolute(path(one()?)?))),
+            "Path.unlink" => Ok(Some(Self::Unlink(path(one()?)?))),
+            "Path.rmdir" => Ok(Some(Self::Rmdir(path(one()?)?))),
+            "Path.write_text" => Ok(Some(Self::WriteText(path_str()?))),
+            "Path.append_text" => Ok(Some(Self::AppendText(path_str()?))),
+            "Path.write_bytes" => Ok(Some(Self::WriteBytes(path_bytes()?))),
+            "Path.append_bytes" => Ok(Some(Self::AppendBytes(path_bytes()?))),
+            "Open" => match two()? {
+                (p, MontyObject::String(mode)) => Ok(Some(Self::Open(OpenCallArgs {
                     path: path(p)?,
-                    mode: mode.parse().ok()?,
-                }),
-                _ => None?,
+                    mode: mode.parse().map_err(|_| invalid())?,
+                }))),
+                _ => Err(invalid()),
             },
             "Path.mkdir" => match (args, kwargs) {
-                ([p], [parents, exist_ok]) => Self::Mkdir(MkdirCallArgs {
+                ([p], [parents, exist_ok]) => Ok(Some(Self::Mkdir(MkdirCallArgs {
                     path: path(p)?,
                     parents: kw_bool(parents, "parents")?,
                     exist_ok: kw_bool(exist_ok, "exist_ok")?,
-                }),
-                _ => None?,
+                }))),
+                _ => Err(invalid()),
             },
             "Path.rename" => {
-                let (src, dst) = two(args, kwargs)?;
-                Self::Rename(RenameCallArgs {
+                let (src, dst) = two()?;
+                Ok(Some(Self::Rename(RenameCallArgs {
                     src: path(src)?,
                     dst: path(dst)?,
-                })
+                })))
             }
-            // Non-filesystem calls (and unknown names) always surface to the
-            // outer handler — a mount can never answer them.
-            _ => None?,
-        };
-        Some(call)
+            // Non-filesystem calls, unknown names, and the empty name of a
+            // re-announced call always surface to the outer handler — a
+            // mount can never answer them.
+            _ => Ok(None),
+        }
     }
 
     /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
@@ -381,7 +371,6 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
-
 impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
     // Owned args (String/Vec<u8>/bool/MontyPath/MontyObject) hold no live
     // heap references, so a plain drop is correct.

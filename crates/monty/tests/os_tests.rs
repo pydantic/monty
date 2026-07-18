@@ -503,7 +503,8 @@ fn assert_round_trip(call: OsFunctionCall) {
     let name = call.name();
     let (args, kwargs) = call.to_args();
     let reconstructed = OsFunctionCall::from_wire_args(name, &args, &kwargs)
-        .unwrap_or_else(|| panic!("from_wire_args returned None for {name}"));
+        .unwrap_or_else(|err| panic!("from_wire_args errored for {name}: {err}"))
+        .unwrap_or_else(|| panic!("from_wire_args returned Ok(None) for {name}"));
     assert_eq!(format!("{reconstructed:?}"), expected);
 }
 
@@ -566,35 +567,42 @@ fn from_wire_args_round_trips_open_all_modes() {
 }
 
 #[test]
-fn from_wire_args_rejects_malformed_input() {
+fn from_wire_args_classifies_malformed_input() {
     let path = || MontyObject::Path("/mnt/data/f.txt".to_owned());
     let s = || MontyObject::String("x".to_owned());
     let no_kw: Vec<(MontyObject, MontyObject)> = vec![];
-    // Non-fs and unknown names never parse.
-    for name in ["os.getenv", "os.environ", "date.today", "datetime.now", "nonsense"] {
-        assert!(OsFunctionCall::from_wire_args(name, &[path()], &no_kw).is_none());
+    // Non-fs and unknown names are not errors — they surface to the caller.
+    // The empty name is how an OsCall re-announced after a snapshot restore
+    // arrives (its payload was consumed at first announcement).
+    for name in ["os.getenv", "os.environ", "date.today", "datetime.now", "nonsense", ""] {
+        assert!(matches!(
+            OsFunctionCall::from_wire_args(name, &[path()], &no_kw),
+            Ok(None)
+        ));
     }
+    // A recognized fs name with a malformed shape is a protocol error.
+    let err = OsFunctionCall::from_wire_args("Path.read_text", &[], &no_kw).unwrap_err();
+    assert_eq!(err, "invalid arguments for OS call 'Path.read_text'");
     // Wrong arity.
-    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[], &no_kw).is_none());
-    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[path(), path()], &no_kw).is_none());
+    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[path(), path()], &no_kw).is_err());
     // Wrong types: str where a path is required, path where data is required.
-    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[s()], &no_kw).is_none());
-    assert!(OsFunctionCall::from_wire_args("Path.write_text", &[path(), path()], &no_kw).is_none());
+    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[s()], &no_kw).is_err());
+    assert!(OsFunctionCall::from_wire_args("Path.write_text", &[path(), path()], &no_kw).is_err());
     // Unexpected kwargs on a positional-only call.
-    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[path()], &[(s(), s())]).is_none());
+    assert!(OsFunctionCall::from_wire_args("Path.read_text", &[path()], &[(s(), s())]).is_err());
     // Bogus open mode.
     let bad_mode = MontyObject::String("q".to_owned());
-    assert!(OsFunctionCall::from_wire_args("Open", &[path(), bad_mode], &no_kw).is_none());
+    assert!(OsFunctionCall::from_wire_args("Open", &[path(), bad_mode], &no_kw).is_err());
     // Mkdir kwargs must be exactly parents/exist_ok bools.
     let kw = |k: &str, v: MontyObject| (MontyObject::String(k.to_owned()), v);
-    assert!(OsFunctionCall::from_wire_args("Path.mkdir", &[path()], &no_kw).is_none());
+    assert!(OsFunctionCall::from_wire_args("Path.mkdir", &[path()], &no_kw).is_err());
     assert!(
         OsFunctionCall::from_wire_args(
             "Path.mkdir",
             &[path()],
             &[kw("parents", MontyObject::Bool(true)), kw("mode", MontyObject::Int(7))],
         )
-        .is_none()
+        .is_err()
     );
     assert!(
         OsFunctionCall::from_wire_args(
@@ -605,6 +613,6 @@ fn from_wire_args_rejects_malformed_input() {
                 kw("exist_ok", MontyObject::Bool(false)),
             ],
         )
-        .is_none()
+        .is_err()
     );
 }

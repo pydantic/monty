@@ -11,7 +11,7 @@ use std::{
 };
 
 use monty::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
-use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
 use monty_proto::{WireOsCall, decode_frame, encode_to_capped_vec, pb};
 use tungstenite::{Message, WebSocket};
 
@@ -187,11 +187,12 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     server.join().expect("mock child thread");
 }
 
-/// A malformed `OsCall` from a (possibly compromised) child never triggers
-/// parent-side I/O: it fails the strict wire parse and surfaces to the caller
-/// exactly like an uncovered call.
+/// A malformed filesystem `OsCall` from a (possibly compromised) child is a
+/// protocol violation: the child validates and serializes these calls itself,
+/// so a recognized fs name with a bad shape can never be legitimate. No
+/// parent-side I/O happens and the worker is discarded.
 #[test]
-fn malformed_os_call_surfaces_without_parent_io() {
+fn malformed_os_call_is_a_protocol_error() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "never read").unwrap();
 
@@ -215,21 +216,13 @@ fn malformed_os_call_surfaces_without_parent_io() {
                 not_handled_error: None,
             })),
         );
-        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
-            panic!("expected ResumeCall");
-        };
-        assert_eq!(resume.call_id, 3);
-        send_event(
-            &mut socket,
-            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
-                value: Some(MontyObject::None.into()),
-            })),
-        );
+        // the parent discards the worker instead of answering; wait for EOF
+        let _ = socket.read();
     });
 
     let pool = Pool::new(config).expect("pool");
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
-    let event = checkout
+    let err = checkout
         .feed(
             "unused",
             vec![],
@@ -242,20 +235,11 @@ fn malformed_os_call_surfaces_without_parent_io() {
             false,
             &mut no_print,
         )
-        .expect("feed");
-    let TurnEvent::OsCall {
-        function_name, args, ..
-    } = event
-    else {
-        panic!("expected OsCall, got {event:?}");
+        .expect_err("malformed fs call must fail the feed");
+    let PoolError::Protocol(msg) = err else {
+        panic!("expected Protocol error, got {err:?}");
     };
-    assert_eq!(function_name, "Path.read_text");
-    assert_eq!(args, vec![MontyObject::String("/mnt/data.txt".to_owned())]);
-    let event = checkout
-        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
-        .expect("resume");
-    assert!(matches!(event, TurnEvent::Complete(MontyObject::None)), "got {event:?}");
-    checkout.finish().expect("finish");
+    assert_eq!(msg, "invalid arguments for OS call 'Path.read_text'");
     server.join().expect("mock child thread");
 }
 

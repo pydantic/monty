@@ -604,7 +604,7 @@ impl Checkout {
                     // count against its deadline) and re-armed per exchange so
                     // a feed doing many fs ops never outlives one timeout.
                     deadline_guard = None;
-                    if let Some(result) = self.try_mount_call(&call) {
+                    if let Some(result) = self.try_mount_call(&call)? {
                         let next_deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
                         self.armed_deadline = next_deadline;
                         let worker = self.worker.as_mut().expect("checked above");
@@ -719,21 +719,30 @@ impl Checkout {
     }
 
     /// Attempts to service a filesystem `OsCall` from the parent-side mount
-    /// table, performing the host I/O here. `None` when the call is not
-    /// mount-covered (it then surfaces to the caller); `Some` carries the wire
-    /// result to resume the child with.
+    /// table, performing the host I/O here. `Ok(None)` when the call is not
+    /// mount-covered (it then surfaces to the caller); `Ok(Some)` carries the
+    /// wire result to resume the child with.
     ///
-    /// The wire args come from an untrusted child: any name/arity/type
-    /// mismatch fails the `from_wire_args` parse and returns `None` — no I/O
-    /// ever happens on a malformed frame, and path containment inside covered
-    /// calls is enforced by the `MountTable` itself.
-    fn try_mount_call(&mut self, call: &WireOsCall) -> Option<pb::ext_function_result::Kind> {
-        let function_call = OsFunctionCall::from_wire_args(&call.function_name, &call.args, &call.kwargs)?;
-        let outcome = self.feed_mounts.as_mut()?.handle_os_call(&function_call)?;
-        Some(match outcome {
-            Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-            Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
-        })
+    /// The wire args come from an untrusted child, but the child validates
+    /// and serializes these calls itself — a recognized filesystem name with
+    /// a malformed shape is a protocol violation (`Err`, worker discarded),
+    /// never serviced. Path containment inside covered calls is enforced by
+    /// the `MountTable` itself.
+    fn try_mount_call(&mut self, call: &WireOsCall) -> Result<Option<pb::ext_function_result::Kind>, PoolError> {
+        match OsFunctionCall::from_wire_args(&call.function_name, &call.args, &call.kwargs) {
+            Ok(Some(function_call)) => {
+                if let Some(outcome) = self.feed_mounts.as_mut().and_then(|m| m.handle_os_call(&function_call)) {
+                    Ok(Some(match outcome {
+                        Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+                        Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            Ok(None) => Ok(None),
+            Err(err) => Err(self.protocol_violation(&err)),
+        }
     }
 
     /// Runs a fallible payload conversion; conversion failures mean the
