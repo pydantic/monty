@@ -230,5 +230,5 @@ with Monty() as pool:
 ```
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (worker-local mounts, line-buffered print
+details of subprocess execution (host-side mounts, buffered print
 callbacks, session dumps).

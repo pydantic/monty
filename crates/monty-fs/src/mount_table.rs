@@ -6,7 +6,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
 use monty::{MontyObject, OsFunctionCall};
@@ -59,8 +58,7 @@ impl MountTable {
 
     /// Adds a pre-built [`Mount`] to the table.
     ///
-    /// Use this when a `Mount` was constructed elsewhere (e.g. owned by a Python
-    /// `MountDir` and temporarily taken for the duration of a run).
+    /// Use this when a mount was validated before the table was assembled.
     pub fn push_mount(&mut self, mount: Mount) {
         // Keep mounts sorted longest-prefix-first so dispatch can stop at the
         // first match without re-sorting the whole table on every insertion.
@@ -68,56 +66,6 @@ impl MountTable {
             .mounts
             .partition_point(|existing| existing.virtual_path.len() > mount.virtual_path.len());
         self.mounts.insert(insert_at, mount);
-    }
-
-    /// Consumes this table and returns all mounts.
-    #[must_use]
-    pub fn into_mounts(self) -> Vec<Mount> {
-        self.mounts
-    }
-
-    /// Takes all mounts out of shared slots and assembles a [`MountTable`].
-    ///
-    /// Each slot is `Arc<Mutex<Option<Mount>>>`. The mount is taken via
-    /// `Option::take` so the slot becomes `None` during execution. Use
-    /// [`Self::put_back_shared_mounts`] to restore them after the run completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if any mutex is poisoned or any mount is
-    /// already taken (concurrent use).
-    pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, String> {
-        let mut taken: Vec<Mount> = Vec::with_capacity(slots.len());
-        for (i, shared) in slots.iter().enumerate() {
-            let Ok(mut guard) = shared.lock() else {
-                rollback_taken_mounts(taken, &slots[..i]);
-                return Err(format!("mount {i} lock is poisoned"));
-            };
-            let Some(mount) = guard.take() else {
-                drop(guard); // release this lock before restoring earlier slots
-                rollback_taken_mounts(taken, &slots[..i]);
-                return Err(format!("mount {i} is already in use by another run"));
-            };
-            taken.push(mount);
-        }
-        let mut table = Self::new();
-        for mount in taken {
-            table.push_mount(mount);
-        }
-        Ok(table)
-    }
-
-    /// Puts all mounts back into their shared slots after execution completes.
-    ///
-    /// Must be called after every [`take_shared_mounts`](Self::take_shared_mounts),
-    /// even on error paths, to avoid permanently losing the mounts.
-    pub fn put_back_shared_mounts(self, slots: &[Arc<Mutex<Option<Mount>>>]) {
-        for (shared, mount) in slots.iter().zip(self.into_mounts()) {
-            if let Ok(mut slot) = shared.lock() {
-                debug_assert!(slot.is_none(), "mount slot should be empty during put_back");
-                *slot = Some(mount);
-            }
-        }
     }
 
     /// Handles an OS call using the mount table.
@@ -181,25 +129,11 @@ impl MountTable {
     }
 }
 
-/// Restores already-taken mounts back into their shared slots on failure.
-///
-/// Called by [`MountTable::take_shared_mounts`] when a later slot fails,
-/// so that earlier slots are not permanently emptied.
-fn rollback_taken_mounts(taken: Vec<Mount>, slots: &[Arc<Mutex<Option<Mount>>>]) {
-    for (shared, mount) in slots.iter().zip(taken) {
-        if let Ok(mut slot) = shared.lock() {
-            *slot = Some(mount);
-        }
-    }
-}
-
 /// A single mount point mapping a virtual path to a host directory.
 ///
 /// Owns the [`MountMode`] which includes overlay state for
-/// [`MountMode::OverlayMemory`] mounts. Can be stored externally (e.g. in a
-/// Python `MountDir`) and temporarily moved into a [`MountTable`] for
-/// the duration of execution via [`MountTable::push_mount`] /
-/// [`MountTable::take_shared_mounts`].
+/// [`MountMode::OverlayMemory`] mounts. It can be constructed before its table
+/// and transferred into it with [`MountTable::push_mount`].
 #[derive(Debug)]
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).

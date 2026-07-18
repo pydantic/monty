@@ -35,7 +35,7 @@ use std::{
 };
 
 use ::monty::{AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject};
-use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use pyo3::{
     Borrowed,
@@ -1513,36 +1513,20 @@ fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSp
         return Ok(vec![]);
     };
     if let Ok(single) = mount.extract::<PyRef<'_, PyMountDir>>() {
-        return Ok(vec![mount_spec(&single)?]);
+        return Ok(vec![single.spec()]);
     }
     if let Ok(list) = mount.cast::<PyList>() {
         return list
             .iter()
             .map(|item| {
                 let dir = item.extract::<PyRef<'_, PyMountDir>>()?;
-                mount_spec(&dir)
+                Ok(dir.spec())
             })
             .collect();
     }
     Err(PyTypeError::new_err(
         "mount must be a MountDir, a list of MountDir, or None",
     ))
-}
-
-fn mount_spec(dir: &PyRef<'_, PyMountDir>) -> PyResult<MountSpec> {
-    let (virtual_path, host_path, mode, write_bytes_limit) = dir.spec_parts()?;
-    let mode = match mode {
-        "read-only" => MountSpecMode::ReadOnly,
-        "read-write" => MountSpecMode::ReadWrite,
-        "overlay" => MountSpecMode::Overlay,
-        other => return Err(PyValueError::new_err(format!("unknown mount mode {other:?}"))),
-    };
-    Ok(MountSpec {
-        virtual_path,
-        host_path,
-        mode,
-        write_bytes_limit,
-    })
 }
 
 /// Maps a pool failure onto the Python exception hierarchy.

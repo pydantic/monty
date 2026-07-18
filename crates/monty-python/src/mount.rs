@@ -1,40 +1,24 @@
 //! Python bindings for filesystem mount configuration.
 //!
-//! Exposes [`PyMountDir`] (a single mount point with shared overlay state)
-//! and [`OsHandler`] (a collection of mounts with optional fallback callback).
-//! Filesystem operations are handled entirely in Rust via
-//! [`monty_fs::MountTable`], with no Python round-trip.
-//!
-//! # Take/put pattern
-//!
-//! [`PyMountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
-//! The Python pool passes mount *configuration* into `monty-pool` for each
-//! feed; the pool builds a fresh parent-side `MountTable` and services the
-//! worker's filesystem OS calls itself (the worker never sees host paths).
-//! Overlay state is therefore per feed in the pool; the `MountDir` is
-//! reusable configuration, not a live overlay store.
+//! [`PyMountDir`] stores immutable configuration for one mount point. Each
+//! feed copies that configuration into a fresh parent-side mount table, so
+//! overlay state lasts only for that feed and host paths never reach workers.
 
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::path::PathBuf;
 
 use monty_fs::{Mount, MountMode};
+use monty_pool::{MountSpec, MountSpecMode};
 use monty_proto::python::exc_monty_to_py;
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-/// Shared storage for a [`Mount`] that can be temporarily taken for execution.
-pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
-
 // =============================================================================
-// MountDir — owns a shared Mount
+// MountDir — immutable mount configuration
 // =============================================================================
 
 /// A single mount point mapping a virtual path to a host directory.
 ///
-/// Owns the underlying [`Mount`] via shared storage. In subprocess execution,
-/// passing this to multiple feeds reuses the configuration; `'overlay'` writes
-/// live only for the feed currently running in the worker.
+/// Passing one instance to multiple feeds reuses only its configuration;
+/// `'overlay'` writes live in each feed's parent-side mount table.
 ///
 /// The `mode` controls sandbox access:
 /// - `'read-only'` — sandbox can read but not write
@@ -42,8 +26,8 @@ pub(crate) type SharedMount = Arc<Mutex<Option<Mount>>>;
 /// - `'overlay'` — reads fall through to host; writes are captured in memory
 #[pyclass(name = "MountDir")]
 pub struct PyMountDir {
-    /// Shared mount storage. `None` while a run is in progress.
-    pub(crate) shared: SharedMount,
+    /// Validated configuration copied into each feed's mount table.
+    spec: MountSpec,
 }
 
 #[pymethods]
@@ -72,69 +56,65 @@ impl PyMountDir {
         let mount = Mount::new(virtual_path, &host_path, mount_mode, write_bytes_limit)
             .map_err(|e| exc_monty_to_py(py, e.into_exception()))?;
         Ok(Self {
-            shared: Arc::new(Mutex::new(Some(mount))),
+            spec: MountSpec {
+                virtual_path: mount.virtual_path().to_owned(),
+                host_path: mount.host_path().to_path_buf(),
+                mode: match mount.mode() {
+                    MountMode::ReadOnly => MountSpecMode::ReadOnly,
+                    MountMode::ReadWrite => MountSpecMode::ReadWrite,
+                    MountMode::OverlayMemory(_) => MountSpecMode::Overlay,
+                },
+                write_bytes_limit: mount.write_bytes_limit(),
+            },
         })
     }
 
     /// The normalized virtual path prefix inside the sandbox.
     #[getter]
-    fn virtual_path(&self) -> PyResult<String> {
-        self.with_mount(|m| m.virtual_path().to_owned())
+    fn virtual_path(&self) -> String {
+        self.spec.virtual_path.clone()
     }
 
     /// The canonical host directory path.
     #[getter]
-    fn host_path(&self) -> PyResult<String> {
-        self.with_mount(|m| m.host_path().display().to_string())
+    fn host_path(&self) -> String {
+        self.spec.host_path.display().to_string()
     }
 
     /// The access mode: `"read-only"`, `"read-write"`, or `"overlay"`.
     #[getter]
-    fn mode(&self) -> PyResult<String> {
-        self.with_mount(|m| m.mode().as_str().to_owned())
+    fn mode(&self) -> &'static str {
+        mount_mode_name(self.spec.mode)
     }
 
     /// The optional write bytes limit, or `None` if unlimited.
     #[getter]
-    fn write_bytes_limit(&self) -> PyResult<Option<u64>> {
-        self.with_mount(Mount::write_bytes_limit)
+    fn write_bytes_limit(&self) -> Option<u64> {
+        self.spec.write_bytes_limit
     }
 
     fn __repr__(&self) -> String {
-        let guard = self.shared.lock().unwrap();
-        match guard.as_ref() {
-            Some(mount) => format!(
-                "MountDir('{}', '{}', '{}')",
-                mount.virtual_path(),
-                mount.host_path().display(),
-                mount.mode().as_str()
-            ),
-            None => "MountDir(<in use>)".to_owned(),
-        }
+        format!(
+            "MountDir('{}', '{}', '{}')",
+            self.spec.virtual_path,
+            self.spec.host_path.display(),
+            mount_mode_name(self.spec.mode)
+        )
     }
 }
 
 impl PyMountDir {
-    /// Extracts `(virtual_path, host_path, mode, write_bytes_limit)` for use
-    /// by the worker pools, which rebuild a parent-side mount table from the
-    /// configuration for each feed instead of using this `Mount` directly.
-    pub(crate) fn spec_parts(&self) -> PyResult<(String, PathBuf, &'static str, Option<u64>)> {
-        self.with_mount(|m| {
-            (
-                m.virtual_path().to_owned(),
-                m.host_path().to_path_buf(),
-                m.mode().as_str(),
-                m.write_bytes_limit(),
-            )
-        })
+    /// Copies the validated configuration for a new parent-side mount table.
+    pub(crate) fn spec(&self) -> MountSpec {
+        self.spec.clone()
     }
+}
 
-    /// Accesses the inner mount, returning an error if it's currently taken for a run.
-    fn with_mount<T>(&self, f: impl FnOnce(&Mount) -> T) -> PyResult<T> {
-        let guard = self.shared.lock().unwrap();
-        guard
-            .as_ref()
-            .map(f)
-            .ok_or_else(|| PyValueError::new_err("mount directory is currently in use by a running Monty instance"))
+/// Returns the Python spelling of a pool mount mode.
+fn mount_mode_name(mode: MountSpecMode) -> &'static str {
+    match mode {
+        MountSpecMode::ReadOnly => "read-only",
+        MountSpecMode::ReadWrite => "read-write",
+        MountSpecMode::Overlay => "overlay",
     }
 }

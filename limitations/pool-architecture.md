@@ -171,12 +171,18 @@ properties that real CPython does not provide, per the caveat above.
   mount on a pathological host filesystem — a stalled NFS or FUSE volume —
   blocks the feed with no timeout. Like a blocking `print_callback` or
   external function, hang-free host I/O is the embedder's responsibility:
-  do not mount directories on filesystems that can hang.
+  do not mount directories on filesystems that can hang. After each covered
+  call, the watchdog is rearmed from the current time with the full
+  `request_timeout`, so the timeout bounds each interval of worker execution,
+  not the whole feed; repeated covered calls can keep one feed alive longer.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are serviced by the pool and never reach the callback.
 - **A mounted file's contents must fit the wire frame limit.** A mounted read
   whose result would exceed the 256 MiB frame cap raises `RuntimeError`
-  inside the sandbox instead of returning the data.
+  inside the sandbox instead of returning the data. The pool currently reads
+  the whole regular file before checking that cap, and mount buffers are not
+  charged to sandbox `max_memory`; bound exposed file sizes and set
+  `write_bytes_limit` for overlays to limit trusted-parent memory exposure.
 - **`external_lookup` resolves undefined names lazily.** `feed_run` /
   `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
   leaves undefined is resolved on first reference against this dict — a
@@ -263,7 +269,7 @@ properties that real CPython does not provide, per the caveat above.
   filesystem calls into surfaced OS calls — unhandled ones raise
   `PermissionError` inside the sandbox.
 - **`'overlay'` writes are not preserved across a dump.** A restored overlay
-  mount starts empty; `read-only` / `read-write` mounts hold no in-worker state
+  mount starts empty; `read-only` / `read-write` mounts have no overlay state
   and restore fully.
 - **A re-announced OS-call snapshot after `load_snapshot` carries only its
   `not_handled_error`** — its `args`/`kwargs` were consumed before the dump, so
