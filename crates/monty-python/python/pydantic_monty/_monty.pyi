@@ -67,7 +67,8 @@ class CollectString:
 class MountDir:
     """A mount point mapping a virtual path to a host directory.
 
-    Retained overlay data and filesystem results share a 100 MB memory budget.
+    Retained overlay data and filesystem results share a per-mount memory
+    budget, `memory_usage_limit` (100 MB by default).
     """
 
     virtual_path: str

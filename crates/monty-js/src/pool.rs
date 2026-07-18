@@ -839,13 +839,15 @@ impl TryFrom<NativeMount> for MountSpec {
     }
 }
 
-/// Validates and narrows a JavaScript byte limit.
+/// Validates and narrows a JavaScript byte limit. Values at or above `2^64`
+/// are rejected rather than saturated — a saturating cast would silently turn
+/// an out-of-range limit into `u64::MAX`, effectively disabling the budget.
 fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
-    if limit.is_finite() && limit >= 0.0 && limit.fract() == 0.0 {
+    if (0.0..18_446_744_073_709_551_616.0).contains(&limit) && limit.fract() == 0.0 {
         #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         Ok(limit as u64)
     } else {
-        Err(invalid(&format!("{name} must be a non-negative integer")))
+        Err(invalid(&format!("{name} must be a non-negative integer below 2**64")))
     }
 }
 

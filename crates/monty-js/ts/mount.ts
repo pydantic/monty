@@ -34,7 +34,8 @@ const VALID_MODES: Record<MountDirMode, true> = {
 
 /**
  * Mounts a real host directory into the sandbox at a virtual path.
- * Retained overlay data and filesystem results share a 100 MB memory budget.
+ * Retained overlay data and filesystem results share a per-mount memory
+ * budget, `memoryUsageLimit` (100 MB by default).
  *
  * ```ts
  * const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
