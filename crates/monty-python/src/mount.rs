@@ -8,9 +8,11 @@
 //! # Take/put pattern
 //!
 //! [`PyMountDir`] owns its [`Mount`] behind `Arc<Mutex<Option<Mount>>>`.
-//! The Python pool sends mount *configuration* to subprocess workers for each
-//! feed. Overlay state is therefore per feed in the worker; the host-side
-//! `MountDir` is reusable configuration, not a live overlay store.
+//! The Python pool passes mount *configuration* into `monty-pool` for each
+//! feed; the pool builds a fresh parent-side `MountTable` and services the
+//! worker's filesystem OS calls itself (the worker never sees host paths).
+//! Overlay state is therefore per feed in the pool; the `MountDir` is
+//! reusable configuration, not a live overlay store.
 
 use std::{
     path::PathBuf,
@@ -114,8 +116,8 @@ impl PyMountDir {
 
 impl PyMountDir {
     /// Extracts `(virtual_path, host_path, mode, write_bytes_limit)` for use
-    /// by the worker pools, which send the mount *configuration* to a worker
-    /// process instead of using the `Mount` in-process.
+    /// by the worker pools, which rebuild a parent-side mount table from the
+    /// configuration for each feed instead of using this `Mount` directly.
     pub(crate) fn spec_parts(&self) -> PyResult<(String, PathBuf, &'static str, Option<u64>)> {
         self.with_mount(|m| {
             (

@@ -4,7 +4,6 @@
 //! for the parent.
 
 use std::{
-    fs,
     io::Write,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     thread,
@@ -80,19 +79,13 @@ impl ChildProc {
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
     fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.feed_with(code, vec![], vec![])
+        self.feed_with(code, vec![])
     }
 
-    fn feed_with(
-        &mut self,
-        code: &str,
-        inputs: Vec<pb::NamedValue>,
-        mounts: Vec<pb::Mount>,
-    ) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed_with(&mut self, code: &str, inputs: Vec<pb::NamedValue>) -> (Vec<pb::Print>, pb::child_event::Kind) {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
-            mounts,
             skip_type_check: false,
         }));
         self.recv_turn()
@@ -187,7 +180,7 @@ fn inputs_are_injected() {
         name: "a".to_owned(),
         value: Some(int_value(20)),
     }];
-    let (_, event) = child.feed_with("a + 1", inputs, vec![]);
+    let (_, event) = child.feed_with("a + 1", inputs);
     assert_eq!(expect_complete(event), MontyObject::Int(21));
     child.shutdown();
 }
@@ -324,81 +317,6 @@ fn os_call_error_resume_carries_exception() {
 }
 
 // =============================================================================
-// Mounts (child-local filesystem)
-// =============================================================================
-
-#[test]
-fn mounted_reads_are_handled_locally() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::ReadOnly.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
-        vec![],
-        vec![mount],
-    );
-    // no OsCall event on the wire — the mount handled it inside the child
-    assert_eq!(expect_complete(event), MontyObject::String("mounted!".to_owned()));
-    child.shutdown();
-}
-
-#[test]
-fn read_only_mount_write_raises_inside_sandbox() {
-    let dir = tempfile::tempdir().unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::ReadOnly.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/new.txt').write_text('x')",
-        vec![],
-        vec![mount],
-    );
-    let error = expect_error(event);
-    assert_eq!(error.exc_type, "PermissionError");
-    child.shutdown();
-}
-
-#[test]
-fn overlay_mount_discards_writes_at_feed_end() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("data.txt"), "original").unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::Overlay.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/data.txt').write_text('changed')\nPath('/mnt/data.txt').read_text()",
-        vec![],
-        vec![mount.clone()],
-    );
-    assert_eq!(expect_complete(event), MontyObject::String("changed".to_owned()));
-    // the host file is untouched and the overlay does not persist to the next feed
-    assert_eq!(fs::read_to_string(dir.path().join("data.txt")).unwrap(), "original");
-    let (_, event) = child.feed_with("Path('/mnt/data.txt').read_text()", vec![], vec![mount]);
-    assert_eq!(expect_complete(event), MontyObject::String("original".to_owned()));
-    child.shutdown();
-}
-
-// =============================================================================
 // Resource limits
 // =============================================================================
 
@@ -517,10 +435,7 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -558,10 +473,7 @@ fn type_check_state_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -594,10 +506,7 @@ fn assert_annotation_option_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -628,10 +537,7 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -745,7 +651,6 @@ fn killed_child_is_detected_as_eof() {
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
-        mounts: vec![],
         skip_type_check: false,
     }));
     thread::sleep(Duration::from_millis(200));

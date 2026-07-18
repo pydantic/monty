@@ -390,23 +390,6 @@ pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "5")]
     pub max_recursion_depth: ::core::option::Option<u64>,
 }
-/// Mounts a host directory into the sandbox. The child builds its own
-/// MountTable from these, so the host path must be valid on the machine the
-/// child runs on.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Mount {
-    /// Absolute virtual POSIX path, e.g. "/mnt/data".
-    #[prost(string, tag = "1")]
-    pub virtual_path: ::prost::alloc::string::String,
-    /// Host-native directory path.
-    #[prost(string, tag = "2")]
-    pub host_path: ::prost::alloc::string::String,
-    #[prost(enumeration = "MountMode", tag = "3")]
-    pub mode: i32,
-    /// Cap on total bytes written through this mount.
-    #[prost(uint64, optional, tag = "4")]
-    pub write_bytes_limit: ::core::option::Option<u64>,
-}
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -517,10 +500,6 @@ pub struct Feed {
     pub code: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
     pub inputs: ::prost::alloc::vec::Vec<NamedValue>,
-    /// Mounts for this feed; handled entirely inside the child. OS calls the
-    /// mounts do not cover bubble up as `OsCall` events.
-    #[prost(message, repeated, tag = "3")]
-    pub mounts: ::prost::alloc::vec::Vec<Mount>,
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "4")]
     pub skip_type_check: bool,
@@ -567,17 +546,10 @@ pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
-    /// Mounts to re-establish for a suspended feed being resumed. Mounts are
-    /// host configuration, not sandbox state, so they are never part of the dump
-    /// — the parent re-supplies the same mounts it used for the original feed.
-    /// Without them a restored feed has no mounts and its OS calls all bubble up.
-    /// When the restored state is idle this must be empty.
-    #[prost(message, repeated, tag = "2")]
-    pub mounts: ::prost::alloc::vec::Vec<Mount>,
 }
 /// Ends the checkout: the child drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.
@@ -758,40 +730,6 @@ pub struct Ok {}
 pub struct FatalError {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum MountMode {
-    Unspecified = 0,
-    ReadOnly = 1,
-    ReadWrite = 2,
-    /// Copy-on-write overlay backed by child-local memory; writes are discarded
-    /// when the session ends.
-    Overlay = 3,
-}
-impl MountMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "MOUNT_MODE_UNSPECIFIED",
-            Self::ReadOnly => "MOUNT_MODE_READ_ONLY",
-            Self::ReadWrite => "MOUNT_MODE_READ_WRITE",
-            Self::Overlay => "MOUNT_MODE_OVERLAY",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "MOUNT_MODE_UNSPECIFIED" => Some(Self::Unspecified),
-            "MOUNT_MODE_READ_ONLY" => Some(Self::ReadOnly),
-            "MOUNT_MODE_READ_WRITE" => Some(Self::ReadWrite),
-            "MOUNT_MODE_OVERLAY" => Some(Self::Overlay),
-            _ => None,
-        }
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

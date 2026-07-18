@@ -20,14 +20,14 @@ use std::{borrow::Cow, mem};
 
 use monty::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    MontyRepl, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
+    MontyRepl, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, WireOsCall, build_mount_table,
-    exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, WireOsCall, exceeds_max_value_depth,
+    future_results_from_proto, pb, write_frame,
 };
 
 /// The child always runs with `LimitedTracker`: an absent/empty limits message
@@ -40,24 +40,18 @@ type Tracker = LimitedTracker;
 /// Wire layout: `[DUMP_VERSION u16 LE][tag u8][session meta][postcard
 /// payload]` where tag 0 is a `MontyRepl` (idle session) and tag 1 a
 /// `ReplProgress` (suspended). The session meta carries the child-side state
-/// that lives *outside* the repl — script name, accumulated type-check stubs,
-/// and the in-flight feed's mount requirements — so a `Load`ed session keeps
-/// type-check enforcement and can validate its mounts instead of silently
-/// dropping them:
+/// that lives *outside* the repl — script name and accumulated type-check
+/// stubs — so a `Load`ed session keeps type-check enforcement:
 ///
 /// - `[script_name str][type_check u8]` and, when `type_check` is 1,
 ///   `[committed_stubs str][has_pending u8][pending_snippet str?]`, where each
 ///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
-/// - mount requirements: `[count u32 LE]` then per entry `[virtual_path
-///   str][mode i32 LE][has_limit u8][write_bytes_limit u64 LE?]`, recording the
-///   feed's mounts *without* host paths so `Load` can verify the re-supply. The
-///   count is 0 for an idle dump.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 3 when `MontyRepl` gained the serialized
-/// `CompileOptions` field (the `AssertMessageAnnotations` enum) and the
-/// executor gained the serialized assert repr truncation limit.
-const DUMP_VERSION: u16 = 3;
+/// version can restore it. Bumped to 4 when mounts moved to the parent: the
+/// child no longer sees mount configuration, so the meta's mount-requirements
+/// section was removed.
+const DUMP_VERSION: u16 = 4;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -210,35 +204,15 @@ struct TypeCheckState {
 struct SessionMeta {
     script_name: String,
     type_check: Option<TypeCheckState>,
-    mount_requirements: Vec<MountRequirement>,
-}
-
-/// The host-independent shape of one mount: everything in a `pb::Mount`
-/// except the machine-specific `host_path`. Recorded in a suspended feed's
-/// dump so `Load` can verify the parent re-supplied the *same* mounts (by
-/// virtual path, mode, and write cap) before resuming — host paths are never
-/// dumped, so a malicious dump cannot inject a mount of an arbitrary host
-/// directory.
-#[derive(Clone, PartialEq)]
-struct MountRequirement {
-    virtual_path: String,
-    mode: i32,
-    write_bytes_limit: Option<u64>,
-}
-
-impl MountRequirement {
-    fn of(mount: &pb::Mount) -> Self {
-        Self {
-            virtual_path: mount.virtual_path.clone(),
-            mode: mount.mode,
-            write_bytes_limit: mount.write_bytes_limit,
-        }
-    }
 }
 
 /// All state of one protocol child: the current REPL session plus the
-/// per-session metadata (script name, mounts, type-check context) that lives
-/// outside the repl.
+/// per-session metadata (script name, type-check context) that lives outside
+/// the repl.
+///
+/// The child performs no filesystem I/O: mounts are host configuration the
+/// parent handles entirely by servicing filesystem `OsCall` events itself, so
+/// no mount state (or host path) ever reaches the child.
 ///
 /// Drive it by reading framed [`pb::ParentRequest`]s from the host transport
 /// and passing each to [`Self::handle`] along with an [`EventSink`]; the child
@@ -248,16 +222,6 @@ pub struct Child {
     /// Script name of the current session (used for error and type-check
     /// diagnostics).
     script_name: String,
-    /// Mount table for the in-flight feed; rebuilt per feed, dropped when the
-    /// feed completes. Not part of dumps (mounts are host configuration, not
-    /// sandbox state) — instead a `Load` resuming a suspended feed carries the
-    /// mounts the parent re-supplies, and `handle_load` rebuilds the table from
-    /// them after checking they match `mount_requirements`.
-    mounts: Option<MountTable>,
-    /// Host-independent shape of the in-flight feed's mounts, dumped alongside
-    /// a suspended session so `Load` can validate the re-supplied mounts.
-    /// Empty between feeds and for idle sessions.
-    mount_requirements: Vec<MountRequirement>,
     /// `Some` when the session was created with `type_check: true`.
     type_check: Option<TypeCheckState>,
 }
@@ -274,18 +238,8 @@ impl Child {
         Self {
             state: SessionState::Configured(None),
             script_name: String::new(),
-            mounts: None,
-            mount_requirements: Vec::new(),
             type_check: None,
         }
-    }
-
-    /// Drops the in-flight feed's mount table and its recorded requirements.
-    /// Called when a feed ends (completion, error, reset) so a later idle dump
-    /// records no mount requirements.
-    fn clear_feed_mounts(&mut self) {
-        self.mounts = None;
-        self.mount_requirements.clear();
     }
 
     /// Handles one request: streams any `Print` events and emits exactly one
@@ -480,14 +434,6 @@ impl Child {
             Ok(inputs) => inputs,
             Err(event) => return *event,
         };
-        // record the host-independent mount shape before consuming the specs,
-        // so a dump taken mid-feed can make `Load` validate the re-supply
-        let requirements = feed.mounts.iter().map(MountRequirement::of).collect();
-        self.mounts = match build_mount_table(feed.mounts) {
-            Ok(mounts) => mounts,
-            Err(err) => return protocol_violation(&format!("invalid mounts: {err}")),
-        };
-        self.mount_requirements = requirements;
         let SessionState::Ready(repl) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked Ready above");
         };
@@ -611,12 +557,7 @@ impl Child {
                 let mut state = Vec::with_capacity(payload.len() + 64);
                 state.extend_from_slice(&DUMP_VERSION.to_le_bytes());
                 state.push(tag);
-                push_session_meta(
-                    &mut state,
-                    &self.script_name,
-                    self.type_check.as_ref(),
-                    &self.mount_requirements,
-                );
+                push_session_meta(&mut state, &self.script_name, self.type_check.as_ref());
                 state.extend_from_slice(&payload);
                 event(pb::child_event::Kind::DumpResult(pb::DumpResult { state }))
             }
@@ -637,7 +578,7 @@ impl Child {
         if !matches!(self.state, SessionState::Configured(_)) {
             return protocol_violation("Load requires a session that has not started (a feed has already run)");
         }
-        let pb::Load { state, mounts } = load;
+        let pb::Load { state } = load;
         let Some((version_bytes, rest)) = state.split_at_checked(2) else {
             return protocol_violation("dump state too short");
         };
@@ -654,15 +595,7 @@ impl Child {
         let SessionMeta {
             script_name,
             type_check,
-            mount_requirements: requirements,
         } = meta;
-        if let Err(message) = validate_supplied_mounts(&requirements, &mounts) {
-            return error_event(ExcType::RuntimeError, &message);
-        }
-        let mount_table = match build_mount_table(mounts) {
-            Ok(table) => table,
-            Err(err) => return protocol_violation(&format!("invalid mounts: {err}")),
-        };
         let mut event = match tag {
             0 => match MontyRepl::load(payload) {
                 Ok(repl) => {
@@ -687,12 +620,6 @@ impl Child {
             },
             other => protocol_violation(&format!("unknown dump tag {other}")),
         };
-        // a resumed feed re-establishes the mounts the parent re-supplied; an
-        // idle restore leaves `self.mounts` untouched (the next feed sets it)
-        if matches!(self.state, SessionState::Suspended(_)) {
-            self.mounts = mount_table;
-            self.mount_requirements = requirements;
-        }
         // adopt the restored metadata only once the payload actually loaded
         // (state is now Ready/Suspended) — a failed load leaves the child in
         // its prior un-started state, re-loadable. Surface the adopted script
@@ -705,8 +632,9 @@ impl Child {
         event
     }
 
-    /// Drives execution until it needs the parent: handles mount-covered OS
-    /// calls locally and returns the turn-ending event for everything else.
+    /// Drives execution until it needs the parent, returning the turn-ending
+    /// event. Every OS call surfaces to the parent — the child performs no
+    /// filesystem I/O (mounts are serviced parent-side).
     fn drive(
         &mut self,
         mut result: Result<ReplProgress<Tracker>, Box<ReplStartError<Tracker>>>,
@@ -716,7 +644,6 @@ impl Child {
             match result {
                 Ok(ReplProgress::Complete { repl, value }) => {
                     self.state = SessionState::Ready(Box::new(repl));
-                    self.clear_feed_mounts();
                     if let Some(state) = &mut self.type_check
                         && let Some(snippet) = state.pending_snippet.take()
                     {
@@ -732,20 +659,6 @@ impl Child {
                     return complete_event(value);
                 }
                 Ok(ReplProgress::OsCall(mut call)) => {
-                    // mount-covered OS calls are handled locally; the parent
-                    // never sees them
-                    let handled = self
-                        .mounts
-                        .as_mut()
-                        .and_then(|mounts| mounts.handle_os_call(&call.function_call));
-                    if let Some(outcome) = handled {
-                        let ext: ExtFunctionResult = match outcome {
-                            Ok(obj) => obj.into(),
-                            Err(err) => err.into_exception().into(),
-                        };
-                        result = call.resume(ext, PrintWriter::Callback(print));
-                        continue;
-                    }
                     let function_call = call.take_function_call();
                     let name = function_call.name();
                     // only the child knows per-call no-handler semantics, so
@@ -806,7 +719,6 @@ impl Child {
                 Err(err) => {
                     // Python-level failure: the session always survives
                     self.state = SessionState::Ready(Box::new(err.repl));
-                    self.clear_feed_mounts();
                     if let Some(state) = &mut self.type_check {
                         state.pending_snippet = None;
                     }
@@ -821,7 +733,6 @@ impl Child {
     /// Ends the current feed with a runtime error while keeping the REPL usable.
     fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::ChildEvent {
         self.state = SessionState::Ready(Box::new(repl));
-        self.clear_feed_mounts();
         if let Some(state) = &mut self.type_check {
             state.pending_snippet = None;
         }
@@ -848,7 +759,6 @@ impl Child {
     /// the next `Configure` (or `Load`).
     fn reset(&mut self) {
         self.state = SessionState::Configured(None);
-        self.clear_feed_mounts();
         self.type_check = None;
         self.script_name = String::new();
     }
@@ -991,14 +901,9 @@ fn push_str_field(buf: &mut Vec<u8>, s: &str) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-/// Appends the session metadata (script name + type-check state + mount
-/// requirements, see [`DUMP_VERSION`]) to a dump envelope.
-fn push_session_meta(
-    buf: &mut Vec<u8>,
-    script_name: &str,
-    type_check: Option<&TypeCheckState>,
-    mount_requirements: &[MountRequirement],
-) {
+/// Appends the session metadata (script name + type-check state, see
+/// [`DUMP_VERSION`]) to a dump envelope.
+fn push_session_meta(buf: &mut Vec<u8>, script_name: &str, type_check: Option<&TypeCheckState>) {
     push_str_field(buf, script_name);
     match type_check {
         Some(tc) => {
@@ -1014,7 +919,6 @@ fn push_session_meta(
         }
         None => buf.push(0),
     }
-    push_mount_requirements(buf, mount_requirements);
 }
 
 /// Splits the [`SessionMeta`] off the front of a dump envelope, returning it
@@ -1043,12 +947,10 @@ fn take_session_meta(bytes: &[u8]) -> Option<(SessionMeta, &[u8])> {
         }
         _ => return None,
     };
-    let (mount_requirements, rest) = take_mount_requirements(rest)?;
     Some((
         SessionMeta {
             script_name,
             type_check,
-            mount_requirements,
         },
         rest,
     ))
@@ -1061,90 +963,6 @@ fn take_str_field(bytes: &[u8]) -> Option<(String, &[u8])> {
     let len = u32::from_le_bytes(len_bytes.try_into().ok()?) as usize;
     let (field, rest) = rest.split_at_checked(len)?;
     Some((String::from_utf8(field.to_vec()).ok()?, rest))
-}
-
-/// Appends the in-flight feed's mount requirements to a dump envelope (see
-/// [`DUMP_VERSION`]). Host paths are deliberately excluded.
-fn push_mount_requirements(buf: &mut Vec<u8>, requirements: &[MountRequirement]) {
-    let count = u32::try_from(requirements.len()).expect("mount count exceeds u32::MAX");
-    buf.extend_from_slice(&count.to_le_bytes());
-    for req in requirements {
-        push_str_field(buf, &req.virtual_path);
-        buf.extend_from_slice(&req.mode.to_le_bytes());
-        match req.write_bytes_limit {
-            Some(limit) => {
-                buf.push(1);
-                buf.extend_from_slice(&limit.to_le_bytes());
-            }
-            None => buf.push(0),
-        }
-    }
-}
-
-/// Splits the mount requirements off the front of a dump envelope, returning
-/// them with the remaining postcard payload. `None` means the envelope is
-/// malformed. The count comes from untrusted bytes, so entries are pushed
-/// without pre-reserving capacity (a bogus count simply runs out of bytes).
-fn take_mount_requirements(bytes: &[u8]) -> Option<(Vec<MountRequirement>, &[u8])> {
-    let (count_bytes, mut rest) = bytes.split_at_checked(4)?;
-    let count = u32::from_le_bytes(count_bytes.try_into().ok()?);
-    let mut requirements = Vec::new();
-    for _ in 0..count {
-        let (virtual_path, after_path) = take_str_field(rest)?;
-        let (mode_bytes, after_mode) = after_path.split_at_checked(4)?;
-        let mode = i32::from_le_bytes(mode_bytes.try_into().ok()?);
-        let (&has_limit, after_flag) = after_mode.split_first()?;
-        let (write_bytes_limit, after_limit) = match has_limit {
-            0 => (None, after_flag),
-            1 => {
-                let (limit_bytes, after) = after_flag.split_at_checked(8)?;
-                (Some(u64::from_le_bytes(limit_bytes.try_into().ok()?)), after)
-            }
-            _ => return None,
-        };
-        requirements.push(MountRequirement {
-            virtual_path,
-            mode,
-            write_bytes_limit,
-        });
-        rest = after_limit;
-    }
-    Some((requirements, rest))
-}
-
-/// Checks that the mounts the parent re-supplied to `Load` match the suspended
-/// feed's recorded requirements exactly (by virtual path, mode, and write cap;
-/// host paths may differ). Returns a human-readable error describing the first
-/// discrepancy — a missing, extra, or altered mount — so a forgotten re-supply
-/// fails loudly instead of silently dropping the feed's mounts.
-fn validate_supplied_mounts(required: &[MountRequirement], supplied: &[pb::Mount]) -> Result<(), String> {
-    for req in required {
-        match supplied.iter().find(|m| m.virtual_path == req.virtual_path) {
-            None => {
-                return Err(format!(
-                    "the dump was suspended with a mount at {:?} that was not re-supplied to load; \
-                     pass the same mounts the original feed used",
-                    req.virtual_path
-                ));
-            }
-            Some(m) if m.mode != req.mode || m.write_bytes_limit != req.write_bytes_limit => {
-                return Err(format!(
-                    "the re-supplied mount at {:?} does not match the dump (mount mode or write limit differs)",
-                    req.virtual_path
-                ));
-            }
-            Some(_) => {}
-        }
-    }
-    for mount in supplied {
-        if !required.iter().any(|req| req.virtual_path == mount.virtual_path) {
-            return Err(format!(
-                "a mount at {:?} was supplied to load but the dump's feed had no such mount",
-                mount.virtual_path
-            ));
-        }
-    }
-    Ok(())
 }
 
 /// Converts wire named inputs into `(name, value)` pairs for `feed_start`.

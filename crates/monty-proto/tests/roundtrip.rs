@@ -546,7 +546,6 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
                 name: "v".to_owned(),
                 value: Some(WireObject::new(value.clone())),
             }],
-            mounts: vec![],
             skip_type_check: false,
         })),
     };

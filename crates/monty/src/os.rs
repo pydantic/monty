@@ -15,8 +15,9 @@
 //!
 //! Add a variant carrying a struct (reuse [`PathOnlyArgs`] etc. if the shape
 //! matches), derive `ToArgs` on the struct, update [`OsFunctionCall::name`]
-//! and the other inherent methods, then wire the new variant into the fs/
-//! dispatcher and any host backends.
+//! and the other inherent methods (including the [`OsFunctionCall::to_args`] /
+//! [`OsFunctionCall::from_wire_args`] pair for filesystem variants), then wire
+//! the new variant into the fs/ dispatcher and any host backends.
 
 use std::{fmt, ops::Deref};
 
@@ -176,6 +177,116 @@ impl OsFunctionCall {
             Self::DateTimeNow(tz) => (vec![tz], vec![]),
             Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
         }
+    }
+
+    /// Inverse of [`Self::to_args`] for filesystem variants: reconstructs the
+    /// typed call from the generic `(positional, keyword)` wire projection so
+    /// a host holding a [`MountTable`](crate::fs::MountTable) can service
+    /// mount-covered OS calls itself (e.g. for a sandbox on a remote worker).
+    ///
+    /// Strict by design: non-filesystem names and any arity/type/kwarg
+    /// mismatch return `None` — the call then surfaces to the outer handler
+    /// unhandled, so a malformed frame from an untrusted child never triggers
+    /// host I/O. Must stay in sync with [`Self::to_args`]; the round-trip is
+    /// enforced by `tests/os_tests.rs`.
+    #[must_use]
+    pub fn from_wire_args(name: &str, args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<Self> {
+        /// `MontyObject::Path` → owned [`MontyPath`], the shape every fs arg uses.
+        fn path(obj: &MontyObject) -> Option<MontyPath> {
+            match obj {
+                MontyObject::Path(p) => Some(MontyPath::new(p.clone())),
+                _ => None,
+            }
+        }
+        /// Exactly one positional, no kwargs.
+        fn one<'a>(args: &'a [MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<&'a MontyObject> {
+            match (args, kwargs) {
+                ([a], []) => Some(a),
+                _ => None,
+            }
+        }
+        /// Exactly two positionals, no kwargs.
+        fn two<'a>(
+            args: &'a [MontyObject],
+            kwargs: &[(MontyObject, MontyObject)],
+        ) -> Option<(&'a MontyObject, &'a MontyObject)> {
+            match (args, kwargs) {
+                ([a, b], []) => Some((a, b)),
+                _ => None,
+            }
+        }
+        /// `(path, str)` positional pair — `WriteText` / `AppendText` payload.
+        fn path_str(args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<PathStringDataArgs> {
+            match two(args, kwargs)? {
+                (p, MontyObject::String(data)) => Some(PathStringDataArgs {
+                    path: path(p)?,
+                    data: data.clone(),
+                }),
+                _ => None,
+            }
+        }
+        /// `(path, bytes)` positional pair — `WriteBytes` / `AppendBytes` payload.
+        fn path_bytes(args: &[MontyObject], kwargs: &[(MontyObject, MontyObject)]) -> Option<PathBytesDataArgs> {
+            match two(args, kwargs)? {
+                (p, MontyObject::Bytes(data)) => Some(PathBytesDataArgs {
+                    path: path(p)?,
+                    data: data.clone(),
+                }),
+                _ => None,
+            }
+        }
+        /// A `name=bool` kwarg pair with the expected key.
+        fn kw_bool(pair: &(MontyObject, MontyObject), key: &str) -> Option<bool> {
+            match pair {
+                (MontyObject::String(k), MontyObject::Bool(b)) if k == key => Some(*b),
+                _ => None,
+            }
+        }
+
+        let call = match name {
+            "Path.exists" => Self::Exists(path(one(args, kwargs)?)?),
+            "Path.is_file" => Self::IsFile(path(one(args, kwargs)?)?),
+            "Path.is_dir" => Self::IsDir(path(one(args, kwargs)?)?),
+            "Path.is_symlink" => Self::IsSymlink(path(one(args, kwargs)?)?),
+            "Path.read_text" => Self::ReadText(path(one(args, kwargs)?)?),
+            "Path.read_bytes" => Self::ReadBytes(path(one(args, kwargs)?)?),
+            "Path.stat" => Self::Stat(path(one(args, kwargs)?)?),
+            "Path.iterdir" => Self::Iterdir(path(one(args, kwargs)?)?),
+            "Path.resolve" => Self::Resolve(path(one(args, kwargs)?)?),
+            "Path.absolute" => Self::Absolute(path(one(args, kwargs)?)?),
+            "Path.unlink" => Self::Unlink(path(one(args, kwargs)?)?),
+            "Path.rmdir" => Self::Rmdir(path(one(args, kwargs)?)?),
+            "Path.write_text" => Self::WriteText(path_str(args, kwargs)?),
+            "Path.append_text" => Self::AppendText(path_str(args, kwargs)?),
+            "Path.write_bytes" => Self::WriteBytes(path_bytes(args, kwargs)?),
+            "Path.append_bytes" => Self::AppendBytes(path_bytes(args, kwargs)?),
+            "Open" => match two(args, kwargs)? {
+                (p, MontyObject::String(mode)) => Self::Open(OpenCallArgs {
+                    path: path(p)?,
+                    mode: mode.parse().ok()?,
+                }),
+                _ => None?,
+            },
+            "Path.mkdir" => match (args, kwargs) {
+                ([p], [parents, exist_ok]) => Self::Mkdir(MkdirCallArgs {
+                    path: path(p)?,
+                    parents: kw_bool(parents, "parents")?,
+                    exist_ok: kw_bool(exist_ok, "exist_ok")?,
+                }),
+                _ => None?,
+            },
+            "Path.rename" => {
+                let (src, dst) = two(args, kwargs)?;
+                Self::Rename(RenameCallArgs {
+                    src: path(src)?,
+                    dst: path(dst)?,
+                })
+            }
+            // Non-filesystem calls (and unknown names) always surface to the
+            // outer handler — a mount can never answer them.
+            _ => None?,
+        };
+        Some(call)
     }
 
     /// Whether this call can be handled by a [`MountTable`](crate::fs::MountTable).

@@ -19,10 +19,10 @@
 //! auto-dispatched through it (reusing the `feed_run` path) until the next
 //! non-OS event, matching the old behaviour. Mounts are fixed for the whole
 //! feed (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
-//! suspended feed with `load_snapshot` re-establishes those mounts — the caller
-//! re-supplies them (their host paths are not in the dump) and they are
-//! validated against the dump's recorded requirements — so the restored feed's
-//! mount-covered file access is served in-worker exactly as before the dump.
+//! suspended feed with `load_snapshot` re-establishes those mounts — the
+//! caller re-supplies them (they are never part of the dump) and the pool
+//! services the restored feed's mount-covered file access on the parent side
+//! exactly as before the dump.
 
 use std::{
     convert::Infallible,

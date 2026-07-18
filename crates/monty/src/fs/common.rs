@@ -34,7 +34,7 @@ pub(super) struct MountContext<'a> {
 /// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before reading.
 pub(super) fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_directory(path, vpath)?;
+    reject_non_regular(path, vpath)?;
     let bytes = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
@@ -45,7 +45,7 @@ pub(super) fn read_text_fs(path: &Path, vpath: &str) -> Result<MontyObject, Moun
 /// On Windows, `fs::read()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before reading.
 pub(super) fn read_bytes_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_directory(path, vpath)?;
+    reject_non_regular(path, vpath)?;
     let content = fs::read(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Bytes(content))
 }
@@ -55,7 +55,7 @@ pub(super) fn read_bytes_fs(path: &Path, vpath: &str) -> Result<MontyObject, Mou
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
 pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_directory(path, vpath)?;
+    reject_non_regular(path, vpath)?;
     fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
@@ -67,7 +67,7 @@ pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<M
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
 pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
-    reject_directory(path, vpath)?;
+    reject_non_regular(path, vpath)?;
     fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
@@ -93,7 +93,7 @@ pub(super) fn append_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Resul
 
 /// Opens `path` in append mode, writes all bytes, and closes it before returning.
 fn append_bytes_to_file(path: &Path, content: &[u8], vpath: &str) -> Result<(), MountError> {
-    reject_directory(path, vpath)?;
+    reject_non_regular(path, vpath)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -261,17 +261,25 @@ pub(super) fn dir_mtime(path: &Path) -> f64 {
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
-/// Returns an `IsADirectory` error if `path` is a directory.
+/// Rejects an existing `path` that is not a regular file: directories get an
+/// `IsADirectory` error, and special files (FIFOs, sockets, devices) get
+/// `PermissionDenied`. A missing path passes — write/append create it.
 ///
-/// On Windows, many `std::fs` operations on directories return
-/// `ErrorKind::PermissionDenied` instead of `ErrorKind::IsADirectory`.
-/// This helper normalises the behaviour across platforms so callers get
-/// the correct Python exception regardless of host OS.
-pub(super) fn reject_directory(path: &Path, vpath: &str) -> Result<(), MountError> {
-    if path.is_dir() {
-        return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath));
+/// The directory check normalises Windows (where many `std::fs` operations on
+/// directories return `PermissionDenied` instead of `IsADirectory`). The
+/// special-file check is a hang guard: reading or writing a FIFO blocks until
+/// a peer appears, and mount I/O runs on the *host* thread servicing the
+/// sandbox, so it must never block on sandbox-reachable input.
+pub(super) fn reject_non_regular(path: &Path, vpath: &str) -> Result<(), MountError> {
+    match fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),
+        Ok(meta) if !meta.is_file() => Err(MountError::io_err(
+            ErrorKind::PermissionDenied,
+            "Permission denied",
+            vpath,
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Formats a child virtual path without introducing duplicate separators.

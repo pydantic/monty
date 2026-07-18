@@ -1,14 +1,15 @@
 """Tests for MountDir filesystem mount support.
 
-These test the Rust-backed mount system that handles filesystem operations
-entirely inside the worker process, with optional Python fallback for
+These test the Rust-backed mount system that services filesystem operations
+on the host side of the worker pool, with optional Python fallback for
 non-filesystem ops via `os=`.
 
-Mounts are worker-local: a `MountDir` only contributes its configuration
-(virtual path, host path, mode, write limit) — the worker builds its own
-mount table per feed. `'overlay'` writes are visible within one `feed_run`
-call and discarded when the feed ends; `'read-write'` mounts write through
-to the real host directory.
+Mounts are host-side: a `MountDir` only contributes its configuration
+(virtual path, host path, mode, write limit) — the pool builds a fresh mount
+table per feed and answers the worker's filesystem OS calls itself.
+`'overlay'` writes are visible within one `feed_run` call and discarded when
+the feed ends; `'read-write'` mounts write through to the real host
+directory.
 """
 
 import tempfile
@@ -330,7 +331,7 @@ def test_no_fallback_not_implemented(monty_run: RunMonty, test_dir: Path):
 
 
 def test_mounted_calls_do_not_reach_os_callback(monty_run: RunMonty, test_dir: Path):
-    """Filesystem calls covered by a mount are handled inside the worker and
+    """Filesystem calls covered by a mount are serviced by the pool and
     never reach the `os=` callback."""
     calls: list[str] = []
 

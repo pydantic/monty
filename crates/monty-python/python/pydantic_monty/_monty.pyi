@@ -399,8 +399,9 @@ class MontySession:
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for this feed.
-                Handled inside the worker — `'overlay'` writes live in the
-                worker and are discarded when the feed ends.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -462,7 +463,8 @@ class MontySession:
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for the whole feed
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
-                the worker and are discarded when the feed ends.
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
             os: Fallback handler for OS calls not covered by a mount, invoked as
                 `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
                 auto-dispatches uncovered OS calls until the next non-OS event;
@@ -502,9 +504,9 @@ class MontySession:
         `RuntimeError` otherwise. The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
         applied); the dataclass registry from `checkout()` is reused. `mount`
-        re-establishes the suspended feed's mounts (whose host paths are not in
-        the dump), validated against the dump's recorded requirements — a
-        missing, extra, or altered mount raises. `'overlay'` writes made before
+        re-establishes the suspended feed's mounts, which are never part of the
+        dump — pass the same mounts the original feed used, or its filesystem
+        calls degrade into unhandled OS calls. `'overlay'` writes made before
         the dump are not preserved (the restored overlay starts empty). Raises
         if the dump is actually an idle session.
 
@@ -722,8 +724,9 @@ class AsyncMontySession:
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for this feed.
-                Handled inside the worker — `'overlay'` writes live in the
-                worker and are discarded when the feed ends.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -769,7 +772,8 @@ class AsyncMontySession:
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for the whole feed
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
-                the worker and are discarded when the feed ends.
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
             os: Fallback handler for OS calls not covered by a mount, invoked as
                 `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
                 auto-dispatches uncovered OS calls until the next non-OS event;

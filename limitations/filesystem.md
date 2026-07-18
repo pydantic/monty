@@ -26,6 +26,16 @@ Each mount is configured by the host as one of:
   directory, writes are captured in memory and never touch the host. The
   changes vanish when the VM is discarded.
 
+## Only regular files can be read, written, or opened
+
+Reading, writing, appending to, or `open()`ing a path that resolves to an
+existing **non-regular file** (FIFO/named pipe, socket, device node) raises
+`PermissionError`. CPython would block until a peer appears; mount I/O runs on
+the host thread driving the sandbox, so it must never block on
+sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
+Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
+still work on special files.
+
 ## Write limits
 
 Hosts can configure a cumulative `write_bytes_limit` per mount. In

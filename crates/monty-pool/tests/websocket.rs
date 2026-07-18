@@ -3,12 +3,17 @@
 //! session. This exercises `Worker::websocket` (the `dial_ws` dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
-use std::{net::TcpListener, thread, time::Duration};
+use std::{
+    fs,
+    net::{TcpListener, TcpStream},
+    thread,
+    time::Duration,
+};
 
-use monty::{AssertMessageAnnotations, MontyObject};
-use monty_pool::{Pool, PoolConfig, ReplConfig, TurnEvent};
-use monty_proto::{decode_frame, encode_to_capped_vec, pb};
-use tungstenite::Message;
+use monty::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
+use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_proto::{WireOsCall, decode_frame, encode_to_capped_vec, pb};
+use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
 /// the obvious turn-ender (`Ok` for control requests, `Complete(42)` for a feed).
@@ -67,5 +72,272 @@ fn drives_a_session_over_websocket() {
     );
 
     checkout.finish().expect("finish");
+    server.join().expect("mock child thread");
+}
+
+/// Binds a listener and returns it with a websocket pool config pointing at it.
+fn ws_pool_config() -> (TcpListener, PoolConfig) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    (listener, config)
+}
+
+/// Accepts one connection and returns the accepted socket.
+fn accept_ws(listener: &TcpListener) -> WebSocket<TcpStream> {
+    let (stream, _peer) = listener.accept().expect("accept");
+    tungstenite::accept(stream).expect("ws handshake")
+}
+
+/// Reads one framed `ParentRequest` from the mock child's socket.
+fn read_request(socket: &mut WebSocket<TcpStream>) -> pb::parent_request::Kind {
+    let Ok(Message::Binary(data)) = socket.read() else {
+        panic!("expected a binary request frame");
+    };
+    decode_frame::<pb::ParentRequest>(data.as_ref())
+        .expect("decode request")
+        .kind
+        .expect("request kind")
+}
+
+/// Sends one event from the mock child.
+fn send_event(socket: &mut WebSocket<TcpStream>, event: &pb::ChildEvent) {
+    let body = encode_to_capped_vec(event).expect("encode event");
+    socket.send(Message::Binary(body.into())).expect("send event");
+}
+
+fn event_kind(kind: pb::child_event::Kind) -> pb::ChildEvent {
+    pb::ChildEvent {
+        kind: Some(kind),
+        ..Default::default()
+    }
+}
+
+fn no_print(_: PrintStream, _: &str) {}
+
+/// The headline scenario for parent-side mounts: the worker lives on the far
+/// side of a WebSocket, yet a mounted read is serviced from the *parent's*
+/// filesystem — the mock child emits the `OsCall` and receives the file's
+/// contents back in a `ResumeCall` without the caller ever seeing the call.
+#[test]
+fn mounted_reads_are_serviced_from_the_parent_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "parent-side bytes").unwrap();
+
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::OsCall(WireOsCall {
+                function_name: "Path.read_text".to_owned(),
+                args: vec![MontyObject::Path("/mnt/data.txt".to_owned())],
+                kwargs: vec![],
+                call_id: 7,
+                not_handled_error: None,
+            })),
+        );
+        // the parent must answer with the mounted file's contents, not
+        // surface the call to its caller
+        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
+            panic!("expected ResumeCall");
+        };
+        assert_eq!(resume.call_id, 7);
+        let Some(pb::ext_function_result::Kind::ReturnValue(value)) = resume.result.and_then(|r| r.kind) else {
+            panic!("expected a ReturnValue result");
+        };
+        let value = value.into_object().expect("valid value");
+        assert_eq!(value, MontyObject::String("parent-side bytes".to_owned()));
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::String("done".to_owned()).into()),
+            })),
+        );
+    });
+
+    let pool = Pool::new(config).expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let event = checkout
+        .feed(
+            "unused",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+            }],
+            false,
+            &mut no_print,
+        )
+        .expect("feed");
+    assert!(
+        matches!(&event, TurnEvent::Complete(MontyObject::String(s)) if s == "done"),
+        "got {event:?}"
+    );
+    checkout.finish().expect("finish");
+    server.join().expect("mock child thread");
+}
+
+/// A malformed `OsCall` from a (possibly compromised) child never triggers
+/// parent-side I/O: it fails the strict wire parse and surfaces to the caller
+/// exactly like an uncovered call.
+#[test]
+fn malformed_os_call_surfaces_without_parent_io() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "never read").unwrap();
+
+    let (listener, config) = ws_pool_config();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // args carry a String where a Path is required — must not parse
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::OsCall(WireOsCall {
+                function_name: "Path.read_text".to_owned(),
+                args: vec![MontyObject::String("/mnt/data.txt".to_owned())],
+                kwargs: vec![],
+                call_id: 3,
+                not_handled_error: None,
+            })),
+        );
+        let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
+            panic!("expected ResumeCall");
+        };
+        assert_eq!(resume.call_id, 3);
+        send_event(
+            &mut socket,
+            &event_kind(pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::None.into()),
+            })),
+        );
+    });
+
+    let pool = Pool::new(config).expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let event = checkout
+        .feed(
+            "unused",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+            }],
+            false,
+            &mut no_print,
+        )
+        .expect("feed");
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "Path.read_text");
+    assert_eq!(args, vec![MontyObject::String("/mnt/data.txt".to_owned())]);
+    let event = checkout
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .expect("resume");
+    assert!(matches!(event, TurnEvent::Complete(MontyObject::None)), "got {event:?}");
+    checkout.finish().expect("finish");
+    server.join().expect("mock child thread");
+}
+
+/// The parent-side `max_duration` backstop (remaining budget + grace) kills a
+/// worker that never answers a feed — the case where the child's own time
+/// enforcement has failed. No `request_timeout` is configured, so the
+/// backstop is the only armed deadline.
+#[test]
+fn duration_backstop_kills_an_unresponsive_worker() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; wait for the watchdog to kill the connection
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).expect("pool");
+    let mut checkout = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .expect("checkout");
+    let err = checkout
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the armed deadline was the remaining budget (≤100ms) plus the grace
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    server.join().expect("mock child thread");
+}
+
+/// A restored session re-adopts its `max_duration` budget from the timing
+/// fields the worker stamps on the `Load` reply, re-arming the parent-side
+/// backstop without the parent ever seeing the original `ReplConfig`.
+#[test]
+fn restored_session_rearms_the_duration_backstop() {
+    let (listener, mut config) = ws_pool_config();
+    config.duration_limit_grace = Some(Duration::from_millis(300));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Load(_)));
+        // an idle restore: Ok stamped with the dump's budget/consumed time
+        send_event(
+            &mut socket,
+            &pb::ChildEvent {
+                kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+                restored_script_name: Some("restored.py".to_owned()),
+                total_execution_micros: 0,
+                max_duration_micros: Some(100_000),
+            },
+        );
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // never reply; the re-adopted backstop must fire
+        let _ = socket.read();
+    });
+
+    let pool = Pool::new(config).expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let (event, script_name) = checkout.restore(vec![1, 2, 3], vec![], &mut no_print).expect("restore");
+    assert!(event.is_none());
+    assert_eq!(script_name.as_deref(), Some("restored.py"));
+    let err = checkout
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
     server.join().expect("mock child thread");
 }

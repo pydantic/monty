@@ -8,7 +8,7 @@ use std::{fs, path::PathBuf};
 use super::{
     common::{
         MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
-        read_bytes_fs, read_text_fs, reject_directory, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
@@ -80,7 +80,7 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
     match mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            reject_directory(&resolved.host_path, path)?;
+            reject_non_regular(&resolved.host_path, path)?;
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;

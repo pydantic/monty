@@ -166,7 +166,7 @@ test('load after a feed is rejected', async () => {
   }
 })
 
-test('mounts are re-supplied to loadSnapshot and validated', async () => {
+test('mounts are re-supplied to loadSnapshot', async () => {
   if (kind === 'browser') {
     const session = await pool().checkout()
     try {
@@ -207,11 +207,17 @@ test('mounts are re-supplied to loadSnapshot and validated', async () => {
     await session.close()
   }
 
-  // omitted: validation rejects the load and poisons the session
+  // omitted: nothing validates the re-supply (mounts are never part of the
+  // dump) — the resumed feed's mounted read degrades into a surfaced OS call,
+  // and leaving it unhandled raises PermissionError inside the sandbox
   {
     const session = await pool().checkout()
-    await t.throwsAsync(() => session.loadSnapshot(blob), { instanceOf: MontyRuntimeError })
-    await t.throwsAsync(() => session.feedRun('1 + 1'))
+    const snap = (await session.loadSnapshot(blob)) as FunctionSnapshot
+    const osSnap = (await snap.resume(null)) as FunctionSnapshot
+    t.true(osSnap.isOsFunction)
+    t.is(osSnap.functionName, 'Path.read_text')
+    const error = await t.throwsAsync(() => osSnap.resumeNotHandled(), { instanceOf: MontyRuntimeError })
+    t.is(error.message, "PermissionError: Permission denied: '/data/hello.txt'")
     await session.close()
   }
 })

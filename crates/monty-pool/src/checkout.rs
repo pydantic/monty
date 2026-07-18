@@ -2,8 +2,11 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use monty::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
+    fs::{MountMode, MountTable, OverlayState},
+};
+use monty_proto::{FrameError, MONTY_VERSION, WireOsCall, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -38,9 +41,11 @@ impl Default for ReplConfig {
     }
 }
 
-/// A host directory mounted into the sandbox for one feed. Mounts are
-/// child-local: the worker process accesses the host path directly, and OS
-/// calls the mounts don't cover surface as [`TurnEvent::OsCall`].
+/// A host directory mounted into the sandbox for one feed. Mounts are handled
+/// entirely on the parent: the checkout services covered filesystem OS calls
+/// from the host path itself (so mounts work even when the worker runs on a
+/// remote machine), and OS calls the mounts don't cover surface as
+/// [`TurnEvent::OsCall`].
 #[derive(Debug, Clone)]
 pub struct MountSpec {
     /// Absolute virtual POSIX path inside the sandbox, e.g. `/mnt/data`.
@@ -58,7 +63,7 @@ pub struct MountSpec {
 pub enum MountSpecMode {
     ReadOnly,
     ReadWrite,
-    /// Copy-on-write overlay in worker memory; writes are discarded when the
+    /// Copy-on-write overlay in parent memory; writes are discarded when the
     /// feed ends.
     Overlay,
 }
@@ -150,6 +155,12 @@ pub struct Checkout {
     /// only by the worker echoing it). Reset at the start of each `restore` and
     /// taken by `restore` to return; unset for non-restore turns.
     restored_script_name: Option<String>,
+    /// Parent-side mount table for the in-flight feed, built from the
+    /// [`MountSpec`]s passed to [`Checkout::feed`] / [`Checkout::restore`].
+    /// Covered filesystem `OsCall` events are serviced from it inside
+    /// [`Checkout::request_turn`] without surfacing to the caller. Dropped
+    /// when the feed ends so overlay writes never leak into the next feed.
+    feed_mounts: Option<MountTable>,
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -176,6 +187,7 @@ impl Checkout {
             reported_execution: Duration::ZERO,
             armed_deadline: None,
             restored_script_name: None,
+            feed_mounts: None,
         };
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
@@ -207,11 +219,13 @@ impl Checkout {
     /// mismatch. Only valid before the worker has been fed (the child rejects a
     /// `Load` once a repl exists).
     ///
-    /// `mounts` re-establish a suspended feed's mounts (which are never part of
-    /// the dump). They must match the mounts the original feed used; pass an
-    /// empty `Vec` for an idle dump. The session's resource budget is taken
-    /// from the dump, so the prior `Configure` limits are dropped here and
-    /// re-adopted from the worker's reply.
+    /// `mounts` re-establish a suspended feed's mounts, which are never part of
+    /// the dump (they are host configuration the parent services itself). Pass
+    /// the same mounts the original feed used — a mount silently omitted here
+    /// degrades its filesystem calls into surfaced [`TurnEvent::OsCall`]s.
+    /// The session's resource budget is taken from the dump, so the prior
+    /// `Configure` limits are dropped here and re-adopted from the worker's
+    /// reply.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -228,11 +242,9 @@ impl Checkout {
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
+        self.feed_mounts = build_mount_table(mounts)?;
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Load(pb::Load {
-                state,
-                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
-            })),
+            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
         };
         let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
             ControlEvent::Ok => None,
@@ -245,8 +257,11 @@ impl Checkout {
     }
 
     /// Executes one snippet against the session. Inputs become sandbox
-    /// globals; mounts apply to this feed only. Returns the first suspension
-    /// (or completion); `print()` output streams to `on_print` throughout.
+    /// globals; mounts apply to this feed only and are serviced by the parent
+    /// (an invalid host path fails here, before any frame is sent, as a
+    /// session-preserving [`PoolError::Runtime`]). Returns the first
+    /// suspension (or completion); `print()` output streams to `on_print`
+    /// throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
@@ -265,6 +280,7 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        self.feed_mounts = build_mount_table(mounts)?;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
                 code: code.to_owned(),
@@ -275,7 +291,6 @@ impl Checkout {
                         value: Some(value.into()),
                     })
                     .collect(),
-                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
                 skip_type_check,
             })),
         };
@@ -519,7 +534,7 @@ impl Checkout {
         // `Worker::reset_killed_for_timeout`).
         worker.reset_killed_for_timeout();
         self.armed_deadline = deadline;
-        let deadline_guard = self.pool.watchdog.arm(worker, deadline);
+        let mut deadline_guard = self.pool.watchdog.arm(worker, deadline);
 
         if let Err(err) = worker.send(request) {
             // `write_frame` rejects an oversize frame *before* writing any
@@ -581,6 +596,44 @@ impl Checkout {
                     });
                 }
                 Some(pb::child_event::Kind::OsCall(call)) => {
+                    // Parent-side mounts: service covered filesystem calls
+                    // here and resume the child directly — the caller never
+                    // sees them (mirroring `Print` handling). The watchdog is
+                    // disarmed around the local I/O (the child is idle,
+                    // blocked on our reply — a slow host filesystem must not
+                    // count against its deadline) and re-armed per exchange so
+                    // a feed doing many fs ops never outlives one timeout.
+                    if self.feed_mounts.is_some() {
+                        deadline_guard = None;
+                        if let Some(result) = self.try_mount_call(&call) {
+                            let next_deadline =
+                                min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+                            self.armed_deadline = next_deadline;
+                            let worker = self.worker.as_mut().expect("checked above");
+                            deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
+                            if let Err(err) = send_internal_resume(worker, call.call_id, result) {
+                                // an oversize result frame is rejected before any
+                                // bytes are written, so the stream is intact and
+                                // the suspended child can be resumed with a small,
+                                // catchable error instead; anything else is a real
+                                // I/O break
+                                let FrameError::FrameTooLarge { len, max } = err else {
+                                    break Err(self.poison("resuming a mount-covered OS call"));
+                                };
+                                let exc = MontyException::new(
+                                    ExcType::RuntimeError,
+                                    Some(format!(
+                                        "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
+                                    )),
+                                );
+                                let error_result = pb::ext_function_result::Kind::Error((&exc).into());
+                                if send_internal_resume(worker, call.call_id, error_result).is_err() {
+                                    break Err(self.poison("resuming a mount-covered OS call"));
+                                }
+                            }
+                            continue;
+                        }
+                    }
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
@@ -607,6 +660,9 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
                     self.pending = None;
+                    // the feed is over — drop its mounts so overlay writes
+                    // cannot leak into the next feed
+                    self.feed_mounts = None;
                     break self.convert_turn(|| {
                         let value = complete
                             .value
@@ -616,6 +672,7 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
                     self.pending = None;
+                    self.feed_mounts = None;
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };
@@ -626,6 +683,7 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
                     self.pending = None;
+                    self.feed_mounts = None;
                     break Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
@@ -663,6 +721,24 @@ impl Checkout {
         }
     }
 
+    /// Attempts to service a filesystem `OsCall` from the parent-side mount
+    /// table, performing the host I/O here. `None` when the call is not
+    /// mount-covered (it then surfaces to the caller); `Some` carries the wire
+    /// result to resume the child with.
+    ///
+    /// The wire args come from an untrusted child: any name/arity/type
+    /// mismatch fails the `from_wire_args` parse and returns `None` — no I/O
+    /// ever happens on a malformed frame, and path containment inside covered
+    /// calls is enforced by the `MountTable` itself.
+    fn try_mount_call(&mut self, call: &WireOsCall) -> Option<pb::ext_function_result::Kind> {
+        let function_call = OsFunctionCall::from_wire_args(&call.function_name, &call.args, &call.kwargs)?;
+        let outcome = self.feed_mounts.as_mut()?.handle_os_call(&function_call)?;
+        Some(match outcome {
+            Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+            Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
+        })
+    }
+
     /// Runs a fallible payload conversion; conversion failures mean the
     /// worker sent garbage, which discards it.
     fn convert_turn(
@@ -691,6 +767,7 @@ impl Checkout {
             return PoolError::Finished;
         };
         self.pending = None;
+        self.feed_mounts = None;
         let timed_out = worker.was_killed_for_timeout();
         let status = worker.kill_and_reap();
         drop(worker);
@@ -716,6 +793,7 @@ impl Checkout {
             self.pool.release_capacity();
         }
         self.pending = None;
+        self.feed_mounts = None;
     }
 }
 
@@ -768,36 +846,44 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-/// Serializes a [`MountSpec`] onto the wire `Mount` message.
-///
-/// The wire `host_path` is a protobuf `string` (UTF-8 by definition), so a
-/// host path that is not valid UTF-8 cannot cross the boundary. Rather than
-/// silently lossily-transcoding it — which could resolve to a *different*
-/// existing directory in the worker and expose the wrong files — this rejects
-/// such a path up front with a catchable error, leaving the session intact.
-fn mount_to_proto(mount: MountSpec) -> Result<pb::Mount, PoolError> {
-    let mode = match mount.mode {
-        MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
-        MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
-        MountSpecMode::Overlay => pb::MountMode::Overlay,
-    };
-    let host_path = mount
-        .host_path
-        .to_str()
-        .ok_or_else(|| {
-            PoolError::Runtime(MontyException::new(
-                ExcType::ValueError,
-                Some(format!(
-                    "mount host path is not valid UTF-8: {:?}",
-                    mount.host_path.display()
-                )),
-            ))
-        })?
-        .to_owned();
-    Ok(pb::Mount {
-        virtual_path: mount.virtual_path,
-        host_path,
-        mode: mode.into(),
-        write_bytes_limit: mount.write_bytes_limit,
+/// Builds the parent-side [`MountTable`] for one feed from its specs;
+/// `Ok(None)` when `mounts` is empty (every OS call then surfaces to the
+/// caller). An invalid mount (host path missing, not a directory, relative
+/// virtual path, …) fails as a session-preserving [`PoolError::Runtime`] —
+/// callers invoke this before sending any frame, so the worker never sees a
+/// half-configured feed.
+fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
+    if mounts.is_empty() {
+        return Ok(None);
+    }
+    let mut table = MountTable::new();
+    for mount in mounts {
+        let mode = match mount.mode {
+            MountSpecMode::ReadOnly => MountMode::ReadOnly,
+            MountSpecMode::ReadWrite => MountMode::ReadWrite,
+            // Overlay state is created fresh per feed: writes live only as
+            // long as the feed and are discarded with it.
+            MountSpecMode::Overlay => MountMode::OverlayMemory(OverlayState::new()),
+        };
+        table
+            .mount(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
+            .map_err(|err| PoolError::Runtime(err.into_exception()))?;
+    }
+    Ok(Some(table))
+}
+
+/// Sends the `ResumeCall` answering a mount-serviced OS call. Free function
+/// (not a method) so [`Checkout::request_turn`] can call it while the worker
+/// is already mutably borrowed.
+fn send_internal_resume(
+    worker: &mut Worker,
+    call_id: u32,
+    result: pb::ext_function_result::Kind,
+) -> Result<(), FrameError> {
+    worker.send(&pb::ParentRequest {
+        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+        })),
     })
 }

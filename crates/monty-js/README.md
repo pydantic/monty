@@ -168,8 +168,9 @@ await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
 Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
-kept in worker memory and discarded at the end of the feed). OS calls mounts
-don't cover can be handled with the `os` callback:
+kept in memory and discarded at the end of the feed). Mount I/O is serviced
+on the host side of the pool, so mounts work even for remote workers. OS
+calls mounts don't cover can be handled with the `os` callback:
 
 ```ts
 import { NOT_HANDLED } from '@pydantic/monty'
