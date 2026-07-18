@@ -100,6 +100,8 @@ pub enum Type {
     BuiltinFunction,
     Cell,
     Iterator,
+    #[strum(serialize = "list_iterator")]
+    ListIterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,

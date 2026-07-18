@@ -342,6 +342,7 @@ pub enum MontyObject {
 /// name, so passing `MontyType::Instance` as an *input* is rejected with an
 /// [`InvalidInputError`] (see [`MontyObject`] input conversion).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumIter)]
+#[non_exhaustive]
 pub enum MontyType {
     Ellipsis,
     Type,
@@ -358,6 +359,7 @@ pub enum MontyType {
     Str,
     Bytes,
     List,
+    ListIterator,
     Tuple,
     NamedTuple,
     Dict,
@@ -447,6 +449,7 @@ impl MontyType {
             Self::Str => Some(Type::Str),
             Self::Bytes => Some(Type::Bytes),
             Self::List => Some(Type::List),
+            Self::ListIterator => Some(Type::ListIterator),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -500,6 +503,7 @@ impl MontyType {
             Type::Str => Self::Str,
             Type::Bytes => Self::Bytes,
             Type::List => Self::List,
+            Type::ListIterator => Self::ListIterator,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,

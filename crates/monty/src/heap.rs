@@ -21,7 +21,7 @@ use crate::{
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, date, datetime, timedelta, timezone,
+        TimeZone, Tuple, date, datetime, list::ListIterator, timedelta, timezone,
     },
     value::Value,
 };
@@ -225,6 +225,7 @@ pub enum HeapReadOutput<'a> {
     Instance(HeapRead<'a, Instance>),
     BoundMethod(HeapRead<'a, BoundMethod>),
     Iter(HeapRead<'a, MontyIter>),
+    ListIterator(HeapRead<'a, ListIterator>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
@@ -614,6 +615,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
+            HeapData::ListIterator(list_iter) => HeapReadOutput::ListIterator(heap_read(base, list_iter, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),

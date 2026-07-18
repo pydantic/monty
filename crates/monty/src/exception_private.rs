@@ -1019,6 +1019,14 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
+    /// Creates a TypeError when `next()` receives a non-iterator.
+    ///
+    /// Matches CPython's format: `TypeError: '{type}' object is not an iterator`
+    #[must_use]
+    pub(crate) fn type_error_not_iterator(type_: &str) -> RunError {
+        SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not an iterator")).into()
+    }
+
     /// Creates a TypeError for non-iterable type in PEP 448 `*value` literal unpack.
     ///
     /// Used when `[*expr]`, `(*expr,)` literal unpack encounters a non-iterable — distinct

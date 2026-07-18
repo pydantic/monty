@@ -230,8 +230,11 @@ pub(crate) trait PyTrait<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()>;
+        _heap_ids: &mut LazyHeapSet,
+    ) -> RunResult<()> {
+        write!(f, "<'{}' object>", self.py_type(vm))?;
+        Ok(())
+    }
 
     /// Returns the Python `repr()` string for this value as a heap `str` `Value`.
     ///
@@ -504,6 +507,20 @@ pub(crate) trait PyTrait<'h> {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         Ok(None)
+    }
+
+    /// Get a Python iterator for this object (`__iter__`)
+    fn py_iter(&self, _self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        Err(SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{}' object is not iterable", self.py_type(vm)),
+        )
+        .into())
+    }
+
+    /// Python iteration for this object (`__next__`)
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        Err(ExcType::type_error_not_iterator(&self.py_type(vm).to_string()))
     }
 }
 

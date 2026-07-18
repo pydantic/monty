@@ -28,7 +28,7 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        Bytes, CmpOrder, LazyHeapSet, List, LongInt, MontyIter, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{
@@ -1431,6 +1431,29 @@ impl<'h> PyTrait<'h> for Value {
             ))),
         }
     }
+
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        if let Self::Ref(id) = self {
+            match vm.heap.read(*id) {
+                HeapReadOutput::List(list) => return list.py_iter(Some(*id), vm),
+                HeapReadOutput::ListIterator(iter) => return iter.py_iter(Some(*id), vm),
+                HeapReadOutput::Iter(iter) => return iter.py_iter(Some(*id), vm),
+                _ => {}
+            }
+        }
+
+        let iter = MontyIter::new(self.clone_with_heap(vm), vm)?;
+        let id = vm.heap.allocate(HeapData::Iter(iter))?;
+        Ok(Self::Ref(id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_next(vm)
+        } else {
+            Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
+        }
+    }
 }
 
 /// `Value` releases its (possible) heap reference through any [`ContainsHeap`]
@@ -1612,6 +1635,16 @@ impl Value {
         } else {
             Ok(false)
         }
+    }
+
+    /// Returns an iterator for this value using its type-specific protocol when available.
+    pub fn py_iter(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        <Self as PyTrait<'_>>::py_iter(self, None, vm)
+    }
+
+    /// Advances this value if it implements the iterator protocol.
+    pub fn py_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        <Self as PyTrait<'_>>::py_next(self, vm)
     }
 
     /// Reads the heap entry this value references, or `None` if it is not a

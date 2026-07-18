@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::{CmpOrder, MontyIter, PyTrait};
@@ -548,6 +549,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
         call_list_method(self, method, args, vm).map(CallResult::Value)
     }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let list_id = self_id.expect("heap values have an id");
+        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator {
+            list: list_id,
+            index: 0,
+        }))?;
+        vm.heap.inc_ref(list_id);
+        Ok(Value::Ref(iterator))
+    }
 }
 
 impl HeapItem for List {
@@ -916,6 +927,75 @@ pub(crate) fn repr_sequence_fmt<'h, T: ResourceTracker>(
     f.write_char(end)?;
 
     Ok(())
+}
+
+/// Iterates over a list while observing changes to its current contents.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ListIterator {
+    /// Owned reference to the list under iteration.
+    list: HeapId,
+    /// Index of the next item to yield.
+    index: usize,
+}
+
+impl ListIterator {
+    /// Returns the number of items remaining in the list's current contents.
+    pub(crate) fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
+        let HeapData::List(list) = heap.get(self.list) else {
+            unreachable!("list iterator must reference a list")
+        };
+        list.len().saturating_sub(self.index)
+    }
+}
+
+impl HeapItem for ListIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.list);
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
+    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::ListIterator
+    }
+
+    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        vm.heap.check_time()?;
+        let (list_id, index) = {
+            let iterator = self.get(vm.heap);
+            (iterator.list, iterator.index)
+        };
+        let item = match vm.heap.read(list_id) {
+            HeapReadOutput::List(list) => list
+                .get(vm.heap)
+                .items
+                .get(index)
+                .map(|item| item.clone_with_heap(vm.heap)),
+            _ => unreachable!("list iterator must reference a list"),
+        };
+        if item.is_some() {
+            self.get_mut(vm.heap).index += 1;
+        }
+        Ok(item)
+    }
 }
 
 #[cfg(test)]

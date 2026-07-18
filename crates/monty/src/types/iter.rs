@@ -23,7 +23,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
-    types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
+    types::{PyTrait, Range, Type, dict_view::DictView, str::allocate_char},
     value::{VALUE_SIZE, Value},
 };
 
@@ -60,18 +60,9 @@ impl MontyIter {
             return Err(ExcType::type_error("iter(callable, sentinel) is not yet supported"));
         }
 
-        // Check if already an iterator - return self
-        if let Value::Ref(id) = &iterable
-            && matches!(vm.heap.get(*id), HeapData::Iter(_))
-        {
-            // Already an iterator - return it (refcount already correct from caller)
-            return Ok(iterable);
-        }
-
-        // Create new iterator
-        let iter = Self::new(iterable, vm)?;
-        let id = vm.heap.allocate(HeapData::Iter(iter))?;
-        Ok(Value::Ref(id))
+        let iterator = iterable.py_iter(vm);
+        iterable.drop_with(vm);
+        iterator
     }
 
     /// Creates a new MontyIter from a Value.
@@ -80,6 +71,22 @@ impl MontyIter {
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
     pub fn new(mut value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        if let Value::Ref(list_id) = value {
+            let list_iterator = match vm.heap.read(list_id) {
+                HeapReadOutput::List(list) => Some(list.py_iter(Some(list_id), vm)?),
+                _ => None,
+            };
+            if let Some(list_iterator) = list_iterator {
+                value.drop_with(vm);
+                let heap_id = list_iterator.ref_id().expect("list iterators are heap allocated");
+                return Ok(Self {
+                    index: 0,
+                    iter_value: IterValue::Opaque { heap_id },
+                    value: list_iterator,
+                });
+            }
+        }
+
         if let Some(iter_value) = IterValue::new(&value, vm) {
             // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
             // to keep the heap object alive during iteration. Drop it immediately to avoid
@@ -172,42 +179,35 @@ impl MontyIter {
                 len,
                 checks_mutation,
             } => {
-                // Check exhaustion for types with captured len
-                if let Some(l) = len
-                    && self.index >= *l
-                {
+                if self.index >= *len {
                     return Ok(None);
                 }
-                let i = self.index;
-                let expected_len = if *checks_mutation { *len } else { None };
-                let item = get_heap_item(vm, *heap_id, i, expected_len)?;
-                // Check for list exhaustion (list can shrink during iteration)
-                let Some(item) = item else {
-                    return Ok(None);
-                };
+                let expected_len = checks_mutation.then_some(*len);
+                let item = get_heap_item(vm, *heap_id, self.index, expected_len)?;
                 self.index += 1;
                 Ok(Some(item))
             }
+            IterValue::Opaque { heap_id } => match vm.heap.read(*heap_id) {
+                HeapReadOutput::Iter(mut i) => i.advance(vm),
+                HeapReadOutput::ListIterator(mut li) => li.py_next(vm),
+                _ => unreachable!(),
+            },
         }
     }
 
     /// Returns the remaining size for iterables based on current state.
     ///
-    /// For immutable types (Range, Tuple, Str, Bytes, FrozenSet), returns the exact remaining count.
-    /// For List, returns current length minus index (may change if list is mutated).
-    /// For Dict and Set, returns the captured length minus index (used for size-change detection).
+    /// For concrete iterables, returns their exact remaining count.
+    ///
+    /// Opaque iterators may provide a type-specific hint; otherwise this returns zero.
     pub fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
         let len = match &self.iter_value {
             IterValue::Range { len, .. } | IterValue::IterStr { len, .. } | IterValue::InternBytes { len, .. } => *len,
-            IterValue::HeapRef { heap_id, len, .. } => {
-                // For List (len=None), check current length dynamically
-                len.unwrap_or_else(|| {
-                    let HeapData::List(list) = heap.get(*heap_id) else {
-                        panic!("HeapRef with len=None should only be List")
-                    };
-                    list.len()
-                })
-            }
+            IterValue::HeapRef { len, .. } => *len,
+            IterValue::Opaque { heap_id } => match heap.get(*heap_id) {
+                HeapData::ListIterator(iter) => iter.size_hint(heap),
+                _ => 0,
+            },
         };
         len.saturating_sub(self.index)
     }
@@ -338,6 +338,7 @@ impl<'h> HeapRead<'h, MontyIter> {
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` for dict/set size changes or allocation failures.
     pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        vm.heap.check_time()?;
         let this = self.get_mut(vm.heap);
         match &mut this.iter_value {
             IterValue::Range { next, step, len } => {
@@ -383,23 +384,23 @@ impl<'h> HeapRead<'h, MontyIter> {
                 len,
                 checks_mutation,
             } => {
-                if let Some(l) = len
-                    && this.index >= *l
-                {
+                if this.index >= *len {
                     return Ok(None);
                 }
-
                 let heap_id = *heap_id;
-                let expected_len = if *checks_mutation { *len } else { None };
                 let index = this.index;
+                let expected_len = checks_mutation.then_some(*len);
                 let item = get_heap_item(vm, heap_id, index, expected_len)?;
-
-                // Check for list exhaustion (list can shrink during iteration)
-                let Some(item) = item else {
-                    return Ok(None);
-                };
                 self.get_mut(vm.heap).index += 1;
                 Ok(Some(item))
+            }
+            IterValue::Opaque { heap_id } => {
+                let heap_id = *heap_id;
+                match vm.heap.read(heap_id) {
+                    HeapReadOutput::Iter(mut i) => i.advance(vm),
+                    HeapReadOutput::ListIterator(mut li) => li.py_next(vm),
+                    _ => unreachable!(),
+                }
             }
         }
     }
@@ -407,34 +408,23 @@ impl<'h> HeapRead<'h, MontyIter> {
 
 /// Gets an item from a heap-allocated container at the given index.
 ///
-/// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
-/// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
+/// Returns an error if a dict or set changed size during iteration.
 fn get_heap_item(
     vm: &VM<'_, impl ResourceTracker>,
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
-) -> RunResult<Option<Value>> {
+) -> RunResult<Value> {
     match vm.heap.get(heap_id) {
-        HeapData::List(list) => {
-            // Check if list shrunk during iteration
-            if index >= list.len() {
-                return Ok(None);
-            }
-            Ok(Some(list.as_slice()[index].clone_with_heap(vm)))
-        }
-        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(vm))),
-        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(vm))),
+        HeapData::Tuple(tuple) => Ok(tuple.as_slice()[index].clone_with_heap(vm)),
+        HeapData::NamedTuple(namedtuple) => Ok(namedtuple.as_vec()[index].clone_with_heap(vm)),
         HeapData::Dict(dict) => {
-            // Check for dict mutation
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
-                dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+            Ok(dict.key_at(index).expect("index should be valid").clone_with_heap(vm))
         }
         HeapData::DictKeysView(view) => {
             let dict = view.dict(vm.heap);
@@ -443,9 +433,7 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
-                dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+            Ok(dict.key_at(index).expect("index should be valid").clone_with_heap(vm))
         }
         HeapData::DictItemsView(view) => {
             let dict = view.dict(vm.heap);
@@ -455,10 +443,10 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             let (key, value) = dict.item_at(index).expect("index should be valid");
-            Ok(Some(super::allocate_tuple(
+            Ok(super::allocate_tuple(
                 smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
                 vm.heap,
-            )?))
+            )?)
         }
         HeapData::DictValuesView(view) => {
             let dict = view.dict(vm.heap);
@@ -467,32 +455,26 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
-                dict.value_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+            Ok(dict.value_at(index).expect("index should be valid").clone_with_heap(vm))
         }
-        HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
+        HeapData::Bytes(bytes) => Ok(Value::Int(i64::from(bytes.as_slice()[index]))),
         HeapData::Set(set) => {
-            // Check for set mutation
             if let Some(expected) = expected_len
                 && set.len() != expected
             {
                 return Err(ExcType::runtime_error_set_changed_size());
             }
-            Ok(Some(
-                set.storage()
-                    .value_at(index)
-                    .expect("index should be valid")
-                    .clone_with_heap(vm),
-            ))
-        }
-        HeapData::FrozenSet(frozenset) => Ok(Some(
-            frozenset
+            Ok(set
                 .storage()
                 .value_at(index)
                 .expect("index should be valid")
-                .clone_with_heap(vm),
-        )),
+                .clone_with_heap(vm))
+        }
+        HeapData::FrozenSet(frozenset) => Ok(frozenset
+            .storage()
+            .value_at(index)
+            .expect("index should be valid")
+            .clone_with_heap(vm)),
         _ => panic!("get_heap_item: unexpected heap data type"),
     }
 }
@@ -522,16 +504,9 @@ pub fn iterator_next(
     let vm = default_guard.ctx();
 
     let Value::Ref(iter_id) = iter_value else {
-        return Err(ExcType::type_error_not_iterable(&iter_value.py_type_name(vm)));
+        return Err(ExcType::type_error_not_iterator(&iter_value.py_type_name(vm)));
     };
-
-    let result = match vm.heap.read(*iter_id) {
-        HeapReadOutput::Iter(mut iter) => iter.advance(vm)?,
-        other => {
-            let data_type = other.py_type(vm).name(vm.heap, vm.interns);
-            return Err(ExcType::type_error(format!("'{data_type}' object is not an iterator")));
-        }
-    };
+    let result = vm.heap.read(*iter_id).py_next(vm)?;
 
     // Get next item using the MontyIter::advance_on_heap method
     match result {
@@ -577,17 +552,16 @@ enum IterValue {
     },
     /// Iterating over interned bytes, yields `Value::Int` for each byte.
     InternBytes { bytes_id: BytesId, len: usize },
-    /// Iterating over a heap-allocated container (List, Tuple, NamedTuple, Dict, Bytes, Set, FrozenSet).
+    /// Iterating over a heap-allocated tuple, dict, bytes, set, or frozen set.
     ///
-    /// - `len`: `None` for List (checked dynamically since lists can mutate during iteration),
-    ///   `Some(n)` for other types (captured at construction for exhaustion checking).
-    /// - `checks_mutation`: `true` for Dict/Set (raises RuntimeError if size changes),
-    ///   `false` for other types.
+    /// `checks_mutation` is true for dicts and sets, which reject size changes.
     HeapRef {
         heap_id: HeapId,
-        len: Option<usize>,
+        len: usize,
         checks_mutation: bool,
     },
+    /// Iterating over an iterator type not inlined in this type. It is responsible for all iteration.
+    Opaque { heap_id: HeapId },
 }
 
 impl IterValue {
@@ -633,63 +607,60 @@ impl IterValue {
     /// Creates an iterator value from heap data.
     fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<Self> {
         match heap.get(heap_id) {
-            // List: no captured len (checked dynamically), no mutation check
-            HeapData::List(_) => Some(Self::HeapRef {
-                heap_id,
-                len: None,
-                checks_mutation: false,
-            }),
             // Tuple/NamedTuple/Bytes/FrozenSet: captured len, no mutation check
             HeapData::Tuple(tuple) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(tuple.as_slice().len()),
+                len: tuple.as_slice().len(),
                 checks_mutation: false,
             }),
             HeapData::NamedTuple(namedtuple) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(namedtuple.len()),
+                len: namedtuple.len(),
                 checks_mutation: false,
             }),
             HeapData::Bytes(b) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(b.len()),
+                len: b.len(),
                 checks_mutation: false,
             }),
             HeapData::FrozenSet(frozenset) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(frozenset.len()),
+                len: frozenset.len(),
                 checks_mutation: false,
             }),
             // Dict and dict views: captured len, WITH mutation check
             HeapData::Dict(dict) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(dict.len()),
+                len: dict.len(),
                 checks_mutation: true,
             }),
             HeapData::DictKeysView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(view.dict(heap).len()),
+                len: view.dict(heap).len(),
                 checks_mutation: true,
             }),
             HeapData::DictItemsView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(view.dict(heap).len()),
+                len: view.dict(heap).len(),
                 checks_mutation: true,
             }),
             HeapData::DictValuesView(view) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(view.dict(heap).len()),
+                len: view.dict(heap).len(),
                 checks_mutation: true,
             }),
             HeapData::Set(set) => Some(Self::HeapRef {
                 heap_id,
-                len: Some(set.len()),
+                len: set.len(),
                 checks_mutation: true,
             }),
             // String: copy content for iteration
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
+            // TODO might be nice to avoid allocating a second iterator object on this branch
+            HeapData::Iter(_) => Some(Self::Opaque { heap_id }),
+            HeapData::ListIterator(_) => Some(Self::Opaque { heap_id }),
             // other types are not iterable
             _ => None,
         }
@@ -710,5 +681,29 @@ impl HeapItem for MontyIter {
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.value.py_dec_ref_ids(stack);
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, MontyIter> {
+    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::Iterator
+    }
+
+    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.advance(vm)
     }
 }

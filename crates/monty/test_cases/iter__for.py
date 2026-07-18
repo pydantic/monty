@@ -4,6 +4,8 @@ for x in [1, 2, 3]:
     result.append(x)
 assert result == [1, 2, 3]
 
+assert type(iter([])).__name__ == 'list_iterator'
+
 # list with mixed types
 result = []
 for x in [1, 'a', True]:
