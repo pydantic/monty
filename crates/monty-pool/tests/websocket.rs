@@ -283,6 +283,77 @@ fn duration_backstop_kills_an_unresponsive_worker() {
     server.join().expect("mock child thread");
 }
 
+/// A worker cannot extend a turn indefinitely by issuing covered mount calls:
+/// each exchange deducts the elapsed worker interval from the turn's
+/// allowance, so cumulative worker execution stays bounded by
+/// `request_timeout` no matter how many covered calls the worker makes.
+#[test]
+fn mount_calls_do_not_reset_the_request_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let (listener, mut config) = ws_pool_config();
+    config.request_timeout = Some(Duration::from_millis(500));
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        assert!(matches!(
+            read_request(&mut socket),
+            pb::parent_request::Kind::Configure(_)
+        ));
+        send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
+        assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
+        // "run" for 200ms then issue a covered call, repeatedly: with the old
+        // per-exchange reset this loop would finish all 20 rounds (each well
+        // under the 500ms timeout); the allowance must kill the worker once
+        // cumulative execution passes the timeout.
+        let mut rounds = 0_u32;
+        for call_id in 0..20 {
+            thread::sleep(Duration::from_millis(200));
+            let call = event_kind(pb::child_event::Kind::OsCall(WireOsCall {
+                function_name: "Path.exists".to_owned(),
+                args: vec![MontyObject::Path("/mnt".to_owned())],
+                kwargs: vec![],
+                call_id,
+                not_handled_error: None,
+            }));
+            let body = encode_to_capped_vec(&call).expect("encode event");
+            if socket.send(Message::Binary(body.into())).is_err() {
+                break; // killed by the watchdog
+            }
+            match socket.read() {
+                Ok(Message::Binary(_)) => rounds += 1,
+                _ => break, // killed by the watchdog
+            }
+        }
+        assert!(rounds >= 1, "at least one covered exchange should be serviced");
+        assert!(
+            rounds < 20,
+            "the watchdog never fired — the deadline was reset per exchange"
+        );
+    });
+
+    let pool = Pool::new(config).expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let err = checkout
+        .feed(
+            "unused",
+            vec![],
+            vec![MountSpec::new(
+                "/mnt".to_owned(),
+                dir.path().to_path_buf(),
+                MountSpecMode::ReadOnly,
+            )],
+            false,
+            &mut no_print,
+        )
+        .expect_err("cumulative worker time must exhaust the turn allowance");
+    let PoolError::Timeout { timeout } = err else {
+        panic!("expected Timeout, got {err:?}");
+    };
+    // the reported timeout is the turn deadline, not a per-exchange residual
+    assert_eq!(timeout, Duration::from_millis(500));
+    server.join().expect("mock child thread");
+}
+
 /// A restored session re-adopts its `max_duration` budget from the timing
 /// fields the worker stamps on the `Load` reply, re-arming the parent-side
 /// backstop without the parent ever seeing the original `ReplConfig`.

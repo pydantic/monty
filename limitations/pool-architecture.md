@@ -171,10 +171,11 @@ properties that real CPython does not provide, per the caveat above.
   mount on a pathological host filesystem — a stalled NFS or FUSE volume —
   blocks the feed with no timeout. Like a blocking `print_callback` or
   external function, hang-free host I/O is the embedder's responsibility:
-  do not mount directories on filesystems that can hang. After each covered
-  call, the watchdog is rearmed from the current time with the full
-  `request_timeout`, so the timeout bounds each interval of worker execution,
-  not the whole feed; repeated covered calls can keep one feed alive longer.
+  do not mount directories on filesystems that can hang. Worker execution
+  time is still hard-bounded: each covered call deducts the worker's elapsed
+  interval from the turn's allowance, so cumulative worker execution per turn
+  never exceeds `request_timeout` no matter how many covered calls it makes —
+  only the parent-side I/O itself is outside the timeout.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are serviced by the pool and never reach the callback.
 - **Mounts have a 100 MB memory budget by default.** Retained overlay data and

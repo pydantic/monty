@@ -1,6 +1,10 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
@@ -551,6 +555,11 @@ impl Checkout {
         // `Worker::reset_killed_for_timeout`).
         worker.reset_killed_for_timeout();
         self.armed_deadline = deadline;
+        // The turn's total worker-time allowance: each mount exchange consumes
+        // the interval the worker just ran, so a stream of covered OS calls
+        // cannot extend one turn beyond `deadline` of cumulative execution.
+        let mut remaining = deadline;
+        let mut armed_at = Instant::now();
         let mut deadline_guard = self.pool.watchdog.arm(worker, deadline);
 
         if let Err(err) = worker.send(request) {
@@ -618,13 +627,19 @@ impl Checkout {
                     // sees them (mirroring `Print` handling). The watchdog is
                     // disarmed around the local I/O (the child is idle,
                     // blocked on our reply — a slow host filesystem must not
-                    // count against its deadline) and re-armed per exchange so
-                    // a feed doing many fs ops never outlives one timeout.
+                    // count against its deadline). Each exchange deducts the
+                    // worker's just-elapsed interval from `remaining`, so
+                    // issuing covered calls cannot reset the deadline: total
+                    // worker execution per turn stays bounded by `deadline`.
                     deadline_guard = None;
+                    remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
                     if let Some(result) = self.try_mount_call(&call)? {
-                        let next_deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-                        self.armed_deadline = next_deadline;
+                        // `armed_deadline` (the `Timeout` error's reported
+                        // value) stays at the turn deadline: the allowance
+                        // makes that the bound the whole turn is held to.
+                        let next_deadline = min_deadline(remaining, self.backstop_deadline());
                         let worker = self.worker.as_mut().expect("checked above");
+                        armed_at = Instant::now();
                         deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
                         if let Err(err) = send_internal_resume(worker, call.call_id, result) {
                             // an oversize result frame is rejected before any
