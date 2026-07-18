@@ -75,9 +75,8 @@ pub(crate) fn get_not_handled(py: Python<'_>) -> PyResult<&Py<PyAny>> {
 #[pymodule]
 mod _monty {
     // `MontyFileHandle` is produced by the value-conversion layer (in
-    // `monty_proto`, shared with the `monty-cpython` worker) whenever a
-    // `MontyObject::FileHandle` crosses the boundary; export it as part of the
-    // `pydantic_monty` surface.
+    // `monty_proto`) whenever a `MontyObject::FileHandle` crosses the
+    // boundary; export it as part of the `pydantic_monty` surface.
     #[pymodule_export]
     use monty_proto::python::PyMontyFileHandle as MontyFileHandle;
     use pyo3::prelude::*;

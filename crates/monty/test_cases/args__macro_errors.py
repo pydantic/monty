@@ -223,7 +223,7 @@ except TypeError as e:
 
 try:
     datetime.date(2024, day=3, month=2)
-    assert datetime.date(2024, day=3, month=2).day == 3, 'date kwarg-filled required succeeds'
+    assert datetime.date(2024, day=3, month=2).day == 3
 except TypeError as e:
     assert False, f'unexpected error: {e}'
 

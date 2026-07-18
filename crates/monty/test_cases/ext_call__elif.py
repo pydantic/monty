@@ -19,7 +19,7 @@ elif add_ints(2, 2) == 5:
     result2 = 2
 else:
     result2 = 3
-assert result2 == 3, 'else taken when all ext call conditions are false'
+assert result2 == 3
 
 # Multiple elif with external calls
 result3 = 0
@@ -33,7 +33,7 @@ elif add_ints(4, 4) == 10:
     result3 = 4
 else:
     result3 = 5
-assert result3 == 3, 'third elif with ext call should match'
+assert result3 == 3
 
 # === External calls in elif bodies ===
 
@@ -45,7 +45,7 @@ elif True:
     val1 = add_ints(10, 20)
 else:
     val1 = 3
-assert val1 == 30, 'ext call in elif body'
+assert val1 == 30
 
 # Ext call in else body after elif chain
 val2 = 0
@@ -55,7 +55,7 @@ elif False:
     val2 = 2
 else:
     val2 = add_ints(15, 25)
-assert val2 == 40, 'ext call in else body after elif'
+assert val2 == 40
 
 # Multiple ext calls in elif body
 val3 = 0
@@ -67,7 +67,7 @@ elif True:
     val3 = add_ints(a, b)
 else:
     val3 = 3
-assert val3 == 30, 'multiple ext calls in elif body'
+assert val3 == 30
 
 # === Nested ext calls ===
 
@@ -79,7 +79,7 @@ elif add_ints(add_ints(1, 2), add_ints(3, 4)) == 10:
     result4 = 2
 else:
     result4 = 3
-assert result4 == 2, 'nested ext calls in elif condition'
+assert result4 == 2
 
 # === Short-circuit with ext calls ===
 
@@ -100,7 +100,7 @@ if True:
     x = add_ints(1, 1)
 elif False:
     x = add_ints(2, 2)
-assert x == 2, 'if body ext call executed, elif skipped'
+assert x == 2
 
 # === Ext call in both condition and body ===
 
@@ -111,7 +111,7 @@ elif add_ints(2, 2) == 4:
     result5 = add_ints(50, 50)
 else:
     result5 = add_ints(25, 25)
-assert result5 == 100, 'ext call in both elif condition and body'
+assert result5 == 100
 
 # === Ext call in if body when condition is true ===
 
@@ -122,7 +122,7 @@ elif add_ints(1, 1) == 2:
     if_body_result = add_ints(10, 20)
 else:
     if_body_result = add_ints(1, 2)
-assert if_body_result == 300, 'ext call in if body when if condition is true'
+assert if_body_result == 300
 
 # === Ext calls returning values used as conditions ===
 
@@ -134,7 +134,7 @@ elif return_value(1):
     cond_result = 2
 else:
     cond_result = 3
-assert cond_result == 2, 'ext call return value used as boolean condition'
+assert cond_result == 2
 
 # === Ext calls with string concatenation ===
 
@@ -145,7 +145,7 @@ elif add_ints(2, 2) == 4:
     str_result = concat_strings('hello', ' world')
 else:
     str_result = concat_strings('x', 'y')
-assert str_result == 'hello world', 'ext call with string result in elif body'
+assert str_result == 'hello world'
 
 # === Multiple conditions with ext calls in same expression ===
 
@@ -156,7 +156,7 @@ elif add_ints(2, 2) < add_ints(3, 3):
     multi_cond = 2
 else:
     multi_cond = 3
-assert multi_cond == 2, 'comparison between two ext call results in elif condition'
+assert multi_cond == 2
 
 # === Ext call in all three branches ===
 
@@ -168,4 +168,4 @@ elif val < 15:
     all_branches = add_ints(2, 0)
 else:
     all_branches = add_ints(3, 0)
-assert all_branches == 2, 'ext call in elif body based on earlier ext call result'
+assert all_branches == 2

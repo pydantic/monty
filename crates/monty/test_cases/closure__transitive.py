@@ -14,7 +14,7 @@ def outer_read(a):
     return mid()
 
 
-assert outer_read(10) == 10, 'inner reads grandparent param'
+assert outer_read(10) == 10
 
 
 # === Four-level read ===
@@ -31,7 +31,7 @@ def a4(x):
     return b()
 
 
-assert a4(21) == 42, 'capture four levels up'
+assert a4(21) == 42
 
 
 # === Two-level nonlocal write ===
@@ -49,7 +49,7 @@ def writer():
     return a
 
 
-assert writer() == 5, 'nonlocal write reaches grandparent local'
+assert writer() == 5
 
 
 # === Intermediate scope rebinds the name (shadowing) ===
@@ -65,7 +65,7 @@ def shadow(x):
     return (mid(), x)
 
 
-assert shadow(1) == (99, 1), 'intermediate binding shadows the deeper capture'
+assert shadow(1) == (99, 1)
 
 
 # === Owner reads its own variable before the capturing def appears ===
@@ -84,7 +84,7 @@ def early_use(n):
     return (mid(), total)
 
 
-assert early_use(10) == (11, 11), 'owner-side references stay consistent with capture'
+assert early_use(10) == (11, 11)
 
 
 # === Sibling closures two levels down share the same cell ===
@@ -106,7 +106,7 @@ def shared():
 
 s, g = shared()
 s(42)
-assert g() == 42, 'sibling closures share one cell across two levels'
+assert g() == 42
 
 
 # === Each instantiation captures its own cell ===
@@ -122,9 +122,9 @@ def make_adder(n):
 
 add3 = make_adder(3)
 add5 = make_adder(5)
-assert add3(10) == 13, 'first closure captures n=3'
-assert add5(10) == 15, 'second closure captures n=5'
-assert add3(10) == 13, 'independent closures do not interfere'
+assert add3(10) == 13
+assert add5(10) == 15
+assert add3(10) == 13
 
 
 # === Comprehension nested two levels deep captures an enclosing variable ===
@@ -135,7 +135,7 @@ def comp(n):
     return mid()
 
 
-assert comp(10) == [10, 11, 12], 'comprehension captures grandparent variable'
+assert comp(10) == [10, 11, 12]
 
 
 # === Mixed capture from two different levels at once ===
@@ -149,7 +149,7 @@ def two_levels(a):
     return mid(5)
 
 
-assert two_levels(10) == 15, 'capture from two different enclosing levels'
+assert two_levels(10) == 15
 
 
 # === Lambda capturing two levels up ===
@@ -160,7 +160,7 @@ def lam(a):
     return mid()
 
 
-assert lam(7) == 7, 'lambda captures grandparent variable'
+assert lam(7) == 7
 
 
 # === Three-level nonlocal write ===
@@ -181,7 +181,7 @@ def writer3():
     return a
 
 
-assert writer3() == 7, 'nonlocal write reaches three levels up'
+assert writer3() == 7
 
 
 # === Chained nonlocal: each intermediate scope also declares it ===
@@ -201,7 +201,7 @@ def chained():
     return a
 
 
-assert chained() == 99, 'nonlocal redeclared at each level'
+assert chained() == 99
 
 
 # === Capturing function defined inside control-flow blocks ===
@@ -221,7 +221,7 @@ def control_flow(a, flag):
     return -1
 
 
-assert control_flow(5, True) == 5, 'capture through nested if/for defs'
+assert control_flow(5, True) == 5
 
 
 # === Owner mutates the captured variable after building the closure ===
@@ -240,7 +240,7 @@ def late_mutation():
     return f()
 
 
-assert late_mutation() == 42, 'closure sees post-creation mutation via the cell'
+assert late_mutation() == 42
 
 
 # === Default argument in a nested function references a transitive capture ===
@@ -254,7 +254,7 @@ def with_default(a):
     return mid()
 
 
-assert with_default(11) == 11, 'default argument uses a transitively captured variable'
+assert with_default(11) == 11
 
 
 # === Owner reads the var BEFORE a nested default captures it ===
@@ -273,7 +273,7 @@ def default_after_read(a):
     return y, mid()
 
 
-assert default_after_read(10) == (11, 10), 'default capture stays consistent with earlier owner read'
+assert default_after_read(10) == (11, 10)
 
 
 # === Single-level default capture with an earlier owner read ===
@@ -286,7 +286,7 @@ def default_one_level(a):
     return y, mid()
 
 
-assert default_one_level(10) == (11, 10), 'one-level default capture consistent with earlier read'
+assert default_one_level(10) == (11, 10)
 
 
 # === `def f(a=a)` gotcha: default RHS captures the enclosing name ===
@@ -299,7 +299,7 @@ def same_name_default(a):
     return inner()
 
 
-assert same_name_default(10) == 10, 'default RHS captures the enclosing same-named variable'
+assert same_name_default(10) == 10
 
 
 # === Intermediate rebind shadows a default capture ===
@@ -316,7 +316,7 @@ def default_shadowed(a):
     return (mid(), a)
 
 
-assert default_shadowed(1) == (99, 1), 'intermediate rebind shadows a default capture'
+assert default_shadowed(1) == (99, 1)
 
 
 # === `global` in an intermediate scope is not a capture candidate ===
@@ -335,8 +335,8 @@ def uses_global():
     return inner()
 
 
-assert uses_global() == 20, 'nested read of a global-declared name hits the module global'
-assert g_counter == 20, 'the global write is visible at module scope'
+assert uses_global() == 20
+assert g_counter == 20
 
 
 # The intermediate `global` even overrides an enclosing local of the same name.
@@ -357,7 +357,7 @@ def outer_with_global_mid():
     return mid()
 
 
-assert outer_with_global_mid() == 100, 'global in mid routes inner past the outer local'
+assert outer_with_global_mid() == 100
 
 
 # === Lambda whose default is a capturing lambda ===
@@ -374,7 +374,7 @@ def lambda_default_capture():
     return y, g()
 
 
-assert lambda_default_capture() == (11, 10), 'lambda default captures enclosing same-named var'
+assert lambda_default_capture() == (11, 10)
 
 
 # The same capture works two levels up and survives owner mutation after the
@@ -391,4 +391,4 @@ def lambda_default_two_level():
     return inner()
 
 
-assert lambda_default_two_level() == 42, 'lambda default capture two levels up sees later mutation'
+assert lambda_default_two_level() == 42

@@ -8,7 +8,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use monty::{
-    LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
+    CompileOptions, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
     fs::{MountMode, MountTable, OverlayState},
 };
@@ -301,7 +301,7 @@ fn run_script(
     let input_names = vec![];
     let inputs = vec![];
 
-    let runner = match MontyRun::new(code, file_path, input_names) {
+    let runner = match MontyRun::new(code, file_path, input_names, CompileOptions::default()) {
         Ok(ex) => ex,
         Err(err) => {
             eprintln!("{BOLD_RED}error{RESET}:\n{err}");
@@ -381,7 +381,7 @@ fn run_repl(
     tracker: impl ResourceTracker,
     mut mount_table: Option<MountTable>,
 ) -> ExitCode {
-    let mut repl = Some(MontyRepl::new(file_path, tracker));
+    let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
 
     if !code.is_empty() {
         execute_repl_snippet(&mut repl, code, &mut mount_table);

@@ -14,21 +14,20 @@ worker the language semantics are identical to embedding the interpreter directl
 (it is the same interpreter), and the notes below are about the *host API* surface.
 
 A WebSocket worker is whatever the relay bridges to, and need not be a Monty
-sandbox at all: the reference remote child is `monty-cpython`, which runs the
-snippet in **real CPython with no sandbox, no resource limits, and full host
-filesystem/network/subprocess access** (it relies on the deployment — a
-container/VM per session — for isolation, not on the language). So none of
-Monty's in-process safety guarantees hold for that transport; treat the remote
-as a trusted-deployment execution surface, not a sandbox. Its CPython-specific
-divergences are documented in `crates/monty-cpython/README.md`.
+sandbox at all: a remote child may run the snippet in **real CPython with no
+sandbox, no resource limits, and full host filesystem/network/subprocess
+access** (relying on the deployment — a container/VM per session — for
+isolation, not on the language). So none of Monty's in-process safety
+guarantees hold for that transport; treat the remote as a trusted-deployment
+execution surface, not a sandbox.
 
 ## Execution model
 
 The guarantees below describe a **Monty sandbox worker** (`monty subprocess`).
-A WebSocket/`monty-cpython` remote honours the *protocol* shape (REPL turns,
-version-skew check, value encoding) but **none** of the sandbox guarantees —
-resource limits, the no-subprocess invariant (`monty-cpython` itself shells out
-to `uv` for installs), and the empty-environment property are Monty-sandbox
+A WebSocket remote honours the *protocol* shape (REPL turns, version-skew
+check, value encoding) but **none** of the sandbox guarantees — resource
+limits, the no-subprocess invariant (an embedded-CPython child shells out to
+`uv` for installs), and the empty-environment property are Monty-sandbox
 properties that real CPython does not provide, per the caveat above.
 
 - The protocol (and `pydantic_monty`) is **REPL-only**: a pool checkout is a
@@ -47,8 +46,8 @@ properties that real CPython does not provide, per the caveat above.
   `version skew: parent=… child=…` message) and exits non-zero rather than
   risk a frame desync. A local subprocess child is built in lockstep with the
   parent, so this mostly matters for the WebSocket transport, where the remote
-  child is deployed separately — a `monty-cpython` (or `monty`) child on a
-  different version replies `FatalError` and the pool surfaces it cleanly.
+  child is deployed separately — a remote child on a different version replies
+  `FatalError` and the pool surfaces it cleanly.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
@@ -174,7 +173,7 @@ properties that real CPython does not provide, per the caveat above.
   workers diverge on *re-reading* a lazily-resolved **value**: the Monty sandbox
   worker caches it in the namespace slot, so a second reference in the same feed
   does not re-fire `NameLookup` (a later host mutation of the dict entry is not
-  observed), whereas the `monty-cpython` worker caches only function proxies and
+  observed), whereas an embedded-CPython worker caches only function proxies and
   re-fires `NameLookup` on every value reference (re-reading live). Function
   proxies are cached by both — but unlike a CPython function object, a proxy
   dispatches by *name* against the dict passed to the current feed at call
@@ -185,21 +184,17 @@ properties that real CPython does not provide, per the caveat above.
   (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
   `external_lookup` — they surface name lookups as snapshots, which resolve only
   to a function (see below).
-- **Dependency installation is only available on the embedded-CPython worker.**
+- **Dependency installation is only available on an embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
-  `session.installDependencies([...])` in `@pydantic/monty`) makes the
-  `monty-cpython` worker `uv pip install` the PEP 508 requirements into a
-  virtualenv at `./.venv` (pre-created in the image, see the crate `Dockerfile`)
-  and add its `site-packages` to `sys.path`, so later feeds can import them. It
-  is session-scoped and repeatable; an empty list is a no-op; it requires `uv` on
-  `PATH` (override: `MONTY_UV`) and network access, and the packages are discarded
-  with the per-session sandbox when the session ends. It is bounded by the pool's
-  `request_timeout` (raise it for large dependency sets). The Monty sandbox
-  worker (`monty subprocess`) has no host interpreter to install for, so the
-  call raises `MontyRuntimeError` (the session stays usable). See
-  `crates/monty-cpython/README.md`.
-- **PEP 723 inline dependencies are auto-installed by the CPython worker.**
-  Before running a feed, the `monty-cpython` worker scans the snippet for a
+  `session.installDependencies([...])` in `@pydantic/monty`) makes an
+  embedded-CPython worker `uv pip install` the PEP 508 requirements so later
+  feeds can import them. It is session-scoped and repeatable; an empty list is
+  a no-op; and it is bounded by the pool's `request_timeout` (raise it for
+  large dependency sets). The Monty sandbox worker (`monty subprocess`) has no
+  host interpreter to install for, so the call raises `MontyRuntimeError` (the
+  session stays usable).
+- **PEP 723 inline dependencies are auto-installed by a CPython worker.**
+  Before running a feed, an embedded-CPython worker scans the snippet for a
   PEP 723 `# /// script` block and installs its `dependencies` (same `uv` path
   as above) so the imports resolve — no protocol involvement, mirroring
   `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`

@@ -4,22 +4,22 @@
 mut_point = make_mutable_point()
 
 setattr(mut_point, 'x', 100)
-assert mut_point.x == 100, 'setattr updated x to 100'
+assert mut_point.x == 100
 
 setattr(mut_point, 'y', 200)
-assert mut_point.y == 200, 'setattr updated y to 200'
+assert mut_point.y == 200
 
 setattr(mut_point, 'z', 300)
-assert mut_point.z == 300, 'setattr created new attribute z'
+assert mut_point.z == 300
 
 setattr(mut_point, 'name', 'test')
-assert mut_point.name == 'test', 'setattr with string value'
+assert mut_point.name == 'test'
 
 setattr(mut_point, 'active', True)
-assert mut_point.active == True, 'setattr with bool value'
+assert mut_point.active == True
 
 result = setattr(mut_point, 'x', 999)
-assert result == None, 'setattr returns None'
+assert result == None
 
 frozen_point = make_point()
 try:

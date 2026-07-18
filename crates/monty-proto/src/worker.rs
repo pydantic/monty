@@ -19,8 +19,8 @@
 use std::{borrow::Cow, mem};
 
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
-    PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
+    MontyRepl, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
@@ -54,8 +54,10 @@ type Tracker = LimitedTracker;
 ///   count is 0 for an idle dump.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it.
-const DUMP_VERSION: u16 = 2;
+/// version can restore it. Bumped to 3 when `MontyRepl` gained the serialized
+/// `CompileOptions` field (the `AssertMessageAnnotations` enum) and the
+/// executor gained the serialized assert repr truncation limit.
+const DUMP_VERSION: u16 = 3;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -436,6 +438,7 @@ impl Child {
             limits,
             type_check,
             type_check_stubs,
+            assert_message_annotations,
             // already validated against our own version when `Configure` arrived
             monty_version: _,
         } = *config;
@@ -445,7 +448,18 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
         });
-        self.state = SessionState::Ready(Box::new(MontyRepl::new(&self.script_name, LimitedTracker::new(limits))));
+        // Missing field means an older parent; the feature defaults to on.
+        let options = CompileOptions {
+            assert_message_annotations: assert_message_annotations.map_or_else(
+                AssertMessageAnnotations::default,
+                AssertMessageAnnotations::from_max_bytes,
+            ),
+        };
+        self.state = SessionState::Ready(Box::new(MontyRepl::new(
+            &self.script_name,
+            LimitedTracker::new(limits),
+            options,
+        )));
         Ok(())
     }
 

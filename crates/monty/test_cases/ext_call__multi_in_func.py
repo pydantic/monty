@@ -10,7 +10,7 @@ def compute_sum():
 
 
 result = compute_sum()
-assert result == 21, 'multiple sequential ext calls in func'
+assert result == 21
 
 
 def compute_nested():
@@ -18,7 +18,7 @@ def compute_nested():
 
 
 result = compute_nested()
-assert result == 10, 'nested ext calls in func'
+assert result == 10
 
 
 def outer():
@@ -29,4 +29,4 @@ def outer():
 
 
 result = outer()
-assert result == 33, 'ext call in nested func plus outer ext call'
+assert result == 33

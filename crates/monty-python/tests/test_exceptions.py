@@ -153,9 +153,47 @@ def test_name_error(monty_run: RunMonty):
 
 
 def test_assertion_error(monty_run: RunMonty):
+    # `assert False` adds no information, so no pytest-style detail is added.
     with pytest.raises(MontyRuntimeError) as exc_info:
         monty_run('assert False')
-    assert isinstance(exc_info.value.exception(), AssertionError)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('')
+
+
+def test_assertion_error_comparison(monty_run: RunMonty):
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run('assert 1 == 2')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('assert 1 == 2')
+
+
+def test_assertion_error_annotations_disabled(pool: Monty):
+    # `assert_message_annotations=False` restores CPython's empty AssertionError.
+    with pool.checkout(assert_message_annotations=False) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('assert 1 == 2')
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot('')
+
+
+def test_assertion_error_annotations_custom_limit(pool: Monty):
+    # An int customizes the per-operand repr truncation length.
+    with pool.checkout(assert_message_annotations=6) as session:
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run("assert 'abcdefghij' == ''")
+    inner = exc_info.value.exception()
+    assert isinstance(inner, AssertionError)
+    assert str(inner) == snapshot("assert 'abcde… == ''")
+
+
+@pytest.mark.parametrize('value', [0, -1, 2**32])
+def test_assertion_error_annotations_invalid_limit(pool: Monty, value: int):
+    with pytest.raises(ValueError) as exc_info:
+        pool.checkout(assert_message_annotations=value)
+    assert exc_info.value.args[0] == snapshot('assert_message_annotations int value must be between 1 and 2**32 - 1')
 
 
 def test_assertion_error_with_message(monty_run: RunMonty):

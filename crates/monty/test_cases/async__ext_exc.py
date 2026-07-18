@@ -16,7 +16,7 @@ try:
     assert False, 'should not reach here'
 except ValueError:
     caught_value_error = True
-assert caught_value_error, 'ValueError was caught'
+assert caught_value_error
 
 # External function raising TypeError
 caught_type_error = False
@@ -25,7 +25,7 @@ try:
     assert False, 'should not reach here'
 except TypeError:
     caught_type_error = True
-assert caught_type_error, 'TypeError was caught'
+assert caught_type_error
 
 # External function raising KeyError
 caught_key_error = False
@@ -34,7 +34,7 @@ try:
     assert False, 'should not reach here'
 except KeyError:
     caught_key_error = True
-assert caught_key_error, 'KeyError was caught'
+assert caught_key_error
 
 # External function raising RuntimeError
 caught_runtime_error = False
@@ -43,7 +43,7 @@ try:
     assert False, 'should not reach here'
 except RuntimeError:
     caught_runtime_error = True
-assert caught_runtime_error, 'RuntimeError was caught'
+assert caught_runtime_error
 
 # === Exception not caught by wrong handler ===
 
@@ -56,7 +56,7 @@ try:
         assert False, 'TypeError should not catch ValueError'
 except ValueError:
     caught_outer = True
-assert caught_outer, 'ValueError caught by outer handler'
+assert caught_outer
 
 # === Exception in expression with multiple ext calls ===
 
@@ -83,7 +83,7 @@ except ValueError:
     pass  # Caught
 finally:
     finally_ran = True
-assert finally_ran, 'finally ran after external exception caught'
+assert finally_ran
 
 # External exception propagating through finally
 outer_caught = False
@@ -97,14 +97,14 @@ try:
         finally_ran2 = True
 except KeyError:
     outer_caught = True
-assert finally_ran2, 'finally ran before exception propagated'
-assert outer_caught, 'exception propagated after finally'
+assert finally_ran2
+assert outer_caught
 
 # === Mix of normal returns and exceptions ===
 
 # Normal return, then exception
 value1 = await async_call(30)  # pyright: ignore
-assert value1 == 30, 'first async call returned normally'
+assert value1 == 30
 try:
     await async_fail('ValueError', 'after success')  # pyright: ignore
     assert False, 'should not reach here'
@@ -118,8 +118,8 @@ try:
 except TypeError:
     caught_exc = True
 value2 = await async_call(10)  # pyright: ignore
-assert caught_exc, 'exception was caught'
-assert value2 == 10, 'async call after caught exception returned normally'
+assert caught_exc
+assert value2 == 10
 
 # === Exception in except handler from external function ===
 
@@ -131,7 +131,7 @@ try:
         await async_fail('TypeError', 'from handler')  # pyright: ignore
 except TypeError:
     outer_catch = True
-assert outer_catch, 'exception from handler caught by outer'
+assert outer_catch
 
 # === Exception in else block from external function ===
 
@@ -145,7 +145,7 @@ try:
         await async_fail('RuntimeError', 'from else')  # pyright: ignore
 except RuntimeError:
     else_exc_caught = True
-assert else_exc_caught, 'exception from else block caught'
+assert else_exc_caught
 
 # === Exception in finally block ===
 
@@ -158,7 +158,7 @@ try:
         await async_fail('ValueError', 'from finally')  # pyright: ignore
 except ValueError:
     finally_exc_caught = True
-assert finally_exc_caught, 'exception from finally caught'
+assert finally_exc_caught
 
 # === Nested try blocks with external exceptions ===
 
@@ -178,9 +178,9 @@ except TypeError:
 finally:
     finally_count += 1
 
-assert inner_handled, 'inner exception was handled'
-assert outer_handled, 'exception from inner handler was caught by outer'
-assert finally_count == 2, 'both finally blocks ran'
+assert inner_handled
+assert outer_handled
+assert finally_count == 2
 
 # === Tests with no sync counterpart in `ext_call__ext_exc.py`. ===
 
@@ -206,7 +206,7 @@ try:
 except ValueError as e:
     assert str(e) == 're-raised'
     outer_reraised = True
-assert outer_reraised, 'bare raise re-propagated to outer handler'
+assert outer_reraised
 
 
 # === Exception unwinds through user-defined async wrapper ===
@@ -236,7 +236,7 @@ try:
     await outer_wrapper()  # pyright: ignore
 except ValueError as e:
     nested_caught = str(e)
-assert nested_caught == 'deep', 'exception caught through two async frames'
+assert nested_caught == 'deep'
 
 # === asyncio.gather: failure propagates out ===
 caught_gather = None
@@ -244,7 +244,7 @@ try:
     await asyncio.gather(async_call(1), async_fail('ValueError', 'gather failure'))  # pyright: ignore
 except ValueError as e:
     caught_gather = str(e)
-assert caught_gather == 'gather failure', 'gather failure caught at await site'
+assert caught_gather == 'gather failure'
 
 
 # === Gathered coroutine: child failure surfaces at the main task's gather ===

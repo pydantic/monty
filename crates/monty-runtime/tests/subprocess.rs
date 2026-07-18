@@ -66,6 +66,7 @@ impl ChildProc {
             type_check: false,
             type_check_stubs: None,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            assert_message_annotations: None,
         });
     }
 
@@ -413,6 +414,7 @@ fn child_enforces_time_limit() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
@@ -463,6 +465,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
@@ -544,6 +547,7 @@ fn type_check_state_survives_dump_and_load() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -571,6 +575,74 @@ fn type_check_state_survives_dump_and_load() {
     fresh.shutdown();
 }
 
+#[test]
+fn assert_annotation_option_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        // 0 = annotations off on the wire.
+        assert_message_annotations: Some(0),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 1 == 2");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message, None);
+    fresh.shutdown();
+}
+
+#[test]
+fn assert_annotation_custom_limit_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        // Non-zero = annotations on, truncating operand reprs to N chars.
+        assert_message_annotations: Some(6),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        mounts: vec![],
+    }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 'abcdefghij' == ''");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message.as_deref(), Some("assert 'abcde… == ''"));
+    fresh.shutdown();
+}
+
 // =============================================================================
 // Protocol violations and crashes
 // =============================================================================
@@ -595,6 +667,7 @@ fn protocol_violations_keep_the_child_alive() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     }));
     let error = expect_error(child.recv());
     assert!(error.message.unwrap().contains("already exists"));
@@ -632,6 +705,7 @@ fn version_skew_on_create_is_a_fatal_error() {
         type_check: false,
         type_check_stubs: None,
         monty_version: "0.0.0-not-a-real-version".to_owned(),
+        assert_message_annotations: None,
     }));
     match child.recv() {
         pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),

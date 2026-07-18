@@ -2,7 +2,7 @@ import json
 
 # === loads accepts integers at the digit limit ===
 load_ok = '1' * 4300
-assert json.loads(load_ok) == int(load_ok), 'loads should accept 4300-digit integers'
+assert json.loads(load_ok) == int(load_ok)
 
 # === loads rejects oversized decimal integers ===
 try:
@@ -30,7 +30,7 @@ except ValueError as exc:
 
 # === dumps accepts integers at the digit limit ===
 dump_ok = 10**4299
-assert json.dumps(dump_ok) == str(dump_ok), 'dumps should accept 4300-digit integers'
+assert json.dumps(dump_ok) == str(dump_ok)
 
 # === dumps rejects oversized decimal integers ===
 try:

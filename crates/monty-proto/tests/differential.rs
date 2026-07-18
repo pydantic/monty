@@ -16,8 +16,8 @@
 //! messages a misbehaving peer produces.
 
 use monty::{
-    DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta,
-    MontyTimeZone, MontyType,
+    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun,
+    MontyTimeDelta, MontyTimeZone, MontyType,
 };
 use monty_proto::{WireFunctionCall, WireObject, WireOsCall, pb};
 use num_bigint::{BigInt, Sign};
@@ -438,7 +438,13 @@ fn hand_call_payloads_match_generated_encoding() {
 /// it exercises the `Cycle` placeholder arm end to end.
 #[test]
 fn executed_cycle_value_is_byte_compatible() {
-    let run = MontyRun::new("a = []\na.append(a)\na".to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(
+        "a = []\na.append(a)\na".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
     let hand = WireObject::new(cyclic.clone()).encode_to_vec();
     assert_eq!(hand, to_oracle(&cyclic).encode_to_vec());

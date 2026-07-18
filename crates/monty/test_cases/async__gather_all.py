@@ -12,7 +12,7 @@ async def task2():
 
 
 result = await asyncio.gather(task1(), task2())  # pyright: ignore
-assert result == [1, 2], 'gather should return results as a list'
+assert result == [1, 2]
 
 
 # === Result ordering ===
@@ -26,11 +26,11 @@ async def fast():
 
 
 result = await asyncio.gather(slow(), fast())  # pyright: ignore
-assert result == ['slow', 'fast'], 'gather should preserve argument order'
+assert result == ['slow', 'fast']
 
 # === Empty gather ===
 result = await asyncio.gather()  # pyright: ignore
-assert result == [], 'empty gather should return empty list'
+assert result == []
 
 
 # === Single coroutine ===
@@ -39,7 +39,7 @@ async def single():
 
 
 result = await asyncio.gather(single())  # pyright: ignore
-assert result == [42], 'gather with single coroutine should return list with one element'
+assert result == [42]
 
 # === repr of gather function ===
 r = repr(asyncio.gather)
@@ -156,8 +156,8 @@ assert first == [7, 7], f'first await: {first}'
 assert second == [7, 7], f'second await: {second}'
 assert third == [7, 7], f'third await: {third}'
 # Identity: every re-await yields the same list object (CPython behavior).
-assert first is second, 're-await should return the cached list, not a new one'
-assert second is third, 're-await should return the same list every time'
+assert first is second
+assert second is third
 
 
 # === Re-awaiting an empty gather returns the same empty list ===
@@ -165,7 +165,7 @@ g_empty = asyncio.gather()
 e1 = await g_empty  # pyright: ignore
 e2 = await g_empty  # pyright: ignore
 assert e1 == [] and e2 == [], 'empty gather re-await: both empty'
-assert e1 is e2, 'empty gather re-await should yield the same list'
+assert e1 is e2
 
 
 # === Re-awaiting a failed gather re-raises the same exception ===
@@ -200,4 +200,4 @@ except ValueError as e:
 nested_1 = asyncio.gather(task1(), task1())
 nested_2 = asyncio.gather(nested_1, nested_1)
 
-assert await nested_2 == [[1, 1], [1, 1]], 'nested gather should return results correctly'  # pyright: ignore
+assert await nested_2 == [[1, 1], [1, 1]]  # pyright: ignore

@@ -23,47 +23,47 @@ class Point:
 
 # === Construction and __init__ ===
 p = Point(3, 4)
-assert p.x == 3, 'instance attribute x set by __init__'
-assert p.y == 4, 'instance attribute y set by __init__'
+assert p.x == 3
+assert p.y == 4
 
 # === Instance methods ===
-assert p.total() == 7, 'method reads instance attributes'
-assert p.scaled() == 14, 'method uses default argument'
-assert p.scaled(3) == 21, 'method positional argument overrides default'
-assert p.scaled(factor=10) == 70, 'method keyword argument'
+assert p.total() == 7
+assert p.scaled() == 14
+assert p.scaled(3) == 21
+assert p.scaled(factor=10) == 70
 
 # === Mutating attributes via a method ===
 p.move(1, 1)
-assert p.x == 4, 'method mutated x via self.x += dx'
-assert p.y == 5, 'method mutated y via self.y += dy'
-assert p.total() == 9, 'method sees mutated attributes'
+assert p.x == 4
+assert p.y == 5
+assert p.total() == 9
 
 # === Mutating attributes directly ===
 p.x = 100
-assert p.x == 100, 'attribute set directly'
-assert p.total() == 105, 'method sees directly-set attribute'
+assert p.x == 100
+assert p.total() == 105
 
 # === Setting a new attribute not declared in __init__ ===
 p.z = 7
-assert p.z == 7, 'new attribute can be added to an instance'
+assert p.z == 7
 
 # === Class variables ===
-assert Point.origin_count == 0, 'class variable read on the class'
-assert p.origin_count == 0, 'class variable read through an instance'
+assert Point.origin_count == 0
+assert p.origin_count == 0
 q = Point(1, 1)
-assert q.origin_count == 0, 'class variable shared across instances'
+assert q.origin_count == 0
 
 # === Independent instances ===
 assert p.x == 100 and q.x == 1, 'instances have independent attributes'
 
 # === type() returns the class object ===
-assert type(p) is Point, 'type(instance) is the class object'
-assert type(p) is type(q), 'two instances of the same class share their type'
-assert type(p).__name__ == 'Point', 'class __name__'
+assert type(p) is Point
+assert type(p) is type(q)
+assert type(p).__name__ == 'Point'
 
 # === isinstance ===
-assert isinstance(p, Point), 'isinstance true for the right class'
-assert isinstance(p, (int, Point)), 'isinstance with a tuple of classes'
+assert isinstance(p, Point)
+assert isinstance(p, (int, Point))
 assert not isinstance(5, Point), 'isinstance false for a non-instance'
 
 
@@ -74,15 +74,15 @@ class Other:
 
 o = Other()
 assert not isinstance(o, Point), 'isinstance false for a different class'
-assert type(o) is not Point, 'different classes are distinct'
+assert type(o) is not Point
 
 # === Identity equality (no user __eq__) ===
-assert p == p, 'an instance equals itself'
-assert p != q, 'distinct instances are not equal'
-assert (p == q) is False, 'distinct instances compare unequal'
+assert p == p
+assert p != q
+assert (p == q) is False
 
 # === Instances are always truthy ===
-assert bool(p) is True, 'instances are truthy'
+assert bool(p) is True
 if q:
     pass
 else:
@@ -90,17 +90,17 @@ else:
 
 # === Bound methods ===
 m = p.total
-assert m() == 105, 'bound method captures self and is callable'
+assert m() == 105
 move = p.move
 move(10, 10)
 assert p.x == 110 and p.y == 15, 'bound method with arguments mutates the instance'
 
 # === getattr() / hasattr() ===
-assert getattr(p, 'x') == 110, 'getattr reads an instance attribute'
-assert getattr(p, 'total')() == 125, 'getattr returns a callable bound method'
-assert getattr(p, 'nope', 'default') == 'default', 'getattr returns default for missing attribute'
-assert hasattr(p, 'x'), 'hasattr true for an existing attribute'
-assert hasattr(p, 'total'), 'hasattr true for a method'
+assert getattr(p, 'x') == 110
+assert getattr(p, 'total')() == 125
+assert getattr(p, 'nope', 'default') == 'default'
+assert hasattr(p, 'x')
+assert hasattr(p, 'total')
 assert not hasattr(p, 'nope'), 'hasattr false for a missing attribute'
 
 # === A class with no __init__ ===
@@ -111,9 +111,9 @@ class Empty:
 
 
 e = Empty()
-assert type(e) is Empty, 'no-init class still constructs'
-assert type(e).__name__ == 'Empty', 'no-init class name'
-assert isinstance(e, Empty), 'isinstance on no-init class'
+assert type(e) is Empty
+assert type(e).__name__ == 'Empty'
+assert isinstance(e, Empty)
 
 # === A class whose only members are methods ===
 
@@ -133,26 +133,26 @@ c = Counter()
 c.inc()
 c.inc()
 c.inc()
-assert c.get() == 3, 'method-only class accumulates state'
+assert c.get() == 3
 
 # === Error cases ===
 try:
     e.nope
     assert False, 'expected AttributeError for missing attribute'
 except AttributeError as exc:
-    assert str(exc) == "'Empty' object has no attribute 'nope'", 'missing attribute message'
+    assert str(exc) == "'Empty' object has no attribute 'nope'"
 
 try:
     e.nope()
     assert False, 'expected AttributeError for missing method'
 except AttributeError as exc:
-    assert str(exc) == "'Empty' object has no attribute 'nope'", 'missing method message'
+    assert str(exc) == "'Empty' object has no attribute 'nope'"
 
 try:
     Empty(1)
     assert False, 'expected TypeError when passing args to a class with no __init__'
 except TypeError as exc:
-    assert str(exc) == 'Empty() takes no arguments', 'no-init takes no arguments message'
+    assert str(exc) == 'Empty() takes no arguments'
 
 # === Exception raised inside __init__ propagates (and the half-built instance
 # is cleaned up — checked under memory-model-checks) ===
@@ -168,7 +168,7 @@ try:
     Boom(1)
     assert False, 'expected ValueError from __init__'
 except ValueError as exc:
-    assert str(exc) == 'boom', '__init__ exception propagates'
+    assert str(exc) == 'boom'
 
 # === Reference cycles between instances are reclaimable (exercises GC tracing
 # of Instance children) ===
@@ -183,21 +183,21 @@ n1 = Link()
 n2 = Link()
 n1.other = n2
 n2.other = n1  # cycle: n1 <-> n2
-assert n1.other.other is n1, 'cycle navigable through attributes'
+assert n1.other.other is n1
 
 # Self reference.
 n1.other = n1
-assert n1.other is n1, 'instance can reference itself'
+assert n1.other is n1
 
 # === Bound methods hash by identity: the same bound-method object works as a
 # dict key (CPython hashes by (instance, func); see limitations/classes.md) ===
 
 m = c.inc
 d = {m: 'inc'}
-assert d[m] == 'inc', 'bound method usable as dict key'
-assert hash(m) == hash(m), 'bound method hash is stable'
+assert d[m] == 'inc'
+assert hash(m) == hash(m)
 s = {m, m}
-assert len(s) == 1, 'same bound method object dedupes in a set'
+assert len(s) == 1
 
 # === A name bound more than once in the class body: last binding wins, the
 # replaced (heap-allocated) value is released ===
@@ -208,7 +208,7 @@ class Rebound:
     items = [2, 3]
 
 
-assert Rebound.items == [2, 3], 'later class-body binding replaces the earlier one'
+assert Rebound.items == [2, 3]
 
 # === Exotic __init__ members: CPython's type.__call__ looks __init__ up with
 # descriptor binding, so only plain functions bind the new instance as self;
@@ -229,7 +229,7 @@ try:
     InitIsClass()
     assert False, 'expected InitIsClass() to raise'
 except TypeError as e:
-    assert str(e) == "__init__() should return None, not '_Helper'", 'class-valued __init__'
+    assert str(e) == "__init__() should return None, not '_Helper'"
 
 
 class InitNotCallable:
@@ -240,7 +240,7 @@ try:
     InitNotCallable()
     assert False, 'expected InitNotCallable() to raise'
 except TypeError as e:
-    assert str(e) == "'int' object is not callable", 'non-callable __init__'
+    assert str(e) == "'int' object is not callable"
 
 
 class InitReturnsValue:
@@ -252,7 +252,7 @@ try:
     InitReturnsValue()
     assert False, 'expected InitReturnsValue() to raise'
 except TypeError as e:
-    assert str(e) == "__init__() should return None, not 'str'", '__init__ returning non-None'
+    assert str(e) == "__init__() should return None, not 'str'"
 
 
 class InitAsync:
@@ -264,7 +264,7 @@ try:
     InitAsync()
     assert False, 'expected InitAsync() to raise'
 except TypeError as e:
-    assert str(e) == "__init__() should return None, not 'coroutine'", 'async __init__'
+    assert str(e) == "__init__() should return None, not 'coroutine'"
 
 
 # A builtin __init__ that returns None: the instance is constructed and the
@@ -274,7 +274,7 @@ class InitBuiltin:
 
 
 ib = InitBuiltin('init-builtin-arg')
-assert type(ib) is InitBuiltin, 'builtin __init__ returning None constructs the instance'
+assert type(ib) is InitBuiltin
 
 
 # A bound method used as __init__ keeps its own receiver; the new instance is
@@ -295,8 +295,8 @@ class InitBoundMethod:
 
 
 ibm = InitBoundMethod(1, 2)
-assert type(ibm) is InitBoundMethod, 'bound-method __init__ constructs the instance'
-assert rec.calls == [(1, 2)], 'bound-method __init__ called with only the constructor args'
+assert type(ibm) is InitBoundMethod
+assert rec.calls == [(1, 2)]
 
 
 # === `...` as the class body (common stub idiom) ===
@@ -304,6 +304,6 @@ class Stub: ...
 
 
 s = Stub()
-assert type(s) is Stub, 'ellipsis-body class instantiates'
+assert type(s) is Stub
 s.x = 1
-assert s.x == 1, 'ellipsis-body class supports attributes'
+assert s.x == 1

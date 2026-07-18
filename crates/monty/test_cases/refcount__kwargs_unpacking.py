@@ -11,12 +11,12 @@ list_a = [1, 2, 3]
 list_c = [4, 5]
 kwargs_dict = {'a': list_a, 'b': 'hello', 'c': list_c}
 result = receive_kwargs(**kwargs_dict)
-assert result == [1, 2, 3], 'received list via **kwargs'
-assert result is list_a, 'should be same object'
+assert result == [1, 2, 3]
+assert result is list_a
 
 # Second call to verify dict reuse works
 result2 = receive_kwargs(**kwargs_dict)
-assert result2 is list_a, 'second call returns same object'
+assert result2 is list_a
 
 # list_a: 5 refs (list_a var, kwargs_dict['a'], result, result2, final expr)
 # list_c: 2 refs (list_c var, kwargs_dict['c'])

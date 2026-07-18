@@ -3,35 +3,35 @@
 
 # === Basic boolean operations ===
 result = return_value(True) and return_value(42)
-assert result == 42, 'ext call in and (both run)'
+assert result == 42
 
 result = return_value(False) and return_value(42)
-assert result == False, 'ext call in and (short circuit)'
+assert result == False
 
 result = return_value(0) or return_value(42)
-assert result == 42, 'ext call in or (both run)'
+assert result == 42
 
 result = return_value(99) or return_value(42)
-assert result == 99, 'ext call in or (short circuit)'
+assert result == 99
 
 
 # === Chained boolean with external calls ===
 result = return_value(True) and return_value(True) and return_value(42)
-assert result == 42, 'chained and all truthy'
+assert result == 42
 
 result = return_value(True) and return_value(False) and return_value(42)
-assert result == False, 'chained and with false in middle'
+assert result == False
 
 result = return_value(0) or return_value(0) or return_value(42)
-assert result == 42, 'chained or all falsy except last'
+assert result == 42
 
 result = return_value(0) or return_value(99) or return_value(42)
-assert result == 99, 'chained or with truthy in middle'
+assert result == 99
 
 
 # === Mixed and/or ===
 result = return_value(True) and return_value(0) or return_value(42)
-assert result == 42, 'and then or'
+assert result == 42
 
 result = return_value(0) or return_value(True) and return_value(42)
-assert result == 42, 'or then and'
+assert result == 42

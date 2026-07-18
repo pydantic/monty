@@ -9,7 +9,7 @@ def test_import_local():
 
 # Call to verify import works inside function
 result = test_import_local()
-assert isinstance(result, str), 'sys.platform should be a string'
+assert isinstance(result, str)
 
 # Verify sys is NOT in global scope after function call
 try:
@@ -27,7 +27,7 @@ def test_from_import_local():
 
 
 any_result = test_from_import_local()
-assert repr(any_result) == 'typing.Any', 'should return typing.Any'
+assert repr(any_result) == 'typing.Any'
 
 # Verify Any is NOT in global scope after function call
 try:
@@ -45,7 +45,7 @@ def test_aliased_import_local():
 
 
 alias_result = test_aliased_import_local()
-assert isinstance(alias_result, str), 'system.platform should be a string'
+assert isinstance(alias_result, str)
 
 # Verify system is NOT in global scope
 try:
@@ -57,7 +57,7 @@ except NameError:
 # === Global import remains accessible ===
 import sys as global_sys
 
-assert isinstance(global_sys.platform, str), 'global import should work'
+assert isinstance(global_sys.platform, str)
 
 
 def use_global_import():
@@ -65,4 +65,4 @@ def use_global_import():
     return global_sys.platform
 
 
-assert use_global_import() == global_sys.platform, 'function should access global import'
+assert use_global_import() == global_sys.platform

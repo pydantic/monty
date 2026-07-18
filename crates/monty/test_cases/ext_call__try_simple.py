@@ -7,4 +7,4 @@ try:
 except ValueError as e:
     prefix = concat_strings('caught: ', repr(e))
     exc_with_ext = prefix
-assert exc_with_ext == "caught: ValueError('test')", 'ext call with exception variable'
+assert exc_with_ext == "caught: ValueError('test')"

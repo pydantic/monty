@@ -7,7 +7,7 @@ try:
     result = add_ints(10, 20)
 except:
     result = -1
-assert result == 30, 'ext call in try body'
+assert result == 30
 
 # Multiple external calls in try body
 try:
@@ -16,14 +16,14 @@ try:
     c = add_ints(a, b)
 except:
     c = -1
-assert c == 10, 'multiple ext calls in try body'
+assert c == 10
 
 # Nested external calls in try body
 try:
     nested = add_ints(add_ints(1, 2), add_ints(3, 4))
 except:
     nested = -1
-assert nested == 10, 'nested ext calls in try body'
+assert nested == 10
 
 # === External calls in except blocks ===
 
@@ -33,7 +33,7 @@ try:
     raise ValueError('error')
 except ValueError:
     handler_result = add_ints(100, 200)
-assert handler_result == 300, 'ext call in except handler'
+assert handler_result == 300
 
 # Multiple external calls in except handler
 try:
@@ -42,7 +42,7 @@ except TypeError:
     x = add_ints(5, 5)
     y = add_ints(10, 10)
     handler_sum = add_ints(x, y)
-assert handler_sum == 30, 'multiple ext calls in except handler'
+assert handler_sum == 30
 
 # External call with exception variable
 exc_with_ext = None
@@ -51,7 +51,7 @@ try:
 except ValueError as e:
     prefix = concat_strings('caught: ', repr(e))
     exc_with_ext = prefix
-assert exc_with_ext == "caught: ValueError('test')", 'ext call with exception variable'
+assert exc_with_ext == "caught: ValueError('test')"
 
 # === External calls in else blocks ===
 
@@ -63,7 +63,7 @@ except:
     else_result = -1
 else:
     else_result = add_ints(50, 50)
-assert else_result == 100, 'ext call in else block'
+assert else_result == 100
 
 # Multiple external calls in else block
 try:
@@ -74,7 +74,7 @@ else:
     p = add_ints(1, 2)
     q = add_ints(3, 4)
     else_multi = add_ints(p, q)
-assert else_multi == 10, 'multiple ext calls in else block'
+assert else_multi == 10
 
 # === External calls in finally blocks ===
 
@@ -84,7 +84,7 @@ try:
     x = 1
 finally:
     finally_result = add_ints(25, 75)
-assert finally_result == 100, 'ext call in finally block'
+assert finally_result == 100
 
 # Finally with external call after exception caught
 finally_after_exc = None
@@ -94,7 +94,7 @@ except ValueError:
     pass
 finally:
     finally_after_exc = add_ints(1, 99)
-assert finally_after_exc == 100, 'ext call in finally after caught exception'
+assert finally_after_exc == 100
 
 # Multiple external calls in finally
 try:
@@ -103,7 +103,7 @@ finally:
     f1 = add_ints(10, 20)
     f2 = add_ints(30, 40)
     finally_multi = add_ints(f1, f2)
-assert finally_multi == 100, 'multiple ext calls in finally block'
+assert finally_multi == 100
 
 # === External calls across multiple phases ===
 
@@ -116,7 +116,7 @@ except ValueError:
     all_phases.append(add_ints(2, 0))  # 2
 finally:
     all_phases.append(add_ints(3, 0))  # 3
-assert all_phases == [1, 2, 3], 'ext calls in try, except, and finally'
+assert all_phases == [1, 2, 3]
 
 # External calls in try, else, and finally (no exception)
 no_exc_phases = []
@@ -128,7 +128,7 @@ else:
     no_exc_phases.append(add_ints(20, 0))  # 20
 finally:
     no_exc_phases.append(add_ints(30, 0))  # 30
-assert no_exc_phases == [10, 20, 30], 'ext calls in try, else, and finally'
+assert no_exc_phases == [10, 20, 30]
 
 # === External calls in nested try blocks ===
 
@@ -144,8 +144,8 @@ try:
         inner_val = add_ints(inner_val, 50)
 except:
     outer_val = -1
-assert outer_val == 100, 'ext call in outer try'
-assert inner_val == 250, 'ext call in inner try and handler'
+assert outer_val == 100
+assert inner_val == 250
 
 # === External calls in exception type expression ===
 # (Exception type is evaluated at handler matching time)
@@ -157,7 +157,7 @@ try:
 except:
     pre = -1
 post_try = add_ints(pre, 10)
-assert post_try == 20, 'ext call result used after try block'
+assert post_try == 20
 
 # === External call in finally with unhandled exception ===
 # Finally should still run even when exception propagates
@@ -172,7 +172,7 @@ try:
         finally_with_propagate = add_ints(42, 0)  # Should still run
 except KeyError:
     pass  # Catch propagated exception
-assert finally_with_propagate == 42, 'ext call in finally should run even with unhandled exception'
+assert finally_with_propagate == 42
 
 # === External call in except handler that then raises ===
 handler_before_raise = None
@@ -184,7 +184,7 @@ try:
         raise TypeError('from handler')
 except TypeError:
     pass
-assert handler_before_raise == 10, 'ext call in handler before raising'
+assert handler_before_raise == 10
 
 # === External call in else block that then raises ===
 else_before_raise = None
@@ -198,7 +198,7 @@ try:
         raise ValueError('from else')
 except ValueError:
     pass
-assert else_before_raise == 20, 'ext call in else before raising'
+assert else_before_raise == 20
 
 # === External call preserves state across try/except ===
 state_before = add_ints(1000, 0)
@@ -210,7 +210,7 @@ except ValueError:
     state_after = add_ints(state_after, 10)
 finally:
     state_after = add_ints(state_after, 100)
-assert state_after == 1111, 'state preserved across try/except with ext calls'
+assert state_after == 1111
 
 # === Multiple except handlers with external calls ===
 which_handler = None
@@ -222,7 +222,7 @@ except TypeError:
     which_handler = add_ints(2, 0)
 except KeyError:
     which_handler = add_ints(3, 0)
-assert which_handler == 2, 'ext call in correct handler with multiple handlers'
+assert which_handler == 2
 
 # === External call in finally with pending exception (after handler raises) ===
 finally_after_handler_raise = None
@@ -237,7 +237,7 @@ try:
         finally_after_handler_raise = add_ints(finally_after_handler_raise, 5)
 except TypeError:
     pass
-assert finally_after_handler_raise == 15, 'ext call in finally with pending exception from handler'
+assert finally_after_handler_raise == 15
 
 # === External call in finally with pending exception (no matching handler) ===
 finally_with_pending_exc = None
@@ -252,7 +252,7 @@ try:
         finally_with_pending_exc = add_ints(100, 0)
 except KeyError:
     pass  # Catch it here
-assert finally_with_pending_exc == 100, 'ext call in finally with unhandled exception pending'
+assert finally_with_pending_exc == 100
 
 # === External call in finally with return (uses simple values) ===
 # Note: External calls in user-defined functions are not supported,
@@ -262,7 +262,7 @@ try:
     finally_return_result = 'in_try'
 finally:
     pass  # finally runs but doesn't override
-assert finally_return_result == 'in_try', 'finally runs with pending value'
+assert finally_return_result == 'in_try'
 
 # === Multiple external calls in finally with pending exception ===
 multi_finally = None
@@ -277,4 +277,4 @@ try:
         multi_finally = add_ints(a, b)
 except ValueError:
     pass
-assert multi_finally == 10, 'multiple ext calls in finally with pending exception'
+assert multi_finally == 10

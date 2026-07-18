@@ -4,7 +4,7 @@ try:
     raise ValueError('test')
 except ValueError:
     caught = True
-assert caught, 'should catch ValueError'
+assert caught
 
 # === Exception variable binding ===
 msg = None
@@ -13,7 +13,7 @@ try:
 except TypeError as e:
     msg = repr(e)
 # repr(e) returns "TypeError('the message')" - confirms we caught the right exception
-assert msg == "TypeError('the message')", 'should capture exception'
+assert msg == "TypeError('the message')"
 
 # === Multiple handlers - first match wins ===
 which = None
@@ -25,7 +25,7 @@ except TypeError:
     which = 'type'
 except:
     which = 'bare'
-assert which == 'type', 'first matching handler should be used'
+assert which == 'type'
 
 # === Bare except catches all ===
 caught_bare = False
@@ -33,7 +33,7 @@ try:
     raise KeyError('key')
 except:
     caught_bare = True
-assert caught_bare, 'bare except should catch all'
+assert caught_bare
 
 # === Else block runs when no exception ===
 else_ran = False
@@ -43,7 +43,7 @@ except:
     pass
 else:
     else_ran = True
-assert else_ran, 'else should run when no exception'
+assert else_ran
 
 # === Else block does not run when exception occurs ===
 else_ran_with_exc = True
@@ -53,7 +53,7 @@ except ValueError:
     pass
 else:
     else_ran_with_exc = False
-assert else_ran_with_exc, 'else should not run when exception occurs'
+assert else_ran_with_exc
 
 # === Finally always runs after try ===
 finally_ran = False
@@ -61,7 +61,7 @@ try:
     x = 1
 finally:
     finally_ran = True
-assert finally_ran, 'finally should run after try'
+assert finally_ran
 
 # === Finally runs after exception caught ===
 finally_after_catch = False
@@ -71,7 +71,7 @@ except ValueError:
     pass
 finally:
     finally_after_catch = True
-assert finally_after_catch, 'finally should run after exception caught'
+assert finally_after_catch
 
 # === Bare raise re-raises current exception ===
 caught_reraised = False
@@ -82,7 +82,7 @@ try:
         raise  # bare raise
 except ValueError as e:
     caught_reraised = repr(e) == "ValueError('original')"
-assert caught_reraised, 'bare raise should re-raise original exception'
+assert caught_reraised
 
 # === Nested try/except ===
 outer_caught = False
@@ -103,7 +103,7 @@ try:
     raise KeyError('key')
 except Exception:
     caught_by_base = True
-assert caught_by_base, 'Exception should catch all exception types'
+assert caught_by_base
 
 # === Tuple of exception types ===
 caught_tuple = False
@@ -111,7 +111,7 @@ try:
     raise TypeError('type')
 except (ValueError, TypeError):
     caught_tuple = True
-assert caught_tuple, 'tuple of types should match'
+assert caught_tuple
 
 
 # === Return in try with finally ===
@@ -122,7 +122,7 @@ def try_return_finally():
         pass
 
 
-assert try_return_finally() == 1, 'return in try should work with finally'
+assert try_return_finally() == 1
 
 
 # === Return in finally overrides try return ===
@@ -133,7 +133,7 @@ def finally_return_overrides():
         return 2  # type: ignore[returnInFinally]
 
 
-assert finally_return_overrides() == 2, 'finally return should override try return'
+assert finally_return_overrides() == 2
 
 # === Exception in handler propagates ===
 handler_exc_propagated = False
@@ -144,7 +144,7 @@ try:
         raise TypeError('from handler')
 except TypeError as e:
     handler_exc_propagated = repr(e) == "TypeError('from handler')"
-assert handler_exc_propagated, 'exception in handler should propagate'
+assert handler_exc_propagated
 
 
 # === Return in finally overrides exception from handler ===
@@ -155,9 +155,7 @@ def finally_return_overrides_handler_exc():
         return 'finally wins handler'  # type: ignore
 
 
-assert finally_return_overrides_handler_exc() == 'finally wins handler', (
-    'return in finally should override exception from handler'
-)
+assert finally_return_overrides_handler_exc() == 'finally wins handler'
 
 
 def finally_return_overrides_handler_exc2():
@@ -170,9 +168,7 @@ def finally_return_overrides_handler_exc2():
         return 'finally wins handler'  # type: ignore
 
 
-assert finally_return_overrides_handler_exc2() == 'finally wins handler', (
-    'return in finally should override exception from handler'
-)
+assert finally_return_overrides_handler_exc2() == 'finally wins handler'
 
 
 # === Return in finally overrides exception from else ===
@@ -188,9 +184,7 @@ def finally_return_overrides_else_exc():
         return 'finally wins else'  # type: ignore
 
 
-assert finally_return_overrides_else_exc() == 'finally wins else', (
-    'return in finally should override exception from else block'
-)
+assert finally_return_overrides_else_exc() == 'finally wins else'
 
 # === Exception variable is cleared after handler ===
 # After except handler, the exception variable is deleted (Python 3 behavior)
@@ -204,7 +198,7 @@ try:
     _ = e  # This should raise NameError
 except NameError:
     e_cleared = True
-assert e_cleared, 'exception variable should be deleted after handler'
+assert e_cleared
 
 # === Unhandled exception propagates ===
 unhandled_propagated = False
@@ -215,7 +209,7 @@ try:
         pass  # KeyError doesn't match, should propagate
 except KeyError as e:
     unhandled_propagated = repr(e) == "KeyError('unhandled')"
-assert unhandled_propagated, 'unhandled exception should propagate to outer try'
+assert unhandled_propagated
 
 # === Finally runs before unhandled exception propagates ===
 finally_before_propagate = False
@@ -228,7 +222,7 @@ try:
         finally_before_propagate = True
 except KeyError:
     pass
-assert finally_before_propagate, 'finally should run before exception propagates'
+assert finally_before_propagate
 
 # === Exception in finally replaces original exception ===
 finally_exc_wins = False
@@ -241,7 +235,7 @@ except TypeError as e:
     finally_exc_wins = repr(e) == "TypeError('from finally')"
 except ValueError:
     finally_exc_wins = False  # Should not reach here
-assert finally_exc_wins, 'exception in finally should replace original'
+assert finally_exc_wins
 
 # === Exception in else propagates ===
 else_exc_propagated = False
@@ -254,7 +248,7 @@ try:
         raise ValueError('from else')
 except ValueError as e:
     else_exc_propagated = repr(e) == "ValueError('from else')"
-assert else_exc_propagated, 'exception in else should propagate'
+assert else_exc_propagated
 
 # === Finally runs after exception in else ===
 finally_after_else_exc = False
@@ -269,7 +263,7 @@ try:
         finally_after_else_exc = True
 except ValueError:
     pass
-assert finally_after_else_exc, 'finally should run after exception in else'
+assert finally_after_else_exc
 
 # === Exception hierarchy: LookupError ===
 # LookupError should catch KeyError
@@ -278,7 +272,7 @@ try:
     raise KeyError('key')
 except LookupError:
     caught_key_by_lookup = True
-assert caught_key_by_lookup, 'LookupError should catch KeyError'
+assert caught_key_by_lookup
 
 # LookupError should catch IndexError
 caught_index_by_lookup = False
@@ -286,7 +280,7 @@ try:
     raise IndexError('index')
 except LookupError:
     caught_index_by_lookup = True
-assert caught_index_by_lookup, 'LookupError should catch IndexError'
+assert caught_index_by_lookup
 
 # LookupError should NOT catch ValueError
 caught_value_by_lookup = False
@@ -306,7 +300,7 @@ try:
     raise ZeroDivisionError('zero')
 except ArithmeticError:
     caught_zero_by_arith = True
-assert caught_zero_by_arith, 'ArithmeticError should catch ZeroDivisionError'
+assert caught_zero_by_arith
 
 # ArithmeticError should catch OverflowError
 caught_overflow_by_arith = False
@@ -314,7 +308,7 @@ try:
     raise OverflowError('overflow')
 except ArithmeticError:
     caught_overflow_by_arith = True
-assert caught_overflow_by_arith, 'ArithmeticError should catch OverflowError'
+assert caught_overflow_by_arith
 
 # === Exception hierarchy: RuntimeError ===
 # RuntimeError should catch NotImplementedError
@@ -323,7 +317,7 @@ try:
     raise NotImplementedError('not impl')
 except RuntimeError:
     caught_notimpl_by_runtime = True
-assert caught_notimpl_by_runtime, 'RuntimeError should catch NotImplementedError'
+assert caught_notimpl_by_runtime
 
 # RuntimeError should catch RecursionError
 caught_recursion_by_runtime = False
@@ -331,7 +325,7 @@ try:
     raise RecursionError('recursion')
 except RuntimeError:
     caught_recursion_by_runtime = True
-assert caught_recursion_by_runtime, 'RuntimeError should catch RecursionError'
+assert caught_recursion_by_runtime
 
 # === Exception hierarchy: OSError ===
 # OSError should catch TimeoutError (subclass since Python 3.3)
@@ -366,23 +360,23 @@ try:
     raise KeyError('key')
 except (ValueError, LookupError):
     caught_by_tuple_base = True
-assert caught_by_tuple_base, 'tuple with LookupError should catch KeyError'
+assert caught_by_tuple_base
 
 # === isinstance with exception hierarchy ===
 try:
     raise KeyError('key')
 except KeyError as e:
-    assert isinstance(e, KeyError), 'exception should be instance of KeyError'
-    assert isinstance(e, LookupError), 'KeyError should be instance of LookupError'
-    assert isinstance(e, Exception), 'KeyError should be instance of Exception'
+    assert isinstance(e, KeyError)
+    assert isinstance(e, LookupError)
+    assert isinstance(e, Exception)
     assert not isinstance(e, ArithmeticError), 'KeyError should not be ArithmeticError'
 
 try:
     raise ZeroDivisionError('zero')
 except ZeroDivisionError as e:
-    assert isinstance(e, ZeroDivisionError), 'exception should be instance of ZeroDivisionError'
-    assert isinstance(e, ArithmeticError), 'ZeroDivisionError should be instance of ArithmeticError'
-    assert isinstance(e, Exception), 'ZeroDivisionError should be instance of Exception'
+    assert isinstance(e, ZeroDivisionError)
+    assert isinstance(e, ArithmeticError)
+    assert isinstance(e, Exception)
     assert not isinstance(e, LookupError), 'ZeroDivisionError should not be LookupError'
 
 # === Multiple handlers where none match ===
@@ -399,7 +393,7 @@ try:
         pass
 except MemoryError as e:
     multi_no_match_propagated = repr(e) == "MemoryError('out of memory')"
-assert multi_no_match_propagated, 'exception should propagate when no handler matches'
+assert multi_no_match_propagated
 
 # === BaseException hierarchy ===
 # BaseException should catch all exceptions including Exception subclasses
@@ -408,21 +402,21 @@ try:
     raise ValueError('value')
 except BaseException:
     caught_value_by_base = True
-assert caught_value_by_base, 'BaseException should catch ValueError'
+assert caught_value_by_base
 
 caught_key_by_base = False
 try:
     raise KeyError('key')
 except BaseException:
     caught_key_by_base = True
-assert caught_key_by_base, 'BaseException should catch KeyError'
+assert caught_key_by_base
 
 caught_type_by_base = False
 try:
     raise TypeError('type')
 except BaseException:
     caught_type_by_base = True
-assert caught_type_by_base, 'BaseException should catch TypeError'
+assert caught_type_by_base
 
 # BaseException catches KeyboardInterrupt
 caught_keyboard_by_base = False
@@ -430,7 +424,7 @@ try:
     raise KeyboardInterrupt()
 except BaseException:
     caught_keyboard_by_base = True
-assert caught_keyboard_by_base, 'BaseException should catch KeyboardInterrupt'
+assert caught_keyboard_by_base
 
 # BaseException catches SystemExit
 caught_sysexit_by_base = False
@@ -438,7 +432,7 @@ try:
     raise SystemExit()
 except BaseException:
     caught_sysexit_by_base = True
-assert caught_sysexit_by_base, 'BaseException should catch SystemExit'
+assert caught_sysexit_by_base
 
 # === Exception does NOT catch BaseException direct subclasses ===
 # Exception should NOT catch KeyboardInterrupt
@@ -469,24 +463,24 @@ try:
     raise ValueError('test')
 except Exception:
     caught_value_by_exc = True
-assert caught_value_by_exc, 'Exception should catch ValueError'
+assert caught_value_by_exc
 
 # === isinstance with BaseException ===
 try:
     raise ValueError('test')
 except ValueError as e:
-    assert isinstance(e, BaseException), 'ValueError should be instance of BaseException'
+    assert isinstance(e, BaseException)
 
 try:
     raise KeyboardInterrupt()
 except KeyboardInterrupt as e:
-    assert isinstance(e, BaseException), 'KeyboardInterrupt should be instance of BaseException'
+    assert isinstance(e, BaseException)
     assert not isinstance(e, Exception), 'KeyboardInterrupt should NOT be instance of Exception'
 
 try:
     raise SystemExit()
 except SystemExit as e:
-    assert isinstance(e, BaseException), 'SystemExit should be instance of BaseException'
+    assert isinstance(e, BaseException)
     assert not isinstance(e, Exception), 'SystemExit should NOT be instance of Exception'
 
 # === Tuple containing BaseException ===
@@ -495,7 +489,7 @@ try:
     raise KeyboardInterrupt()
 except (ValueError, BaseException):
     caught_by_tuple_with_base = True
-assert caught_by_tuple_with_base, 'tuple with BaseException should catch KeyboardInterrupt'
+assert caught_by_tuple_with_base
 
 # === Nested tuples in except are rejected (CPython parity) ===
 # CPython only accepts a single level of tuple in an `except` clause. A nested
@@ -519,7 +513,7 @@ try:
 except TypeError as exc:
     _rejected = True
     assert str(exc) == _msg, f'unexpected message: {exc}'
-assert _rejected, 'single-element nested tuple should raise TypeError'
+assert _rejected
 
 # Tuple of tuples.
 _rejected = False
@@ -531,7 +525,7 @@ try:
 except TypeError as exc:
     _rejected = True
     assert str(exc) == _msg, f'unexpected message: {exc}'
-assert _rejected, 'tuple of tuples should raise TypeError'
+assert _rejected
 
 # The whole tuple is validated, so an invalid element raises even when an
 # earlier element already matched the raised exception.
@@ -544,7 +538,7 @@ try:
 except TypeError as exc:
     _rejected = True
     assert str(exc) == _msg, f'unexpected message: {exc}'
-assert _rejected, 'invalid element after a match should still raise TypeError'
+assert _rejected
 
 # Invalid element appears before a valid match.
 _rejected = False
@@ -556,7 +550,7 @@ try:
 except TypeError as exc:
     _rejected = True
     assert str(exc) == _msg, f'unexpected message: {exc}'
-assert _rejected, 'leading nested tuple should raise TypeError'
+assert _rejected
 
 # Deeply nested, runtime-constructed tuple: rejected with TypeError, not a host
 # stack overflow and not a RecursionError.
@@ -572,7 +566,7 @@ try:
 except TypeError as exc:
     _rejected = True
     assert str(exc) == _msg, f'unexpected message: {exc}'
-assert _rejected, 'deeply nested runtime tuple should raise TypeError'
+assert _rejected
 
 # An empty tuple is valid (never matches): the original exception propagates
 # unchanged rather than raising the "catching classes" TypeError.
@@ -585,7 +579,7 @@ try:
 except TypeError as exc:
     caught_empty_tuple = True
     assert str(exc) == 'propagate', f'unexpected message: {exc}'
-assert caught_empty_tuple, 'empty except tuple should let exception propagate'
+assert caught_empty_tuple
 
 # A large flat tuple built at runtime still matches normally.
 big_flat = tuple([ValueError] * 5000 + [TypeError])
@@ -594,7 +588,7 @@ try:
     raise TypeError()
 except big_flat:
     caught_big_flat = True
-assert caught_big_flat, 'large flat runtime tuple should still match'
+assert caught_big_flat
 
 # === Exception state cleared on `return` from inside an except handler ===
 # When `return` exits an except clause, the exception is cleared from the
@@ -711,7 +705,7 @@ except ValueError as caught:
     try:
         raise
     except ValueError as bare:
-        assert str(bare) == 'outer', 'bare raise should re-raise outer exception, not be cleared by inner raise'
+        assert str(bare) == 'outer'
 
 
 # Function-call boundary: an exception raised and caught inside a callee

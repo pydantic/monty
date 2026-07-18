@@ -383,6 +383,11 @@ message Configure {
   // deployed in lockstep, so a mismatch is a hard, fail-fast error rather
   // than a silent source of frame desync.
   string monty_version = 5;
+  // Introspected `assert` failure messages (see limitations/assert.md).
+  // Absent = on with the default 120-byte operand-repr truncation; 0 disables
+  // annotations; any other value retains that many bytes per operand before
+  // any ellipsis, cutting on a character boundary.
+  optional uint32 assert_message_annotations = 6;
 }
 
 // Executes one snippet against the session. Turn ends with `Complete`,

@@ -6,8 +6,8 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Signature},
     builtins::Builtins,
     expressions::{
-        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
-        NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, NameScope, Node,
+        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -1003,8 +1003,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// - Function calls are resolved from identifiers to builtin types
     /// - Attribute calls validate that the object is already defined (not a new name)
     /// - Lists and tuples are recursively prepared
-    /// - Modulo equality patterns like `x % n == k` (constant right-hand side) are optimized to
-    ///   `CmpOperator::ModEq`
     ///
     /// # Errors
     /// Returns a NameError if an attribute call references an undefined variable
@@ -1171,32 +1169,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             }
             Expr::Await(value) => Expr::Await(Box::new(self.prepare_expression(*value)?)),
         };
-
-        // Optimization: Transform `(x % n) == value` with any constant right-hand side into a
-        // specialized ModEq operator.
-        // This is a common pattern in competitive programming (e.g., FizzBuzz checks like `i % 3 == 0`)
-        // and can be executed more efficiently with a single modulo operation + comparison
-        // instead of separate modulo, then equality check.
-        if let Expr::CmpOp { left, op, right } = &expr
-            && op == &CmpOperator::Eq
-            && let Expr::Literal(Literal::Int(value)) = right.expr
-            && let Expr::Op {
-                left: left2,
-                op,
-                right: right2,
-            } = &left.expr
-            && op == &Operator::Mod
-        {
-            let new_expr = Expr::CmpOp {
-                left: left2.clone(),
-                op: CmpOperator::ModEq(value),
-                right: right2.clone(),
-            };
-            return Ok(ExprLoc {
-                position: left.position,
-                expr: new_expr,
-            });
-        }
 
         Ok(ExprLoc { position, expr })
     }

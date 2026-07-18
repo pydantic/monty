@@ -1,24 +1,24 @@
 # === Basic chain comparisons ===
-assert (1 < 2 < 3) == True, 'ascending chain'
-assert (1 < 3 < 2) == False, 'fails at second comparison'
-assert (3 < 2 < 1) == False, 'fails at first comparison'
-assert (1 <= 2 <= 2) == True, 'with equality'
+assert (1 < 2 < 3) == True
+assert (1 < 3 < 2) == False
+assert (3 < 2 < 1) == False
+assert (1 <= 2 <= 2) == True
 assert 1 <= 2 <= 2, 'with equality'
 assert 1 <= 2 <= 2 <= 3, 'chained with equality'
 
 # === Mixed operators ===
-assert (1 < 2 <= 2 < 3) == True, 'mixed lt and le'
-assert (1 == 1 == 1) == True, 'triple equality'
-assert (1 != 2 != 1) == True, 'not-equal chain (not transitive)'
+assert (1 < 2 <= 2 < 3) == True
+assert (1 == 1 == 1) == True
+assert (1 != 2 != 1) == True
 
 # === Longer chains ===
-assert (1 < 2 < 3 < 4 < 5) == True, '5-way ascending'
-assert (1 < 2 < 3 < 2 < 5) == False, 'fails in middle'
+assert (1 < 2 < 3 < 4 < 5) == True
+assert (1 < 2 < 3 < 2 < 5) == False
 
 # === With variables and expressions ===
 x = 5
-assert (1 < x < 10) == True, 'variable in chain'
-assert (0 < x - 3 < x < x + 1) == True, 'expressions'
+assert (1 < x < 10) == True
+assert (0 < x - 3 < x < x + 1) == True
 
 
 # === Short-circuit evaluation ===
@@ -39,8 +39,8 @@ def test_short_circuit():
 
     # Test: first comparison fails, c() should not be called
     result = a() < b() < c()  # 1 < 0 is False, c() should not be called
-    assert result == False, 'short circuit result'
-    assert calls == ['a', 'b'], 'c not called due to short circuit'
+    assert result == False
+    assert calls == ['a', 'b']
 
 
 test_short_circuit()
@@ -56,8 +56,8 @@ def test_single_eval():
         return 5
 
     result = 1 < middle() < 10
-    assert result == True, 'chain result'
-    assert count == 1, 'middle() called exactly once'
+    assert result == True
+    assert count == 1
 
 
 test_single_eval()
@@ -66,10 +66,10 @@ test_single_eval()
 a = [1]
 b = a
 c = a
-assert (a is b is c) == True, 'is chain same object'
+assert (a is b is c) == True
 
 # === Containment checks ===
-assert (1 in [1, 2] in [[1, 2], [3]]) == True, 'in chain'
+assert (1 in [1, 2] in [[1, 2], [3]]) == True
 
 
 # === Verify no namespace pollution ===

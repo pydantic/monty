@@ -15,7 +15,7 @@ mod format;
 mod recursion;
 mod scheduler;
 
-use std::{cmp::Ordering, mem};
+use std::mem;
 
 pub(crate) use call::CallResult;
 pub(crate) use recursion::{ContainsVM, RecursionToken};
@@ -28,7 +28,7 @@ use crate::{
     builtins::Builtins,
     bytecode::{
         code::{Code, LocationEntry},
-        op::Opcode,
+        op::{Opcode, decode_assert_flags},
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
@@ -745,6 +745,10 @@ pub struct VM<'h, T: ResourceTracker> {
     /// Per-run cache of compiled patterns for module-level `re.*` calls. Not
     /// snapshotted (a pure performance cache), so default-initialized on restore.
     pub(crate) re_pattern_cache: RePatternCache,
+
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    /// Supplied by the executor on construction, so it is not snapshotted.
+    pub(crate) assert_repr_max_bytes: u32,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -754,6 +758,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         heap: &'h mut HeapReader<'h, T>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         Self {
             stack: Vec::with_capacity(64),
@@ -773,6 +778,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            assert_repr_max_bytes,
         }
     }
 
@@ -788,12 +794,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// * `heap` - The deserialized heap
     /// * `interns` - Interns for looking up function code
     /// * `print_writer` - Writer for print output
+    /// * `assert_repr_max_bytes` - Operand-repr byte cap from the executor
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
         heap: &'h mut HeapReader<'h, T>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
+        assert_repr_max_bytes: u32,
     ) -> Self {
         // Reconstruct call frames from serialized form
         let frames: Vec<CallFrame<'_>> = snapshot
@@ -842,6 +850,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
             re_pattern_cache: RePatternCache::default(),
+            assert_repr_max_bytes,
         }
     }
 
@@ -1126,14 +1135,14 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Comparison Operations
                 Opcode::CompareEq => try_catch_sync!(self, cached_frame, self.compare_eq()),
                 Opcode::CompareNe => try_catch_sync!(self, cached_frame, self.compare_ne()),
-                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_ord("<", Ordering::is_lt)),
-                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_ord("<=", Ordering::is_le)),
-                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_ord(">", Ordering::is_gt)),
-                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ord(">=", Ordering::is_ge)),
-                Opcode::CompareIs => self.compare_is(false),
-                Opcode::CompareIsNot => self.compare_is(true),
-                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in(false)),
-                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_in(true)),
+                Opcode::CompareLt => try_catch_sync!(self, cached_frame, self.compare_lt()),
+                Opcode::CompareLe => try_catch_sync!(self, cached_frame, self.compare_le()),
+                Opcode::CompareGt => try_catch_sync!(self, cached_frame, self.compare_gt()),
+                Opcode::CompareGe => try_catch_sync!(self, cached_frame, self.compare_ge()),
+                Opcode::CompareIs => try_catch_sync!(self, cached_frame, self.compare_is()),
+                Opcode::CompareIsNot => try_catch_sync!(self, cached_frame, self.compare_is_not()),
+                Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in()),
+                Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_not_in()),
                 Opcode::CompareModEq => {
                     let const_idx = cached_frame.fetch_u16();
                     let k = cached_frame.code.constants().get(const_idx);
@@ -1621,6 +1630,18 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::Raise => {
                     let exc = self.pop();
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
+                    catch_sync!(self, cached_frame, error);
+                }
+                Opcode::Assert => {
+                    match decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode") {
+                        Some(op) => try_catch_sync!(self, cached_frame, self.assert_cmp(op)),
+                        None => try_catch_sync!(self, cached_frame, self.assert_test()),
+                    }
+                }
+                Opcode::AssertFailed => {
+                    let cmp_op =
+                        decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode");
+                    let error = self.assert_failed_msg(cmp_op);
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {

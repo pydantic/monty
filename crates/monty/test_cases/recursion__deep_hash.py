@@ -10,7 +10,7 @@ for _ in range(10000):
 
 try:
     h = hash(x)
-    assert isinstance(h, int), 'hash should return an int'
+    assert isinstance(h, int)
 except RecursionError:
     pass  # acceptable if depth guard triggers
 
@@ -21,7 +21,7 @@ for _ in range(10000):
 
 try:
     h = hash(y)
-    assert isinstance(h, int), 'hash should return an int'
+    assert isinstance(h, int)
 except RecursionError:
     pass  # acceptable if depth guard triggers
 

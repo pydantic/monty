@@ -14,7 +14,7 @@ def recurse(n):
 
 
 # === Within the configured limit (10): succeeds on both ===
-assert recurse(5) == 0, 'recursion of depth 5 should succeed under limit 10'
+assert recurse(5) == 0
 
 # === Exceeds the limit: both interpreters raise ===
 try:

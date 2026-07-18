@@ -1,376 +1,366 @@
 # === Phase 1: Simple transformations ===
 
 # lower()
-assert 'HELLO'.lower() == 'hello', 'lower basic'
-assert 'Hello World'.lower() == 'hello world', 'lower mixed'
-assert 'hello'.lower() == 'hello', 'lower already lower'
-assert ''.lower() == '', 'lower empty'
-assert '123'.lower() == '123', 'lower numbers unchanged'
+assert 'HELLO'.lower() == 'hello'
+assert 'Hello World'.lower() == 'hello world'
+assert 'hello'.lower() == 'hello'
+assert ''.lower() == ''
+assert '123'.lower() == '123'
 
 # upper()
-assert 'hello'.upper() == 'HELLO', 'upper basic'
-assert 'Hello World'.upper() == 'HELLO WORLD', 'upper mixed'
-assert 'HELLO'.upper() == 'HELLO', 'upper already upper'
-assert ''.upper() == '', 'upper empty'
-assert '123'.upper() == '123', 'upper numbers unchanged'
+assert 'hello'.upper() == 'HELLO'
+assert 'Hello World'.upper() == 'HELLO WORLD'
+assert 'HELLO'.upper() == 'HELLO'
+assert ''.upper() == ''
+assert '123'.upper() == '123'
 
 # capitalize()
-assert 'hello'.capitalize() == 'Hello', 'capitalize basic'
-assert 'HELLO'.capitalize() == 'Hello', 'capitalize all upper'
-assert 'hELLO wORLD'.capitalize() == 'Hello world', 'capitalize mixed'
-assert ''.capitalize() == '', 'capitalize empty'
-assert '123abc'.capitalize() == '123abc', 'capitalize number start'
+assert 'hello'.capitalize() == 'Hello'
+assert 'HELLO'.capitalize() == 'Hello'
+assert 'hELLO wORLD'.capitalize() == 'Hello world'
+assert ''.capitalize() == ''
+assert '123abc'.capitalize() == '123abc'
 
 # title()
-assert 'hello world'.title() == 'Hello World', 'title basic'
-assert 'HELLO WORLD'.title() == 'Hello World', 'title all upper'
-assert "they're".title() == "They'Re", 'title apostrophe'
-assert ''.title() == '', 'title empty'
-assert '123 abc'.title() == '123 Abc', 'title number start'
+assert 'hello world'.title() == 'Hello World'
+assert 'HELLO WORLD'.title() == 'Hello World'
+assert "they're".title() == "They'Re"
+assert ''.title() == ''
+assert '123 abc'.title() == '123 Abc'
 
 # swapcase()
-assert 'Hello World'.swapcase() == 'hELLO wORLD', 'swapcase basic'
-assert 'HELLO'.swapcase() == 'hello', 'swapcase all upper'
-assert 'hello'.swapcase() == 'HELLO', 'swapcase all lower'
-assert ''.swapcase() == '', 'swapcase empty'
+assert 'Hello World'.swapcase() == 'hELLO wORLD'
+assert 'HELLO'.swapcase() == 'hello'
+assert 'hello'.swapcase() == 'HELLO'
+assert ''.swapcase() == ''
 
 # casefold()
-assert 'Hello'.casefold() == 'hello', 'casefold basic'
-assert 'HELLO'.casefold() == 'hello', 'casefold all upper'
-assert ''.casefold() == '', 'casefold empty'
+assert 'Hello'.casefold() == 'hello'
+assert 'HELLO'.casefold() == 'hello'
+assert ''.casefold() == ''
 
 # === Phase 2: Predicate methods ===
 
 # isalpha()
-assert 'hello'.isalpha() == True, 'isalpha basic'
-assert 'Hello'.isalpha() == True, 'isalpha mixed case'
-assert ''.isalpha() == False, 'isalpha empty'
-assert 'hello123'.isalpha() == False, 'isalpha with digits'
-assert 'hello world'.isalpha() == False, 'isalpha with space'
+assert 'hello'.isalpha() == True
+assert 'Hello'.isalpha() == True
+assert ''.isalpha() == False
+assert 'hello123'.isalpha() == False
+assert 'hello world'.isalpha() == False
 
 # isdigit()
-assert '123'.isdigit() == True, 'isdigit basic'
-assert ''.isdigit() == False, 'isdigit empty'
-assert '123abc'.isdigit() == False, 'isdigit with letters'
-assert '12 34'.isdigit() == False, 'isdigit with space'
+assert '123'.isdigit() == True
+assert ''.isdigit() == False
+assert '123abc'.isdigit() == False
+assert '12 34'.isdigit() == False
 
 # isalnum()
-assert 'hello123'.isalnum() == True, 'isalnum basic'
-assert 'hello'.isalnum() == True, 'isalnum letters only'
-assert '123'.isalnum() == True, 'isalnum digits only'
-assert ''.isalnum() == False, 'isalnum empty'
-assert 'hello 123'.isalnum() == False, 'isalnum with space'
+assert 'hello123'.isalnum() == True
+assert 'hello'.isalnum() == True
+assert '123'.isalnum() == True
+assert ''.isalnum() == False
+assert 'hello 123'.isalnum() == False
 
 # isnumeric()
-assert '123'.isnumeric() == True, 'isnumeric basic'
-assert ''.isnumeric() == False, 'isnumeric empty'
-assert '123abc'.isnumeric() == False, 'isnumeric with letters'
+assert '123'.isnumeric() == True
+assert ''.isnumeric() == False
+assert '123abc'.isnumeric() == False
 
 # isspace()
-assert '   '.isspace() == True, 'isspace spaces'
-assert '\t\n'.isspace() == True, 'isspace tabs and newlines'
-assert ''.isspace() == False, 'isspace empty'
-assert ' a '.isspace() == False, 'isspace with letter'
+assert '   '.isspace() == True
+assert '\t\n'.isspace() == True
+assert ''.isspace() == False
+assert ' a '.isspace() == False
 
 # islower()
-assert 'hello'.islower() == True, 'islower basic'
-assert 'Hello'.islower() == False, 'islower mixed'
-assert ''.islower() == False, 'islower empty'
-assert '123'.islower() == False, 'islower numbers only'
-assert 'hello123'.islower() == True, 'islower with numbers'
+assert 'hello'.islower() == True
+assert 'Hello'.islower() == False
+assert ''.islower() == False
+assert '123'.islower() == False
+assert 'hello123'.islower() == True
 
 # isupper()
-assert 'HELLO'.isupper() == True, 'isupper basic'
-assert 'Hello'.isupper() == False, 'isupper mixed'
-assert ''.isupper() == False, 'isupper empty'
-assert '123'.isupper() == False, 'isupper numbers only'
-assert 'HELLO123'.isupper() == True, 'isupper with numbers'
+assert 'HELLO'.isupper() == True
+assert 'Hello'.isupper() == False
+assert ''.isupper() == False
+assert '123'.isupper() == False
+assert 'HELLO123'.isupper() == True
 
 # isascii()
-assert 'hello'.isascii() == True, 'isascii basic'
-assert ''.isascii() == True, 'isascii empty'
-assert '\x00\x7f'.isascii() == True, 'isascii boundary'
+assert 'hello'.isascii() == True
+assert ''.isascii() == True
+assert '\x00\x7f'.isascii() == True
 
 # isdecimal()
-assert '123'.isdecimal() == True, 'isdecimal basic'
-assert ''.isdecimal() == False, 'isdecimal empty'
-assert '123abc'.isdecimal() == False, 'isdecimal with letters'
+assert '123'.isdecimal() == True
+assert ''.isdecimal() == False
+assert '123abc'.isdecimal() == False
 
 # === Phase 3: Search methods ===
 
 # find()
-assert 'hello'.find('l') == 2, 'find basic'
-assert 'hello'.find('ll') == 2, 'find substring'
-assert 'hello'.find('x') == -1, 'find not found'
-assert 'hello'.find('') == 0, 'find empty string'
-assert 'hello'.find('l', 3) == 3, 'find with start'
-assert 'hello'.find('l', 0, 3) == 2, 'find with start and end'
+assert 'hello'.find('l') == 2
+assert 'hello'.find('ll') == 2
+assert 'hello'.find('x') == -1
+assert 'hello'.find('') == 0
+assert 'hello'.find('l', 3) == 3
+assert 'hello'.find('l', 0, 3) == 2
 
 # find()/startswith() with i64::MIN start/end — regression: `-index` on i64::MIN used to panic
 _I64_MIN = -(2**63)
-assert 'hello'.find('h', _I64_MIN) == 0, 'find with i64::MIN start clamps to 0'
-assert 'hello'.find('h', 0, _I64_MIN) == -1, 'find with i64::MIN end clamps to 0'
-assert 'hello'.startswith('h', _I64_MIN) == True, 'startswith with i64::MIN start clamps to 0'
-assert 'hello'.startswith('h', _I64_MIN, _I64_MIN) == False, 'startswith with i64::MIN end'
+assert 'hello'.find('h', _I64_MIN) == 0
+assert 'hello'.find('h', 0, _I64_MIN) == -1
+assert 'hello'.startswith('h', _I64_MIN) == True
+assert 'hello'.startswith('h', _I64_MIN, _I64_MIN) == False
 
 # rfind()
-assert 'hello'.rfind('l') == 3, 'rfind basic'
-assert 'hello'.rfind('x') == -1, 'rfind not found'
-assert 'hello'.rfind('l', 0, 3) == 2, 'rfind with end'
+assert 'hello'.rfind('l') == 3
+assert 'hello'.rfind('x') == -1
+assert 'hello'.rfind('l', 0, 3) == 2
 
 # index()
-assert 'hello'.index('l') == 2, 'index basic'
-assert 'hello'.index('ll') == 2, 'index substring'
+assert 'hello'.index('l') == 2
+assert 'hello'.index('ll') == 2
 
 # rindex()
-assert 'hello'.rindex('l') == 3, 'rindex basic'
+assert 'hello'.rindex('l') == 3
 
 # count()
-assert 'hello'.count('l') == 2, 'count basic'
-assert 'hello'.count('ll') == 1, 'count substring'
-assert 'hello'.count('x') == 0, 'count not found'
-assert 'hello'.count('') == 6, 'count empty string'
-assert 'aaa'.count('a') == 3, 'count repeated'
+assert 'hello'.count('l') == 2
+assert 'hello'.count('ll') == 1
+assert 'hello'.count('x') == 0
+assert 'hello'.count('') == 6
+assert 'aaa'.count('a') == 3
 
 # startswith()
-assert 'hello'.startswith('he') == True, 'startswith basic'
-assert 'hello'.startswith('lo') == False, 'startswith false'
-assert 'hello'.startswith('') == True, 'startswith empty'
-assert 'hello'.startswith('ell', 1) == True, 'startswith with start'
+assert 'hello'.startswith('he') == True
+assert 'hello'.startswith('lo') == False
+assert 'hello'.startswith('') == True
+assert 'hello'.startswith('ell', 1) == True
 
 # endswith()
-assert 'hello'.endswith('lo') == True, 'endswith basic'
-assert 'hello'.endswith('he') == False, 'endswith false'
-assert 'hello'.endswith('') == True, 'endswith empty'
-assert 'hello'.endswith('ell', 0, 4) == True, 'endswith with end'
+assert 'hello'.endswith('lo') == True
+assert 'hello'.endswith('he') == False
+assert 'hello'.endswith('') == True
+assert 'hello'.endswith('ell', 0, 4) == True
 
 # === Phase 4: Strip/trim methods ===
 
 # strip()
-assert '  hello  '.strip() == 'hello', 'strip whitespace'
-assert 'xxhelloxx'.strip('x') == 'hello', 'strip chars'
-assert 'hello'.strip() == 'hello', 'strip nothing'
-assert ''.strip() == '', 'strip empty'
-assert '   '.strip() == '', 'strip only whitespace'
+assert '  hello  '.strip() == 'hello'
+assert 'xxhelloxx'.strip('x') == 'hello'
+assert 'hello'.strip() == 'hello'
+assert ''.strip() == ''
+assert '   '.strip() == ''
 
 # lstrip()
-assert '  hello  '.lstrip() == 'hello  ', 'lstrip whitespace'
-assert 'xxhello'.lstrip('x') == 'hello', 'lstrip chars'
-assert 'hello'.lstrip() == 'hello', 'lstrip nothing'
+assert '  hello  '.lstrip() == 'hello  '
+assert 'xxhello'.lstrip('x') == 'hello'
+assert 'hello'.lstrip() == 'hello'
 
 # rstrip()
-assert '  hello  '.rstrip() == '  hello', 'rstrip whitespace'
-assert 'helloxx'.rstrip('x') == 'hello', 'rstrip chars'
-assert 'hello'.rstrip() == 'hello', 'rstrip nothing'
+assert '  hello  '.rstrip() == '  hello'
+assert 'helloxx'.rstrip('x') == 'hello'
+assert 'hello'.rstrip() == 'hello'
 
 # removeprefix()
-assert 'hello world'.removeprefix('hello ') == 'world', 'removeprefix basic'
-assert 'hello world'.removeprefix('world') == 'hello world', 'removeprefix not found'
-assert 'hello'.removeprefix('') == 'hello', 'removeprefix empty'
+assert 'hello world'.removeprefix('hello ') == 'world'
+assert 'hello world'.removeprefix('world') == 'hello world'
+assert 'hello'.removeprefix('') == 'hello'
 
 # removesuffix()
-assert 'hello world'.removesuffix(' world') == 'hello', 'removesuffix basic'
-assert 'hello world'.removesuffix('hello') == 'hello world', 'removesuffix not found'
-assert 'hello'.removesuffix('') == 'hello', 'removesuffix empty'
+assert 'hello world'.removesuffix(' world') == 'hello'
+assert 'hello world'.removesuffix('hello') == 'hello world'
+assert 'hello'.removesuffix('') == 'hello'
 
 # === Phase 5: Split methods ===
 
 # split()
-assert 'a b c'.split() == ['a', 'b', 'c'], 'split whitespace'
-assert 'a,b,c'.split(',') == ['a', 'b', 'c'], 'split comma'
-assert 'a,b,c'.split(',', 1) == ['a', 'b,c'], 'split maxsplit'
-assert '  a  b  '.split() == ['a', 'b'], 'split multiple spaces'
-assert 'hello'.split('x') == ['hello'], 'split not found'
+assert 'a b c'.split() == ['a', 'b', 'c']
+assert 'a,b,c'.split(',') == ['a', 'b', 'c']
+assert 'a,b,c'.split(',', 1) == ['a', 'b,c']
+assert '  a  b  '.split() == ['a', 'b']
+assert 'hello'.split('x') == ['hello']
 
 # rsplit()
-assert 'a b c'.rsplit() == ['a', 'b', 'c'], 'rsplit whitespace'
-assert 'a,b,c'.rsplit(',') == ['a', 'b', 'c'], 'rsplit comma'
-assert 'a,b,c'.rsplit(',', 1) == ['a,b', 'c'], 'rsplit maxsplit'
+assert 'a b c'.rsplit() == ['a', 'b', 'c']
+assert 'a,b,c'.rsplit(',') == ['a', 'b', 'c']
+assert 'a,b,c'.rsplit(',', 1) == ['a,b', 'c']
 # Multi-byte whitespace must not panic on UTF-8 boundary (U+00A0, U+3000).
-assert 'hello world'.rsplit(maxsplit=1) == ['hello', 'world'], 'rsplit maxsplit nbsp'
-assert 'a　b　c'.rsplit(maxsplit=1) == ['a　b', 'c'], 'rsplit maxsplit ideographic space'
-assert 'a b c'.rsplit(maxsplit=2) == ['a', 'b', 'c'], 'rsplit maxsplit=2 nbsp'
-assert 'a b c'.rsplit(maxsplit=0) == ['a b c'], 'rsplit maxsplit=0 does no splits'
+assert 'hello world'.rsplit(maxsplit=1) == ['hello', 'world']
+assert 'a　b　c'.rsplit(maxsplit=1) == ['a　b', 'c']
+assert 'a b c'.rsplit(maxsplit=2) == ['a', 'b', 'c']
+assert 'a b c'.rsplit(maxsplit=0) == ['a b c']
 # Runs of whitespace count as one separator.
-assert 'a  b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive ascii whitespace'
-assert 'a\xa0\xa0b'.rsplit(maxsplit=2) == ['a', 'b'], 'rsplit consecutive nbsp'
-assert '  a  b  '.rsplit(maxsplit=1) == ['  a', 'b'], 'rsplit trailing whitespace trimmed'
+assert 'a  b'.rsplit(maxsplit=2) == ['a', 'b']
+assert 'a\xa0\xa0b'.rsplit(maxsplit=2) == ['a', 'b']
+assert '  a  b  '.rsplit(maxsplit=1) == ['  a', 'b']
 
 # splitlines()
-assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c'], 'splitlines basic'
-assert 'a\nb\nc'.splitlines(True) == ['a\n', 'b\n', 'c'], 'splitlines keepends'
-assert 'a\r\nb'.splitlines() == ['a', 'b'], 'splitlines crlf'
-assert ''.splitlines() == [], 'splitlines empty'
+assert 'a\nb\nc'.splitlines() == ['a', 'b', 'c']
+assert 'a\nb\nc'.splitlines(True) == ['a\n', 'b\n', 'c']
+assert 'a\r\nb'.splitlines() == ['a', 'b']
+assert ''.splitlines() == []
 
 # partition()
-assert 'hello world'.partition(' ') == ('hello', ' ', 'world'), 'partition basic'
-assert 'hello'.partition('x') == ('hello', '', ''), 'partition not found'
-assert 'hello world test'.partition(' ') == ('hello', ' ', 'world test'), 'partition first'
+assert 'hello world'.partition(' ') == ('hello', ' ', 'world')
+assert 'hello'.partition('x') == ('hello', '', '')
+assert 'hello world test'.partition(' ') == ('hello', ' ', 'world test')
 
 # rpartition()
-assert 'hello world'.rpartition(' ') == ('hello', ' ', 'world'), 'rpartition basic'
-assert 'hello'.rpartition('x') == ('', '', 'hello'), 'rpartition not found'
-assert 'hello world test'.rpartition(' ') == ('hello world', ' ', 'test'), 'rpartition last'
+assert 'hello world'.rpartition(' ') == ('hello', ' ', 'world')
+assert 'hello'.rpartition('x') == ('', '', 'hello')
+assert 'hello world test'.rpartition(' ') == ('hello world', ' ', 'test')
 
 # === Phase 6: Replace/modify methods ===
 
 # replace()
-assert 'hello'.replace('l', 'L') == 'heLLo', 'replace basic'
-assert 'hello'.replace('l', 'L', 1) == 'heLlo', 'replace count'
-assert 'hello'.replace('x', 'y') == 'hello', 'replace not found'
-assert 'aaa'.replace('a', 'b') == 'bbb', 'replace all'
-assert ''.replace('a', 'b') == '', 'replace empty'
+assert 'hello'.replace('l', 'L') == 'heLLo'
+assert 'hello'.replace('l', 'L', 1) == 'heLlo'
+assert 'hello'.replace('x', 'y') == 'hello'
+assert 'aaa'.replace('a', 'b') == 'bbb'
+assert ''.replace('a', 'b') == ''
 
 # center()
-assert 'hi'.center(6) == '  hi  ', 'center basic'
-assert 'hi'.center(6, '-') == '--hi--', 'center fillchar'
-assert 'hi'.center(2) == 'hi', 'center no padding'
-assert 'hi'.center(1) == 'hi', 'center smaller'
+assert 'hi'.center(6) == '  hi  '
+assert 'hi'.center(6, '-') == '--hi--'
+assert 'hi'.center(2) == 'hi'
+assert 'hi'.center(1) == 'hi'
 
 # ljust()
-assert 'hi'.ljust(6) == 'hi    ', 'ljust basic'
-assert 'hi'.ljust(6, '-') == 'hi----', 'ljust fillchar'
-assert 'hi'.ljust(2) == 'hi', 'ljust no padding'
+assert 'hi'.ljust(6) == 'hi    '
+assert 'hi'.ljust(6, '-') == 'hi----'
+assert 'hi'.ljust(2) == 'hi'
 
 # rjust()
-assert 'hi'.rjust(6) == '    hi', 'rjust basic'
-assert 'hi'.rjust(6, '-') == '----hi', 'rjust fillchar'
-assert 'hi'.rjust(2) == 'hi', 'rjust no padding'
+assert 'hi'.rjust(6) == '    hi'
+assert 'hi'.rjust(6, '-') == '----hi'
+assert 'hi'.rjust(2) == 'hi'
 
 # zfill()
-assert '42'.zfill(5) == '00042', 'zfill basic'
-assert '-42'.zfill(5) == '-0042', 'zfill negative'
-assert '+42'.zfill(5) == '+0042', 'zfill positive'
-assert '42'.zfill(2) == '42', 'zfill no padding'
-assert ''.zfill(3) == '000', 'zfill empty'
+assert '42'.zfill(5) == '00042'
+assert '-42'.zfill(5) == '-0042'
+assert '+42'.zfill(5) == '+0042'
+assert '42'.zfill(2) == '42'
+assert ''.zfill(3) == '000'
 
 # === Phase 7: Additional tests for Python compatibility ===
 
 # startswith/endswith with tuple
-assert 'hello'.startswith(('he', 'lo')) == True, 'startswith tuple first match'
-assert 'hello'.startswith(('lo', 'he')) == True, 'startswith tuple second match'
-assert 'hello'.startswith(('x', 'y')) == False, 'startswith tuple no match'
-assert 'hello'.endswith(('he', 'lo')) == True, 'endswith tuple first match'
-assert 'hello'.endswith(('lo', 'he')) == True, 'endswith tuple second match'
-assert 'hello'.endswith(('x', 'y')) == False, 'endswith tuple no match'
-assert 'hello'.startswith(('ell',), 1) == True, 'startswith tuple with start'
+assert 'hello'.startswith(('he', 'lo')) == True
+assert 'hello'.startswith(('lo', 'he')) == True
+assert 'hello'.startswith(('x', 'y')) == False
+assert 'hello'.endswith(('he', 'lo')) == True
+assert 'hello'.endswith(('lo', 'he')) == True
+assert 'hello'.endswith(('x', 'y')) == False
+assert 'hello'.startswith(('ell',), 1) == True
 
 # startswith/endswith affix validation matches CPython: tuple elements are
 # validated lazily and in order, so a match short-circuits before later
 # elements are type-checked
-assert 'hello'.startswith(('he', 1)) == True, 'startswith match before invalid tuple element'
-assert 'hello'.endswith(('lo', 1)) == True, 'endswith match before invalid tuple element'
+assert 'hello'.startswith(('he', 1)) == True
+assert 'hello'.endswith(('lo', 1)) == True
 try:
     'hello'.startswith(('xx', 1))
     assert False, 'expected startswith invalid tuple element to raise'
 except TypeError as exc:
-    assert str(exc) == 'tuple for startswith must only contain str, not int', 'startswith tuple element error'
+    assert str(exc) == 'tuple for startswith must only contain str, not int'
 try:
     'hello'.endswith((1, 'lo'))
     assert False, 'expected endswith invalid element before match to raise'
 except TypeError as exc:
-    assert str(exc) == 'tuple for endswith must only contain str, not int', 'endswith invalid element before match'
+    assert str(exc) == 'tuple for endswith must only contain str, not int'
 try:
     'hello'.startswith(42)
     assert False, 'expected startswith non-str affix to raise'
 except TypeError as exc:
-    assert str(exc) == 'startswith first arg must be str or a tuple of str, not int', 'startswith affix type error'
+    assert str(exc) == 'startswith first arg must be str or a tuple of str, not int'
 try:
     'hello'.endswith(None)
     assert False, 'expected endswith None affix to raise'
 except TypeError as exc:
-    assert str(exc) == 'endswith first arg must be str or a tuple of str, not NoneType', 'endswith affix type error'
+    assert str(exc) == 'endswith first arg must be str or a tuple of str, not NoneType'
 
 # bad start/end indices raise before the affix is inspected, with CPython's message
 try:
     'hello'.startswith(42, 'x')
     assert False, 'expected startswith bad start to raise'
 except TypeError as exc:
-    assert str(exc) == 'slice indices must be integers or None or have an __index__ method', (
-        'bad start beats affix type error'
-    )
+    assert str(exc) == 'slice indices must be integers or None or have an __index__ method'
 try:
     'hello'.endswith(('lo', 1), None, 'x')
     assert False, 'expected endswith bad end to raise'
 except TypeError as exc:
-    assert str(exc) == 'slice indices must be integers or None or have an __index__ method', (
-        'bad end beats tuple element error'
-    )
+    assert str(exc) == 'slice indices must be integers or None or have an __index__ method'
 
 # bool is accepted as a slice index (int subtype)
-assert 'hello'.startswith('ello', True) == True, 'startswith bool start index'
-assert 'hello'.count('l', True) == 2, 'count bool start index'
+assert 'hello'.startswith('ello', True) == True
+assert 'hello'.count('l', True) == 2
 
 # find/rfind/index/rindex/count with None as start/end
-assert 'hello'.find('l', None) == 2, 'find with None start'
-assert 'hello'.find('l', None, None) == 2, 'find with None start and end'
-assert 'hello'.find('l', 0, None) == 2, 'find with None end'
-assert 'hello'.rfind('l', None, None) == 3, 'rfind with None start and end'
-assert 'hello'.count('l', None, None) == 2, 'count with None start and end'
-assert 'hello'.startswith('he', None) == True, 'startswith with None start'
-assert 'hello'.endswith('lo', None, None) == True, 'endswith with None start and end'
+assert 'hello'.find('l', None) == 2
+assert 'hello'.find('l', None, None) == 2
+assert 'hello'.find('l', 0, None) == 2
+assert 'hello'.rfind('l', None, None) == 3
+assert 'hello'.count('l', None, None) == 2
+assert 'hello'.startswith('he', None) == True
+assert 'hello'.endswith('lo', None, None) == True
 
 # strip with None
-assert '  hello  '.strip(None) == 'hello', 'strip None same as no arg'
-assert '  hello  '.lstrip(None) == 'hello  ', 'lstrip None same as no arg'
-assert '  hello  '.rstrip(None) == '  hello', 'rstrip None same as no arg'
+assert '  hello  '.strip(None) == 'hello'
+assert '  hello  '.lstrip(None) == 'hello  '
+assert '  hello  '.rstrip(None) == '  hello'
 
 # === Phase 8: Keyword argument tests ===
 
 # split with keyword args
-assert 'a,b,c'.split(sep=',') == ['a', 'b', 'c'], 'split sep kwarg'
-assert 'a,b,c'.split(',', maxsplit=1) == ['a', 'b,c'], 'split maxsplit kwarg'
-assert 'a,b,c'.split(sep=',', maxsplit=1) == ['a', 'b,c'], 'split both kwargs'
+assert 'a,b,c'.split(sep=',') == ['a', 'b', 'c']
+assert 'a,b,c'.split(',', maxsplit=1) == ['a', 'b,c']
+assert 'a,b,c'.split(sep=',', maxsplit=1) == ['a', 'b,c']
 
 # rsplit with keyword args
-assert 'a,b,c'.rsplit(sep=',') == ['a', 'b', 'c'], 'rsplit sep kwarg'
-assert 'a,b,c'.rsplit(',', maxsplit=1) == ['a,b', 'c'], 'rsplit maxsplit kwarg'
-assert 'a,b,c'.rsplit(sep=',', maxsplit=1) == ['a,b', 'c'], 'rsplit both kwargs'
+assert 'a,b,c'.rsplit(sep=',') == ['a', 'b', 'c']
+assert 'a,b,c'.rsplit(',', maxsplit=1) == ['a,b', 'c']
+assert 'a,b,c'.rsplit(sep=',', maxsplit=1) == ['a,b', 'c']
 
 # splitlines with keyword args
-assert 'a\nb\nc'.splitlines(keepends=True) == ['a\n', 'b\n', 'c'], 'splitlines keepends kwarg'
-assert 'a\nb\nc'.splitlines(keepends=False) == ['a', 'b', 'c'], 'splitlines keepends=False'
+assert 'a\nb\nc'.splitlines(keepends=True) == ['a\n', 'b\n', 'c']
+assert 'a\nb\nc'.splitlines(keepends=False) == ['a', 'b', 'c']
 
 # replace with keyword args
-assert 'aaa'.replace('a', 'b', count=2) == 'bba', 'replace count kwarg'
+assert 'aaa'.replace('a', 'b', count=2) == 'bba'
 
 # === Phase 9: Additional methods ===
 
 # encode()
-assert 'hello'.encode() == b'hello', 'encode default'
-assert 'hello'.encode('utf-8') == b'hello', 'encode utf-8'
-assert 'hello'.encode('utf8') == b'hello', 'encode utf8 alias'
-assert 'hello'.encode('utf_8') == b'hello', 'encode utf_8 alias'
-assert 'hello'.encode('UTF-8') == b'hello', 'encode UTF-8 case insensitive'
-assert ''.encode() == b'', 'encode empty'
-assert 'hello'.encode('utf-8', 'strict') == b'hello', 'encode with errors'
+assert 'hello'.encode() == b'hello'
+assert 'hello'.encode('utf-8') == b'hello'
+assert 'hello'.encode('utf8') == b'hello'
+assert 'hello'.encode('utf_8') == b'hello'
+assert 'hello'.encode('UTF-8') == b'hello'
+assert ''.encode() == b''
+assert 'hello'.encode('utf-8', 'strict') == b'hello'
 
 # === encode() with the 'ascii' codec ===
-assert 'hello'.encode('ascii') == b'hello', 'encode plain ascii'
-assert 'hello'.encode('us-ascii') == b'hello', 'encode us-ascii alias'
-assert 'hello'.encode('us_ascii') == b'hello', 'encode us_ascii (underscore) alias'
-assert 'hello'.encode('US_ASCII') == b'hello', 'encode US_ASCII case insensitive underscore alias'
-assert 'hello'.encode('ASCII') == b'hello', 'encode ASCII case insensitive'
-assert 'héllo wörld ⚡'.encode('ascii', 'ignore') == b'hllo wrld ', 'encode ascii ignore drops non-ascii chars'
-assert 'héllo wörld ⚡'.encode('ascii', 'replace') == b'h?llo w?rld ?', 'encode ascii replace uses ?'
-assert 'héllo wörld ⚡'.encode('ascii', 'backslashreplace') == b'h\\xe9llo w\\xf6rld \\u26a1', (
-    'encode ascii backslashreplace escapes non-ascii chars'
-)
+assert 'hello'.encode('ascii') == b'hello'
+assert 'hello'.encode('us-ascii') == b'hello'
+assert 'hello'.encode('us_ascii') == b'hello'
+assert 'hello'.encode('US_ASCII') == b'hello'
+assert 'hello'.encode('ASCII') == b'hello'
+assert 'héllo wörld ⚡'.encode('ascii', 'ignore') == b'hllo wrld '
+assert 'héllo wörld ⚡'.encode('ascii', 'replace') == b'h?llo w?rld ?'
+assert 'héllo wörld ⚡'.encode('ascii', 'backslashreplace') == b'h\\xe9llo w\\xf6rld \\u26a1'
 # Non-BMP characters (> U+FFFF) escape via the \Uxxxxxxxx form, not \uxxxx.
-assert 'a\U0001f600b'.encode('ascii', 'backslashreplace') == b'a\\U0001f600b', (
-    'encode ascii backslashreplace escapes non-BMP chars with \\U'
-)
+assert 'a\U0001f600b'.encode('ascii', 'backslashreplace') == b'a\\U0001f600b'
 # The 'ignore' handler round-trips through decode('ascii') since only ASCII bytes remain.
-assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test', (
-    'encode ignore then decode ascii strips non-ascii characters'
-)
+assert 'café — 日本語 test'.encode('ascii', 'ignore').decode('ascii') == 'caf   test'
 
 # strict (the default) raises UnicodeEncodeError, a ValueError subclass, with CPython's exact wording.
 try:
     'héllo'.encode('ascii')
     assert False, 'encode ascii of non-ascii string should error'
 except ValueError as e:
-    assert isinstance(e, UnicodeEncodeError), 'UnicodeEncodeError should be a ValueError subclass'
+    assert isinstance(e, UnicodeEncodeError)
     assert type(e).__name__ == 'UnicodeEncodeError', f'exception type name: {type(e).__name__}'
     assert str(e) == "'ascii' codec can't encode character '\\xe9' in position 1: ordinal not in range(128)", (
         f'encode ascii strict single-char message: {e}'
@@ -409,27 +399,17 @@ except UnicodeEncodeError as e:
     )
 
 # xmlcharrefreplace substitutes decimal XML character references.
-assert 'héllo ⚡'.encode('ascii', 'xmlcharrefreplace') == b'h&#233;llo &#9889;', (
-    'encode ascii xmlcharrefreplace uses decimal character references'
-)
-assert 'a\U0001f600b'.encode('ascii', 'xmlcharrefreplace') == b'a&#128512;b', (
-    'encode ascii xmlcharrefreplace handles non-BMP chars'
-)
+assert 'héllo ⚡'.encode('ascii', 'xmlcharrefreplace') == b'h&#233;llo &#9889;'
+assert 'a\U0001f600b'.encode('ascii', 'xmlcharrefreplace') == b'a&#128512;b'
 # namereplace substitutes \N{...} escapes, falling back to backslash escapes
 # for characters with no Unicode name (e.g. C1 controls).
-assert (
-    'héllo ⚡'.encode('ascii', 'namereplace') == b'h\\N{LATIN SMALL LETTER E WITH ACUTE}llo \\N{HIGH VOLTAGE SIGN}'
-), 'encode ascii namereplace uses unicode name escapes'
-assert '一'.encode('ascii', 'namereplace') == b'\\N{CJK UNIFIED IDEOGRAPH-4E00}', (
-    'encode ascii namereplace handles algorithmic CJK names'
-)
-assert 'a\x80\x9fb'.encode('ascii', 'namereplace') == b'a\\x80\\x9fb', (
-    'encode ascii namereplace falls back to backslash escapes for unnamed chars'
-)
+assert 'héllo ⚡'.encode('ascii', 'namereplace') == b'h\\N{LATIN SMALL LETTER E WITH ACUTE}llo \\N{HIGH VOLTAGE SIGN}'
+assert '一'.encode('ascii', 'namereplace') == b'\\N{CJK UNIFIED IDEOGRAPH-4E00}'
+assert 'a\x80\x9fb'.encode('ascii', 'namereplace') == b'a\\x80\\x9fb'
 # surrogateescape/surrogatepass only special-case lone surrogates, which a
 # valid str can never contain here, so they re-raise exactly like strict.
-assert 'hello'.encode('ascii', 'surrogateescape') == b'hello', 'unused surrogateescape handler'
-assert 'hello'.encode('ascii', 'surrogatepass') == b'hello', 'unused surrogatepass handler'
+assert 'hello'.encode('ascii', 'surrogateescape') == b'hello'
+assert 'hello'.encode('ascii', 'surrogatepass') == b'hello'
 try:
     'héllo'.encode('ascii', 'surrogateescape')
     assert False, 'encode ascii surrogateescape of non-ascii string should error'
@@ -446,7 +426,7 @@ except UnicodeEncodeError as e:
     )
 
 # Like CPython, an unknown error handler name is only looked up if it's actually needed.
-assert 'hello'.encode('ascii', 'bogus') == b'hello', 'unused error handler name is never validated'
+assert 'hello'.encode('ascii', 'bogus') == b'hello'
 try:
     'héllo'.encode('ascii', 'bogus')
     assert False, 'encode ascii with unknown error handler should error'
@@ -479,82 +459,82 @@ for bad, expected_type in ((42, 'int'), (None, 'None'), (b'utf-8', 'bytes')):
         )
 
 # isidentifier()
-assert 'hello'.isidentifier() == True, 'isidentifier basic'
-assert '_hello'.isidentifier() == True, 'isidentifier underscore'
-assert '__init__'.isidentifier() == True, 'isidentifier dunder'
-assert 'hello123'.isidentifier() == True, 'isidentifier with digits'
-assert ''.isidentifier() == False, 'isidentifier empty'
-assert '123hello'.isidentifier() == False, 'isidentifier digit start'
-assert 'hello world'.isidentifier() == False, 'isidentifier with space'
-assert 'hello-world'.isidentifier() == False, 'isidentifier with dash'
-assert 'class'.isidentifier() == True, 'isidentifier keyword'  # isidentifier doesn't check keywords
+assert 'hello'.isidentifier() == True
+assert '_hello'.isidentifier() == True
+assert '__init__'.isidentifier() == True
+assert 'hello123'.isidentifier() == True
+assert ''.isidentifier() == False
+assert '123hello'.isidentifier() == False
+assert 'hello world'.isidentifier() == False
+assert 'hello-world'.isidentifier() == False
+assert 'class'.isidentifier() == True  # isidentifier doesn't check keywords
 
 # istitle()
-assert 'Hello World'.istitle() == True, 'istitle basic'
-assert 'Hello'.istitle() == True, 'istitle single word'
-assert 'HELLO'.istitle() == False, 'istitle all upper'
-assert 'hello'.istitle() == False, 'istitle all lower'
-assert ''.istitle() == False, 'istitle empty'
-assert 'Hello world'.istitle() == False, 'istitle lowercase word'
-assert '123'.istitle() == False, 'istitle numbers only'
-assert 'Hello 123 World'.istitle() == True, 'istitle with numbers'
-assert "They'Re".istitle() == True, 'istitle apostrophe'
+assert 'Hello World'.istitle() == True
+assert 'Hello'.istitle() == True
+assert 'HELLO'.istitle() == False
+assert 'hello'.istitle() == False
+assert ''.istitle() == False
+assert 'Hello world'.istitle() == False
+assert '123'.istitle() == False
+assert 'Hello 123 World'.istitle() == True
+assert "They'Re".istitle() == True
 
 # === Phase 10: Unicode support for is* methods ===
 
 # isdecimal with Unicode decimal digits
-assert '٠١٢٣٤٥٦٧٨٩'.isdecimal() == True, 'isdecimal Arabic-Indic'
-assert '０１２３４５６７８９'.isdecimal() == True, 'isdecimal Fullwidth'
-assert '०१२३४५६७८९'.isdecimal() == True, 'isdecimal Devanagari'
-assert '²'.isdecimal() == False, 'isdecimal superscript not decimal'
-assert '½'.isdecimal() == False, 'isdecimal fraction not decimal'
+assert '٠١٢٣٤٥٦٧٨٩'.isdecimal() == True
+assert '０１２３４５６７８９'.isdecimal() == True
+assert '०१२३४५६७८९'.isdecimal() == True
+assert '²'.isdecimal() == False
+assert '½'.isdecimal() == False
 
 # isdigit with superscripts and subscripts
-assert '²³'.isdigit() == True, 'isdigit superscripts'
-assert '₀₁₂₃₄₅₆₇₈₉'.isdigit() == True, 'isdigit subscripts'
-assert '0123456789'.isdigit() == True, 'isdigit ASCII'
-assert '٠١٢٣٤٥٦٧٨٩'.isdigit() == True, 'isdigit Arabic-Indic'
-assert '½'.isdigit() == False, 'isdigit fraction not digit'
+assert '²³'.isdigit() == True
+assert '₀₁₂₃₄₅₆₇₈₉'.isdigit() == True
+assert '0123456789'.isdigit() == True
+assert '٠١٢٣٤٥٦٧٨٩'.isdigit() == True
+assert '½'.isdigit() == False
 
 # isnumeric with fractions and other numerics
-assert '½'.isnumeric() == True, 'isnumeric fraction'
-assert '²'.isnumeric() == True, 'isnumeric superscript'
-assert '٠١٢٣٤٥٦٧٨٩'.isnumeric() == True, 'isnumeric Arabic-Indic'
-assert '0123456789'.isnumeric() == True, 'isnumeric ASCII'
+assert '½'.isnumeric() == True
+assert '²'.isnumeric() == True
+assert '٠١٢٣٤٥٦٧٨٩'.isnumeric() == True
+assert '0123456789'.isnumeric() == True
 
 # === Phase 11: expandtabs ===
 
 # expandtabs() default tabsize=8
-assert '\thello'.expandtabs() == '        hello', 'expandtabs default'
-assert ''.expandtabs() == '', 'expandtabs empty'
-assert 'no tabs here'.expandtabs() == 'no tabs here', 'expandtabs no tabs'
+assert '\thello'.expandtabs() == '        hello'
+assert ''.expandtabs() == ''
+assert 'no tabs here'.expandtabs() == 'no tabs here'
 
 # expandtabs() with explicit tabsize
-assert '\thello'.expandtabs(4) == '    hello', 'expandtabs tabsize=4'
-assert '\thello'.expandtabs(8) == '        hello', 'expandtabs tabsize=8 explicit'
-assert '\thello'.expandtabs(1) == ' hello', 'expandtabs tabsize=1'
+assert '\thello'.expandtabs(4) == '    hello'
+assert '\thello'.expandtabs(8) == '        hello'
+assert '\thello'.expandtabs(1) == ' hello'
 
 # expandtabs() column tracking (tabs align to next tabstop)
-assert 'a\tb'.expandtabs() == 'a       b', 'expandtabs column align'
-assert 'ab\tcd'.expandtabs() == 'ab      cd', 'expandtabs 2 chars then tab'
-assert 'abcdefg\th'.expandtabs() == 'abcdefg h', 'expandtabs 7 chars then tab'
-assert 'abcdefgh\ti'.expandtabs() == 'abcdefgh        i', 'expandtabs 8 chars then tab'
-assert 'a\tb\tc'.expandtabs(4) == 'a   b   c', 'expandtabs multiple tabs tabsize=4'
+assert 'a\tb'.expandtabs() == 'a       b'
+assert 'ab\tcd'.expandtabs() == 'ab      cd'
+assert 'abcdefg\th'.expandtabs() == 'abcdefg h'
+assert 'abcdefgh\ti'.expandtabs() == 'abcdefgh        i'
+assert 'a\tb\tc'.expandtabs(4) == 'a   b   c'
 
 # expandtabs() with tabsize=0 (tabs become nothing)
-assert '\thello'.expandtabs(0) == 'hello', 'expandtabs tabsize=0'
-assert 'a\tb\tc'.expandtabs(0) == 'abc', 'expandtabs tabsize=0 multiple'
+assert '\thello'.expandtabs(0) == 'hello'
+assert 'a\tb\tc'.expandtabs(0) == 'abc'
 
 # expandtabs() with negative tabsize (treated as 0)
-assert '\thello'.expandtabs(-1) == 'hello', 'expandtabs negative tabsize'
+assert '\thello'.expandtabs(-1) == 'hello'
 
 # expandtabs() with newlines resetting column
-assert 'a\tb\nc\td'.expandtabs(4) == 'a   b\nc   d', 'expandtabs newline resets column'
-assert '\t\n\t'.expandtabs(4) == '    \n    ', 'expandtabs tab newline tab'
-assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d', 'expandtabs carriage return resets column'
+assert 'a\tb\nc\td'.expandtabs(4) == 'a   b\nc   d'
+assert '\t\n\t'.expandtabs(4) == '    \n    '
+assert 'a\tb\rc\td'.expandtabs(4) == 'a   b\rc   d'
 
 # expandtabs() with keyword argument
-assert '\thello'.expandtabs(tabsize=4) == '    hello', 'expandtabs tabsize kwarg'
+assert '\thello'.expandtabs(tabsize=4) == '    hello'
 
 # expandtabs() error cases
 try:

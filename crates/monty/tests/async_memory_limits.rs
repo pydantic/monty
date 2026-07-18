@@ -6,8 +6,8 @@
 use std::{mem, rc::Rc, time::Duration};
 
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult, PrintWriter,
-    ResourceError, ResourceLimits, ResourceTracker, RunProgress,
+    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun,
+    NameLookupResult, PrintWriter, ResourceError, ResourceLimits, ResourceTracker, RunProgress,
 };
 
 /// Wraps `LimitedTracker` in `Rc` so a test can hold its own handle for
@@ -108,7 +108,7 @@ async def main():
 await main()
 "
     );
-    MontyRun::new(code, "test.py", vec![]).unwrap()
+    MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap()
 }
 
 /// `await_gather_future` must charge its per-await bookkeeping
@@ -180,7 +180,7 @@ async def deep(n):
 
 asyncio.run(deep(20000))
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::new()
         .max_memory(128 * 1024)
@@ -212,7 +212,7 @@ async def f():
 
 asyncio.run(f())
 ";
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::new()
         .max_memory(128 * 1024)

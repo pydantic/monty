@@ -928,6 +928,7 @@ mod tests {
         heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
         resource::NoLimitTracker,
+        run::AssertMessageAnnotations,
         types::LongInt,
     };
 
@@ -968,7 +969,13 @@ mod tests {
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let mut vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+            );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
@@ -1001,7 +1008,13 @@ mod tests {
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let mut vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+            );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };
@@ -1031,7 +1044,13 @@ mod tests {
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
-            let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
+            let mut vm = VM::new(
+                Vec::new(),
+                reader,
+                interns,
+                PrintWriter::Disabled,
+                AssertMessageAnnotations::DEFAULT_MAX_BYTES.get(),
+            );
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
             };

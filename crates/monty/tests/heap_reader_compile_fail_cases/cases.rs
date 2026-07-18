@@ -154,7 +154,7 @@ fn smuggle_vm<T: ResourceTracker>(
     HeapReader::with(
         heap,
         &mut (interns, crate::io::PrintWriter::Disabled),
-        |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow()),
+        |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
     )
 }
 

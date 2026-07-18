@@ -4,11 +4,11 @@
 //! fallback. Host-facing payload behavior is invisible to `test_cases/`, so
 //! it is pinned here.
 
-use monty::{JsonErrorData, MontyException, MontyRun};
+use monty::{CompileOptions, JsonErrorData, MontyException, MontyRun};
 
 /// Runs `code` and returns the resulting `MontyException`.
 fn run_exc(code: &str) -> MontyException {
-    MontyRun::new(code.to_owned(), "test.py", vec![])
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .run_no_limits(vec![])
         .unwrap_err()

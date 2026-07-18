@@ -17,12 +17,12 @@
 //!   time with `NotImplementedError` (CPython allows it, except `__debug__`
 //!   which it rejects with `SyntaxError`)
 
-use monty::{DictPairs, ExcType, MontyObject, MontyRun};
+use monty::{CompileOptions, DictPairs, ExcType, MontyObject, MontyRun};
 
 /// Runs `code` to completion with no resource limits and returns the value of
 /// its final expression.
 fn eval(code: &str) -> MontyObject {
-    MontyRun::new(code.to_owned(), "test.py", vec![])
+    MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .run_no_limits(vec![])
         .unwrap()
@@ -54,7 +54,7 @@ fn loader_raises_name_error() {
     // `__loader__` is intentionally not exposed: CPython always binds it to a
     // loader object (never `None`), so Monty leaves it unresolved rather than
     // diverge on type — reading it raises `NameError` like any unbound name.
-    let err = MontyRun::new("__loader__".to_owned(), "test.py", vec![])
+    let err = MontyRun::new("__loader__".to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
         .run_no_limits(vec![])
         .expect_err("expected NameError");
@@ -87,7 +87,8 @@ fn name_resolves_inside_function() {
 /// Asserts that compiling `code` fails with a `NotImplementedError` whose
 /// message names the offending dunder.
 fn assert_reassignment_rejected(code: &str, dunder: &str) {
-    let err = MontyRun::new(code.to_owned(), "test.py", vec![]).expect_err("expected compile error");
+    let err = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
+        .expect_err("expected compile error");
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_eq!(
         err.message().unwrap(),

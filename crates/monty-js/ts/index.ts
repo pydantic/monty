@@ -4,6 +4,7 @@
 // @pydantic/monty/wasm.
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
+export { type AssertMessageAnnotations } from './options.js'
 export {
   FunctionSnapshot,
   FutureSnapshot,

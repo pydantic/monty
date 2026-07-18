@@ -14,17 +14,17 @@ class Vec:
 v = Vec(1, 2)
 
 # === repr() / str() dispatch to __repr__ ===
-assert repr(v) == 'Vec(1, 2)', 'repr() calls user __repr__'
-assert str(v) == 'Vec(1, 2)', 'str() falls back to __repr__ when no __str__'
+assert repr(v) == 'Vec(1, 2)'
+assert str(v) == 'Vec(1, 2)'
 
 # === f-strings ===
-assert f'{v!r}' == 'Vec(1, 2)', 'f-string !r conversion uses __repr__'
-assert f'{v}' == 'Vec(1, 2)', 'f-string str conversion falls back to __repr__'
+assert f'{v!r}' == 'Vec(1, 2)'
+assert f'{v}' == 'Vec(1, 2)'
 
 # === repr inside containers uses __repr__ ===
-assert repr([v, v]) == '[Vec(1, 2), Vec(1, 2)]', 'list repr recurses into instance __repr__'
-assert repr((v,)) == '(Vec(1, 2),)', 'tuple repr recurses into instance __repr__'
-assert repr({'k': v}) == "{'k': Vec(1, 2)}", 'dict repr recurses into instance __repr__'
+assert repr([v, v]) == '[Vec(1, 2), Vec(1, 2)]'
+assert repr((v,)) == '(Vec(1, 2),)'
+assert repr({'k': v}) == "{'k': Vec(1, 2)}"
 
 
 class Temperature:
@@ -41,10 +41,10 @@ class Temperature:
 t = Temperature(20)
 
 # === __str__ overrides __repr__ for str()/print, repr() still uses __repr__ ===
-assert str(t) == '20°C', 'str() uses __str__ when defined'
-assert repr(t) == 'Temperature(celsius=20)', 'repr() uses __repr__ even when __str__ exists'
-assert f'{t}' == '20°C', 'f-string str conversion uses __str__'
-assert f'{t!r}' == 'Temperature(celsius=20)', 'f-string repr conversion uses __repr__'
+assert str(t) == '20°C'
+assert repr(t) == 'Temperature(celsius=20)'
+assert f'{t}' == '20°C'
+assert f'{t!r}' == 'Temperature(celsius=20)'
 
 # === __repr__ that references other instances ===
 
@@ -59,7 +59,7 @@ class Node:
 
 
 chain = Node(1, Node(2, None))
-assert repr(chain) == 'Node(1, Node(2, None))', '__repr__ recurses into nested instances'
+assert repr(chain) == 'Node(1, Node(2, None))'
 
 # === Default repr (no __repr__): bare class name + address ===
 # CPython qualifies the name (`<__main__.Plain object ...>`); Monty uses the bare
@@ -72,9 +72,9 @@ class Plain:
 
 
 pl = Plain()
-assert repr(pl).startswith('<Plain object at 0x'), 'default repr includes class name and address'
-assert str(pl) == repr(pl), 'default str falls back to default repr'
-assert type(pl).__name__ == 'Plain', 'default-repr class still has a name'
+assert repr(pl).startswith('<Plain object at 0x')
+assert str(pl) == repr(pl)
+assert type(pl).__name__ == 'Plain'
 
 # === __repr__/__str__ set to an already-bound method: no extra `self` is bound ===
 # `Bar.__repr__` here is a `BoundMethod`, not a plain function, so dispatch must
@@ -91,5 +91,5 @@ class Bar:
     __str__ = Greeter().greet
 
 
-assert repr(Bar()) == 'hi', 'a bound-method __repr__ is called with no extra self argument'
-assert str(Bar()) == 'hi', 'a bound-method __str__ is called with no extra self argument'
+assert repr(Bar()) == 'hi'
+assert str(Bar()) == 'hi'

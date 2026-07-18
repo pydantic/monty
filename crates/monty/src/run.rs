@@ -1,5 +1,8 @@
 //! Public interface for running Monty code.
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    num::NonZeroU32,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ruff_python_stdlib::identifiers::is_identifier;
 
@@ -21,6 +24,76 @@ use crate::{
     value::Value,
 };
 
+/// Options controlling how Monty behavior diverges from plain CPython.
+///
+/// Consumed when code is compiled: a [`MontyRun`] bakes the choices into the
+/// program at construction, while a `MontyRepl` stores them so every snippet
+/// fed to the session compiles the same way.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+pub struct CompileOptions {
+    /// Give failed `assert` statements pytest-style introspected messages,
+    /// deliberately diverging from CPython; see `limitations/assert.md`.
+    /// On by default with a 120-byte operand-repr truncation.
+    pub assert_message_annotations: AssertMessageAnnotations,
+}
+
+/// Controls the pytest-style introspected `assert` failure messages of
+/// [`CompileOptions::assert_message_annotations`].
+///
+/// The choice is baked in at compile time (whether the introspecting opcodes
+/// are emitted) but the truncation limit is applied at runtime, so it also
+/// travels with serialized sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AssertMessageAnnotations {
+    /// Disable introspection; bare asserts use CPython's empty message.
+    Off,
+    /// Retain at most this many UTF-8 bytes per operand before any `…` suffix.
+    /// Non-zero because `0` encodes [`Off`](Self::Off) on the wire.
+    MaxBytes(NonZeroU32),
+}
+
+impl AssertMessageAnnotations {
+    /// Operand-repr truncation used by [`Default`] and `From<bool>`.
+    pub const DEFAULT_MAX_BYTES: NonZeroU32 = NonZeroU32::new(120).expect("120 is non-zero");
+
+    /// Whether the compiler should emit introspecting assert opcodes.
+    #[must_use]
+    pub fn enabled(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Returns the wire value: `0` when disabled, otherwise the UTF-8 byte cap.
+    #[must_use]
+    pub fn max_bytes(self) -> u32 {
+        match self {
+            Self::Off => 0,
+            Self::MaxBytes(n) => n.get(),
+        }
+    }
+
+    /// Decodes the wire value: `0` is off and any other value is the byte cap.
+    #[must_use]
+    pub fn from_max_bytes(value: u32) -> Self {
+        match NonZeroU32::new(value) {
+            Some(n) => Self::MaxBytes(n),
+            None => Self::Off,
+        }
+    }
+}
+
+impl Default for AssertMessageAnnotations {
+    fn default() -> Self {
+        Self::MaxBytes(Self::DEFAULT_MAX_BYTES)
+    }
+}
+
+impl From<bool> for AssertMessageAnnotations {
+    /// `true` enables the 120-byte default; `false` disables annotations.
+    fn from(enabled: bool) -> Self {
+        if enabled { Self::default() } else { Self::Off }
+    }
+}
+
 /// Primary interface for running Monty code.
 ///
 /// `MontyRun` supports two execution modes:
@@ -30,9 +103,15 @@ use crate::{
 ///
 /// # Example
 /// ```
-/// use monty::{MontyRun, MontyObject};
+/// use monty::{CompileOptions, MontyRun, MontyObject};
 ///
-/// let runner = MontyRun::new("x + 1".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
+/// let runner = MontyRun::new(
+///     "x + 1".to_owned(),
+///     "test.py",
+///     vec!["x".to_owned()],
+///     CompileOptions::default(),
+/// )
+/// .unwrap();
 /// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
@@ -52,11 +131,17 @@ impl MontyRun {
     /// * `code` - The Python code to execute
     /// * `script_name` - The script name for error messages
     /// * `input_names` - Names of input variables
+    /// * `options` - [`CompileOptions`] controlling CPython divergences; usually `CompileOptions::default()`
     ///
     /// # Errors
     /// Returns `MontyException` if the code cannot be parsed.
-    pub fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
-        Executor::new(code, script_name, input_names).map(|executor| Self { executor })
+    pub fn new(
+        code: String,
+        script_name: &str,
+        input_names: Vec<String>,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
+        Executor::new(code, script_name, input_names, options).map(|executor| Self { executor })
     }
 
     /// Returns the code that was parsed to create this snapshot.
@@ -164,7 +249,13 @@ impl MontyRun {
         let globals = executor.empty_globals();
         let (converted, vm_state) =
             HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
-                let mut vm = VM::new(globals, reader, &executor.interns, print.reborrow());
+                let mut vm = VM::new(
+                    globals,
+                    reader,
+                    &executor.interns,
+                    print.reborrow(),
+                    executor.assert_repr_max_bytes,
+                );
                 executor.populate_inputs(inputs, &mut vm)?;
 
                 // Start execution
@@ -201,6 +292,9 @@ pub(crate) struct Executor {
     /// One entry per input value, in the order the embedder passed them.
     /// Empty for the standard (non-REPL) execution path.
     pub(crate) input_slots: Vec<NamespaceId>,
+    /// UTF-8 byte cap for each operand repr in introspected assert messages.
+    /// Stored with the compiled program and passed to every VM.
+    pub(crate) assert_repr_max_bytes: u32,
     /// Estimated heap capacity for pre-allocation on subsequent runs.
     /// Uses AtomicUsize for thread-safety (required by PyO3's Sync bound).
     heap_capacity: AtomicUsize,
@@ -214,14 +308,20 @@ impl Clone for Executor {
             interns: self.interns.clone(),
             code: self.code.clone(),
             input_slots: self.input_slots.clone(),
+            assert_repr_max_bytes: self.assert_repr_max_bytes,
             heap_capacity: AtomicUsize::new(self.heap_capacity.load(Ordering::Relaxed)),
         }
     }
 }
 
 impl Executor {
-    /// Creates a new executor with the given code, filename, and input names.
-    pub(crate) fn new(code: String, script_name: &str, input_names: Vec<String>) -> Result<Self, MontyException> {
+    /// Creates a new executor with the given code, filename, input names, and compile options.
+    pub(crate) fn new(
+        code: String,
+        script_name: &str,
+        input_names: Vec<String>,
+        options: CompileOptions,
+    ) -> Result<Self, MontyException> {
         check_identifier(&input_names)?;
         let parse_result = parse(&code, script_name).map_err(|e| e.into_python_exc(script_name, &code))?;
         let prepared = prepare(parse_result, input_names).map_err(|e| e.into_python_exc(script_name, &code))?;
@@ -233,7 +333,7 @@ impl Executor {
         // The compiler enforces the bytecode-format namespace-size limit and reports
         // it as a `SyntaxError` rather than panicking on the `u16` cast.
         let namespace_size = prepared.globals.len();
-        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals)
+        let compile_result = Compiler::compile_module(&prepared.nodes, &interns, &prepared.globals, options)
             .map_err(|e| e.into_python_exc(script_name, &code))?;
 
         // Set the compiled functions in the interns
@@ -245,6 +345,7 @@ impl Executor {
             interns,
             code,
             input_slots: Vec::new(),
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
             heap_capacity: AtomicUsize::new(namespace_size),
         })
     }
@@ -272,6 +373,7 @@ impl Executor {
         mut existing_globals: NameMap,
         existing_interns: &Interns,
         input_names: &[String],
+        options: CompileOptions,
     ) -> Result<Self, MontyException> {
         check_identifier(input_names)?;
 
@@ -300,9 +402,14 @@ impl Executor {
 
         let existing_functions = existing_interns.functions_clone();
         let mut interns = Interns::new(prepared.interner, Vec::new());
-        let compile_result =
-            Compiler::compile_module_with_functions(&prepared.nodes, &interns, &prepared.globals, existing_functions)
-                .map_err(|e| e.into_python_exc(script_name, &code))?;
+        let compile_result = Compiler::compile_module_with_functions(
+            &prepared.nodes,
+            &interns,
+            &prepared.globals,
+            existing_functions,
+            options,
+        )
+        .map_err(|e| e.into_python_exc(script_name, &code))?;
         interns.set_functions(compile_result.functions);
 
         Ok(Self {
@@ -311,6 +418,7 @@ impl Executor {
             interns,
             code,
             input_slots,
+            assert_repr_max_bytes: options.assert_message_annotations.max_bytes(),
             heap_capacity: AtomicUsize::new(0),
         })
     }
@@ -337,7 +445,13 @@ impl Executor {
 
         // Create VM first, then populate inputs with VM alive
         let result = HeapReader::with(&mut heap, &mut (self, print), |reader, (executor, print)| {
-            let mut vm = VM::new(globals, reader, &executor.interns, print.reborrow());
+            let mut vm = VM::new(
+                globals,
+                reader,
+                &executor.interns,
+                print.reborrow(),
+                executor.assert_repr_max_bytes,
+            );
             executor.populate_inputs(inputs, &mut vm)?;
             executor.run_to_completion(&mut vm)
         });
@@ -428,7 +542,13 @@ impl Executor {
 
         HeapReader::with(&mut heap, &mut &*self, |reader, executor| {
             // Create VM, populate inputs, and run
-            let mut vm = VM::new(globals, reader, &executor.interns, PrintWriter::Stdout);
+            let mut vm = VM::new(
+                globals,
+                reader,
+                &executor.interns,
+                PrintWriter::Stdout,
+                executor.assert_repr_max_bytes,
+            );
             executor.populate_inputs(inputs, &mut vm)?;
             let frame_exit_result = vm.run_module(&executor.module_code);
 

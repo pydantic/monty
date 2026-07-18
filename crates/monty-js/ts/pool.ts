@@ -7,6 +7,7 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
+import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from './options.js'
 import { MontySession } from './session.js'
 
 /** Options for [`Monty`]. */
@@ -55,6 +56,14 @@ export interface CheckoutOptions {
   typeCheck?: boolean
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
+  /**
+   * Give failed `assert` statements pytest-style introspected messages, e.g.
+   * `AssertionError: assert 2 == 5` — a deliberate divergence from CPython's
+   * empty bare `AssertionError` (see limitations/assert.md). Default true; set
+   * false to disable annotations, or an integer >= 1 to customize the
+   * per-operand repr truncation length (default 120 bytes).
+   */
+  assertMessageAnnotations?: AssertMessageAnnotations
 }
 
 /** Sandbox resource limits. Omitted fields mean "unlimited". */
@@ -112,11 +121,13 @@ export class Monty {
     if (this.closed) {
       throw new Error('the pool is closed — create a new Monty pool')
     }
+    const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
     })
     await native.enter()
     return new MontySession(native)

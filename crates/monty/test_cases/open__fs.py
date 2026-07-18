@@ -8,68 +8,68 @@ is_windows = sys.platform == 'win32'
 
 # === Text read ===
 text_file = open(root / 'hello.txt')
-assert str(type(text_file)) == "<class '_io.TextIOWrapper'>", 'text open returns TextIOWrapper'
-assert text_file.mode == 'r', 'default mode is r'
-assert text_file.readable() == True, 'default text file is readable'
-assert text_file.writable() == False, 'default text file is not writable'
-assert text_file.read() == 'hello world\n', 'text read returns full file'
+assert str(type(text_file)) == "<class '_io.TextIOWrapper'>"
+assert text_file.mode == 'r'
+assert text_file.readable() == True
+assert text_file.writable() == False
+assert text_file.read() == 'hello world\n'
 # Second sequential read should be empty (CPython EOF semantics)
-assert text_file.read() == '', 'second text read returns empty after EOF'
-assert text_file.read() == '', 'third text read still empty'
+assert text_file.read() == ''
+assert text_file.read() == ''
 # Both CPython and Monty report readable files as seekable now that Monty
 # implements seek()/tell() via on-demand buffering.
-assert text_file.seekable() == True, 'readable file is seekable'
+assert text_file.seekable() == True
 text_file.close()
-assert text_file.closed == True, 'close sets closed'
+assert text_file.closed == True
 
 # === Binary read ===
 binary_file = open(root / 'data.bin', 'rb')
-assert str(type(binary_file)) == "<class '_io.BufferedReader'>", 'rb open returns BufferedReader'
-assert binary_file.mode == 'rb', 'binary mode is preserved'
-assert binary_file.read() == b'\x00\x01\x02\x03', 'binary read returns bytes'
-assert binary_file.read() == b'', 'second binary read returns empty after EOF'
+assert str(type(binary_file)) == "<class '_io.BufferedReader'>"
+assert binary_file.mode == 'rb'
+assert binary_file.read() == b'\x00\x01\x02\x03'
+assert binary_file.read() == b''
 binary_file.close()
 
 # === Text write ===
 writer = open(root / 'open_write.txt', 'w')
-assert str(type(writer)) == "<class '_io.TextIOWrapper'>", 'text write returns TextIOWrapper'
-assert writer.readable() == False, 'w text file is not readable'
-assert writer.writable() == True, 'w text file is writable'
-assert writer.write('alpha') == 5, 'text write returns character count'
-assert writer.write('\nβ') == 2, 'second text write appends after initial truncate'
+assert str(type(writer)) == "<class '_io.TextIOWrapper'>"
+assert writer.readable() == False
+assert writer.writable() == True
+assert writer.write('alpha') == 5
+assert writer.write('\nβ') == 2
 writer.flush()
 writer.close()
-assert (root / 'open_write.txt').read_text() == 'alpha\nβ', 'text writes are committed'
+assert (root / 'open_write.txt').read_text() == 'alpha\nβ'
 
 # === Text append ===
 append_writer = open(root / 'open_write.txt', 'a')
-assert append_writer.write('!') == 1, 'append text returns character count'
+assert append_writer.write('!') == 1
 append_writer.close()
-assert (root / 'open_write.txt').read_text() == 'alpha\nβ!', 'text append extends file'
+assert (root / 'open_write.txt').read_text() == 'alpha\nβ!'
 
 new_append_writer = open(root / 'open_new_append.txt', 'a')
-assert new_append_writer.write('created') == 7, 'append creates missing file'
+assert new_append_writer.write('created') == 7
 new_append_writer.close()
-assert (root / 'open_new_append.txt').read_text() == 'created', 'append-created file readable'
+assert (root / 'open_new_append.txt').read_text() == 'created'
 
 # === Binary write and append ===
 binary_writer = open(root / 'open_bytes.bin', 'wb')
-assert str(type(binary_writer)) == "<class '_io.BufferedWriter'>", 'wb open returns BufferedWriter'
-assert binary_writer.write(b'\x10\x11') == 2, 'binary write returns byte count'
-assert binary_writer.write(b'\x12') == 1, 'second binary write appends'
+assert str(type(binary_writer)) == "<class '_io.BufferedWriter'>"
+assert binary_writer.write(b'\x10\x11') == 2
+assert binary_writer.write(b'\x12') == 1
 binary_writer.close()
-assert (root / 'open_bytes.bin').read_bytes() == b'\x10\x11\x12', 'binary writes are committed'
+assert (root / 'open_bytes.bin').read_bytes() == b'\x10\x11\x12'
 
 binary_append = open(root / 'open_bytes.bin', 'ab')
-assert binary_append.write(b'\x13') == 1, 'binary append returns byte count'
+assert binary_append.write(b'\x13') == 1
 binary_append.close()
-assert (root / 'open_bytes.bin').read_bytes() == b'\x10\x11\x12\x13', 'binary append extends file'
+assert (root / 'open_bytes.bin').read_bytes() == b'\x10\x11\x12\x13'
 
 # === Identity comparison: a file is equal to itself but not to a distinct handle ===
 f = open(root / 'hello.txt')
-assert f == f, 'file is equal to itself'
+assert f == f
 g = open(root / 'hello.txt')
-assert f != g, 'two distinct handles to the same path are not equal'
+assert f != g
 f.close()
 g.close()
 
@@ -87,13 +87,13 @@ if is_monty:
 
 # === Keyword arguments ===
 keyword_file = open(file=root / 'hello.txt', mode='r', encoding='utf-8')
-assert keyword_file.read() == 'hello world\n', 'open accepts file/mode/encoding keywords'
+assert keyword_file.read() == 'hello world\n'
 keyword_file.close()
 
 # === bytes path accepted (matches CPython os.fsdecode semantics) ===
 hello_bytes = str(root / 'hello.txt').encode('utf-8')
 bytes_path_file = open(hello_bytes)
-assert bytes_path_file.read() == 'hello world\n', 'open accepts bytes paths via UTF-8 decode'
+assert bytes_path_file.read() == 'hello world\n'
 bytes_path_file.close()
 
 # === All eight positional args accepted at CPython defaults ===
@@ -101,7 +101,7 @@ bytes_path_file.close()
 # defaults (encoding='utf-8' is also accepted as a documented no-op since
 # Monty already uses UTF-8).
 positional = open(root / 'hello.txt', 'r', -1, 'utf-8', None, None, True, None)
-assert positional.read() == 'hello world\n', 'open accepts default positional args + utf-8 encoding'
+assert positional.read() == 'hello world\n'
 positional.close()
 
 # closefd and opener also accepted as kwargs at their defaults
@@ -130,32 +130,32 @@ if is_monty:
 # w truncates an existing file immediately, before (and even without) any write
 (root / 'open_trunc.txt').write_text('previous contents')
 trunc = open(root / 'open_trunc.txt', 'w')
-assert (root / 'open_trunc.txt').read_text() == '', 'open(w) truncates immediately, before any write'
+assert (root / 'open_trunc.txt').read_text() == ''
 trunc.close()
-assert (root / 'open_trunc.txt').read_text() == '', 'file stays empty after closing an unused w handle'
+assert (root / 'open_trunc.txt').read_text() == ''
 
 # w creates a missing file immediately, even with no write
 opened_w = open(root / 'open_created_w.txt', 'w')
 opened_w.close()
-assert (root / 'open_created_w.txt').read_text() == '', 'open(w) creates the file immediately'
+assert (root / 'open_created_w.txt').read_text() == ''
 
 # a creates a missing file immediately, even with no write
 opened_a = open(root / 'open_created_a.txt', 'a')
 opened_a.close()
-assert (root / 'open_created_a.txt').read_text() == '', 'open(a) creates the file immediately'
+assert (root / 'open_created_a.txt').read_text() == ''
 
 # a must NOT truncate existing content on open
 (root / 'open_keep_a.txt').write_text('keep me')
 keep = open(root / 'open_keep_a.txt', 'a')
-assert (root / 'open_keep_a.txt').read_text() == 'keep me', 'open(a) does not truncate existing content'
+assert (root / 'open_keep_a.txt').read_text() == 'keep me'
 keep.write('!')
 keep.close()
-assert (root / 'open_keep_a.txt').read_text() == 'keep me!', 'append writes after existing content'
+assert (root / 'open_keep_a.txt').read_text() == 'keep me!'
 
 # binary w truncates on open too
 (root / 'open_trunc.bin').write_bytes(b'\xff\xfe')
 btrunc = open(root / 'open_trunc.bin', 'wb')
-assert (root / 'open_trunc.bin').read_bytes() == b'', 'open(wb) truncates immediately'
+assert (root / 'open_trunc.bin').read_bytes() == b''
 btrunc.close()
 
 # === Open-time existence checks for read modes ===
@@ -296,120 +296,120 @@ except ValueError as exc:
 # Set up a multi-line text fixture for the rest of these tests.
 (root / 'sized.txt').write_text('hello world')
 sized = open(root / 'sized.txt')
-assert sized.read(5) == 'hello', 'read(5) returns first 5 chars'
-assert sized.read(100) == ' world', 'read(N) clamps at EOF'
-assert sized.read(1) == '', 'read past EOF returns empty'
-assert sized.read(0) == '', 'read(0) returns empty without advancing position'
+assert sized.read(5) == 'hello'
+assert sized.read(100) == ' world'
+assert sized.read(1) == ''
+assert sized.read(0) == ''
 sized.close()
 
 read_none = open(root / 'sized.txt')
-assert read_none.read(None) == 'hello world', 'read(None) returns all remaining content'
+assert read_none.read(None) == 'hello world'
 read_none.close()
 
 read_bool = open(root / 'sized.txt')
-assert read_bool.read(True) == 'h', 'read(True) behaves like read(1)'
-assert read_bool.read(False) == '', 'read(False) behaves like read(0)'
-assert read_bool.read(1) == 'e', 'read(False) does not advance position'
+assert read_bool.read(True) == 'h'
+assert read_bool.read(False) == ''
+assert read_bool.read(1) == 'e'
 read_bool.close()
 
 # read(-1) and read() (with buffer loaded) return the rest
 mixed = open(root / 'sized.txt')
-assert mixed.read(5) == 'hello', 'first sized read'
-assert mixed.read(-1) == ' world', 'read(-1) returns rest'
+assert mixed.read(5) == 'hello'
+assert mixed.read(-1) == ' world'
 mixed.close()
 
 mixed2 = open(root / 'sized.txt')
-assert mixed2.read(5) == 'hello', 'first sized read'
-assert mixed2.read() == ' world', 'bare read() after sized read returns rest'
+assert mixed2.read(5) == 'hello'
+assert mixed2.read() == ' world'
 mixed2.close()
 
 # read(0) without prior reads short-circuits without loading
 zero = open(root / 'sized.txt')
-assert zero.read(0) == '', 'read(0) on fresh file returns empty'
-assert zero.read(5) == 'hello', 'subsequent sized read still works'
+assert zero.read(0) == ''
+assert zero.read(5) == 'hello'
 zero.close()
 
 # Binary sized read
 (root / 'sized.bin').write_bytes(b'\x10\x11\x12\x13\x14')
 sized_b = open(root / 'sized.bin', 'rb')
-assert sized_b.read(3) == b'\x10\x11\x12', 'binary read(3)'
-assert sized_b.read(10) == b'\x13\x14', 'binary read(N) clamps at EOF'
-assert sized_b.read(1) == b'', 'binary read past EOF'
+assert sized_b.read(3) == b'\x10\x11\x12'
+assert sized_b.read(10) == b'\x13\x14'
+assert sized_b.read(1) == b''
 sized_b.close()
 
 # === readline / readlines / tell / seek ===
 (root / 'lines.txt').write_text('first\nsecond\nthird')
 lf = open(root / 'lines.txt')
-assert lf.readline() == 'first\n', 'first readline includes newline'
-assert lf.readline() == 'second\n', 'second readline includes newline'
-assert lf.readline() == 'third', 'last line without trailing newline'
-assert lf.readline() == '', 'readline at EOF returns empty'
+assert lf.readline() == 'first\n'
+assert lf.readline() == 'second\n'
+assert lf.readline() == 'third'
+assert lf.readline() == ''
 lf.close()
 
 # readline on an empty file
 (root / 'empty_lines.txt').write_text('')
 empty_lf = open(root / 'empty_lines.txt')
-assert empty_lf.readline() == '', 'readline on empty file returns empty'
+assert empty_lf.readline() == ''
 empty_lf.close()
 
 # readlines
 all_lines = open(root / 'lines.txt')
-assert all_lines.readlines() == ['first\n', 'second\n', 'third'], 'readlines returns list'
-assert all_lines.readlines() == [], 'second readlines returns empty list at EOF'
+assert all_lines.readlines() == ['first\n', 'second\n', 'third']
+assert all_lines.readlines() == []
 all_lines.close()
 
 # Binary readline / readlines
 (root / 'lines.bin').write_bytes(b'a\nb\nc')
 bin_lf = open(root / 'lines.bin', 'rb')
-assert bin_lf.readline() == b'a\n', 'binary readline includes newline'
-assert bin_lf.readlines() == [b'b\n', b'c'], 'binary readlines returns rest'
+assert bin_lf.readline() == b'a\n'
+assert bin_lf.readlines() == [b'b\n', b'c']
 bin_lf.close()
 
 # tell()
 t = open(root / 'sized.txt')
-assert t.tell() == 0, 'fresh file tell is 0'
+assert t.tell() == 0
 t.read(5)
-assert t.tell() == 5, 'tell after read(5) advances by 5'
+assert t.tell() == 5
 t.read(2)
-assert t.tell() == 7, 'tell after second sized read'
+assert t.tell() == 7
 t.close()
 
 # seek()
 s = open(root / 'sized.txt')
-assert s.read(11) == 'hello world', 'read everything'
-assert s.tell() == 11, 'position at EOF'
-assert s.seek(0) == 0, 'seek(0) returns 0'
-assert s.tell() == 0, 'seek(0) resets position'
-assert s.read(5) == 'hello', 'read after seek(0)'
-assert s.seek(0, 2) == 11, 'seek(0, 2) returns buffer length'
-assert s.read(1) == '', 'read after seek to end'
-assert s.seek(6) == 6, 'seek(6) returns 6'
-assert s.read(5) == 'world', 'read after explicit seek'
+assert s.read(11) == 'hello world'
+assert s.tell() == 11
+assert s.seek(0) == 0
+assert s.tell() == 0
+assert s.read(5) == 'hello'
+assert s.seek(0, 2) == 11
+assert s.read(1) == ''
+assert s.seek(6) == 6
+assert s.read(5) == 'world'
 s.close()
 
 # seek() with no prior reads triggers the buffer load
 fresh_seek = open(root / 'sized.txt')
-assert fresh_seek.seek(0, 2) == 11, 'seek end on fresh file loads buffer'
-assert fresh_seek.tell() == 11, 'tell after seek to end'
-assert fresh_seek.read(1) == '', 'read past end is empty'
+assert fresh_seek.seek(0, 2) == 11
+assert fresh_seek.tell() == 11
+assert fresh_seek.read(1) == ''
 fresh_seek.close()
 
 # seek(offset, 1) — SEEK_CUR — adjusts position relative to current.
 # CPython's TextIOWrapper rejects nonzero cur-relative seeks, so the
 # text-mode case is restricted to seek(0, 1) (which is a no-op tell()).
 cur_t = open(root / 'sized.txt')
-assert cur_t.read(4) == 'hell', 'partial read to position 4'
-assert cur_t.seek(0, 1) == 4, 'text seek(0, 1) returns current position'
-assert cur_t.read(2) == 'o ', 'read continues from unchanged position'
+assert cur_t.read(4) == 'hell'
+assert cur_t.seek(0, 1) == 4
+assert cur_t.read(2) == 'o '
 cur_t.close()
 
 # Binary SEEK_CUR supports nonzero offsets in both CPython and Monty.
 cur_b = open(root / 'sized.bin', 'rb')
-assert cur_b.read(2) == b'\x10\x11', 'binary partial read'
-assert cur_b.seek(1, 1) == 3, 'binary seek(1, 1) advances'
-assert cur_b.read(2) == b'\x13\x14', 'binary read after SEEK_CUR'
-assert cur_b.seek(-3, 1) == 2, 'binary seek backward via SEEK_CUR'
-assert cur_b.read(2) == b'\x12\x13', 'binary read after SEEK_CUR backward'
+assert cur_b.read(2) == b'\x10\x11'
+assert cur_b.seek(1, 1) == 3
+assert cur_b.read(2) == b'\x13\x14'
+assert cur_b.seek(-3, 1) == 2
+assert cur_b.read(2) == b'\x12\x13'
 cur_b.close()
 
 # Negative seek raises OSError in binary mode (matches CPython's BufferedReader).
@@ -459,29 +459,29 @@ except ValueError as exc:
 # UTF-8 multi-byte handling: 'β' is 2 bytes, 1 char.
 (root / 'utf8.txt').write_text('aβc')
 utf = open(root / 'utf8.txt')
-assert utf.read(2) == 'aβ', 'read(2) returns 2 chars including multi-byte'
+assert utf.read(2) == 'aβ'
 # Monty's text-mode tell() is a char index (diverges from CPython's opaque
 # byte cookie); see limitations/open.md.
 if is_monty:
-    assert utf.tell() == 2, 'monty text tell is char-index'
-assert utf.read(1) == 'c', 'remaining char'
+    assert utf.tell() == 2
+assert utf.read(1) == 'c'
 utf.close()
 
 # tell/seek round-trip
 rt = open(root / 'lines.txt')
 rt.read(3)
 captured = rt.tell()
-assert captured == 3, 'capture position 3'
+assert captured == 3
 rt.read(5)
-assert rt.seek(captured) == 3, 'seek back to captured position'
-assert rt.read(2) == 'st', 'read after seek matches position-3 content'
+assert rt.seek(captured) == 3
+assert rt.read(2) == 'st'
 rt.close()
 
 # Mixed read() / readline()
 mixed_rl = open(root / 'lines.txt')
-assert mixed_rl.read(2) == 'fi', 'partial read'
-assert mixed_rl.readline() == 'rst\n', 'readline continues from position'
-assert mixed_rl.read() == 'second\nthird', 'rest of file'
+assert mixed_rl.read(2) == 'fi'
+assert mixed_rl.readline() == 'rst\n'
+assert mixed_rl.read() == 'second\nthird'
 mixed_rl.close()
 
 # read on a 'w' file
@@ -509,47 +509,47 @@ except ValueError as exc:
 
 # write-only files still expose logical tell/seek state.
 write_pos = open(root / 'write_position.txt', 'w')
-assert write_pos.seekable() == True, 'write-only file is logically seekable'
-assert write_pos.tell() == 0, 'fresh write file starts at position 0'
-assert write_pos.write('abc') == 3, 'text write returns chars written'
-assert write_pos.tell() == 3, 'tell advances after text write'
-assert write_pos.seek(0) == 0, 'write-only seek(0) works'
-assert write_pos.tell() == 0, 'tell reflects write-only seek'
-assert write_pos.seek(0, 2) == 3, 'write-only seek end uses tracked length'
+assert write_pos.seekable() == True
+assert write_pos.tell() == 0
+assert write_pos.write('abc') == 3
+assert write_pos.tell() == 3
+assert write_pos.seek(0) == 0
+assert write_pos.tell() == 0
+assert write_pos.seek(0, 2) == 3
 write_pos.close()
 
 write_pos_b = open(root / 'write_position.bin', 'wb')
-assert write_pos_b.write(b'\x00\x01\x02\x03') == 4, 'binary write returns bytes written'
-assert write_pos_b.tell() == 4, 'binary tell advances by bytes'
+assert write_pos_b.write(b'\x00\x01\x02\x03') == 4
+assert write_pos_b.tell() == 4
 write_pos_b.close()
 
 # Regression: binary read after seek-past-end must not panic.
 (root / 'past_end.bin').write_bytes(b'12345')
 pe = open(root / 'past_end.bin', 'rb')
-assert pe.seek(100) == 100, 'seek past end returns target'
-assert pe.tell() == 100, 'tell after seek past end'
-assert pe.read(5) == b'', 'read(N) past end is empty'
-assert pe.tell() == 100, 'binary read(N) past end leaves position alone'
-assert pe.readline() == b'', 'readline past end is empty'
-assert pe.tell() == 100, 'binary readline past end leaves position alone'
-assert pe.readlines() == [], 'readlines past end is empty'
-assert pe.tell() == 100, 'binary readlines past end leaves position alone'
-assert pe.read() == b'', 'bare read past end is empty'
-assert pe.tell() == 100, 'binary bare read past end leaves position alone'
+assert pe.seek(100) == 100
+assert pe.tell() == 100
+assert pe.read(5) == b''
+assert pe.tell() == 100
+assert pe.readline() == b''
+assert pe.tell() == 100
+assert pe.readlines() == []
+assert pe.tell() == 100
+assert pe.read() == b''
+assert pe.tell() == 100
 pe.close()
 
 # Same regression in text mode.
 (root / 'past_end.txt').write_text('hello')
 pet = open(root / 'past_end.txt')
-assert pet.seek(100) == 100, 'text seek past end returns target'
-assert pet.read(5) == '', 'text read(N) past end is empty'
-assert pet.tell() == 100, 'text read(N) past end leaves position alone'
-assert pet.readline() == '', 'text readline past end is empty'
-assert pet.tell() == 100, 'text readline past end leaves position alone'
-assert pet.readlines() == [], 'text readlines past end is empty'
-assert pet.tell() == 100, 'text readlines past end leaves position alone'
-assert pet.read() == '', 'text bare read past end is empty'
-assert pet.tell() == 100, 'text bare read past end leaves position alone'
+assert pet.seek(100) == 100
+assert pet.read(5) == ''
+assert pet.tell() == 100
+assert pet.readline() == ''
+assert pet.tell() == 100
+assert pet.readlines() == []
+assert pet.tell() == 100
+assert pet.read() == ''
+assert pet.tell() == 100
 pet.close()
 
 # read(N) with non-int arg raises TypeError (exact message diverges from CPython).
@@ -578,33 +578,33 @@ nt.close()
 (root / 'path_open_bytes.bin').write_bytes(b'\x10\x20\x30')
 
 path_read = (root / 'path_open_text.txt').open()
-assert path_read.read() == 'hello via Path.open\n', 'Path.open() default-mode reads the file'
+assert path_read.read() == 'hello via Path.open\n'
 path_read.close()
 
 # Positional mode reaches the same wrapper as `open(..., 'rb')`.
 binary_via_path = (root / 'path_open_bytes.bin').open('rb')
-assert str(type(binary_via_path)) == "<class '_io.BufferedReader'>", "Path.open('rb') returns BufferedReader"
-assert binary_via_path.read() == b'\x10\x20\x30', "Path.open('rb') reads bytes"
+assert str(type(binary_via_path)) == "<class '_io.BufferedReader'>"
+assert binary_via_path.read() == b'\x10\x20\x30'
 binary_via_path.close()
 
 # Keyword-only mode works too (no positional arg).
 kw_mode = (root / 'path_open_text.txt').open(mode='r')
-assert kw_mode.read() == 'hello via Path.open\n', 'Path.open(mode=...) reads the file'
+assert kw_mode.read() == 'hello via Path.open\n'
 kw_mode.close()
 
 # `encoding='utf-8'` accepted as the documented no-op (Monty always uses UTF-8).
 enc = (root / 'path_open_text.txt').open('r', encoding='utf-8')
-assert enc.read() == 'hello via Path.open\n', "Path.open('r', encoding='utf-8') accepted"
+assert enc.read() == 'hello via Path.open\n'
 enc.close()
 
 # Context manager works through Path.open() — closes on exit on both paths.
 with (root / 'path_open_text.txt').open() as f:
-    assert f.read() == 'hello via Path.open\n', 'Path.open() works as context manager'
-assert f.closed, 'context-manager exit closes the Path.open() file'
+    assert f.read() == 'hello via Path.open\n'
+assert f.closed
 
 # Write through Path.open() lands the same content as a direct open().
 (root / 'path_open_write.txt').open('w').write('written via Path.open\n')
-assert (root / 'path_open_write.txt').read_text() == 'written via Path.open\n', "Path.open('w') write committed"
+assert (root / 'path_open_write.txt').read_text() == 'written via Path.open\n'
 
 # Mode validation is shared — Monty rejects '+' modes; CPython would accept
 # them, so this is monty-only.

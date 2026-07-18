@@ -15,12 +15,12 @@ def make_multiplier(n: int):
 
 
 m = make_multiplier(3)
-assert m.compute() == 30, 'method captures enclosing function local'
-assert m.base == 10, 'instance attribute set in nested class __init__'
+assert m.compute() == 30
+assert m.base == 10
 
 m2 = make_multiplier(5)
-assert m2.compute() == 50, 'each closure captures its own enclosing value'
-assert m.compute() == 30, 'independent closures do not interfere'
+assert m2.compute() == 50
+assert m.compute() == 30
 
 
 def counter_factory():
@@ -36,9 +36,9 @@ def counter_factory():
 
 
 c = counter_factory()
-assert c.bump() == 1, 'nonlocal captured cell shared with method'
-assert c.bump() == 2, 'cell mutation persists across method calls'
-assert c.bump() == 3, 'cell keeps accumulating'
+assert c.bump() == 1
+assert c.bump() == 2
+assert c.bump() == 3
 
 
 # A class defined at module scope still resolves globals (not class members) by
@@ -54,4 +54,4 @@ class Scaled:
         return self.v * FACTOR
 
 
-assert Scaled(3).scale() == 12, 'method reads a module global by bare name'
+assert Scaled(3).scale() == 12

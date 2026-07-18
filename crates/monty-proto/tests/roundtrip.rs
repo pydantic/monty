@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use monty::{
-    CodeLoc, DictPairs, ExcData, ExcType, ExtFunctionResult, JsonErrorData, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult, ResourceLimits,
-    StackFrame, UnicodeErrorData,
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, JsonErrorData, MontyDate, MontyDateTime,
+    MontyException, MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult,
+    ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -194,7 +194,13 @@ fn repr_and_cycle_round_trip() {
     // Cycles appear in worker outputs (e.g. a returned cyclic list), so the
     // parent must decode them; produce one via execution and round-trip it.
     // Using one as an *execution input* is rejected by `MontyObject::to_value`.
-    let run = MontyRun::new("a = []\na.append(a)\na".to_owned(), "test.py", vec![]).unwrap();
+    let run = MontyRun::new(
+        "a = []\na.append(a)\na".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
     let cyclic = run.run_no_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
     assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_, _))));

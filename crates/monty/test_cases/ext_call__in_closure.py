@@ -11,7 +11,7 @@ def outer_with_nested():
     return inner()
 
 
-assert outer_with_nested() == 15, 'ext call in nested function'
+assert outer_with_nested() == 15
 
 
 # An external call (which suspends the frame) inside a closure capturing a
@@ -29,4 +29,4 @@ def outer_two_levels():
     return mid()
 
 
-assert outer_two_levels() == 107, 'ext call in a two-level closure'
+assert outer_two_levels() == 107

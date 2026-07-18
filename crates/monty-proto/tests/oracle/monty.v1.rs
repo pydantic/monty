@@ -502,6 +502,12 @@ pub struct Configure {
     /// than a silent source of frame desync.
     #[prost(string, tag = "5")]
     pub monty_version: ::prost::alloc::string::String,
+    /// Introspected `assert` failure messages (see limitations/assert.md).
+    /// Absent = on with the default 120-byte operand-repr truncation; 0 disables
+    /// annotations; any other value retains that many bytes per operand before
+    /// any ellipsis, cutting on a character boundary.
+    #[prost(uint32, optional, tag = "6")]
+    pub assert_message_annotations: ::core::option::Option<u32>,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.

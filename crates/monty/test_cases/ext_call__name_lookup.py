@@ -5,18 +5,18 @@
 
 # === Integer constant ===
 assert CONST_INT == 42, f'CONST_INT should be 42, got {CONST_INT}'
-assert CONST_INT + 8 == 50, 'CONST_INT arithmetic'
+assert CONST_INT + 8 == 50
 assert type(CONST_INT) == int, f'CONST_INT type should be int, got {type(CONST_INT)}'
 
 # === String constant ===
 assert CONST_STR == 'hello', f'CONST_STR should be hello, got {CONST_STR}'
-assert CONST_STR + ' world' == 'hello world', 'CONST_STR concatenation'
+assert CONST_STR + ' world' == 'hello world'
 assert len(CONST_STR) == 5, f'CONST_STR length should be 5, got {len(CONST_STR)}'
 assert type(CONST_STR) == str, f'CONST_STR type should be str, got {type(CONST_STR)}'
 
 # === Float constant ===
 assert CONST_FLOAT == 3.14, f'CONST_FLOAT should be 3.14, got {CONST_FLOAT}'
-assert CONST_FLOAT + 0.86 == 4.0, 'CONST_FLOAT arithmetic'
+assert CONST_FLOAT + 0.86 == 4.0
 assert type(CONST_FLOAT) == float, f'CONST_FLOAT type should be float, got {type(CONST_FLOAT)}'
 
 # === Boolean constant ===
@@ -27,8 +27,8 @@ assert type(CONST_BOOL) == bool, f'CONST_BOOL type should be bool, got {type(CON
 # === List constant ===
 assert CONST_LIST == [1, 2, 3], f'CONST_LIST should be [1, 2, 3], got {CONST_LIST}'
 assert len(CONST_LIST) == 3, f'CONST_LIST length should be 3, got {len(CONST_LIST)}'
-assert CONST_LIST[0] == 1, 'CONST_LIST first element'
-assert CONST_LIST[-1] == 3, 'CONST_LIST last element'
+assert CONST_LIST[0] == 1
+assert CONST_LIST[-1] == 3
 assert type(CONST_LIST) == list, f'CONST_LIST type should be list, got {type(CONST_LIST)}'
 
 # === None constant ===
