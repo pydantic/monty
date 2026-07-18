@@ -23,8 +23,52 @@ use crate::{
     intern::StringId,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
-    value::{BinaryOp, EitherStr, Value},
+    value::{EitherStr, Value},
 };
+
+/// Runtime binary operation used for Python operator dispatch.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    MatMul,
+    TrueDiv,
+    FloorDiv,
+    Mod,
+    Pow,
+    And,
+    Or,
+    Xor,
+    LShift,
+    RShift,
+}
+
+impl BinaryOp {
+    /// Returns the operator text used in unsupported-operands errors.
+    pub(crate) fn error_name(self) -> &'static str {
+        match self {
+            Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::MatMul => "@",
+            Self::TrueDiv => "/",
+            Self::FloorDiv => "//",
+            Self::Mod => "%",
+            Self::Pow => "** or pow()",
+            Self::And => "&",
+            Self::Or => "|",
+            Self::Xor => "^",
+            Self::LShift => "<<",
+            Self::RShift => ">>",
+        }
+    }
+
+    /// Whether this operation is supported by set-like values.
+    pub(crate) fn is_set_op(self) -> bool {
+        matches!(self, Self::And | Self::Or | Self::Xor | Self::Sub)
+    }
+}
 
 /// Return type for attribute method calls on heap-allocated types.
 ///

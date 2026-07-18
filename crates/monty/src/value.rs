@@ -28,7 +28,7 @@ use crate::{
         check_repeat_size,
     },
     types::{
-        Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
+        BinaryOp, Bytes, CmpOrder, LazyHeapSet, List, LongInt, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{
@@ -2000,7 +2000,7 @@ impl Value {
             let lhs_type = self.py_type(vm);
             let lhs_name = self.py_type_name(vm);
             Err(ExcType::binary_type_error(
-                op.as_str(),
+                op.error_name(),
                 lhs_type,
                 lhs_name,
                 other.py_type_name(vm),
@@ -2385,67 +2385,6 @@ impl EitherStr {
         match self {
             Self::Interned(_) => 0,
             Self::Heap(s) => s.capacity(),
-        }
-    }
-}
-
-/// Binary operation type for Python operator protocol dispatch.
-#[derive(Debug, Clone, Copy)]
-pub enum BinaryOp {
-    Add,
-    Sub,
-    Mul,
-    MatMul,
-    TrueDiv,
-    FloorDiv,
-    Mod,
-    Pow,
-    And,
-    Or,
-    Xor,
-    LShift,
-    RShift,
-}
-
-impl BinaryOp {
-    /// Returns the operator symbol for error messages.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Add => "+",
-            Self::Sub => "-",
-            Self::Mul => "*",
-            Self::MatMul => "@",
-            Self::TrueDiv => "/",
-            Self::FloorDiv => "//",
-            Self::Mod => "%",
-            Self::Pow => "** or pow()",
-            Self::And => "&",
-            Self::Or => "|",
-            Self::Xor => "^",
-            Self::LShift => "<<",
-            Self::RShift => ">>",
-        }
-    }
-}
-
-/// Bitwise operation type retained while opcode call sites migrate to [`BinaryOp`].
-#[derive(Debug, Clone, Copy)]
-pub enum BitwiseOp {
-    And,
-    Or,
-    Xor,
-    LShift,
-    RShift,
-}
-
-impl From<BitwiseOp> for BinaryOp {
-    fn from(op: BitwiseOp) -> Self {
-        match op {
-            BitwiseOp::And => Self::And,
-            BitwiseOp::Or => Self::Or,
-            BitwiseOp::Xor => Self::Xor,
-            BitwiseOp::LShift => Self::LShift,
-            BitwiseOp::RShift => Self::RShift,
         }
     }
 }

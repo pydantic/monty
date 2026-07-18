@@ -18,13 +18,13 @@ use crate::{
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
-        Set, Slice, Str, Tuple, Type, date, datetime,
+        BinaryOp, BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet,
+        Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch,
+        RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
         str::{allocate_string, concat_allocate_str},
         timedelta, timezone,
     },
-    value::{BinaryOp, EitherStr, Value, eq_bigint, eq_ext_function},
+    value::{EitherStr, Value, eq_bigint, eq_ext_function},
 };
 
 /// HeapData captures every runtime value that must live in the arena.

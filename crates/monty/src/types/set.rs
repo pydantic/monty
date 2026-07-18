@@ -3,7 +3,7 @@ use std::{cell::Cell, fmt::Write, mem};
 use hashbrown::HashTable;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{BinaryOp, MontyIter, PyTrait};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -17,7 +17,7 @@ use crate::{
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{LazyHeapSet, Type},
-    value::{BinaryOp, EitherStr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Entry in the set storage, containing a value and its cached hash.
@@ -896,9 +896,12 @@ impl<'h> HeapRead<'h, FrozenSet> {
     pub(crate) fn binary_op_value(
         &self,
         other: &Value,
-        op: SetBinaryOp,
+        op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<FrozenSet>> {
+        if !op.is_set_op() {
+            return Ok(None);
+        }
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
@@ -906,10 +909,11 @@ impl<'h> HeapRead<'h, FrozenSet> {
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetBinaryOp::And => FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => FrozenSet::wrap(self.storage().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => FrozenSet::wrap(self.storage().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => FrozenSet::wrap(self.storage().difference(&other_storage, vm)?),
+            BinaryOp::And => FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?),
+            BinaryOp::Or => FrozenSet::wrap(self.storage().union(&other_storage, vm)?),
+            BinaryOp::Xor => FrozenSet::wrap(self.storage().symmetric_difference(&other_storage, vm)?),
+            BinaryOp::Sub => FrozenSet::wrap(self.storage().difference(&other_storage, vm)?),
+            _ => unreachable!("non-set op rejected above"),
         };
         Ok(Some(result))
     }
@@ -1006,9 +1010,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        let Some(op) = set_binary_op(op) else {
-            return Ok(None);
-        };
         let Some(result) = self.binary_op_value(other, op, vm)? else {
             return Ok(None);
         };
@@ -1110,26 +1111,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
     }
 }
 
-/// Pure set/frozenset binary operators shared by both concrete container types.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SetBinaryOp {
-    And,
-    Or,
-    Xor,
-    Sub,
-}
-
-/// Converts a binary operator to the corresponding pure set operator.
-fn set_binary_op(op: BinaryOp) -> Option<SetBinaryOp> {
-    match op {
-        BinaryOp::And => Some(SetBinaryOp::And),
-        BinaryOp::Or => Some(SetBinaryOp::Or),
-        BinaryOp::Xor => Some(SetBinaryOp::Xor),
-        BinaryOp::Sub => Some(SetBinaryOp::Sub),
-        _ => None,
-    }
-}
-
 /// Helper methods for set operations with arbitrary iterables.
 impl<'h> HeapRead<'h, Set> {
     /// Implements operator-form set algebra, which only accepts set/frozenset operands.
@@ -1142,9 +1123,12 @@ impl<'h> HeapRead<'h, Set> {
     pub(crate) fn binary_op_value(
         &self,
         other: &Value,
-        op: SetBinaryOp,
+        op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Set>> {
+        if !op.is_set_op() {
+            return Ok(None);
+        }
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
@@ -1152,10 +1136,11 @@ impl<'h> HeapRead<'h, Set> {
         let other_storage = vm.heap.protect(other_storage);
 
         let result = match op {
-            SetBinaryOp::And => Set(self.storage().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => Set(self.storage().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => Set(self.storage().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => Set(self.storage().difference(&other_storage, vm)?),
+            BinaryOp::And => Set(self.storage().intersection(&other_storage, vm)?),
+            BinaryOp::Or => Set(self.storage().union(&other_storage, vm)?),
+            BinaryOp::Xor => Set(self.storage().symmetric_difference(&other_storage, vm)?),
+            BinaryOp::Sub => Set(self.storage().difference(&other_storage, vm)?),
+            _ => unreachable!("non-set op rejected above"),
         };
         Ok(Some(result))
     }
@@ -1324,9 +1309,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        let Some(op) = set_binary_op(op) else {
-            return Ok(None);
-        };
         let Some(result) = self.binary_op_value(other, op, vm)? else {
             return Ok(None);
         };

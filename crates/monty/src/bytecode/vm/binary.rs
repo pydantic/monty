@@ -6,8 +6,7 @@ use crate::{
     exception_private::{ExcType, RunError},
     heap::DropGuard,
     resource::ResourceTracker,
-    types::PyTrait,
-    value::{BinaryOp, BitwiseOp},
+    types::{BinaryOp, PyTrait},
 };
 
 impl<T: ResourceTracker> VM<'_, T> {
@@ -48,8 +47,8 @@ impl<T: ResourceTracker> VM<'_, T> {
     }
 
     /// Binary bitwise operation.
-    pub(super) fn binary_bitwise(&mut self, op: BitwiseOp) -> Result<(), RunError> {
-        self.binary_op(op.into())
+    pub(super) fn binary_bitwise(&mut self, op: BinaryOp) -> Result<(), RunError> {
+        self.binary_op(op)
     }
 
     /// Binary `&`.

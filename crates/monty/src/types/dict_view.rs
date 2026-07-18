@@ -10,8 +10,8 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{Dict, FrozenSet, LazyHeapSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
-    value::{BinaryOp, EitherStr, Value},
+    types::{BinaryOp, Dict, FrozenSet, LazyHeapSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
+    value::{EitherStr, Value},
 };
 
 /// Shared accessors for heap-backed dictionary view objects.
@@ -163,7 +163,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
+        if op.is_set_op() {
+            dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_rbinary_impl(
@@ -172,7 +176,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
+        if op.is_set_op() {
+            dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_repr_fmt(
@@ -337,7 +345,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
+        if op.is_set_op() {
+            dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_rbinary_impl(
@@ -346,7 +358,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         op: BinaryOp,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
+        if op.is_set_op() {
+            dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_repr_fmt(
@@ -586,10 +602,6 @@ fn dict_view_binary_op_value(
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<Value>> {
     defer_drop!(lhs_set, vm);
-    let Some(op) = dict_view_binary_op(op) else {
-        return Ok(None);
-    };
-
     let rhs_set = collect_iterable_to_set(rhs.clone_with_heap(vm), vm)?;
     defer_drop!(rhs_set, vm);
 
@@ -606,10 +618,6 @@ fn dict_view_rbinary_op_value(
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Option<Value>> {
     defer_drop!(rhs_set, vm);
-    let Some(op) = dict_view_binary_op(op) else {
-        return Ok(None);
-    };
-
     let lhs_set = collect_iterable_to_set(lhs.clone_with_heap(vm), vm)?;
     defer_drop!(lhs_set, vm);
 
@@ -618,42 +626,23 @@ fn dict_view_rbinary_op_value(
     Ok(Some(Value::Ref(result_id)))
 }
 
-/// Supported dict-view set-like operators.
-#[derive(Debug, Clone, Copy)]
-enum DictViewBinaryOp {
-    And,
-    Or,
-    Xor,
-    Sub,
-}
-
-/// Converts a binary operator to the corresponding dict-view set-like operator.
-fn dict_view_binary_op(op: BinaryOp) -> Option<DictViewBinaryOp> {
-    match op {
-        BinaryOp::And => Some(DictViewBinaryOp::And),
-        BinaryOp::Or => Some(DictViewBinaryOp::Or),
-        BinaryOp::Xor => Some(DictViewBinaryOp::Xor),
-        BinaryOp::Sub => Some(DictViewBinaryOp::Sub),
-        _ => None,
-    }
-}
-
 /// Applies a set-like operator to two temporary sets.
 fn apply_dict_view_binary_op(
     lhs: &Set,
     rhs: &Set,
-    op: DictViewBinaryOp,
+    op: BinaryOp,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<Set> {
     let mut result = match op {
-        DictViewBinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),
-        DictViewBinaryOp::Or => Set::with_capacity(lhs.len() + rhs.len()),
-        DictViewBinaryOp::Xor => Set::with_capacity(lhs.len() + rhs.len()),
-        DictViewBinaryOp::Sub => Set::with_capacity(lhs.len()),
+        BinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),
+        BinaryOp::Or => Set::with_capacity(lhs.len() + rhs.len()),
+        BinaryOp::Xor => Set::with_capacity(lhs.len() + rhs.len()),
+        BinaryOp::Sub => Set::with_capacity(lhs.len()),
+        _ => unreachable!("non-set op rejected before materializing the view"),
     };
 
     match op {
-        DictViewBinaryOp::And => {
+        BinaryOp::And => {
             let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
             for value in smaller.iter() {
                 if vm.heap.protect(larger).contains(value, vm)? {
@@ -661,7 +650,7 @@ fn apply_dict_view_binary_op(
                 }
             }
         }
-        DictViewBinaryOp::Or => {
+        BinaryOp::Or => {
             for value in lhs.iter() {
                 result.add(value.clone_with_heap(vm), vm)?;
             }
@@ -669,7 +658,7 @@ fn apply_dict_view_binary_op(
                 result.add(value.clone_with_heap(vm), vm)?;
             }
         }
-        DictViewBinaryOp::Xor => {
+        BinaryOp::Xor => {
             for value in lhs.iter() {
                 if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
@@ -681,13 +670,14 @@ fn apply_dict_view_binary_op(
                 }
             }
         }
-        DictViewBinaryOp::Sub => {
+        BinaryOp::Sub => {
             for value in lhs.iter() {
                 if !vm.heap.protect(rhs).contains(value, vm)? {
                     result.add(value.clone_with_heap(vm), vm)?;
                 }
             }
         }
+        _ => unreachable!("non-set op rejected before materializing the view"),
     }
 
     Ok(result)
