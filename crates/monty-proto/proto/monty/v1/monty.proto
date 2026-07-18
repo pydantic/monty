@@ -373,12 +373,8 @@ message Configure {
 message Feed {
   string code = 1;
   repeated NamedValue inputs = 2;
-  // Formerly child-local `Mount`s. Mounts are now handled entirely by the
-  // parent, which services the filesystem `OsCall` events itself — the child
-  // never sees host paths and needs no filesystem access.
-  reserved 3;
   // Skip type checking for this feed even when the session enables it.
-  bool skip_type_check = 4;
+  bool skip_type_check = 3;
 }
 
 // Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -414,10 +410,6 @@ message Dump {}
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
   bytes state = 1;
-  // Formerly child-local `Mount`s re-supplied on restore. Mounts are host
-  // configuration handled entirely by the parent, which re-establishes them
-  // itself when resuming a suspended feed.
-  reserved 2;
 }
 
 // Ends the checkout: the child drops all session state and returns to the

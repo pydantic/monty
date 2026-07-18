@@ -404,7 +404,7 @@ pub struct Feed {
     #[prost(message, repeated, tag = "2")]
     pub inputs: ::prost::alloc::vec::Vec<NamedValue>,
     /// Skip type checking for this feed even when the session enables it.
-    #[prost(bool, tag = "4")]
+    #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
 }
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the

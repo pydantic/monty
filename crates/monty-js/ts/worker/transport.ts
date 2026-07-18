@@ -130,7 +130,7 @@ export class WorkerTransport {
       named.lengthDelimited(2, encodeMontyObject(value)) // NamedValue.value
       feed.lengthDelimited(2, named.finish()) // ReplFeed.inputs
     }
-    if (skipTypeCheck) feed.bool(4, true) // ReplFeed.skip_type_check
+    if (skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
     return this.turn(Req.ReplFeed, feed.finish(), onPrint)
   }
 
