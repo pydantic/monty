@@ -123,17 +123,26 @@ except TypeError as exc:
 
 
 class NeverEqual:
+    def __init__(self):
+        self.calls = 0
+
     def __eq__(self, other):
+        self.calls += 1
         return False
 
 
 never_equal = NeverEqual()
 assert (never_equal == never_equal) is False, 'custom equality runs before the identity fallback'
+assert never_equal.calls == 1
 assert (never_equal != never_equal) is True, 'inequality negates custom equality for the same object'
+assert never_equal.calls == 2
 assert never_equal in [never_equal], 'list membership accepts an identical object before equality'
 assert [never_equal].count(never_equal) == 1, 'list.count accepts an identical object before equality'
 assert [never_equal].index(never_equal) == 0, 'list.index accepts an identical object before equality'
+assert never_equal in (never_equal,), 'tuple membership accepts an identical object before equality'
 assert [never_equal] == [never_equal], 'list equality accepts identical elements before equality'
+assert (never_equal,) == (never_equal,), 'tuple equality accepts identical elements before equality'
+assert never_equal.calls == 2
 
 
 class LeftEq:
@@ -148,8 +157,31 @@ class RightEq:
 
 left_eq = LeftEq()
 assert left_eq == left_eq, 'NotImplemented falls back to identity for self-comparison'
+assert (left_eq == LeftEq()) is False, 'NotImplemented falls back to unequal for distinct objects'
 assert (left_eq == RightEq()) == 'right handled', 'reflected __eq__ preserves its arbitrary result'
 assert (RightEq() == left_eq) == 'right handled', 'custom __eq__ preserves its arbitrary result'
+assert left_eq in [RightEq()], 'container equality truth-tests a reflected arbitrary result'
+
+
+class HeapResultEq:
+    def __eq__(self, other):
+        return []
+
+
+heap_result_eq = HeapResultEq()
+heap_eq_result = heap_result_eq == 1
+assert heap_eq_result == []
+assert heap_result_eq not in [1], 'container membership truth-tests a heap-valued equality result'
+
+
+class SelfResultEq:
+    def __eq__(self, other):
+        return self
+
+
+self_result_eq = SelfResultEq()
+assert (self_result_eq == 1) is self_result_eq, 'direct equality preserves a self result'
+assert self_result_eq in [1], 'container membership truth-tests a self result'
 
 # === Instances are always truthy ===
 assert bool(p) is True

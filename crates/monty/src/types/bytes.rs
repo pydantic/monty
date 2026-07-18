@@ -264,7 +264,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(Value::Int(i64::from(byte)))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         // Heap bytes equal interned or heap bytes with the same content.
         Ok(eq_bytes(self.get(vm.heap).as_slice(), other, vm))
     }

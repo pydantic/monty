@@ -318,7 +318,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(self.clone_item(idx, vm))
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         // A tuple equals another tuple; `tuple == namedtuple` is handled by the
         // reflected pass via `NamedTuple::py_eq_impl`.
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {

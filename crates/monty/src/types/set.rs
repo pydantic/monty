@@ -985,7 +985,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         // `set` and `frozenset` compare equal by their members, regardless of
         // mutability. `set == dict_keys`/`dict_items` is handled by the reflected
         // pass via the dict-view impls.
@@ -1255,7 +1260,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         // `frozenset` and `set` compare equal by their members, regardless of
         // mutability. `frozenset == dict_keys`/`dict_items` is handled by the
         // reflected pass via the dict-view impls.

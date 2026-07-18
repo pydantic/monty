@@ -293,7 +293,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         // A namedtuple equals another namedtuple element-wise, and also equals a
         // plain tuple with the same elements (class name is ignored). Both
         // directions of the tuple case are covered here, so `Tuple::py_eq_impl`

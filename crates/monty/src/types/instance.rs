@@ -91,10 +91,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
-        // User instance equality is dispatched by `Value::py_rich_eq_impl`,
-        // which needs the instance ID to bind `self`.
-        Ok(None)
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        let self_id = self_id.expect("instance equality requires its heap ID");
+        if let Some(result) = instance_eq(self_id, other, vm)? {
+            let is_equal = result.py_bool(vm);
+            result.drop_with(vm);
+            is_equal.map(Some)
+        } else {
+            Ok(None)
+        }
     }
 
     fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
@@ -271,7 +281,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        _other: &Value,
+        _vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

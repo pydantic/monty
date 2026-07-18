@@ -159,7 +159,12 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'_, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         match self {
             // `Undefined` is a sentinel and is never equal to anything.
             Self::Undefined => Ok(Some(false)),
@@ -209,7 +214,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
+            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm, Some(*id)),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -1611,11 +1616,12 @@ impl Value {
     pub fn py_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
         if self.is(other, vm) {
             Ok(true)
+        } else if let Some(result) = self.py_eq_impl(other, vm, None)? {
+            Ok(result)
+        } else if let Some(result) = other.py_eq_impl(self, vm, None)? {
+            Ok(result)
         } else {
-            let result = self.py_rich_eq(other, vm)?;
-            let is_equal = result.py_bool(vm);
-            result.drop_with(vm);
-            is_equal
+            Ok(self.is(other, vm))
         }
     }
 
@@ -1624,23 +1630,29 @@ impl Value {
     /// Tries the left operand, then reflected equality when it returns
     /// `NotImplemented`; identity is only the final fallback after both decline.
     pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        if let Some(result) = self.py_rich_eq_impl(other, vm)? {
-            Ok(result)
-        } else if let Some(result) = other.py_rich_eq_impl(self, vm)? {
-            Ok(result)
-        } else {
-            Ok(Self::Bool(self.is(other, vm)))
+        let lhs_result = self.py_rich_eq_impl(other, vm)?;
+        if !lhs_result.is_not_implemented() {
+            return Ok(lhs_result);
         }
+
+        let rhs_result = other.py_rich_eq_impl(self, vm)?;
+        if !rhs_result.is_not_implemented() {
+            return Ok(rhs_result);
+        }
+
+        Ok(Self::Bool(self.is(other, vm)))
     }
 
-    /// Runs one side of rich equality, preserving user-instance results.
-    fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+    /// Runs one side of rich equality, using `NotImplemented` to request reflected dispatch.
+    fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Self::Ref(id) = self
             && matches!(vm.heap.get(*id), HeapData::Instance(_))
         {
-            instance_eq(*id, other, vm)
+            Ok(instance_eq(*id, other, vm)?.unwrap_or(Self::NotImplemented))
+        } else if let Some(result) = self.py_eq_impl(other, vm, None)? {
+            Ok(Self::Bool(result))
         } else {
-            Ok(self.py_eq_impl(other, vm)?.map(Value::Bool))
+            Ok(Self::NotImplemented)
         }
     }
 

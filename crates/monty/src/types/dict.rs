@@ -806,7 +806,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Dict(other)) => Ok(Some(self.eq_dict(&other, vm)?)),
             _ => Ok(None),

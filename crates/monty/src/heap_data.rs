@@ -630,7 +630,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         match self {
             HeapReadOutput::Str(a) => Ok(eq_str(a.get(vm.heap).as_str(), other, vm)),
             HeapReadOutput::Bytes(a) => Ok(eq_bytes(a.get(vm.heap).as_slice(), other, vm)),
@@ -651,26 +656,29 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 Some(HeapReadOutput::FunctionDefaults(b)) => Some(a.get(vm.heap).func_id == b.get(vm.heap).func_id),
                 _ => None,
             }),
-            HeapReadOutput::List(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Tuple(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Dict(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Set(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::FrozenSet(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::DictKeysView(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::DictItemsView(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::DictValuesView(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Range(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Slice(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Dataclass(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Path(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::RePattern(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::ReMatch(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::OpenFile(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::Date(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::DateTime(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::TimeDelta(a) => a.py_eq_impl(other, vm),
-            HeapReadOutput::TimeZone(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::List(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Tuple(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Dict(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Set(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::FrozenSet(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::DictKeysView(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::DictItemsView(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::DictValuesView(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Range(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Slice(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Dataclass(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Path(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::RePattern(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::ReMatch(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::OpenFile(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Date(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::DateTime(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::TimeDelta(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::TimeZone(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Class(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::Instance(a) => a.py_eq_impl(other, vm, self_id),
+            HeapReadOutput::BoundMethod(a) => a.py_eq_impl(other, vm, self_id),
             // Identity-only types: equality is pure identity (handled before the
             // heap read in `Value::py_eq_impl`), so they never define `==` themselves.
             HeapReadOutput::Cell(_)
@@ -679,12 +687,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | HeapReadOutput::Module(_)
             | HeapReadOutput::Coroutine(_)
             | HeapReadOutput::GatherFuture(_)
-            | HeapReadOutput::ExternalFuture(_)
-            // User classes, instances and bound methods compare by identity, which
-            // `Value::py_eq_impl` resolves before reaching here.
-            | HeapReadOutput::Class(_)
-            | HeapReadOutput::Instance(_)
-            | HeapReadOutput::BoundMethod(_) => Ok(None),
+            | HeapReadOutput::ExternalFuture(_) => Ok(None),
         }
     }
 

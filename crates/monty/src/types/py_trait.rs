@@ -168,13 +168,12 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// One-sided equality for interpreter-native types.
+    /// One-sided equality normalized for identity-or-equality operations.
     ///
     /// Returns `Some(bool)` when this type handles `other`, or `None` for
-    /// `NotImplemented`. [`Value::py_rich_eq`] drives reflection and the final
-    /// identity fallback; user instances bypass this method because their
-    /// `__eq__` may return an arbitrary [`Value`]. This mirrors the
-    /// `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
+    /// `NotImplemented`. User instances truth-test arbitrary `__eq__` results
+    /// here, while [`Value::py_rich_eq`] uses a separate path to preserve them.
+    /// This mirrors the `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
     /// [`CmpOrder::Incomparable`].
     ///
     /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
@@ -183,9 +182,15 @@ pub(crate) trait PyTrait<'h> {
     /// heap to resolve nested references; `&mut VM` allows lazy hash computation
     /// for dict key lookups and access to interned string content.
     ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
+    /// Heap-backed implementations receive `self_id`; immediate values receive
+    /// `None`. Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>>;
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///

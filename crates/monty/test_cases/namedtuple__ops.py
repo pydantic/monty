@@ -4,6 +4,8 @@ vi = sys.version_info
 
 # === Equality: same object ===
 assert vi == vi
+assert vi in [vi]
+assert [vi].count(vi) == 1
 
 # === Equality: two references ===
 vi2 = sys.version_info

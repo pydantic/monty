@@ -231,7 +231,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
