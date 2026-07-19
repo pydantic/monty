@@ -100,6 +100,42 @@ pub(crate) enum Value {
     Dereferenced,
 }
 
+/// Scoped view of a value that keeps a referenced heap entry open for repeated operations.
+pub(crate) enum ValueRead<'h, 'v> {
+    /// Immediate values need no heap access.
+    Immediate(&'v Value),
+    /// Heap values retain both their owner and the typed heap read handle.
+    Heap {
+        _owner: &'v Value,
+        value: HeapReadOutput<'h>,
+    },
+}
+
+impl<'h> ValueRead<'h, '_> {
+    /// Advances this value without reacquiring its heap entry.
+    pub(crate) fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        match self {
+            Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
+            Self::Heap { value, .. } => value.py_next(vm),
+        }
+    }
+
+    /// Returns the iterator's internal remaining-length hint when available.
+    pub(crate) fn iter_size_hint(&self, vm: &VM<'h, impl ResourceTracker>) -> usize {
+        match self {
+            Self::Heap {
+                value: HeapReadOutput::ListIterator(iter),
+                ..
+            } => iter.get(vm.heap).size_hint(vm.heap),
+            Self::Heap {
+                value: HeapReadOutput::Iter(iter),
+                ..
+            } => iter.get(vm.heap).size_hint(vm.heap),
+            _ => 0,
+        }
+    }
+}
+
 /// Size of a single `Value` slot in bytes.
 ///
 /// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
@@ -1639,6 +1675,17 @@ impl Value {
     /// Advances this value if it implements the iterator protocol.
     pub fn py_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
         <Self as PyTrait<'_>>::py_next(self, vm)
+    }
+
+    /// Creates a scoped view that retains this value's heap reader when needed.
+    pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h, impl ResourceTracker>) -> ValueRead<'h, 'v> {
+        match self {
+            Self::Ref(id) => ValueRead::Heap {
+                _owner: self,
+                value: vm.heap.read(*id),
+            },
+            _ => ValueRead::Immediate(self),
+        }
     }
 
     /// Reads the heap entry this value references, or `None` if it is not a

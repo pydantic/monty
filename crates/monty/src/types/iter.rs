@@ -24,7 +24,7 @@ use crate::{
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{PyTrait, Range, Type, dict_view::DictView, str::allocate_char},
-    value::{VALUE_SIZE, Value},
+    value::{VALUE_SIZE, Value, ValueRead},
 };
 
 /// Iterator state for Python for loops.
@@ -132,10 +132,12 @@ impl MontyIter {
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        // Check timeout on every iteration step. For NoLimitTracker this is
-        // inlined as a no-op. For LimitTracker it ensures that Rust-side loops
-        // (sum, sorted, min, max, etc.) cannot bypass the VM's per-instruction
-        // timeout check by running entirely within a single bytecode instruction.
+        if let IterValue::Opaque { heap_id } = &self.iter_value {
+            return vm.heap.read(*heap_id).py_next(vm);
+        }
+
+        // Inline iterators own the timeout check; opaque iterators delegate it
+        // to the concrete heap iterator above.
         vm.heap.check_time()?;
         match &mut self.iter_value {
             IterValue::Range { next, step, len } => {
@@ -187,7 +189,7 @@ impl MontyIter {
                 self.index += 1;
                 Ok(Some(item))
             }
-            &mut IterValue::Opaque { heap_id } => vm.heap.read(heap_id).py_next(vm),
+            IterValue::Opaque { .. } => unreachable!("opaque iterators return before inline dispatch"),
         }
     }
 
@@ -264,17 +266,27 @@ impl MontyIter {
     pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<T> {
         let mut guard = DropGuard::new(self, vm);
         let (this, vm) = guard.as_parts_mut();
-        HeapedMontyIter {
-            iter: this,
-            vm,
-            yielded: 0,
+        if matches!(this.iter_value, IterValue::Opaque { .. }) {
+            let mut iter = this.value.read(vm);
+            HeapedMontyIter {
+                iter: &mut iter,
+                vm,
+                yielded: 0,
+            }
+            .collect()
+        } else {
+            HeapedMontyIter {
+                iter: this,
+                vm,
+                yielded: 0,
+            }
+            .collect()
         }
-        .collect()
     }
 }
 
-/// Adapter that drives a [`MontyIter`] as a standard [`Iterator`] so it can be
-/// fed to `collect()`, while enforcing the memory budget *incrementally*.
+/// Adapts an internal iterator driver to [`Iterator`] while enforcing the
+/// memory budget incrementally.
 ///
 /// `collect()` builds a native `Vec`/`SmallVec` whose backing storage is
 /// allocated by the global Rust allocator and is invisible to Monty's resource
@@ -287,20 +299,20 @@ impl MontyIter {
 /// policy used by [`MontyIter::preallocation_hint`].
 ///
 /// [`next`]: Iterator::next
-struct HeapedMontyIter<'this, 'h, T: ResourceTracker> {
+struct HeapedMontyIter<'this, 'h, T: ResourceTracker, I: CollectIter<'h>> {
     /// The underlying iterator being drained.
-    iter: &'this mut MontyIter,
+    iter: &'this mut I,
     /// VM handle, needed both to advance `iter` and to reach the tracker.
     vm: &'this mut VM<'h, T>,
     /// Count of elements yielded so far; drives the running size estimate.
     yielded: usize,
 }
 
-impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, T> {
+impl<'h, T: ResourceTracker, I: CollectIter<'h>> Iterator for HeapedMontyIter<'_, 'h, T, I> {
     type Item = RunResult<Value>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.iter.for_next(self.vm) {
+        match self.iter.next_value(self.vm) {
             Ok(None) => None,
             Err(e) => Some(Err(e)),
             Ok(Some(value)) => {
@@ -323,8 +335,37 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.iter.size_hint(self.vm.heap);
+        let remaining = self.iter.remaining(self.vm);
         (remaining, Some(remaining))
+    }
+}
+
+/// Common interface for stack and retained-heap iterators drained by `collect()`.
+trait CollectIter<'h> {
+    /// Advances the iterator by one item.
+    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>>;
+
+    /// Returns an internal remaining-length hint when available.
+    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize;
+}
+
+impl<'h> CollectIter<'h> for MontyIter {
+    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.for_next(vm)
+    }
+
+    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize {
+        self.size_hint(vm.heap)
+    }
+}
+
+impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
+    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.py_next(vm)
+    }
+
+    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize {
+        self.iter_size_hint(vm)
     }
 }
 
@@ -334,6 +375,10 @@ impl<'h> HeapRead<'h, MontyIter> {
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` for dict/set size changes or allocation failures.
     pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        if let IterValue::Opaque { heap_id } = &self.get(vm.heap).iter_value {
+            return vm.heap.read(*heap_id).py_next(vm);
+        }
+
         vm.heap.check_time()?;
         let this = self.get_mut(vm.heap);
         match &mut this.iter_value {
@@ -390,7 +435,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                 self.get_mut(vm.heap).index += 1;
                 Ok(Some(item))
             }
-            &mut IterValue::Opaque { heap_id } => vm.heap.read(heap_id).py_next(vm),
+            IterValue::Opaque { .. } => unreachable!("opaque iterators return before inline dispatch"),
         }
     }
 }
