@@ -1,9 +1,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::hash_map::DefaultHasher,
     fmt::{self, Write},
-    hash::{Hash, Hasher},
     mem::{self, discriminant},
     str::FromStr,
 };
@@ -21,6 +19,7 @@ use crate::{
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{
@@ -106,6 +105,37 @@ pub(crate) enum Value {
 /// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
 /// Must match the per-element unit used by `py_estimate_size` implementations.
 pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
+
+/// Borrowed integer payload used to format a Python `id()` in callable reprs.
+enum PythonIdDisplay<'a> {
+    /// Identity that fits Monty's immediate integer representation.
+    Int(i64),
+    /// Arbitrary-precision identity borrowed from its heap value.
+    LongInt(&'a BigInt),
+}
+
+impl<'a> PythonIdDisplay<'a> {
+    /// Extracts the integer payload returned by the structural identity encoder.
+    fn new(value: &'a Value, heap: &'a Heap<impl ResourceTracker>) -> Self {
+        match value {
+            Value::Int(value) => Self::Int(*value),
+            Value::Ref(id) => match heap.get(*id) {
+                HeapData::LongInt(value) => Self::LongInt(value.inner()),
+                _ => unreachable!("identity values are integers"),
+            },
+            _ => unreachable!("identity values are integers"),
+        }
+    }
+}
+
+impl fmt::LowerHex for PythonIdDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Int(value) => fmt::LowerHex::fmt(value, f),
+            Self::LongInt(value) => fmt::LowerHex::fmt(value, f),
+        }
+    }
+}
 
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with`.
 /// This helps catch reference counting bugs during development/testing.
@@ -360,8 +390,18 @@ impl<'h> PyTrait<'h> for Value {
             }
             Self::Float(v) => Ok(write!(f, "{}", FormatFloat(*v))?),
             Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
-            Self::ModuleFunction(mf) => Ok(mf.py_repr_fmt(f, self.id(vm))?),
-            Self::DefFunction(f_id) => Ok(interns.get_function(*f_id).py_repr_fmt(f, interns, self.id(vm))?),
+            Self::ModuleFunction(mf) => {
+                let py_id = self.id(vm).into_value(vm.heap)?;
+                defer_drop!(py_id, vm);
+                Ok(mf.py_repr_fmt(f, PythonIdDisplay::new(py_id, vm.heap))?)
+            }
+            Self::DefFunction(f_id) => {
+                let py_id = self.id(vm).into_value(vm.heap)?;
+                defer_drop!(py_id, vm);
+                Ok(interns
+                    .get_function(*f_id)
+                    .py_repr_fmt(f, interns, PythonIdDisplay::new(py_id, vm.heap))?)
+            }
             Self::ExtFunction(name_id) => Ok(write!(f, "<function '{}' external>", interns.get_str(*name_id))?),
             Self::InternString(string_id) => Ok(string_repr_fmt(interns.get_str(*string_id), f)?),
             Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
@@ -1509,63 +1549,12 @@ impl Value {
         }
     }
 
-    /// Returns the Python-visible `id()` for this value.
+    /// Returns this value's complete structural identity.
     ///
-    /// `ExtFunction` values (inline `Value::ExtFunction` or heap
-    /// `HeapData::ExtFunction`) get a name-derived id so that two external
-    /// function values with the same name always satisfy CPython's invariant
-    /// `a is b ⇒ id(a) == id(b)` — needed because `MontyObject::Function`
-    /// conversion has discarded host object identity. All other variants use
-    /// a representation-based id.
-    ///
-    /// For immediate values (Int, Float, Builtins), this computes a deterministic ID
-    /// based on the value's hash, avoiding heap allocation. This means `id(5) == id(5)` will
-    /// return True (unlike CPython for large integers outside the interning range).
-    ///
-    /// Singletons (None, True, False, etc.) return IDs from a dedicated tagged range.
-    /// Interned strings/bytes use their interner index for stable identity.
-    /// Heap-allocated values (Ref) reuse their `HeapId` inside the heap-tagged range,
-    /// except for heap `ExtFunction` which uses the name-derived id described above.
-    pub fn id(&self, vm: &VM<'_, impl ResourceTracker>) -> usize {
-        match self {
-            // ExtFunction id is name-derived so the inline and heap representations
-            // agree; this also keeps `is(a, b) ⇒ id(a) == id(b)`. The guarded `Ref`
-            // arm must precede the bare `Ref` arm below — match evaluation is
-            // top-to-bottom.
-            Self::ExtFunction(name_id) => ext_function_value_id(vm.interns.get_str(*name_id)),
-            Self::Ref(id) if let HeapData::ExtFunction(name) = vm.heap.get(*id) => ext_function_value_id(name.as_str()),
-            // Singletons have fixed tagged IDs
-            Self::Undefined => singleton_id(SingletonSlot::Undefined),
-            Self::Ellipsis => singleton_id(SingletonSlot::Ellipsis),
-            Self::None => singleton_id(SingletonSlot::None),
-            Self::Bool(b) => {
-                if *b {
-                    singleton_id(SingletonSlot::True)
-                } else {
-                    singleton_id(SingletonSlot::False)
-                }
-            }
-            // Interned strings/bytes/bigints use their index directly - the index is the stable identifier
-            Self::InternString(string_id) => INTERN_STR_ID_TAG | (string_id.index() & INTERN_STR_ID_MASK),
-            Self::InternBytes(bytes_id) => INTERN_BYTES_ID_TAG | (bytes_id.index() & INTERN_BYTES_ID_MASK),
-            Self::InternLongInt(long_int_id) => {
-                INTERN_LONG_INT_ID_TAG | (long_int_id.index() & INTERN_LONG_INT_ID_MASK)
-            }
-            // Already heap-allocated (includes Range and Exception), return id within a dedicated tag range
-            Self::Ref(id) => heap_tagged_id(*id),
-            // Value-based IDs for immediate types (no heap allocation!)
-            Self::Int(v) => int_value_id(*v),
-            Self::Float(v) => float_value_id(*v),
-            Self::Builtin(c) => builtin_value_id(*c),
-            Self::ModuleFunction(mf) => module_function_value_id(*mf),
-            Self::DefFunction(f_id) => function_value_id(*f_id),
-            // Markers get deterministic IDs based on discriminant
-            Self::Marker(m) => marker_value_id(*m),
-            // Properties get deterministic IDs based on discriminant
-            Self::Property(p) => property_value_id(*p),
-            #[cfg(feature = "memory-model-checks")]
-            Self::Dereferenced => panic!("Cannot get id of Dereferenced object"),
-        }
+    /// Immediate values retain Monty's value-derived identity, heap objects use
+    /// their arena index, and external functions remain identified by name.
+    pub(crate) fn id<'a>(&self, vm: &'a VM<'_, impl ResourceTracker>) -> Identity<'a> {
+        Identity::new(self, vm)
     }
 
     /// Returns the Ref ID if this value is a reference, otherwise returns None.
@@ -1589,9 +1578,10 @@ impl Value {
         }
     }
 
-    /// Python-visible `is` operator. Identity is name-based for `ExtFunction`
-    /// values via [`Value::id`], so two callables with the same `__name__`
-    /// compare identical regardless of representation.
+    /// Python-visible `is` operator using complete structural identity.
+    ///
+    /// External functions compare by name across inline and heap representations;
+    /// all other values compare using their full immediate or arena identity.
     pub fn is(&self, other: &Self, vm: &VM<'_, impl ResourceTracker>) -> bool {
         self.id(vm) == other.id(vm)
     }
@@ -2449,71 +2439,6 @@ impl Marker {
     }
 }
 
-/// High-bit tag reserved for literal singletons (None, Ellipsis, booleans).
-const SINGLETON_ID_TAG: usize = 1usize << (usize::BITS - 1);
-/// High-bit tag reserved for interned string `id()` values.
-const INTERN_STR_ID_TAG: usize = 1usize << (usize::BITS - 2);
-/// High-bit tag reserved for interned bytes `id()` values to avoid colliding with any other space.
-const INTERN_BYTES_ID_TAG: usize = 1usize << (usize::BITS - 3);
-/// High-bit tag reserved for heap-backed `HeapId`s.
-const HEAP_ID_TAG: usize = 1usize << (usize::BITS - 4);
-
-/// Mask that keeps pointer-derived bits below the bytes tag bit.
-const INTERN_BYTES_ID_MASK: usize = INTERN_BYTES_ID_TAG - 1;
-/// Mask that keeps pointer-derived bits below the string tag bit.
-const INTERN_STR_ID_MASK: usize = INTERN_STR_ID_TAG - 1;
-/// Mask that keeps per-singleton offsets below the singleton tag bit.
-const SINGLETON_ID_MASK: usize = SINGLETON_ID_TAG - 1;
-/// Mask that keeps heap value IDs below the heap tag bit.
-const HEAP_ID_MASK: usize = HEAP_ID_TAG - 1;
-
-/// High-bit tag for Int value-based IDs (no heap allocation needed).
-const INT_ID_TAG: usize = 1usize << (usize::BITS - 5);
-/// High-bit tag for Float value-based IDs.
-const FLOAT_ID_TAG: usize = 1usize << (usize::BITS - 6);
-/// High-bit tag for Callable value-based IDs.
-const BUILTIN_ID_TAG: usize = 1usize << (usize::BITS - 7);
-/// High-bit tag for Function value-based IDs.
-const FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 8);
-/// High-bit tag for External Function value-based IDs.
-const EXTFUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 9);
-/// High-bit tag for Marker value-based IDs (stdout, stderr, etc.).
-const MARKER_ID_TAG: usize = 1usize << (usize::BITS - 10);
-/// High-bit tag for ModuleFunction value-based IDs.
-const MODULE_FUNCTION_ID_TAG: usize = 1usize << (usize::BITS - 12);
-/// High-bit tag for interned LongInt `id()` values.
-const INTERN_LONG_INT_ID_TAG: usize = 1usize << (usize::BITS - 13);
-/// High-bit tag for Property value-based IDs.
-const PROPERTY_ID_TAG: usize = 1usize << (usize::BITS - 14);
-
-/// Masks for value-based ID tags (keep bits below the tag bit).
-const INT_ID_MASK: usize = INT_ID_TAG - 1;
-const FLOAT_ID_MASK: usize = FLOAT_ID_TAG - 1;
-const BUILTIN_ID_MASK: usize = BUILTIN_ID_TAG - 1;
-const FUNCTION_ID_MASK: usize = FUNCTION_ID_TAG - 1;
-const EXTFUNCTION_ID_MASK: usize = EXTFUNCTION_ID_TAG - 1;
-const MARKER_ID_MASK: usize = MARKER_ID_TAG - 1;
-const MODULE_FUNCTION_ID_MASK: usize = MODULE_FUNCTION_ID_TAG - 1;
-const INTERN_LONG_INT_ID_MASK: usize = INTERN_LONG_INT_ID_TAG - 1;
-const PROPERTY_ID_MASK: usize = PROPERTY_ID_TAG - 1;
-
-/// Enumerates singleton literal slots so we can issue stable `id()` values without heap allocation.
-#[repr(usize)]
-#[derive(Copy, Clone)]
-enum SingletonSlot {
-    Undefined = 0,
-    Ellipsis = 1,
-    None = 2,
-    False = 3,
-    True = 4,
-}
-
-/// Returns the fully tagged `id()` value for the requested singleton literal.
-#[inline]
-const fn singleton_id(slot: SingletonSlot) -> usize {
-    SINGLETON_ID_TAG | ((slot as usize) & SINGLETON_ID_MASK)
-}
-
 /// Computes Python-style floor division and modulo.
 ///
 /// Python's division rounds toward negative infinity (floor division),
@@ -2547,100 +2472,6 @@ fn py_float_mod(a: f64, b: f64) -> f64 {
     } else {
         r
     }
-}
-
-/// Converts a heap `HeapId` into its tagged `id()` value, ensuring it never collides with other spaces.
-#[inline]
-pub fn heap_tagged_id(heap_id: HeapId) -> usize {
-    HEAP_ID_TAG | (heap_id.index() & HEAP_ID_MASK)
-}
-
-/// Computes a deterministic ID for an i64 integer value.
-/// Uses the value's hash combined with a type tag to ensure uniqueness across types.
-#[inline]
-fn int_value_id(value: i64) -> usize {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    let hash_u64 = hasher.finish();
-    // Mask to usize range before conversion to handle 32-bit platforms
-    let masked = hash_u64 & (usize::MAX as u64);
-    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
-    INT_ID_TAG | (hash_usize & INT_ID_MASK)
-}
-
-/// Computes a deterministic ID for an f64 float value.
-/// Uses the bit representation's hash for consistency (handles NaN, infinities, etc.).
-#[inline]
-fn float_value_id(value: f64) -> usize {
-    let mut hasher = DefaultHasher::new();
-    value.to_bits().hash(&mut hasher);
-    let hash_u64 = hasher.finish();
-    // Mask to usize range before conversion to handle 32-bit platforms
-    let masked = hash_u64 & (usize::MAX as u64);
-    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
-    FLOAT_ID_TAG | (hash_usize & FLOAT_ID_MASK)
-}
-
-/// Computes a deterministic ID for a builtin based on its discriminant.
-#[inline]
-fn builtin_value_id(b: Builtins) -> usize {
-    let mut hasher = DefaultHasher::new();
-    b.hash(&mut hasher);
-    let hash_u64 = hasher.finish();
-    // wrapping here is fine
-    #[expect(clippy::cast_possible_truncation)]
-    let hash_usize = hash_u64 as usize;
-    BUILTIN_ID_TAG | (hash_usize & BUILTIN_ID_MASK)
-}
-
-/// Computes a deterministic ID for a function based on its id.
-#[inline]
-fn function_value_id(f_id: FunctionId) -> usize {
-    FUNCTION_ID_TAG | (f_id.index() & FUNCTION_ID_MASK)
-}
-
-/// Computes a deterministic ID for an external function from its name string.
-///
-/// Used by [`Value::id`] so that inline `Value::ExtFunction` and heap
-/// `HeapData::ExtFunction` values referring to the same function name share
-/// the same Python-visible `id()` — required by CPython's
-/// `a is b ⇒ id(a) == id(b)` invariant. Collisions across distinct names are
-/// possible (the masked hash space is finite) but acceptable: Python's `id()`
-/// is allowed to collide across distinct objects.
-#[inline]
-fn ext_function_value_id(name: &str) -> usize {
-    let hash_u64 = hash_python_str(name).raw();
-    // Mask to usize range before conversion to handle 32-bit platforms.
-    let masked = hash_u64 & (usize::MAX as u64);
-    let hash_usize = usize::try_from(masked).expect("masked value fits in usize");
-    EXTFUNCTION_ID_TAG | (hash_usize & EXTFUNCTION_ID_MASK)
-}
-
-/// Computes a deterministic ID for a marker value based on its discriminant.
-#[inline]
-fn marker_value_id(m: Marker) -> usize {
-    MARKER_ID_TAG | ((m.0 as usize) & MARKER_ID_MASK)
-}
-
-/// Computes a deterministic ID for a property value based on its discriminant.
-#[inline]
-fn property_value_id(p: Property) -> usize {
-    let discriminant = match p {
-        Property::Os(os_fn) => os_fn as usize,
-    };
-    PROPERTY_ID_TAG | (discriminant & PROPERTY_ID_MASK)
-}
-
-/// Computes a deterministic ID for a module function based on its discriminant.
-#[inline]
-fn module_function_value_id(mf: ModuleFunctions) -> usize {
-    let mut hasher = DefaultHasher::new();
-    mf.hash(&mut hasher);
-    let hash_u64 = hasher.finish();
-    // wrapping here is fine
-    #[expect(clippy::cast_possible_truncation)]
-    let hash_usize = hash_u64 as usize;
-    MODULE_FUNCTION_ID_TAG | (hash_usize & MODULE_FUNCTION_ID_MASK)
 }
 
 /// Converts an i64 repeat count to usize, handling negative values and overflow.

@@ -81,6 +81,15 @@ t = (1, 2)
 r = t
 assert id(t) == id(r)
 
+
+# === Function repr uses the same integer identity ===
+def identity_repr_target():
+    pass
+
+
+repr_address = repr(identity_repr_target).split(' at ')[-1]
+assert repr_address == f'{hex(id(identity_repr_target))}>'
+
 # === Boolean is tests ===
 assert (True is True) == True
 assert (False is False) == True

@@ -89,7 +89,7 @@ fn same_callable_round_trips_through_dict() {
 #[test]
 fn different_named_callables_remain_distinct() {
     let runner = MontyRun::new(
-        "(a is b, a == b)".to_owned(),
+        "(a is b, a == b, id(a) == id(b))".to_owned(),
         "test.py",
         vec!["a".to_owned(), "b".to_owned()],
         CompileOptions::default(),
@@ -109,7 +109,11 @@ fn different_named_callables_remain_distinct() {
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Bool(false), MontyObject::Bool(false)]),
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+        ]),
     );
 }
 
