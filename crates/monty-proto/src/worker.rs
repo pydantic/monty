@@ -48,10 +48,9 @@ type Tracker = LimitedTracker;
 ///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 4 when mounts moved to the parent: the
-/// child no longer sees mount configuration, so the meta's mount-requirements
-/// section was removed.
-const DUMP_VERSION: u16 = 4;
+/// version can restore it. Bumped to 5 because adding argument-name variants
+/// changed the serialized `StaticStrings` discriminants.
+const DUMP_VERSION: u16 = 5;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.

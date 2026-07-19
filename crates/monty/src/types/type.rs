@@ -596,14 +596,16 @@ fn parse_int_from_str(value: &str, base: u32, heap: &Heap<impl ResourceTracker>)
         return Ok(Value::Int(int));
     }
     let invalid = || ExcType::value_error_invalid_literal_for_int(base, StringRepr(value));
-    parse_int_digits(value, base, &invalid, heap)
+    parse_int_digits(value.trim(), base, &invalid, heap)
 }
 
-/// Parses a Python `int()` bytes argument — same rules as str parsing, but a
-/// failure reprs the input as a bytes literal (`b'...'`), matching CPython.
+/// Parses a Python `int()` bytes argument using ASCII whitespace rules.
+///
+/// Unlike `str`, bytes must not treat UTF-8 encodings of Unicode whitespace as
+/// separators. Failures repr the input as a bytes literal, matching CPython.
 fn parse_int_from_bytes(bytes: &[u8], base: u32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     let invalid = || ExcType::value_error_invalid_literal_for_int(base, bytes_repr(bytes));
-    match str::from_utf8(bytes) {
+    match str::from_utf8(bytes.trim_ascii()) {
         Ok(s) => parse_int_digits(s, base, &invalid, heap),
         Err(_) => Err(invalid()),
     }
@@ -619,19 +621,17 @@ enum IntScanState {
     Underscore,
 }
 
-/// The shared str/bytes int-literal parser: whitespace, sign, base prefix
-/// (`0x`/`0o`/`0b`, mandatory-zeros rule for `base=0`), underscore placement,
-/// the digit limit for non-power-of-two bases, and BigInt promotion.
+/// Parses a whitespace-trimmed str/bytes int literal: sign, base prefix,
+/// underscore placement, digit limits, and BigInt promotion.
 fn parse_int_digits(
     value: &str,
     base: u32,
     invalid: &impl Fn() -> RunError,
     heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let trimmed = value.trim();
-    let (negative, body) = match trimmed.strip_prefix(['+', '-']) {
-        Some(rest) => (trimmed.starts_with('-'), rest),
-        None => (false, trimmed),
+    let (negative, body) = match value.strip_prefix(['+', '-']) {
+        Some(rest) => (value.starts_with('-'), rest),
+        None => (false, value),
     };
 
     // Resolve the effective base and strip any `0x`/`0o`/`0b` prefix. For

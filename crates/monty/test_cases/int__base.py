@@ -36,6 +36,14 @@ assert int('-0', 0) == 0
 assert int(b'12') == 12
 assert int(b'ff', 16) == 255
 assert int(b' -0x10 ', 0) == -16
+assert int('\u00a012\u00a0') == 12
+
+# Bytes accept ASCII whitespace only, not UTF-8 encodings of Unicode whitespace.
+try:
+    int(b'\xc2\xa012\xc2\xa0')
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == "invalid literal for int() with base 10: b'\\xc2\\xa012\\xc2\\xa0'"
 
 # === LongInt promotion with base ===
 assert int('f' * 40, 16) == 1461501637330902918203684832716283019655932542975
