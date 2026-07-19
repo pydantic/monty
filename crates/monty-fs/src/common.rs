@@ -380,6 +380,12 @@ pub(super) fn dir_mtime(path: &Path) -> f64 {
 /// special-file check is a hang guard: reading or writing a FIFO blocks until
 /// a peer appears, and mount I/O runs on the *host* thread servicing the
 /// sandbox, so it must never block on sandbox-reachable input.
+///
+/// TOCTOU caveat: this is a check-then-open, so another *host* process with
+/// write access to the mounted directory can swap a regular file for a FIFO
+/// between check and open and block the servicing thread. Sandbox code alone
+/// cannot exploit this — no mount mode can create special files or symlinks —
+/// so do not mount directories writable by untrusted local processes.
 pub(super) fn reject_non_regular(path: &Path, vpath: &str) -> Result<(), MountError> {
     match fs::metadata(path) {
         Ok(meta) if meta.is_dir() => Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath)),

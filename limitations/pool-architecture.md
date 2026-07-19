@@ -167,15 +167,21 @@ properties that real CPython does not provide, per the caveat above.
 - **Mount I/O is not covered by `request_timeout`.** Covered filesystem calls
   run synchronously on the host thread driving the session; the watchdog's
   only lever is killing the worker, which cannot interrupt host-side I/O.
-  Sandbox code cannot exploit this (special files are rejected, above), but a
-  mount on a pathological host filesystem — a stalled NFS or FUSE volume —
-  blocks the feed with no timeout. Like a blocking `print_callback` or
-  external function, hang-free host I/O is the embedder's responsibility:
-  do not mount directories on filesystems that can hang. Worker execution
-  time is still hard-bounded: each covered call deducts the worker's elapsed
-  interval from the turn's allowance, so cumulative worker execution per turn
-  never exceeds `request_timeout` no matter how many covered calls it makes —
-  only the parent-side I/O itself is outside the timeout.
+  Sandbox code cannot *hang* the host this way (special files are rejected,
+  above), but a mount on a pathological host filesystem — a stalled NFS or
+  FUSE volume — blocks the feed with no timeout. Like a blocking
+  `print_callback` or external function, hang-free host I/O is the embedder's
+  responsibility: do not mount directories on filesystems that can hang.
+  Worker execution time is still hard-bounded: each covered call deducts the
+  worker's elapsed interval from the turn's allowance, so cumulative worker
+  execution per turn never exceeds `request_timeout` no matter how many
+  covered calls it makes. The parent-side I/O itself is deducted from
+  nothing, though, so sandbox code *can* stretch a feed's wall clock well
+  beyond `request_timeout` on a perfectly healthy filesystem — e.g. a loop of
+  large mounted reads pays only its own (bounded) execution time while the
+  host does up to a mount-memory-budget's worth of free I/O per call. Feed
+  wall clock with mounts is therefore not a hard bound; only worker execution
+  is.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are serviced by the pool and never reach the callback.
 - **Mounts have a 100 MB memory budget by default.** Retained overlay data and

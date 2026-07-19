@@ -182,11 +182,33 @@ impl OsFunctionCall {
     /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
     /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
     /// must fall through to the host callback.
+    ///
+    /// Deliberately an allowlist: `Used` (and any future non-FS variant) must
+    /// return `false`, because `monty-fs` panics if a call without a
+    /// [`Self::primary_path`] reaches its filesystem dispatch.
     #[must_use]
     pub fn is_filesystem(&self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_)
+            Self::Exists(_)
+                | Self::IsFile(_)
+                | Self::IsDir(_)
+                | Self::IsSymlink(_)
+                | Self::ReadText(_)
+                | Self::ReadBytes(_)
+                | Self::WriteText(_)
+                | Self::WriteBytes(_)
+                | Self::AppendText(_)
+                | Self::AppendBytes(_)
+                | Self::Stat(_)
+                | Self::Iterdir(_)
+                | Self::Resolve(_)
+                | Self::Absolute(_)
+                | Self::Open(_)
+                | Self::Mkdir(_)
+                | Self::Unlink(_)
+                | Self::Rmdir(_)
+                | Self::Rename(_)
         )
     }
 

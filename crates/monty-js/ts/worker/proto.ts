@@ -200,7 +200,9 @@ export function frame(message: Uint8Array): Uint8Array {
 export function* deframe(buf: Uint8Array): Generator<Uint8Array> {
   let i = 0
   while (i + 4 <= buf.length) {
-    const len = buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)
+    // `>>> 0` keeps the length unsigned: `<< 24` yields a *signed* 32-bit
+    // value, and a negative length would walk `i` backwards forever.
+    const len = (buf[i] | (buf[i + 1] << 8) | (buf[i + 2] << 16) | (buf[i + 3] << 24)) >>> 0
     i += 4
     yield buf.subarray(i, i + len)
     i += len

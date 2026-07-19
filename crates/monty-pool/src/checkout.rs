@@ -631,6 +631,15 @@ impl Checkout {
                     // worker's just-elapsed interval from `remaining`, so
                     // issuing covered calls cannot reset the deadline: total
                     // worker execution per turn stays bounded by `deadline`.
+                    //
+                    // Deliberate trade-off: the host I/O window itself is
+                    // deducted from nothing and runs with no watchdog, so a
+                    // feed's *wall clock* is not bounded by the deadline — a
+                    // stalled filesystem blocks it indefinitely, and a loop
+                    // of covered calls gets its (per-call budget-bounded)
+                    // host I/O for free. Only worker execution is a hard
+                    // bound; see "Mount I/O is not covered by
+                    // `request_timeout`" in limitations/pool-architecture.md.
                     deadline_guard = None;
                     remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
                     let call_id = call.call_id;

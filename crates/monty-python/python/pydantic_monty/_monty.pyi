@@ -65,11 +65,7 @@ class CollectString:
 
 @final
 class MountDir:
-    """A mount point mapping a virtual path to a host directory.
-
-    Retained overlay data and filesystem results share a per-mount memory
-    budget, `memory_usage_limit` (100 MB by default).
-    """
+    """A mount point mapping a virtual path to a host directory."""
 
     virtual_path: str
     host_path: str
@@ -84,9 +80,29 @@ class MountDir:
         *,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-        # mirrors monty-fs's DEFAULT_MEMORY_USAGE_LIMIT
         memory_usage_limit: int = 100_000_000,
-    ) -> MountDir: ...
+    ) -> MountDir:
+        """Configure a mount point; validation happens here, not at feed time.
+
+        Arguments:
+            virtual_path: Absolute POSIX-style path prefix inside the sandbox
+                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                if not absolute.
+            host_path: Real host directory to expose. Canonicalized at
+                construction; raises if it doesn't exist or isn't a directory.
+                Sandbox code can never see this path or reach outside it.
+            mode: `'read-only'` — reads only, writes raise `PermissionError`;
+                `'read-write'` — writes through to the host directory;
+                `'overlay'` (default) — reads fall through to the host, writes
+                are captured in memory per feed and discarded when it ends.
+            write_bytes_limit: Cap on cumulative bytes written through the
+                mount within one feed; exceeding it raises `OSError` in the
+                sandbox. `None` (default) means unlimited.
+            memory_usage_limit: Per-mount budget in bytes (default 100 MB,
+                matches DEFAULT_MEMORY_USAGE_LIMIT) shared by retained overlay
+                data and transient filesystem results; an operation that would
+                exceed it raises `MemoryError` in the sandbox.
+        """
 
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
