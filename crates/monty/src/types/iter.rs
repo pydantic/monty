@@ -798,9 +798,8 @@ impl IterValue {
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // An existing iterator is its own iterator: delegate to it so
-            // `for`/`list`/`sum`/comprehensions drive the SAME object and share
-            // its position, rather than restarting it.
+            // An iterator is its own iterator: delegate so consumers share its
+            // position rather than restarting it.
             HeapData::Iter(_) => Some(Self::IterHeapRef { iter_id: heap_id }),
             // other types are not iterable
             _ => None,

@@ -1,7 +1,6 @@
-# Phase 1a: an existing iterator is itself iterable (its __iter__ returns self),
-# so for-loops, list()/tuple()/sum(), and comprehensions all drive it.
-# Today only next(it) works on a bare iterator; these consumption sites fail
-# with "'iterator' object is not iterable".
+# An iterator is itself iterable (its __iter__ returns self), so for-loops,
+# list()/tuple()/sum() and comprehensions all drive an existing iterator,
+# sharing its position rather than restarting it.
 
 # === for-loop over an iterator ===
 out = []
