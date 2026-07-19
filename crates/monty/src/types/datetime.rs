@@ -22,7 +22,7 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    object::MontyObject,
+    object::MontyTimeZone,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -258,17 +258,21 @@ struct DatetimeInitArgs {
 }
 
 /// Classmethod implementation for `datetime.now(tz=None)`. Yields a
-/// `DateTimeNow` OS call with `tz` projected to [`MontyObject`] at the
-/// producer site (so the host sees a typed value directly).
-///
-/// Takes `&mut VM` rather than `&mut Heap` because the projection needs
-/// `MontyObject::new` to walk heap-allocated tzinfo objects.
+/// `DateTimeNow` OS call carrying the tz argument as a typed
+/// [`Option<MontyTimeZone>`] — validation happened during extraction, so the
+/// call can never carry an arbitrary object.
 pub(crate) fn class_now(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
-    // Avoid `defer_drop_mut!` here: it would keep `vm` borrowed until end of
-    // scope, blocking the final `MontyObject::new(vm, ...)` call.
     let tz_value = extract_now_tz(vm, args)?;
-    let tz_obj = MontyObject::new(tz_value, vm);
-    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz_obj)))
+    // `extract_now_tz` already validated the value, so this cannot fail; it
+    // reuses `tzinfo_from_value` purely for the None-or-timezone projection.
+    let tz = tzinfo_from_value(&tz_value, vm.heap, vm.interns)?
+        .0
+        .map(|tz| MontyTimeZone {
+            offset_seconds: tz.offset_seconds,
+            name: tz.name,
+        });
+    tz_value.drop_with(vm);
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
 }
 
 /// Extracts the single `tz` argument from `datetime.now()`'s args

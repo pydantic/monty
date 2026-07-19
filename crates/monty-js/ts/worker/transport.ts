@@ -17,7 +17,7 @@ import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn } fro
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
 import type { Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
-import { decodeMontyObject, encodeMontyObject } from './value.js'
+import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
@@ -545,8 +545,9 @@ function decodeOsArm(field: number, bytes: Uint8Array): Omit<DecodedOsCall, 'cal
     case Os.DateToday:
       return nonFsCall('date.today', [])
     case Os.DateTimeNow:
-      // the arm payload is the tz argument itself (a MontyObject)
-      return nonFsCall('datetime.now', [decodeMontyObject(bytes)])
+      // typed arm: `DateTimeNow.tz` (field 1) is an optional TimeZone
+      // message; absent means a naive result (tz=None)
+      return nonFsCall('datetime.now', [decodeDateTimeNowTz(bytes)])
     case Os.Consumed:
       return { functionName: '', args: [], kwargs: [] }
     default:
@@ -646,6 +647,17 @@ function decodeGetenv(bytes: Uint8Array): [string, unknown] {
     else if (f.field === 2) dflt = decodeMontyObject(f.bytes)
   }
   return [key, dflt]
+}
+
+/** Decodes `OsCall.DateTimeNow`: an optional `TimeZone` at field 1, `null` (naive) when absent. */
+function decodeDateTimeNowTz(bytes: Uint8Array): unknown {
+  const reader = new Reader(bytes)
+  let tz: unknown = null
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) tz = decodeTimeZone(f.bytes)
+  }
+  return tz
 }
 
 function decodePair(bytes: Uint8Array): [unknown, unknown] {

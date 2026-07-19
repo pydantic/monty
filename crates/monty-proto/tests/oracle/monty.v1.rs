@@ -719,6 +719,15 @@ pub mod os_call {
         #[prost(message, optional, tag = "2")]
         pub default: ::core::option::Option<super::MontyObject>,
     }
+    /// datetime.now(tz) — the VM validates the argument to None-or-timezone
+    /// before suspending, so the wire carries a typed TimeZone rather than an
+    /// arbitrary MontyObject.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct DateTimeNow {
+        /// Fixed-offset timezone for an aware result; absent for a naive one.
+        #[prost(message, optional, tag = "1")]
+        pub tz: ::core::option::Option<super::TimeZone>,
+    }
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Call {
         /// ---- FS read / check / remove — the string is the virtual path -------
@@ -790,9 +799,9 @@ pub mod os_call {
         /// date.today()
         #[prost(message, tag = "23")]
         DateToday(super::Unit),
-        /// datetime.now(tz) — the timezone argument (`none` for a naive result).
+        /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
-        DateTimeNow(super::MontyObject),
+        DateTimeNow(DateTimeNow),
         /// Re-announced after `Load`: the argument payload was consumed when the
         /// call was first announced, before the dump was taken. The parent must
         /// answer from its own records (or with a not-handled error).

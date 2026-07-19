@@ -99,9 +99,9 @@ class MountDir:
                 mount within one feed; exceeding it raises `OSError` in the
                 sandbox. `None` (default) means unlimited.
             memory_usage_limit: Per-mount budget in bytes (default 100 MB,
-                matches DEFAULT_MEMORY_USAGE_LIMIT) shared by retained overlay
-                data and transient filesystem results; an operation that would
-                exceed it raises `MemoryError` in the sandbox.
+                matches DEFAULT_MEMORY_USAGE_LIMIT in rust) shared by retained
+                overlay data and transient filesystem results; an operation that
+                would exceed it raises `MemoryError` in the sandbox.
         """
 
 class MontyError(Exception):

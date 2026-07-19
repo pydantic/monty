@@ -28,6 +28,7 @@ use crate::{
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::{Interns, StaticStrings},
+    object::MontyTimeZone,
     resource::ResourceTracker,
     types::{file::FileMode, str::StringRepr},
     value::Value,
@@ -124,9 +125,9 @@ pub enum OsFunctionCall {
     #[strum(serialize = "date.today")]
     DateToday,
     /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
-    /// Carries the timezone argument (`MontyObject::None` for naive).
+    /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
-    DateTimeNow(MontyObject),
+    DateTimeNow(Option<MontyTimeZone>),
 
     /// Placeholder left behind by [`crate::OsCall::take_function_call`] and
     /// [`crate::ReplOsCall::take_function_call`] after the real call has been
@@ -174,7 +175,7 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz], vec![]),
+            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
             Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
         }
     }

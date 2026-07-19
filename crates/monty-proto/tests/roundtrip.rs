@@ -664,8 +664,8 @@ fn os_calls_round_trip_all_variants() {
         }),
         OsFunctionCall::GetEnviron,
         OsFunctionCall::DateToday,
-        OsFunctionCall::DateTimeNow(MontyObject::None),
-        OsFunctionCall::DateTimeNow(MontyObject::TimeZone(MontyTimeZone {
+        OsFunctionCall::DateTimeNow(None),
+        OsFunctionCall::DateTimeNow(Some(MontyTimeZone {
             offset_seconds: 3600,
             name: Some("CET".to_owned()),
         })),

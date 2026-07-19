@@ -8,13 +8,13 @@
 //! converting; `TryFrom` rejects it defensively.
 
 use monty::{
-    GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs,
+    GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
+    PathStringDataArgs, RenameCallArgs,
 };
 
 use crate::{
     convert::ProtoConvertError,
-    pb::{Unit, os_call},
+    pb::{TimeZone, Unit, os_call},
 };
 
 impl From<OsFunctionCall> for os_call::Call {
@@ -55,7 +55,12 @@ impl From<OsFunctionCall> for os_call::Call {
             }),
             OsFunctionCall::GetEnviron => Self::GetEnviron(Unit {}),
             OsFunctionCall::DateToday => Self::DateToday(Unit {}),
-            OsFunctionCall::DateTimeNow(tz) => Self::DateTimeNow(tz.into()),
+            OsFunctionCall::DateTimeNow(tz) => Self::DateTimeNow(os_call::DateTimeNow {
+                tz: tz.map(|tz| TimeZone {
+                    offset_seconds: tz.offset_seconds,
+                    name: tz.name,
+                }),
+            }),
             OsFunctionCall::Used => unreachable!("OsFunctionCall::Used encoded after take_function_call"),
         }
     }
@@ -104,7 +109,12 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
             }),
             os_call::Call::GetEnviron(_) => Self::GetEnviron,
             os_call::Call::DateToday(_) => Self::DateToday,
-            os_call::Call::DateTimeNow(tz) => Self::DateTimeNow(tz.into_object()?),
+            // typed arm: the wire cannot express anything but an optional
+            // timezone here, mirroring the VM's validation of `datetime.now`
+            os_call::Call::DateTimeNow(now) => Self::DateTimeNow(now.tz.map(|tz| MontyTimeZone {
+                offset_seconds: tz.offset_seconds,
+                name: tz.name,
+            })),
             // a consumed re-announcement carries no call — callers surface it
             // to their fallback handler instead of converting it
             os_call::Call::Consumed(_) => {

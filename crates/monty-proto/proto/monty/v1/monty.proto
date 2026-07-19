@@ -538,8 +538,8 @@ message OsCall {
     Getenv getenv = 21;     // os.getenv
     Unit get_environ = 22;  // the os.environ snapshot
     Unit date_today = 23;   // date.today()
-    // datetime.now(tz) — the timezone argument (`none` for a naive result).
-    MontyObject date_time_now = 24;
+    // datetime.now(tz) — the timezone argument (absent for a naive result).
+    DateTimeNow date_time_now = 24;
 
     // Re-announced after `Load`: the argument payload was consumed when the
     // call was first announced, before the dump was taken. The parent must
@@ -573,6 +573,13 @@ message OsCall {
   message Getenv {
     string key = 1;
     MontyObject default = 2;
+  }
+  // datetime.now(tz) — the VM validates the argument to None-or-timezone
+  // before suspending, so the wire carries a typed TimeZone rather than an
+  // arbitrary MontyObject.
+  message DateTimeNow {
+    // Fixed-offset timezone for an aware result; absent for a naive one.
+    optional TimeZone tz = 1;
   }
 }
 

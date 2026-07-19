@@ -660,12 +660,11 @@ impl Child {
                 }
                 Ok(ReplProgress::OsCall(mut call)) => {
                     let function_call = call.take_function_call();
-                    // only `os.getenv`'s default and `datetime.now`'s tz carry
-                    // arbitrary sandbox values — every other arm is flat
-                    // strings/bytes, which cannot nest
+                    // only `os.getenv`'s default carries an arbitrary sandbox
+                    // value — every other arm is flat strings/bytes/typed
+                    // structs, which cannot nest
                     let too_deep = match &function_call {
                         OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
-                        OsFunctionCall::DateTimeNow(tz) => exceeds_max_value_depth(tz),
                         _ => false,
                     };
                     if too_deep {

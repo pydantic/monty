@@ -379,9 +379,9 @@ fn hand_call_payloads_match_generated_encoding() {
         generated_call.encode_to_vec()
     );
 
-    // `OsCall` is fully generated, but its `Getenv.default` / `DateTimeNow`
-    // fields embed the hand-written `WireObject` — check the embedding agrees
-    // with the oracle byte-for-byte.
+    // `OsCall` is fully generated, but its `Getenv.default` field embeds the
+    // hand-written `WireObject` — check the embedding agrees with the oracle
+    // byte-for-byte.
     let default = MontyObject::List(vec![MontyObject::None, MontyObject::Int(3)]);
     let hand_os = pb::OsCall {
         call_id: 7,
@@ -403,13 +403,25 @@ fn hand_call_payloads_match_generated_encoding() {
         hand_os
     );
 
+    // `DateTimeNow` is fully typed (optional TimeZone) — no `WireObject`
+    // embedding, but keep the byte-compat check against the oracle.
     let hand_now = pb::OsCall {
         call_id: 9,
-        call: Some(pb::os_call::Call::DateTimeNow(WireObject::new(MontyObject::None))),
+        call: Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+            tz: Some(pb::TimeZone {
+                offset_seconds: 3600,
+                name: Some("CET".to_owned()),
+            }),
+        })),
     };
     let generated_now = oracle::OsCall {
         call_id: 9,
-        call: Some(oracle::os_call::Call::DateTimeNow(to_oracle(&MontyObject::None))),
+        call: Some(oracle::os_call::Call::DateTimeNow(oracle::os_call::DateTimeNow {
+            tz: Some(oracle::TimeZone {
+                offset_seconds: 3600,
+                name: Some("CET".to_owned()),
+            }),
+        })),
     };
     assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
