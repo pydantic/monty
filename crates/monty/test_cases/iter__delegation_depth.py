@@ -4,5 +4,5 @@
 o = iter([1, 2, 3])
 for _ in range(200):
     o = iter(iter(o))
-assert next(o) == 1, 'a deep delegation chain still advances the terminal iterator'
-assert list(o) == [2, 3], 'and shares its position'
+assert next(o) == 1
+assert list(o) == [2, 3]

@@ -6,18 +6,18 @@
 out = []
 for x in iter([1, 2, 3]):
     out.append(x)
-assert out == [1, 2, 3], 'for-loop drives an existing iterator'
+assert out == [1, 2, 3]
 
 # === constructors consume an iterator ===
-assert list(iter([4, 5, 6])) == [4, 5, 6], 'list() consumes an iterator'
-assert tuple(iter([7, 8])) == (7, 8), 'tuple() consumes an iterator'
-assert sum(iter([1, 2, 3])) == 6, 'sum() consumes an iterator'
+assert list(iter([4, 5, 6])) == [4, 5, 6]
+assert tuple(iter([7, 8])) == (7, 8)
+assert sum(iter([1, 2, 3])) == 6
 
 # === iter(it) is it, and consumption shares the underlying state ===
 it = iter([10, 20, 30])
-assert iter(it) is it, 'iter() of an iterator returns the same object'
-assert next(it) == 10, 'next() advances the iterator'
-assert list(it) == [20, 30], 'list() continues where next() left off (shared state)'
+assert iter(it) is it
+assert next(it) == 10
+assert list(it) == [20, 30]
 
 # === comprehension over an iterator ===
-assert [x * 2 for x in iter([1, 2, 3])] == [2, 4, 6], 'comprehension consumes an iterator'
+assert [x * 2 for x in iter([1, 2, 3])] == [2, 4, 6]
