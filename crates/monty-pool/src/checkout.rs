@@ -104,16 +104,14 @@ pub enum TurnEvent {
         method_call: bool,
     },
     /// The sandbox performed an OS operation no mount handled (e.g.
-    /// `"Path.read_text"`) — answer with [`Checkout::resume`].
+    /// `"Path.read_text"`) — answer with [`Checkout::resume`]. A caller with
+    /// no handler should resume with [`ResumeValue::NotHandled`]; the sandbox
+    /// then raises the call's own no-handler default.
     OsCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        /// The exception the sandbox would raise if nothing handles this
-        /// call; a caller with no handler should resume with
-        /// `ResumeValue::Error(not_handled_error)`.
-        not_handled_error: MontyException,
     },
     /// The sandbox read an undefined name — answer with
     /// [`Checkout::resume_name_lookup`].
@@ -140,6 +138,11 @@ pub enum ResumeValue {
     /// No handler exists for the called name — the sandbox raises
     /// `NameError`.
     NotFound,
+    /// No handler accepted this OS call — the sandbox raises the call's own
+    /// no-handler default (`PermissionError` naming the path for filesystem
+    /// calls, `RuntimeError` for the rest). Only valid answering a
+    /// [`TurnEvent::OsCall`].
+    NotHandled,
 }
 
 /// Callback receiving sandbox `print()` output streamed during a turn.
@@ -186,10 +189,13 @@ pub struct Checkout {
 /// Which kind of suspension is awaiting an answer.
 enum Pending {
     /// FunctionCall or OsCall; carries the call id and name (the name feeds
-    /// `ResumeValue::NotFound`'s NameError).
+    /// `ResumeValue::NotFound`'s NameError). `os_call` gates
+    /// [`ResumeValue::NotHandled`], which only an OS-call suspension can
+    /// resolve.
     Call {
         call_id: u32,
         function_name: String,
+        os_call: bool,
     },
     NameLookup,
     Futures,
@@ -322,10 +328,20 @@ impl Checkout {
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
     pub fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
-        let Some(Pending::Call { call_id, function_name }) = &self.pending else {
+        let Some(Pending::Call {
+            call_id,
+            function_name,
+            os_call,
+        }) = &self.pending
+        else {
             return Err(PoolError::Protocol("no suspended call to resume".to_owned()));
         };
-        let (call_id, function_name) = (*call_id, function_name.clone());
+        let (call_id, function_name, os_call) = (*call_id, function_name.clone(), *os_call);
+        if matches!(value, ResumeValue::NotHandled) && !os_call {
+            return Err(PoolError::Protocol(
+                "NotHandled is only valid answering an OS call".to_owned(),
+            ));
+        }
         if let ResumeValue::Return(obj) = &value {
             ensure_sendable([obj])?;
         }
@@ -334,6 +350,7 @@ impl Checkout {
             ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
             ResumeValue::Future => pb::ext_function_result::Kind::Future(call_id),
             ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
+            ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         };
         self.pending = None;
         let request = pb::ParentRequest {
@@ -391,7 +408,7 @@ impl Checkout {
                 let kind = match value {
                     ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
                     ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
-                    ResumeValue::Future | ResumeValue::NotFound => {
+                    ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
                         return Err(PoolError::Protocol(format!(
                             "future {call_id} must resolve to Return or Error"
                         )));
@@ -612,6 +629,7 @@ impl Checkout {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
+                        os_call: false,
                     });
                     break self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
@@ -698,21 +716,19 @@ impl Checkout {
                         MountCallOutcome::NotHandled(function_call) => function_call,
                     };
                     // Not mount-covered: surface to the caller in the
-                    // `(name, args, kwargs)` host-callback shape, with the
-                    // parent-computed no-handler error.
-                    let not_handled_error = unhandled.on_no_handler();
+                    // `(name, args, kwargs)` host-callback shape.
                     let function_name = unhandled.name().to_owned();
                     let (args, kwargs) = unhandled.to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
+                        os_call: true,
                     });
                     break Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
                         args,
                         kwargs,
                         call_id,
-                        not_handled_error,
                     }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {

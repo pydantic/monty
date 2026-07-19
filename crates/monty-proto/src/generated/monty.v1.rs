@@ -294,10 +294,11 @@ pub struct ResourceLimits {
     pub max_recursion_depth: ::core::option::Option<u64>,
 }
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
-/// monty's `ExtFunctionResult`.
+/// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
+/// resolve, against its suspended call).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExtFunctionResult {
-    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4")]
+    #[prost(oneof = "ext_function_result::Kind", tags = "1, 2, 3, 4, 5")]
     pub kind: ::core::option::Option<ext_function_result::Kind>,
 }
 /// Nested message and enum types in `ExtFunctionResult`.
@@ -317,6 +318,12 @@ pub mod ext_function_result {
         /// No handler exists for this name — the child raises NameError.
         #[prost(string, tag = "4")]
         NotFound(::prost::alloc::string::String),
+        /// No handler accepted this OS call — the child raises the call's own
+        /// no-handler default (PermissionError naming the path for filesystem
+        /// calls, RuntimeError for the rest). Only valid answering an `OsCall`
+        /// suspension; the child computes it from its retained call payload.
+        #[prost(message, tag = "5")]
+        NotHandled(super::Unit),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -545,9 +552,10 @@ pub struct Print {
 /// file_handle); a mismatched result becomes a Python-level error inside the
 /// sandbox.
 ///
-/// A parent with no handler should answer `ResumeCall` with the call's
-/// not-handled error: PermissionError naming the path for filesystem calls,
-/// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
+/// A parent with no handler should answer `ResumeCall` with
+/// `ExtFunctionResult.not_handled`: the child raises the call's own default
+/// (PermissionError naming the path for filesystem calls, RuntimeError for
+/// the rest — monty's `OsFunctionCall::on_no_handler`).
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
     #[prost(uint32, tag = "1")]

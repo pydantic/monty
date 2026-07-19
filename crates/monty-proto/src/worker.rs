@@ -469,13 +469,27 @@ impl Child {
                 resume.call_id
             ));
         }
-        let result: ExtFunctionResult = match resume.result {
-            Some(result) => match result.try_into() {
-                Ok(result) => result,
-                Err(err) => return protocol_violation(&format!("invalid result: {err}")),
-            },
-            None => return protocol_violation("ResumeCall has no result"),
+        let Some(wire_result) = resume.result else {
+            return protocol_violation("ResumeCall has no result");
         };
+        // NotHandled resolves against the suspended call itself — the child
+        // owns the no-handler semantics (`OsFunctionCall::on_no_handler`), so
+        // the parent never has to compute or echo the default exception.
+        let result: ExtFunctionResult =
+            if matches!(wire_result.kind, Some(pb::ext_function_result::Kind::NotHandled(_))) {
+                let SessionState::Suspended(progress) = &self.state else {
+                    unreachable!("checked above");
+                };
+                let ReplProgress::OsCall(call) = progress.as_ref() else {
+                    return protocol_violation("NotHandled is only valid answering a suspended OS call");
+                };
+                ExtFunctionResult::Error(call.function_call.on_no_handler())
+            } else {
+                match wire_result.try_into() {
+                    Ok(result) => result,
+                    Err(err) => return protocol_violation(&format!("invalid result: {err}")),
+                }
+            };
         let SessionState::Suspended(progress) = mem::replace(&mut self.state, SessionState::Configured(None)) else {
             unreachable!("checked above");
         };

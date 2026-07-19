@@ -184,7 +184,6 @@ impl NativePool {
                 ),
             },
             checkout: Arc::new(Mutex::new(None)),
-            pending_not_handled: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -208,10 +207,6 @@ pub struct NativeSession {
     pool: SharedPool,
     repl_config: ReplConfig,
     checkout: SharedCheckout,
-    /// The exception the sandbox raises when the host declines the pending
-    /// OS call. Kept Rust-side so the full exception (traceback included)
-    /// round-trips instead of being rebuilt from strings.
-    pending_not_handled: Arc<Mutex<Option<MontyException>>>,
 }
 
 #[napi]
@@ -295,18 +290,15 @@ impl NativeSession {
     }
 
     /// Answers an `osCall` suspension by declining it: the sandbox raises the
-    /// call's default exception (full traceback preserved Rust-side).
+    /// call's own no-handler default.
     #[napi]
     pub fn resume_not_handled<'env>(
         &self,
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let exc = lock(&self.pending_not_handled)
-            .take()
-            .unwrap_or_else(|| MontyException::new(ExcType::RuntimeError, Some("OS call is not supported".to_owned())));
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume(ResumeValue::Error(exc), on_print)
+        self.run_turn(env, on_print, |checkout, on_print| {
+            checkout.resume(ResumeValue::NotHandled, on_print)
         })
     }
 
@@ -521,7 +513,6 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = on_print.build_threadsafe_function().build()?;
         let slot = Arc::clone(&self.checkout);
-        let pending_not_handled = Arc::clone(&self.pending_not_handled);
         env.spawn_future_with_callback(
             async move {
                 spawn_blocking(move || {
@@ -542,11 +533,7 @@ impl NativeSession {
                         };
                         let _ = block_on(tsfn.call_async(FnArgs::from((stream.to_owned(), text.to_owned()))));
                     };
-                    let outcome = compute(checkout, &mut on_print);
-                    if let TurnOutcome::Event(TurnEvent::OsCall { not_handled_error, .. }) = &outcome {
-                        *lock(&pending_not_handled) = Some(not_handled_error.clone());
-                    }
-                    outcome
+                    compute(checkout, &mut on_print)
                 })
                 .await
                 .map_err(task_error)
@@ -632,14 +619,12 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            not_handled_error,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            obj.set("notHandledError", exception_to_js(env, &not_handled_error)?)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name }) => {
             obj.set("kind", "nameLookup")?;

@@ -76,7 +76,6 @@ export class WorkerTransport {
   /** The id/name of the suspension awaiting an answer, for the `resume*` family. */
   private pendingCallId = 0
   private pendingFunctionName = ''
-  private pendingNotHandled: { excType: string; message: string } | null = null
 
   /** No OS process backs a wasm worker. */
   readonly workerPid: number | null = null
@@ -149,8 +148,9 @@ export class WorkerTransport {
   }
 
   resumeNotHandled(onPrint: OnPrint): Promise<NativeTurn> {
-    const exc = this.pendingNotHandled ?? { excType: 'RuntimeError', message: 'OS call is not supported' }
-    return this.resumeCall(extResult(2, raisedException(exc.excType, exc.message)), onPrint)
+    // ExtFunctionResult.not_handled (Unit): the child raises the suspended
+    // call's own no-handler default.
+    return this.resumeCall(extResult(5, new Uint8Array()), onPrint)
   }
 
   resumeFuture(onPrint: OnPrint): Promise<NativeTurn> {
@@ -315,7 +315,6 @@ export class WorkerTransport {
         const call = decodeCall(event.bytes)
         this.pendingCallId = call.callId
         this.pendingFunctionName = call.functionName
-        this.pendingNotHandled = null
         return {
           kind: 'functionCall',
           functionName: call.functionName,
@@ -329,14 +328,12 @@ export class WorkerTransport {
         const call = decodeOsCall(event.bytes)
         this.pendingCallId = call.callId
         this.pendingFunctionName = call.functionName
-        this.pendingNotHandled = simpleExc(call.notHandledError)
         return {
           kind: 'osCall',
           functionName: call.functionName,
           args: call.args,
           kwargs: call.kwargs,
           callId: call.callId,
-          notHandledError: call.notHandledError,
         }
       }
       case Ev.NameLookup:
@@ -475,13 +472,12 @@ interface DecodedOsCall {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
-  notHandledError: NativeException
 }
 
 /**
  * Decodes the typed `OsCall` oneof back into the `(name, args, kwargs)`
- * host-callback shape the native path surfaces, with the same per-call
- * not-handled error monty's `OsFunctionCall::on_no_handler` produces.
+ * host-callback shape the native path surfaces. Declining the call is
+ * answered child-side (see `resumeNotHandled`), so no error is built here.
  */
 function decodeOsCall(bytes: Uint8Array): DecodedOsCall {
   const reader = new Reader(bytes)
@@ -500,28 +496,27 @@ function decodeOsArm(field: number, bytes: Uint8Array): Omit<DecodedOsCall, 'cal
   const pathArm = OS_PATH_ARMS[field]
   if (pathArm !== undefined) {
     const path = decodeString(bytes)
-    return fsCall(pathArm, path, [path])
+    return osCall(pathArm, [path])
   }
   switch (field) {
     case Os.WriteText:
     case Os.AppendText: {
       const [path, data] = decodePathAndString(bytes)
-      return fsCall(field === Os.WriteText ? 'Path.write_text' : 'Path.append_text', path, [path, data])
+      return osCall(field === Os.WriteText ? 'Path.write_text' : 'Path.append_text', [path, data])
     }
     case Os.WriteBytes:
     case Os.AppendBytes: {
       const [path, data] = decodeBytesWrite(bytes)
-      return fsCall(field === Os.WriteBytes ? 'Path.write_bytes' : 'Path.append_bytes', path, [path, data])
+      return osCall(field === Os.WriteBytes ? 'Path.write_bytes' : 'Path.append_bytes', [path, data])
     }
     case Os.Open: {
       const [path, mode] = decodePathAndString(bytes)
-      return fsCall('open', path, [path, mode])
+      return osCall('open', [path, mode])
     }
     case Os.Mkdir: {
       const { path, parents, existOk } = decodeMkdir(bytes)
-      return fsCall(
+      return osCall(
         'Path.mkdir',
-        path,
         [path],
         [
           ['parents', parents],
@@ -531,63 +526,32 @@ function decodeOsArm(field: number, bytes: Uint8Array): Omit<DecodedOsCall, 'cal
     }
     case Os.Rename: {
       const [src, dst] = decodePathAndString(bytes)
-      return fsCall('Path.rename', src, [src, dst])
+      return osCall('Path.rename', [src, dst])
     }
     case Os.Getenv: {
       const [key, dflt] = decodeGetenv(bytes)
-      return nonFsCall('os.getenv', [key, dflt])
+      return osCall('os.getenv', [key, dflt])
     }
     case Os.GetEnviron:
-      return nonFsCall('os.environ', [])
+      return osCall('os.environ', [])
     case Os.DateToday:
-      return nonFsCall('date.today', [])
+      return osCall('date.today', [])
     case Os.DateTimeNow:
       // typed arm: `DateTimeNow.tz` (field 1) is an optional TimeZone
       // message; absent means a naive result (tz=None)
-      return nonFsCall('datetime.now', [decodeDateTimeNowTz(bytes)])
+      return osCall('datetime.now', [decodeDateTimeNowTz(bytes)])
     default:
       throw new Error(`unknown OsCall arm ${field}`)
   }
 }
 
-/**
- * A surfaced filesystem call: `on_no_handler` semantics are a
- * `PermissionError` naming the primary path. Plain single-quoting stands in
- * for Python's repr — exotic path characters may render differently than the
- * native parent, which is fine for an error message.
- */
-function fsCall(
-  name: string,
-  primaryPath: string,
+/** The `(name, args, kwargs)` host-callback shape for one decoded arm. */
+function osCall(
+  functionName: string,
   args: unknown[],
   kwargs: [unknown, unknown][] = [],
 ): Omit<DecodedOsCall, 'callId'> {
-  return {
-    functionName: name,
-    args,
-    kwargs,
-    notHandledError: {
-      excType: 'PermissionError',
-      message: `Permission denied: '${primaryPath}'`,
-      traceback: '',
-      frames: [],
-    },
-  }
-}
-
-/** A surfaced non-filesystem call: `on_no_handler` is a `RuntimeError`. */
-function nonFsCall(name: string, args: unknown[]): Omit<DecodedOsCall, 'callId'> {
-  return {
-    functionName: name,
-    args,
-    kwargs: [],
-    notHandledError: {
-      excType: 'RuntimeError',
-      message: `'${name}' is not supported in this environment`,
-      traceback: '',
-      frames: [],
-    },
-  }
+  return { functionName, args, kwargs }
 }
 
 /** `TextWrite`/`Open`/`Rename` bodies: two string fields. */
@@ -814,10 +778,6 @@ function functionValue(name: string): Uint8Array {
   const obj = new Writer()
   obj.lengthDelimited(25, fn.finish()) // MontyObject.function
   return obj.finish()
-}
-
-function simpleExc(exc: NativeException): { excType: string; message: string } {
-  return { excType: exc.excType, message: exc.message }
 }
 
 function crashed(message: string): NativeTurn {

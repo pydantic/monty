@@ -213,19 +213,9 @@ fn drive_sync(
                 function_name,
                 args,
                 kwargs,
-                not_handled_error,
                 ..
             } if os.is_some() => {
-                let result = dispatch_os_parts(
-                    py,
-                    &function_name,
-                    &args,
-                    &kwargs,
-                    &not_handled_error,
-                    os.as_ref(),
-                    &ctx.dc_registry,
-                );
-                let resume = ext_result_to_resume(result);
+                let resume = dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &ctx.dc_registry);
                 let (result, print_err) =
                     py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, move |c, p| c.resume(resume, p)));
                 event = finalize_turn(py, result, print_err)?;
@@ -249,20 +239,10 @@ async fn drive_async(
                 function_name,
                 args,
                 kwargs,
-                not_handled_error,
                 ..
             } if os.is_some() => {
                 let resume = Python::attach(|py| {
-                    let result = dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        &kwargs,
-                        &not_handled_error,
-                        os.as_ref(),
-                        &ctx.dc_registry,
-                    );
-                    ext_result_to_resume(result)
+                    dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &ctx.dc_registry)
                 });
                 event = run_turn_async(&ctx.checkout, &ctx.print_target, move |c, p| c.resume(resume, p)).await?;
             }
@@ -301,8 +281,8 @@ pub(crate) fn build_snapshot(
                 args,
                 kwargs,
                 call_id,
+                is_os_function: false,
                 is_method_call: method_call,
-                not_handled_error: None,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -311,15 +291,14 @@ pub(crate) fn build_snapshot(
             args,
             kwargs,
             call_id,
-            not_handled_error,
         } => {
             let call = FunctionCallData {
                 function_name,
                 args,
                 kwargs,
                 call_id,
+                is_os_function: true,
                 is_method_call: false,
-                not_handled_error: Some(not_handled_error),
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -540,18 +519,8 @@ struct FunctionCallData {
     args: Vec<MontyObject>,
     kwargs: Vec<(MontyObject, MontyObject)>,
     call_id: u32,
+    is_os_function: bool,
     is_method_call: bool,
-    /// The exception the sandbox would raise with no handler — always present
-    /// for OS calls (which is what distinguishes them from external function
-    /// calls), and consumed by `resume_not_handled`.
-    not_handled_error: Option<MontyException>,
-}
-
-impl FunctionCallData {
-    /// Whether this is an OS call (vs an external function call).
-    fn is_os_function(&self) -> bool {
-        self.not_handled_error.is_some()
-    }
 }
 
 struct FunctionSnapshot {
@@ -564,12 +533,16 @@ impl FunctionSnapshot {
         parse_external_result(py, result, &self.snapshot.ctx.dc_registry)
     }
 
+    /// `ResumeValue::NotHandled` for an OS-call snapshot: the sandbox raises
+    /// the call's own no-handler default.
     fn not_handled_value(&self) -> PyResult<ResumeValue> {
-        let exc =
-            self.call.not_handled_error.clone().ok_or_else(|| {
-                PyRuntimeError::new_err("resume_not_handled() is only valid for OS function snapshots")
-            })?;
-        Ok(ResumeValue::Error(exc))
+        if self.call.is_os_function {
+            Ok(ResumeValue::NotHandled)
+        } else {
+            Err(PyRuntimeError::new_err(
+                "resume_not_handled() is only valid for OS function snapshots",
+            ))
+        }
     }
 }
 
@@ -587,7 +560,7 @@ impl PyFunctionSnapshot {
 
     #[getter]
     fn is_os_function(&self) -> bool {
-        self.0.call.is_os_function()
+        self.0.call.is_os_function
     }
 
     #[getter]
@@ -642,13 +615,12 @@ impl PyFunctionSnapshot {
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
         let call = &self.0.call;
-        let result = if let Some(not_handled_error) = &call.not_handled_error {
+        let value = if call.is_os_function {
             dispatch_os_parts(
                 py,
                 &call.function_name,
                 &call.args,
                 &call.kwargs,
-                not_handled_error,
                 ctx.os.as_ref(),
                 &ctx.dc_registry,
             )
@@ -661,7 +633,7 @@ impl PyFunctionSnapshot {
                 ctx.external_lookup.as_ref(),
                 &ctx.dc_registry,
             ) {
-                CallResult::Sync(result) => result,
+                CallResult::Sync(result) => ext_result_to_resume(result),
                 CallResult::Coroutine(coro) => {
                     // Close the un-awaited coroutine so it doesn't leak a
                     // "coroutine was never awaited" ResourceWarning: a sync
@@ -672,7 +644,6 @@ impl PyFunctionSnapshot {
                 }
             }
         };
-        let value = ext_result_to_resume(result);
         let os = ctx.clone_os(py);
         drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
     }
@@ -684,8 +655,7 @@ impl PyFunctionSnapshot {
     fn __repr__(&self) -> String {
         format!(
             "FunctionSnapshot(function_name={:?}, is_os_function={})",
-            self.0.call.function_name,
-            self.0.call.is_os_function()
+            self.0.call.function_name, self.0.call.is_os_function
         )
     }
 }
@@ -704,7 +674,7 @@ impl PyAsyncFunctionSnapshot {
 
     #[getter]
     fn is_os_function(&self) -> bool {
-        self.0.call.is_os_function()
+        self.0.call.is_os_function
     }
 
     #[getter]
@@ -768,19 +738,17 @@ impl PyAsyncFunctionSnapshot {
         future_into_py(py, async move {
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
-            let answer: PyResult<ResumeValue> = if let Some(not_handled_error) = &call.not_handled_error {
-                let result = Python::attach(|py| {
+            let answer: PyResult<ResumeValue> = if call.is_os_function {
+                Ok(Python::attach(|py| {
                     dispatch_os_parts(
                         py,
                         &call.function_name,
                         &call.args,
                         &call.kwargs,
-                        not_handled_error,
                         ctx.os.as_ref(),
                         &ctx.dc_registry,
                     )
-                });
-                Ok(ext_result_to_resume(result))
+                }))
             } else {
                 match dispatch_function_call(
                     &call.function_name,
@@ -817,8 +785,7 @@ impl PyAsyncFunctionSnapshot {
     fn __repr__(&self) -> String {
         format!(
             "AsyncFunctionSnapshot(function_name={:?}, is_os_function={})",
-            self.0.call.function_name,
-            self.0.call.is_os_function()
+            self.0.call.function_name, self.0.call.is_os_function
         )
     }
 }

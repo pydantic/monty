@@ -56,12 +56,6 @@ export interface OsCallTurn {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
-  /**
-   * Summary of the exception the sandbox raises when declined; the full
-   * exception (traceback included) is retained Rust-side and used by
-   * `resumeNotHandled`.
-   */
-  notHandledError: { excType: string; message: string; frames: NativeFrame[] }
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

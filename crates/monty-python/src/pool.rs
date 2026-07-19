@@ -1212,12 +1212,15 @@ fn sync_turn_answer(
             function_name,
             args,
             kwargs,
-            not_handled_error,
             ..
-        } => {
-            let result = dispatch_os_parts(py, &function_name, &args, &kwargs, &not_handled_error, os, dc_registry);
-            Ok(TurnAnswer::Call(ext_to_resume(result)?))
-        }
+        } => Ok(TurnAnswer::Call(dispatch_os_parts(
+            py,
+            &function_name,
+            &args,
+            &kwargs,
+            os,
+            dc_registry,
+        ))),
         TurnEvent::NameLookup { name } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
         TurnEvent::Complete(_) => unreachable!("Complete is handled by the drive loop"),
@@ -1328,13 +1331,10 @@ fn async_turn_answer(
             function_name,
             args,
             kwargs,
-            not_handled_error,
             ..
         } => {
-            let result = Python::attach(|py| {
-                dispatch_os_parts(py, &function_name, &args, &kwargs, &not_handled_error, os, dc_registry)
-            });
-            Ok(TurnAnswer::Call(ext_to_resume(result)?))
+            let value = Python::attach(|py| dispatch_os_parts(py, &function_name, &args, &kwargs, os, dc_registry));
+            Ok(TurnAnswer::Call(value))
         }
         TurnEvent::NameLookup { name } => {
             let value = Python::attach(|py| {
@@ -1447,21 +1447,20 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
 }
 
 /// Calls the Python `os=` fallback for a bubbled OS call. With no callback —
-/// or when it returns `NOT_HANDLED` — answers with the pool-computed
-/// `not_handled_error`, preserving monty's per-call no-handler semantics.
+/// or when it returns `NOT_HANDLED` — answers [`ResumeValue::NotHandled`], so
+/// the sandbox raises monty's per-call no-handler default itself.
 pub(crate) fn dispatch_os_parts(
     py: Python<'_>,
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    not_handled_error: &MontyException,
     os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
-) -> ExtFunctionResult {
+) -> ResumeValue {
     let Some(os_callback) = os else {
-        return not_handled_error.clone().into();
+        return ResumeValue::NotHandled;
     };
-    let call = || -> PyResult<ExtFunctionResult> {
+    let call = || -> PyResult<ResumeValue> {
         let py_args: Vec<Py<PyAny>> = args
             .iter()
             .map(|arg| monty_to_py(py, arg, dc_registry))
@@ -1473,14 +1472,14 @@ pub(crate) fn dispatch_os_parts(
         }
         let result = os_callback.bind(py).call1((function_name, py_args, py_kwargs))?;
         if result.is(get_not_handled(py)?.bind(py)) {
-            return Ok(not_handled_error.clone().into());
+            return Ok(ResumeValue::NotHandled);
         }
         Ok(match py_to_monty_value(&result, dc_registry) {
-            Ok(obj) => ExtFunctionResult::Return(obj),
-            Err(exc) => ExtFunctionResult::Error(exc),
+            Ok(obj) => ResumeValue::Return(obj),
+            Err(exc) => ResumeValue::Error(exc),
         })
     };
-    call().unwrap_or_else(|err| ExtFunctionResult::Error(exc_py_to_monty(py, &err)))
+    call().unwrap_or_else(|err| ResumeValue::Error(exc_py_to_monty(py, &err)))
 }
 
 /// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
