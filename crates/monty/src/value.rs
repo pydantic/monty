@@ -1433,17 +1433,12 @@ impl<'h> PyTrait<'h> for Value {
 
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Self::Ref(id) = self {
-            match vm.heap.read(*id) {
-                HeapReadOutput::List(list) => return list.py_iter(Some(*id), vm),
-                HeapReadOutput::ListIterator(iter) => return iter.py_iter(Some(*id), vm),
-                HeapReadOutput::Iter(iter) => return iter.py_iter(Some(*id), vm),
-                _ => {}
-            }
+            vm.heap.read(*id).py_iter(Some(*id), vm)
+        } else {
+            let iter = MontyIter::new(self.clone_with_heap(vm), vm)?;
+            let id = vm.heap.allocate(HeapData::Iter(iter))?;
+            Ok(Self::Ref(id))
         }
-
-        let iter = MontyIter::new(self.clone_with_heap(vm), vm)?;
-        let id = vm.heap.allocate(HeapData::Iter(iter))?;
-        Ok(Self::Ref(id))
     }
 
     fn py_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {

@@ -1017,11 +1017,86 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        match self {
+            Self::Str(value) => value.py_iter(self_id, vm),
+            Self::Bytes(value) => value.py_iter(self_id, vm),
+            Self::List(value) => value.py_iter(self_id, vm),
+            Self::ListIterator(value) => value.py_iter(self_id, vm),
+            Self::Tuple(value) => value.py_iter(self_id, vm),
+            Self::NamedTuple(value) => value.py_iter(self_id, vm),
+            Self::Dict(value) => value.py_iter(self_id, vm),
+            Self::DictKeysView(value) => value.py_iter(self_id, vm),
+            Self::DictItemsView(value) => value.py_iter(self_id, vm),
+            Self::DictValuesView(value) => value.py_iter(self_id, vm),
+            Self::Set(value) => value.py_iter(self_id, vm),
+            Self::FrozenSet(value) => value.py_iter(self_id, vm),
+            Self::Range(value) => value.py_iter(self_id, vm),
+            Self::Slice(value) => value.py_iter(self_id, vm),
+            Self::Dataclass(value) => value.py_iter(self_id, vm),
+            Self::Class(value) => value.py_iter(self_id, vm),
+            Self::Instance(value) => value.py_iter(self_id, vm),
+            Self::BoundMethod(value) => value.py_iter(self_id, vm),
+            Self::Iter(value) => value.py_iter(self_id, vm),
+            Self::Path(value) => value.py_iter(self_id, vm),
+            Self::OpenFile(value) => value.py_iter(self_id, vm),
+            Self::ReMatch(value) => value.py_iter(self_id, vm),
+            Self::RePattern(value) => value.py_iter(self_id, vm),
+            Self::Date(value) => value.py_iter(self_id, vm),
+            Self::DateTime(value) => value.py_iter(self_id, vm),
+            Self::TimeDelta(value) => value.py_iter(self_id, vm),
+            Self::TimeZone(value) => value.py_iter(self_id, vm),
+            Self::Closure(_)
+            | Self::FunctionDefaults(_)
+            | Self::ExtFunction(_)
+            | Self::Cell(_)
+            | Self::Exception(_)
+            | Self::LongInt(_)
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_)
+            | Self::ExternalFuture(_) => {
+                let self_id = self_id.expect("heap values have an id");
+                vm.heap.inc_ref(self_id);
+                let iter = MontyIter::new(Value::Ref(self_id), vm)?;
+                let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
+                Ok(Value::Ref(iter_id))
+            }
+        }
+    }
+
     fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match self {
-            Self::Iter(iter) => iter.py_next(vm),
-            Self::ListIterator(iter) => iter.py_next(vm),
-            other => Err(ExcType::type_error_not_iterator(&other.py_type(vm).to_string())),
+            Self::Str(value) => value.py_next(vm),
+            Self::Bytes(value) => value.py_next(vm),
+            Self::List(value) => value.py_next(vm),
+            Self::ListIterator(value) => value.py_next(vm),
+            Self::Tuple(value) => value.py_next(vm),
+            Self::NamedTuple(value) => value.py_next(vm),
+            Self::Dict(value) => value.py_next(vm),
+            Self::DictKeysView(value) => value.py_next(vm),
+            Self::DictItemsView(value) => value.py_next(vm),
+            Self::DictValuesView(value) => value.py_next(vm),
+            Self::Set(value) => value.py_next(vm),
+            Self::FrozenSet(value) => value.py_next(vm),
+            Self::Range(value) => value.py_next(vm),
+            Self::Slice(value) => value.py_next(vm),
+            Self::Dataclass(value) => value.py_next(vm),
+            Self::Class(value) => value.py_next(vm),
+            Self::Instance(value) => value.py_next(vm),
+            Self::BoundMethod(value) => value.py_next(vm),
+            Self::Iter(value) => value.py_next(vm),
+            Self::Path(value) => value.py_next(vm),
+            Self::OpenFile(value) => value.py_next(vm),
+            Self::ReMatch(value) => value.py_next(vm),
+            Self::RePattern(value) => value.py_next(vm),
+            Self::Date(value) => value.py_next(vm),
+            Self::DateTime(value) => value.py_next(vm),
+            Self::TimeDelta(value) => value.py_next(vm),
+            Self::TimeZone(value) => value.py_next(vm),
+            other => Err(ExcType::type_error_not_iterator(
+                &other.py_type(vm).name(vm.heap, vm.interns),
+            )),
         }
     }
 }

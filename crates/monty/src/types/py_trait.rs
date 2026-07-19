@@ -13,13 +13,13 @@ use std::{cmp::Ordering, fmt::Write};
 
 use ahash::AHashSet;
 
-use super::{Type, allocate_string};
+use super::{MontyIter, Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, HeapId},
+    heap::{DropWithContext, HeapData, HeapId},
     intern::StringId,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
@@ -232,7 +232,8 @@ pub(crate) trait PyTrait<'h> {
         vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut LazyHeapSet,
     ) -> RunResult<()> {
-        write!(f, "<'{}' object>", self.py_type(vm))?;
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        write!(f, "<{type_name} object>")?;
         Ok(())
     }
 
@@ -509,18 +510,24 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// Get a Python iterator for this object (`__iter__`)
-    fn py_iter(&self, _self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        Err(SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("'{}' object is not iterable", self.py_type(vm)),
-        )
-        .into())
+    /// Returns a Python iterator for this object (`__iter__`).
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let Some(self_id) = self_id else {
+            return Err(ExcType::type_error_not_iterable(
+                &self.py_type(vm).name(vm.heap, vm.interns),
+            ));
+        };
+        vm.heap.inc_ref(self_id);
+        let iter = MontyIter::new(Value::Ref(self_id), vm)?;
+        let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
+        Ok(Value::Ref(iter_id))
     }
 
-    /// Python iteration for this object (`__next__`)
+    /// Advances this object using Python's iterator protocol (`__next__`).
     fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        Err(ExcType::type_error_not_iterator(&self.py_type(vm).to_string()))
+        Err(ExcType::type_error_not_iterator(
+            &self.py_type(vm).name(vm.heap, vm.interns),
+        ))
     }
 }
 

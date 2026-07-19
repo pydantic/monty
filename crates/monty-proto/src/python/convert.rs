@@ -225,6 +225,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::Str,
             MontyType::Bytes,
             MontyType::List,
+            MontyType::ListIterator,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -436,6 +437,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::DateTime => cached!("datetime", "datetime"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
+        MontyType::ListIterator => get_list_iterator_type(py).map(|b| b.clone().unbind()),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
@@ -456,6 +458,13 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         ))),
         _ => import_builtins(py)?.getattr(py, t.to_string()),
     }
+}
+
+/// Returns CPython's private `list_iterator` type without relying on a module attribute.
+fn get_list_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    TYPE.get_or_try_init(py, || Ok(PyList::empty(py).try_iter()?.get_type().into_any().unbind()))
+        .map(|ty| ty.bind(py))
 }
 
 /// Converts a native Python `datetime.timedelta` to Monty's carrier representation.

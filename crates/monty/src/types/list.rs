@@ -939,6 +939,11 @@ pub(crate) struct ListIterator {
 }
 
 impl ListIterator {
+    /// Returns the list kept alive by this iterator.
+    pub(crate) fn list_id(&self) -> HeapId {
+        self.list
+    }
+
     /// Returns the number of items remaining in the list's current contents.
     pub(crate) fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
         let HeapData::List(list) = heap.get(self.list) else {

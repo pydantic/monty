@@ -1563,6 +1563,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        HeapData::ListIterator(iter) => on_child(iter.list_id()),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {

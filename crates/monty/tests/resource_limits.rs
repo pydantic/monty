@@ -81,6 +81,30 @@ result
     );
 }
 
+/// Test that GC collects cycles between lists and their iterators.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_list_iterator_cycles() {
+    let code = r"
+for i in range(100001):
+    a = []
+    iterator = iter(a)
+    a.append(iterator)
+
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    assert!(
+        output.heap_count < 30,
+        "GC should collect list-iterator cycles: {} heap objects (expected < 30)",
+        output.heap_count
+    );
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next

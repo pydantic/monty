@@ -133,7 +133,7 @@ def test_type_object_output(monty_run: RunMonty):
 import datetime, re
 from pathlib import Path
 [
-    int, str, type, type(None), type(...),
+    int, str, type, type(None), type(...), type(iter([])),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
@@ -146,6 +146,7 @@ from pathlib import Path
         type,
         type(None),
         type(...),
+        type(iter([])),
         pathlib.PurePosixPath,
         pathlib.PurePosixPath,
         datetime.datetime,
@@ -167,6 +168,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         bool,
         type(None),
         type(...),
+        type(iter([])),
         datetime.datetime,
         datetime.date,
         datetime.timedelta,

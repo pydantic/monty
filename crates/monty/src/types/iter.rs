@@ -187,11 +187,7 @@ impl MontyIter {
                 self.index += 1;
                 Ok(Some(item))
             }
-            IterValue::Opaque { heap_id } => match vm.heap.read(*heap_id) {
-                HeapReadOutput::Iter(mut i) => i.advance(vm),
-                HeapReadOutput::ListIterator(mut li) => li.py_next(vm),
-                _ => unreachable!(),
-            },
+            &mut IterValue::Opaque { heap_id } => vm.heap.read(heap_id).py_next(vm),
         }
     }
 
@@ -394,14 +390,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                 self.get_mut(vm.heap).index += 1;
                 Ok(Some(item))
             }
-            IterValue::Opaque { heap_id } => {
-                let heap_id = *heap_id;
-                match vm.heap.read(heap_id) {
-                    HeapReadOutput::Iter(mut i) => i.advance(vm),
-                    HeapReadOutput::ListIterator(mut li) => li.py_next(vm),
-                    _ => unreachable!(),
-                }
-            }
+            &mut IterValue::Opaque { heap_id } => vm.heap.read(heap_id).py_next(vm),
         }
     }
 }
