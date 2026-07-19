@@ -14,7 +14,7 @@ use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
-use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountError, MountMode, MountTable, OverlayState};
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -56,9 +56,14 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
     mt
 }
 
-/// Shorthand: dispatch an `OsFunctionCall` through the mount table.
+/// Shorthand: dispatch an `OsFunctionCall` through the mount table, adapting
+/// the owning `handle_os_call` API back to the `Option` shape assertions use.
+/// Clones the call — fine here, test payloads are tiny.
 fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(c)
+    match mt.handle_os_call(c.clone()) {
+        MountCallOutcome::Handled(result) => Some(result),
+        MountCallOutcome::NotHandled(_) => None,
+    }
 }
 
 /// Shorthand: call and unwrap both the Option and Result.
@@ -1554,15 +1559,18 @@ fn mount_sorting_specific_wins() {
 }
 
 #[test]
-fn non_filesystem_ops_return_none() {
+fn non_filesystem_ops_not_handled() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let result = mt.handle_os_call(&OsFunctionCall::Getenv(monty::GetenvArgs {
+    let result = mt.handle_os_call(OsFunctionCall::Getenv(monty::GetenvArgs {
         key: "PATH".to_owned(),
         default: MontyObject::None,
     }));
-    assert!(result.is_none(), "non-filesystem ops should return None");
+    assert!(
+        matches!(result, MountCallOutcome::NotHandled(OsFunctionCall::Getenv(_))),
+        "non-filesystem ops should hand the call back"
+    );
 }
 
 #[test]

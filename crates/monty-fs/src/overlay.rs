@@ -55,36 +55,39 @@ fn available_memory(state: &OverlayState, ctx: &MountContext<'_>) -> Result<Memo
 }
 
 /// Executes a parsed filesystem request using overlay semantics.
+///
+/// Truncating writes move their payload into overlay storage; appends borrow
+/// it (extending the retained buffer copies regardless).
 pub(super) fn execute(
-    request: FsRequest<'_>,
+    request: FsRequest,
     ctx: &mut MountContext<'_>,
     state: &mut OverlayState,
 ) -> Result<MontyObject, MountError> {
     match request {
-        FsRequest::Exists { path } => exists(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsFile { path } => is_file(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsDir { path } => is_dir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsSymlink { path } => is_symlink(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::ReadText { path } => read_text(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::WriteText { path, data } => write_text(state, path, data, ctx),
-        FsRequest::WriteBytes { path, data } => write_bytes(state, path, data, ctx),
-        FsRequest::AppendText { path, data } => append_text(state, path, data, ctx),
-        FsRequest::AppendBytes { path, data } => append_bytes(state, path, data, ctx),
+        FsRequest::Exists { path } => exists(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsFile { path } => is_file(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsDir { path } => is_dir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsSymlink { path } => is_symlink(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::ReadText { path } => read_text(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::WriteText { path, data } => write_text(state, &path, data, ctx),
+        FsRequest::WriteBytes { path, data } => write_bytes(state, &path, data, ctx),
+        FsRequest::AppendText { path, data } => append_text(state, &path, &data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(state, &path, &data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
             exist_ok,
-        } => mkdir(state, &relative_path(path, ctx)?, parents, exist_ok, ctx, path),
-        FsRequest::Unlink { path } => unlink(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Rmdir { path } => rmdir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Iterdir { path } => iterdir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Stat { path } => stat(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Rename { src, dst } => rename(state, src, dst, ctx),
+        } => mkdir(state, &relative_path(&path, ctx)?, parents, exist_ok, ctx, &path),
+        FsRequest::Unlink { path } => unlink(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Rmdir { path } => rmdir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Iterdir { path } => iterdir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Stat { path } => stat(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Rename { src, dst } => rename(state, &src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(normalize_virtual_path(path)))
+            Ok(MontyObject::Path(normalize_virtual_path(&path)))
         }
-        FsRequest::Open { path, mode } => open(state, path, mode, ctx),
+        FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
 }
 
@@ -121,7 +124,7 @@ fn open(
         // `write_text` with empty data gives exactly the truncating
         // create-or-clobber semantics `open(w)` needs.
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
-            write_text(state, path, "", ctx)?;
+            write_text(state, path, String::new(), ctx)?;
         }
         // `open(a)` only needs the file to exist — it must NOT pull the real
         // file's content into the overlay, because that would O(file_size)
@@ -311,57 +314,62 @@ fn read_bytes(
 }
 
 /// Writes text into the overlay after validating quota and parent existence.
+/// Takes the payload by value so the retained content is a move, not a copy.
 fn write_text(
     state: &mut OverlayState,
     vpath: &str,
-    data: &str,
+    data: String,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
+    // The return value is the CPython char count — computed up front since
+    // the bytes move into the overlay below.
+    let char_count = data.chars().count();
+    let byte_len = data.len();
+    check_write_limit(byte_len, ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
-    state.check_file_replacement(&relative, data.len(), ctx.memory_usage_limit)?;
+    state.check_file_replacement(&relative, byte_len, ctx.memory_usage_limit)?;
 
     state.insert(
         relative,
         OverlayEntry::File(OverlayFile {
-            content: data.as_bytes().to_vec(),
+            content: data.into_bytes(),
             mtime: current_timestamp(),
         }),
         ctx.memory_usage_limit,
     )?;
 
-    commit_write_bytes(data.len(), ctx);
-    Ok(MontyObject::Int(
-        i64::try_from(data.chars().count()).unwrap_or(i64::MAX),
-    ))
+    commit_write_bytes(byte_len, ctx);
+    Ok(MontyObject::Int(i64::try_from(char_count).unwrap_or(i64::MAX)))
 }
 
 /// Writes bytes into the overlay after validating quota and parent existence.
+/// Takes the payload by value so the retained content is a move, not a copy.
 fn write_bytes(
     state: &mut OverlayState,
     vpath: &str,
-    data: &[u8],
+    data: Vec<u8>,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
+    let byte_len = data.len();
+    check_write_limit(byte_len, ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
-    state.check_file_replacement(&relative, data.len(), ctx.memory_usage_limit)?;
+    state.check_file_replacement(&relative, byte_len, ctx.memory_usage_limit)?;
 
     state.insert(
         relative,
         OverlayEntry::File(OverlayFile {
-            content: data.to_vec(),
+            content: data,
             mtime: current_timestamp(),
         }),
         ctx.memory_usage_limit,
     )?;
 
-    commit_write_bytes(data.len(), ctx);
-    Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+    commit_write_bytes(byte_len, ctx);
+    Ok(MontyObject::Int(i64::try_from(byte_len).unwrap_or(i64::MAX)))
 }
 
 /// Appends text in the overlay without leaving a host file handle open.

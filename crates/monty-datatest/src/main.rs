@@ -29,7 +29,7 @@ use monty::{
     MontyFileHandle, MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress,
     dir_stat, file_stat,
 };
-use monty_fs::{MountMode, MountTable, OverlayState};
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 
@@ -1770,16 +1770,13 @@ fn run_mount_fs_iter_loop(
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
-            RunProgress::OsCall(call) => {
+            RunProgress::OsCall(mut call) => {
                 // Dispatch through the mount table first.
-                let result = mount_table.handle_os_call(&call.function_call);
-                let ext_result = match result {
-                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
-                    Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
-                    None => {
-                        // Non-filesystem operation — dispatch to the regular handler.
-                        dispatch_os_call(&call.function_call)
-                    }
+                let ext_result = match mount_table.handle_os_call(call.take_function_call()) {
+                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                    // Non-filesystem operation — dispatch to the regular handler.
+                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
                 };
                 progress = call.resume(ext_result, PrintWriter::Stdout)?;
             }

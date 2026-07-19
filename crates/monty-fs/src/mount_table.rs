@@ -11,15 +11,24 @@ use std::{
 use monty::{MontyObject, OsFunctionCall};
 
 use super::{
-    common::MountContext,
-    dispatch::{self, FsRequest},
-    error::MountError,
-    mount_mode::MountMode,
-    path_security::normalize_virtual_path,
+    common::MountContext, dispatch, error::MountError, mount_mode::MountMode, path_security::normalize_virtual_path,
 };
 
 /// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
 pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 100_000_000;
+
+/// Outcome of [`MountTable::handle_os_call`].
+///
+/// The call is consumed so write payloads can be moved into overlay storage;
+/// when no mount covers it, ownership is handed back so the caller can
+/// surface the call to its fallback handler (host callback, `on_no_handler`).
+#[derive(Debug)]
+pub enum MountCallOutcome {
+    /// A mount covered the call and serviced it (successfully or not).
+    Handled(Result<MontyObject, MountError>),
+    /// Non-filesystem op or no matching mount — the call, returned unchanged.
+    NotHandled(OsFunctionCall),
+}
 
 /// A collection of mount points mapping virtual paths to host directories.
 ///
@@ -74,21 +83,20 @@ impl MountTable {
 
     /// Handles an OS call using the mount table.
     ///
-    /// Returns `Some(Ok(result))` if handled, `Some(Err(..))` on error, or
-    /// `None` if the operation was not handled (non-filesystem op, or no
-    /// matching mount for the path). The caller should fall through to a
-    /// callback or use [`OsFunctionCall::on_no_handler`] for unhandled calls.
-    pub fn handle_os_call(&mut self, call: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
-        if !call.is_filesystem() {
-            return None;
-        }
-
-        let request = dispatch::fs_request_from_call(call);
-
-        match self.route_request(request) {
-            Some(Ok(index)) => Some(self.mounts[index].execute(request)),
-            Some(Err(err)) => Some(Err(err)),
-            None => None,
+    /// Consumes the call so a covered write's payload is *moved* into the
+    /// backend (overlay storage retains it without a copy). Routing happens
+    /// on a borrow first, so [`MountCallOutcome::NotHandled`] hands the call
+    /// back untouched for the caller's fallback handler (a host callback or
+    /// [`OsFunctionCall::on_no_handler`]).
+    pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
+        if call.is_filesystem() {
+            match self.route_call(&call) {
+                Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
+                Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
+                None => MountCallOutcome::NotHandled(call),
+            }
+        } else {
+            MountCallOutcome::NotHandled(call)
         }
     }
 
@@ -104,18 +112,20 @@ impl MountTable {
         self.mounts.len()
     }
 
-    /// Selects the mount that should handle `request`.
+    /// Selects the mount that should handle `call`, routing on borrowed paths
+    /// so the call itself stays intact for [`MountCallOutcome::NotHandled`].
     ///
     /// Rename requests require both source and destination to resolve to the
     /// same longest-prefix mount. Other requests only route on the primary path.
-    fn route_request(&self, request: FsRequest<'_>) -> Option<Result<usize, MountError>> {
-        let src_mount_index = self.find_mount_index(request.primary_path())?;
+    fn route_call(&self, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
+        let primary_path = call.primary_path().expect("filesystem call always has a primary path");
+        let src_mount_index = self.find_mount_index(primary_path)?;
 
-        if let Some(dst_path) = request.rename_destination() {
+        if let Some(dst_path) = call.rename_destination() {
             let dst_mount_index = self.find_mount_index(dst_path)?;
             if src_mount_index != dst_mount_index {
                 return Some(Err(MountError::CrossMountRename {
-                    src: request.primary_path().to_owned(),
+                    src: primary_path.to_owned(),
                     dst: dst_path.to_owned(),
                 }));
             }
@@ -251,8 +261,9 @@ impl Mount {
         self.write_bytes_used
     }
 
-    /// Executes a parsed filesystem request against this mount.
-    fn execute(&mut self, request: FsRequest<'_>) -> Result<MontyObject, MountError> {
+    /// Executes a filesystem call against this mount, consuming it so write
+    /// payloads move into the backend.
+    fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
             mount_virtual: &self.virtual_path,
             mount_host: &self.host_path,
@@ -260,7 +271,7 @@ impl Mount {
             write_bytes_limit: self.write_bytes_limit,
             memory_usage_limit: self.memory_usage_limit,
         };
-        dispatch::execute(request, &mut ctx, &mut self.mode)
+        dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, &mut self.mode)
     }
 }
 

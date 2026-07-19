@@ -30,7 +30,7 @@
 
 pub use error::MountError;
 pub use mount_mode::MountMode;
-pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountTable};
+pub use mount_table::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountTable};
 pub use overlay_state::OverlayState;
 
 mod common;

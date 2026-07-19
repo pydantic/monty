@@ -1,6 +1,7 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
 use std::{
+    mem,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -8,8 +9,9 @@ use std::{
 
 use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
+    WireArgsOutcome,
 };
-use monty_fs::{MountMode, MountTable, OverlayState};
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, WireOsCall, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
@@ -621,7 +623,7 @@ impl Checkout {
                         })
                     });
                 }
-                Some(pb::child_event::Kind::OsCall(call)) => {
+                Some(pb::child_event::Kind::OsCall(mut call)) => {
                     // Parent-side mounts: service covered filesystem calls
                     // here and resume the child directly — the caller never
                     // sees them (mirroring `Print` handling). The watchdog is
@@ -633,7 +635,7 @@ impl Checkout {
                     // worker execution per turn stays bounded by `deadline`.
                     deadline_guard = None;
                     remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
-                    if let Some(result) = self.try_mount_call(&call)? {
+                    if let Some(result) = self.try_mount_call(&mut call)? {
                         // `armed_deadline` (the `Timeout` error's reported
                         // value) stays at the turn deadline: the allowance
                         // makes that the bound the whole turn is held to.
@@ -755,25 +757,42 @@ impl Checkout {
     /// mount-covered (it then surfaces to the caller); `Ok(Some)` carries the
     /// wire result to resume the child with.
     ///
+    /// The wire args are *moved* out of `call` so a covered write's payload
+    /// reaches overlay storage without a copy; when the call is not covered
+    /// they are moved back (via the `to_args` round trip, exact by
+    /// construction) so the caller can still surface the original call.
+    ///
     /// The wire args come from an untrusted child, but the child validates
     /// and serializes these calls itself — a recognized filesystem name with
     /// a malformed shape is a protocol violation (`Err`, worker discarded),
     /// never serviced. Path containment inside covered calls is enforced by
     /// the `MountTable` itself.
-    fn try_mount_call(&mut self, call: &WireOsCall) -> Result<Option<pb::ext_function_result::Kind>, PoolError> {
-        match OsFunctionCall::from_wire_args(&call.function_name, &call.args, &call.kwargs) {
-            Ok(Some(function_call)) => {
-                if let Some(outcome) = self.feed_mounts.as_mut().and_then(|m| m.handle_os_call(&function_call)) {
-                    Ok(Some(match outcome {
+    fn try_mount_call(&mut self, call: &mut WireOsCall) -> Result<Option<pb::ext_function_result::Kind>, PoolError> {
+        let args = mem::take(&mut call.args);
+        let kwargs = mem::take(&mut call.kwargs);
+        match OsFunctionCall::from_wire_args(&call.function_name, args, kwargs) {
+            WireArgsOutcome::Success(function_call) => {
+                // With no mounts this feed, every call surfaces to the caller.
+                let outcome = match self.feed_mounts.as_mut() {
+                    Some(mounts) => mounts.handle_os_call(function_call),
+                    None => MountCallOutcome::NotHandled(function_call),
+                };
+                match outcome {
+                    MountCallOutcome::Handled(result) => Ok(Some(match result {
                         Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
                         Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
-                    }))
-                } else {
-                    Ok(None)
+                    })),
+                    MountCallOutcome::NotHandled(function_call) => {
+                        (call.args, call.kwargs) = function_call.to_args();
+                        Ok(None)
+                    }
                 }
             }
-            Ok(None) => Ok(None),
-            Err(err) => Err(self.protocol_violation(&err)),
+            WireArgsOutcome::NoMatch(args, kwargs) => {
+                (call.args, call.kwargs) = (args, kwargs);
+                Ok(None)
+            }
+            WireArgsOutcome::Error(err) => Err(self.protocol_violation(&err)),
         }
     }
 
