@@ -66,8 +66,6 @@ mechanism beyond dataclass field inheritance.
   `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
-- **`round(x, n)`** — `n` must be an integer; CPython accepts and truncates
-  floats.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
   not honoured; `sep=` and `end=` are.
 - **`id(f)` / `hash(f)` / `f is g` / `f == g` for host-supplied callables**

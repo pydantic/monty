@@ -595,8 +595,18 @@ fn parse_int_from_str(value: &str, base: u32, heap: &Heap<impl ResourceTracker>)
     {
         return Ok(Value::Int(int));
     }
-    let invalid = || ExcType::value_error_invalid_literal_for_int(base, StringRepr(value));
-    parse_int_digits(value.trim(), base, &invalid, heap)
+    let trimmed = value.trim();
+    // Preserve the allocation-free path for whitespace-padded i64 values
+    // without retrying unchanged inputs that already failed above.
+    if base == 10
+        && trimmed.len() != value.len()
+        && let Ok(int) = trimmed.parse::<i64>()
+    {
+        Ok(Value::Int(int))
+    } else {
+        let invalid = || ExcType::value_error_invalid_literal_for_int(base, StringRepr(value));
+        parse_int_digits(trimmed, base, &invalid, heap)
+    }
 }
 
 /// Parses a Python `int()` bytes argument using ASCII whitespace rules.

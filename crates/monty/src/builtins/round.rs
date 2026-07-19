@@ -17,7 +17,7 @@ pub fn normalize_bool_to_int(value: Value) -> Value {
 }
 
 /// Argument shape for `round(number, ndigits=None)` — CPython parses it with
-/// `PyArg_ParseTupleAndKeywords("|OO:round")`, so both arguments are
+/// `PyArg_ParseTupleAndKeywords("O|O:round")`, so both arguments are
 /// keyword-capable, missing-argument errors carry `(pos N)` (`c_named`), and
 /// the total pre-count reports `round() takes at most 2 arguments (3 given)`.
 #[derive(FromArgs)]
