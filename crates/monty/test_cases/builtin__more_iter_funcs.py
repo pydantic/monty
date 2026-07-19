@@ -306,6 +306,13 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
+# enumerate keyword forms (CPython's vectorcall accepts all of these)
+assert list(enumerate(['a', 'b'], start=1)) == [(1, 'a'), (2, 'b')]
+assert list(enumerate(iterable=['a'])) == [(0, 'a')]
+assert list(enumerate(iterable=['a'], start=2)) == [(2, 'a')]
+assert list(enumerate(start=2, iterable=['a'])) == [(2, 'a')]
+assert list(enumerate(['a'], start=True)) == [(1, 'a')]
+
 # enumerate string
 assert list(enumerate('ab')) == [(0, 'a'), (1, 'b')]
 

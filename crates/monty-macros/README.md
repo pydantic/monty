@@ -96,6 +96,8 @@ are all incompatible.
   must be {expected}, not {got}`).
 - `kwarg_error_name = "..."` — override the function name in the
   unknown-kwarg error only (`json.dumps` reports `JSONEncoder.__init__`).
+  Under `style = unpack` it instead names the function in the blanket
+  `takes no keyword arguments` rejection (`unicodedata.name()`).
 - `kwargs_not_supported_yet` — reject every kwarg with a
   `NotImplementedError`; a Monty TODO marker.
 

@@ -23,6 +23,10 @@ assert round(5) == 5
 # round with ndigits
 assert round(3.14159, 2) == 3.14
 assert round(3.14159, 0) == 3.0
+# both round() arguments are keyword-capable in CPython
+assert round(3.14159, ndigits=2) == 3.14
+assert round(number=3.14159, ndigits=2) == 3.14
+assert round(ndigits=2, number=3.14159) == 3.14
 assert repr(round(-0.4, 0)) == '-0.0'
 assert repr(round(-0.5, 0)) == '-0.0'
 assert round(1234, -2) == 1200

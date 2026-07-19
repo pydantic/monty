@@ -244,12 +244,11 @@ impl Signature {
             }
         }
 
-        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic) {
-            return err(
-                "`kwarg_error_name` is only meaningful with `style = def` or the default \
-                 `clinic` style — the C families defer unknown-kwarg errors past binding \
-                 and `unpack` callables take no keywords worth renaming",
-            );
+        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic | Style::Unpack) {
+            return err("`kwarg_error_name` is only meaningful with `style = def`, the default \
+                 `clinic` style, or `style = unpack` (where it names the function in the \
+                 `takes no keyword arguments` error) — the C families defer unknown-kwarg \
+                 errors past binding");
         }
 
         if self.kwargs_not_supported_yet {

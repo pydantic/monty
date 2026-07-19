@@ -2,6 +2,7 @@
 # Basic sum operations
 assert sum([1, 2, 3]) == 6
 assert sum([1, 2, 3], 10) == 16
+assert sum([1, 2, 3], start=10) == 16
 assert sum(()) == 0
 assert sum([], 5) == 5
 assert sum(range(5)) == 10

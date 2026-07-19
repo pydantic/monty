@@ -576,6 +576,9 @@ pub enum StaticStrings {
     Offset,
     // datetime.now() kwarg
     Tz,
+    // round() kwargs
+    Number,
+    Ndigits,
     // date/datetime methods
     Isoformat,
     Strftime,

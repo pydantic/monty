@@ -14,6 +14,7 @@ import datetime
 import json
 import re
 import sys
+import unicodedata
 
 is_monty = sys.platform == 'monty'
 
@@ -469,3 +470,208 @@ try:
     assert False, 'datetime double conflict should report month'
 except TypeError as e:
     assert str(e) == "argument for function given by name ('month') and position (2)", f'c-earliest-conflict: {e}'
+
+# =====================================================================
+# === Unpack style (`style = unpack` — positional-only, no keywords) ===
+# =====================================================================
+
+# === unpack: any keyword is rejected wholesale, before arity ===
+try:
+    next(iter([]), 1, 2, bogus=1)
+    assert False, 'next with kwargs should raise no-keyword error'
+except TypeError as e:
+    assert str(e) == 'next() takes no keyword arguments', f'unpack-no-kw-next: {e}'
+
+try:
+    reversed(sequence=[1])
+    assert False, 'reversed with kwargs should raise no-keyword error'
+except TypeError as e:
+    assert str(e) == 'reversed() takes no keyword arguments', f'unpack-no-kw-reversed: {e}'
+
+try:
+    unicodedata.name('a', bogus=1)
+    assert False, 'unicodedata.name with kwargs should raise no-keyword error'
+except TypeError as e:
+    # `kwarg_error_name` qualifies the module function like CPython does.
+    assert str(e) == 'unicodedata.name() takes no keyword arguments', f'unpack-no-kw-qualified: {e}'
+
+# === unpack: exact arity (min == max collapses the wording) ===
+try:
+    reversed([1], [2])
+    assert False, 'reversed with 2 args should raise'
+except TypeError as e:
+    assert str(e) == 'reversed expected 1 argument, got 2', f'unpack-exact-arity: {e}'
+
+# =====================================================================
+# === Newly bound builtins: sum (clinic), round (c_named)            ===
+# =====================================================================
+
+# === sum: positional-only iterable cannot be passed by keyword ===
+try:
+    sum(iterable=[1])
+    assert False, 'sum(iterable=...) should raise'
+except TypeError as e:
+    assert str(e) == 'sum() takes at least 1 positional argument (0 given)', f'sum-pos-only: {e}'
+
+# === sum: at_most_total pre-count ===
+try:
+    sum([1], 1, 1)
+    assert False, 'sum with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'sum() takes at most 2 arguments (3 given)', f'sum-at-most: {e}'
+
+# === sum: unknown kwarg ===
+try:
+    sum([1], bogus=1)
+    assert False, 'sum with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "sum() got an unexpected keyword argument 'bogus'", f'sum-unknown-kw: {e}'
+
+# === round: c_named missing required argument ===
+try:
+    round()
+    assert False, 'round() should raise'
+except TypeError as e:
+    assert str(e) == "round() missing required argument 'number' (pos 1)", f'round-missing: {e}'
+
+try:
+    round(ndigits=1)
+    assert False, 'round(ndigits=1) should raise'
+except TypeError as e:
+    assert str(e) == "round() missing required argument 'number' (pos 1)", f'round-missing-kw: {e}'
+
+# === round: at_most_total pre-count ===
+try:
+    round(1, 2, 3)
+    assert False, 'round with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'round() takes at most 2 arguments (3 given)', f'round-at-most: {e}'
+
+# === round: unknown kwarg ===
+try:
+    round(1, bogus=2)
+    assert False, 'round with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "round() got an unexpected keyword argument 'bogus'", f'round-unknown-kw: {e}'
+
+# =====================================================================
+# === enumerate — CPython's hand-written vectorcall parser           ===
+# =====================================================================
+# CPython special-cases enumerate's argument parsing (enumobject.c
+# `enumerate_vectorcall`), so its errors match no parser family; Monty
+# mirrors that parser exactly, quirks included.
+
+try:
+    enumerate()
+    assert False, 'enumerate() should raise'
+except TypeError as e:
+    assert str(e) == "enumerate() missing required argument 'iterable'", f'enum-missing: {e}'
+
+# Quirk: any unrecognised zero-positional keyword shape reports the missing
+# iterable — even when `iterable=` was actually passed.
+try:
+    enumerate(start=1, bogus=1, iterable=[1])
+    assert False, 'enumerate 3-kwarg form should raise'
+except TypeError as e:
+    assert str(e) == "enumerate() missing required argument 'iterable'", f'enum-quirk-missing: {e}'
+
+# Quirk: keyword names are validated positionally against the accepted
+# shapes, so a lone `start=` reports 'start' as invalid.
+try:
+    enumerate(start=1)
+    assert False, 'enumerate(start=1) should raise'
+except TypeError as e:
+    assert str(e) == "'start' is an invalid keyword argument for enumerate()", f'enum-lone-start: {e}'
+
+try:
+    enumerate([1], iterable=[2])
+    assert False, 'enumerate positional + iterable= should raise'
+except TypeError as e:
+    assert str(e) == "'iterable' is an invalid keyword argument for enumerate()", f'enum-conflict: {e}'
+
+try:
+    enumerate([1], bogus=1)
+    assert False, 'enumerate with unknown kwarg should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()", f'enum-unknown-kw: {e}'
+
+# Total pre-count fires whenever at least one positional is present.
+try:
+    enumerate([1], 0, 0)
+    assert False, 'enumerate with 3 positionals should raise'
+except TypeError as e:
+    assert str(e) == 'enumerate() takes at most 2 arguments (3 given)', f'enum-at-most: {e}'
+
+try:
+    enumerate([1], bogus=1, worse=2)
+    assert False, 'enumerate 1-pos 2-kwarg should raise'
+except TypeError as e:
+    assert str(e) == 'enumerate() takes at most 2 arguments (3 given)', f'enum-at-most-kw: {e}'
+
+# === unpack: arity wording (`{name} expected …`, no parentheses) ===
+try:
+    next()
+    assert False, 'next() should raise'
+except TypeError as e:
+    assert str(e) == 'next expected at least 1 argument, got 0', f'unpack-at-least: {e}'
+
+try:
+    next(iter([]), 1, 2)
+    assert False, 'next with 3 args should raise'
+except TypeError as e:
+    assert str(e) == 'next expected at most 2 arguments, got 3', f'unpack-at-most: {e}'
+
+try:
+    reversed()
+    assert False, 'reversed() should raise'
+except TypeError as e:
+    assert str(e) == 'reversed expected 1 argument, got 0', f'unpack-exact-zero: {e}'
+
+# === sum: body type-check reachable through the keyword path ===
+try:
+    sum([1], start='x')
+    assert False, 'sum string start= should raise'
+except TypeError as e:
+    assert str(e) == "sum() can't sum strings [use ''.join(seq) instead]", f'sum-kw-str-start: {e}'
+
+# === enumerate: lone unknown keyword ===
+try:
+    enumerate(bogus=1)
+    assert False, 'enumerate(bogus=1) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()", f'enum-lone-unknown: {e}'
+
+# === enumerate: two-kwarg form, each rejection branch ===
+# swapped order (start first) with a bad second name
+try:
+    enumerate(start=1, bogus=2)
+    assert False, 'enumerate(start=, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()", f'enum-2kw-swapped-bad: {e}'
+
+# unswapped order with a bad first name
+try:
+    enumerate(bogus=2, start=1)
+    assert False, 'enumerate(bogus=, start=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()", f'enum-2kw-bad-first: {e}'
+
+# unswapped order with a good first and bad second name
+try:
+    enumerate(iterable=[1], bogus=1)
+    assert False, 'enumerate(iterable=, bogus=) should raise'
+except TypeError as e:
+    assert str(e) == "'bogus' is an invalid keyword argument for enumerate()", f'enum-2kw-bad-second: {e}'
+
+# === enumerate: non-string keys reach its hand-written key check ===
+try:
+    enumerate([1], **{1: 2})
+    assert False, 'enumerate non-string key should raise'
+except TypeError as e:
+    assert str(e) == 'keywords must be strings', f'enum-nonstring-key: {e}'
+
+try:
+    enumerate(**{1: 2})
+    assert False, 'enumerate lone non-string key should raise'
+except TypeError as e:
+    assert str(e) == 'keywords must be strings', f'enum-lone-nonstring-key: {e}'

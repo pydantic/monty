@@ -1,7 +1,7 @@
 //! Implementation of the round() builtin function.
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -16,24 +16,35 @@ pub fn normalize_bool_to_int(value: Value) -> Value {
     }
 }
 
+/// Argument shape for `round(number, ndigits=None)` — CPython parses it with
+/// `PyArg_ParseTupleAndKeywords("|OO:round")`, so both arguments are
+/// keyword-capable, missing-argument errors carry `(pos N)` (`c_named`), and
+/// the total pre-count reports `round() takes at most 2 arguments (3 given)`.
+#[derive(FromArgs)]
+#[from_args(name = "round", style = c_named, at_most_total)]
+struct RoundArgs {
+    number: Value,
+    #[from_args(default = Value::None)]
+    ndigits: Value,
+}
+
 /// Implementation of the round() builtin function.
 ///
 /// Rounds a number to a given precision in decimal digits.
 /// If ndigits is omitted or None, returns the nearest integer.
 /// Uses banker's rounding (round half to even).
 pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (number, ndigits) = args.get_one_two_args("round", vm.heap)?;
+    let RoundArgs { number, ndigits } = RoundArgs::from_args(args, vm)?;
     let number = normalize_bool_to_int(number);
     defer_drop!(number, vm);
     defer_drop!(ndigits, vm);
 
     // Determine the number of digits (None means round to integer)
-    // Extract digits value before potentially consuming ndigits for error handling
     let digits: Option<i64> = match ndigits {
-        Some(Value::None) => None,
-        Some(Value::Int(n)) => Some(*n),
-        Some(Value::Bool(b)) => Some(i64::from(*b)),
-        Some(v) => {
+        Value::None => None,
+        Value::Int(n) => Some(*n),
+        Value::Bool(b) => Some(i64::from(*b)),
+        v => {
             let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(
                 ExcType::TypeError,
@@ -41,7 +52,6 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
             )
             .into());
         }
-        None => None,
     };
 
     match number {

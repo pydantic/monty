@@ -1,7 +1,7 @@
 //! Implementation of the reversed() builtin function.
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::HeapData,
@@ -10,24 +10,35 @@ use crate::{
     value::Value,
 };
 
+/// Argument shape for `reversed(sequence, /)` — positional-only, so
+/// `style = unpack` gives CPython's exact-arity wording
+/// (`reversed expected 1 argument, got 2`) and the blanket
+/// `reversed() takes no keyword arguments` rejection.
+#[derive(FromArgs)]
+#[from_args(name = "reversed", style = unpack)]
+struct ReversedArgs {
+    #[from_args(pos_only)]
+    sequence: Value,
+}
+
 /// Implementation of the reversed() builtin function.
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("reversed", vm.heap)?;
+    let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
 
     // Being iterable is not enough: CPython needs `__reversed__`, or
     // `__len__` + `__getitem__`. Check before iterating so unordered and
     // one-shot iterables are rejected rather than silently reversed.
-    if !is_reversible(&value, vm) {
-        let err = ExcType::type_error_not_reversible(&value.py_type_name(vm));
-        value.drop_with(vm);
+    if !is_reversible(&sequence, vm) {
+        let err = ExcType::type_error_not_reversible(&sequence.py_type_name(vm));
+        sequence.drop_with(vm);
         return Err(err);
     }
 
     // Collect all items
-    let mut items: Vec<_> = MontyIter::new(value, vm)?.collect(vm)?;
+    let mut items: Vec<_> = MontyIter::new(sequence, vm)?.collect(vm)?;
 
     // Reverse in place
     items.reverse();

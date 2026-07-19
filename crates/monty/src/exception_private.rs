@@ -858,6 +858,31 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for a missing required argument without a position,
+    /// as raised by hand-written vectorcall fast paths like `enumerate`:
+    /// `{name}() missing required argument '{arg_name}'`
+    #[must_use]
+    pub(crate) fn type_error_missing_required_no_pos(name: &str, arg_name: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() missing required argument '{arg_name}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a keyword rejected by a hand-written vectorcall
+    /// fast path (CPython's `enumerate` wording, distinct from the parser
+    /// families' "unexpected keyword argument"):
+    /// `'{key}' is an invalid keyword argument for {name}()`
+    #[must_use]
+    pub(crate) fn type_error_invalid_keyword_argument(name: &str, key: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("'{key}' is an invalid keyword argument for {name}()"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError matching CPython's `_PyArg_BadArgument`
     /// positional-style wording: `{name}() argument {pos} must be
     /// {expected}, not {got}`.
