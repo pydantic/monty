@@ -983,12 +983,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
             let iterator = self.get(vm.heap);
             (iterator.list, iterator.index)
         };
-        let item = match vm.heap.read(list_id) {
-            HeapReadOutput::List(list) => list
-                .get(vm.heap)
-                .items
-                .get(index)
-                .map(|item| item.clone_with_heap(vm.heap)),
+        let item = match vm.heap.get(list_id) {
+            HeapData::List(list) => list.items.get(index).map(|item| item.clone_with_heap(vm.heap)),
             _ => unreachable!("list iterator must reference a list"),
         };
         if item.is_some() {

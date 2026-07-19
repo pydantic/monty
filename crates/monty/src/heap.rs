@@ -1073,7 +1073,8 @@ impl<T: ResourceTracker> Heap<T> {
         });
     }
 
-    /// Returns an immutable reference to the heap data stored at the given ID.
+    /// Returns an immutable reference to the heap data stored at the given ID. This can be more efficient
+    /// than `.read()` for short-lived borrows that need read-only access (avoids reader bookkeeping).
     ///
     /// # Panics
     /// Panics if the value ID is invalid, the value has already been freed,
