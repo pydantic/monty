@@ -679,16 +679,19 @@ impl<'a> Parser<'a> {
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
     /// recorded in `members`, in source order, for namespace assembly.
     ///
-    /// `pass` and `...` are ignored; a leading docstring becomes a synthesized
-    /// `__doc__` member (defaulting to `None`). Inheritance/metaclass syntax
-    /// (`class Foo(Bar):`), class/method decorators, and anything else in the
-    /// body (arbitrary control flow, complex targets) are rejected with a
-    /// not-implemented error, reserving the syntax for later.
+    /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
+    /// member. Class decorators are supported (enclosing scope, applied
+    /// bottom-up); inheritance, function/method decorators, and anything else in
+    /// the body are rejected as not-implemented, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
-        let position = self.convert_range(class.range);
-        if !class.decorator_list.is_empty() {
-            return Err(ParseError::not_implemented("class decorators", position));
-        }
+        let position = self.class_keyword_range(&class);
+        // Parsed as ordinary expressions; the compiler emits the apply calls
+        // after building the class.
+        let decorators = class
+            .decorator_list
+            .into_iter()
+            .map(|d| self.parse_expression(d.expression))
+            .collect::<Result<Vec<_>, ParseError>>()?;
         // `class.arguments` carries base classes and metaclass keywords.
         if class
             .arguments
@@ -823,8 +826,34 @@ impl<'a> Parser<'a> {
             name,
             body,
             members,
+            decorators,
             position,
         })
+    }
+
+    /// The range of a `class` statement from the `class` keyword, excluding
+    /// decorators: ruff's `StmtClassDef::range` starts at the first decorator
+    /// where CPython starts at the keyword, which would otherwise show decorator
+    /// lines in a class-body traceback frame. Scanning back for the keyword is
+    /// exact — only whitespace and continuations may sit between it and the name.
+    fn class_keyword_range(&self, class: &ast::StmtClassDef) -> CodeRange {
+        let start = if class.decorator_list.is_empty() {
+            // Undecorated: ruff's range already starts at the keyword.
+            class.range.start().into()
+        } else {
+            let name_start = usize::from(class.name.range.start());
+            // Always fits in `u32`; the fallback is unreachable (a class statement
+            // always contains the keyword) but avoids a panic path.
+            self.code[..name_start]
+                .rfind("class")
+                .and_then(|i| u32::try_from(i).ok())
+                .unwrap_or_else(|| class.range.start().into())
+        };
+        CodeRange {
+            filename: self.filename_id,
+            start_byte: start,
+            end_byte: class.range.end().into(),
+        }
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope

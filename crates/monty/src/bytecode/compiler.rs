@@ -670,8 +670,9 @@ impl<'a> Compiler<'a> {
                 name,
                 body,
                 members,
+                decorators,
                 position,
-            } => self.compile_class_def(name, body, members, *position)?,
+            } => self.compile_class_def(name, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::With {
                 context, target, body, ..
@@ -834,8 +835,14 @@ impl<'a> Compiler<'a> {
         name: &Identifier,
         body: &PreparedFunctionDef,
         members: &[Identifier],
+        decorators: &[ExprLoc],
         position: CodeRange,
     ) -> Result<(), CompileError> {
+        // Pushed in source order so they sit below the class value: the applying
+        // calls below then run bottom-up, like CPython's `cls = deco(cls)`.
+        for decorator in decorators {
+            self.compile_expr(decorator)?;
+        }
         // Build the class-body function/closure value on the stack...
         self.emit_make_class_body(body, members, name, position)?;
         // ...call it with zero args — it runs the body and returns the `Class`.
@@ -844,7 +851,14 @@ impl<'a> Compiler<'a> {
         // CPython) rather than falling back to `CodeRange::default()`.
         self.code.set_location(position, None);
         self.code.emit_u8(Opcode::CallFunction, 0)?;
-        // ...and bind the class object to the class name's slot.
+        // Each call consumes the callable below the current value: `deco(value)`.
+        // Reversed so the bottom-most (last pushed) applies first, and located at
+        // its own decorator so a traceback pins the one that raised, like CPython.
+        for decorator in decorators.iter().rev() {
+            self.code.set_location(decorator.position, None);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
+        }
+        // ...and bind the (possibly decorated) class object to the name's slot.
         self.compile_store(name)?;
         Ok(())
     }

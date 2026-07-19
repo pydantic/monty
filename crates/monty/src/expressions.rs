@@ -660,6 +660,9 @@ pub enum Node<F> {
         /// Each is resolved to a class-body-local slot during prepare; the
         /// compiler uses them to assemble the namespace dict.
         members: Vec<Identifier>,
+        /// In source order; evaluated in the enclosing scope and applied
+        /// bottom-up (`cls = deco(cls)`), like CPython.
+        decorators: Vec<ExprLoc>,
         /// Source position of the `class` statement (for error reporting).
         position: CodeRange,
     },
