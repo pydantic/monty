@@ -62,17 +62,47 @@ impl Str {
 
     /// Creates a string from the `str()` constructor call.
     ///
-    /// - `str()` with no args returns an empty string
+    /// - `str()` with no args returns an empty string (even with `encoding=`)
     /// - `str(x)` converts x to its string representation using `py_str`
+    /// - `str(b, encoding, errors)` decodes a bytes object via the codec registry
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let StrInitArgs { object } = StrInitArgs::from_args(args, vm)?;
-        match object {
-            None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
-            Some(v) => {
-                defer_drop!(v, vm);
-                v.py_str(vm)
-            }
+        let StrInitArgs {
+            object,
+            encoding,
+            errors,
+        } = StrInitArgs::from_args(args, vm)?;
+        defer_drop!(object, vm);
+        defer_drop!(encoding, vm);
+        defer_drop!(errors, vm);
+        if encoding.is_none() && errors.is_none() {
+            return match object {
+                None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
+                Some(v) => v.py_str(vm),
+            };
         }
+        // Decoding mode. Type-check `encoding` then `errors` first — CPython's
+        // clinic converters run before the constructor body sees the object.
+        str_ctor_arg_check(encoding.as_ref(), "encoding", vm)?;
+        str_ctor_arg_check(errors.as_ref(), "errors", vm)?;
+        let Some(object) = object else {
+            // A missing object wins over the decoding args: `str(encoding='utf-8')` is ''.
+            return Ok(Value::InternString(StaticStrings::EmptyString.into()));
+        };
+        let bytes: &[u8] = match object {
+            Value::InternBytes(bytes_id) => vm.interns.get_bytes(*bytes_id),
+            Value::InternString(_) => return Err(ExcType::type_error_decoding_str_not_supported()),
+            Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                HeapData::Bytes(b) => b.as_slice(),
+                HeapData::Str(_) => return Err(ExcType::type_error_decoding_str_not_supported()),
+                _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
+            },
+            _ => return Err(ExcType::type_error_decoding_need_bytes(object.py_type_name(vm))),
+        };
+        let encoding = ctor_str_arg(encoding.as_ref(), "utf-8", vm)?;
+        let errors = ctor_str_arg(errors.as_ref(), "strict", vm)?;
+        let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+        let s = codec.decode(bytes, errors)?;
+        Ok(allocate_string(s, vm.heap)?)
     }
 
     /// Handles slice-based indexing for strings.
@@ -84,13 +114,49 @@ impl Str {
     }
 }
 
-/// Argument shape for `str(object='')` — accepts one optional pos-or-keyword
-/// `object` arg whose absence is the documented "return empty string" path.
+/// Argument shape for `str(object='', encoding='utf-8', errors='strict')`.
+///
+/// `encoding`/`errors` are raw `Value`s validated in the body: CPython's
+/// `unicode_new` names a wrong type by its `tp_name` (`must be str, not
+/// NoneType`), not `_PyArg_BadArgument`'s `None` special case, so the macro's
+/// `bad_arg_named` wording can't be used. `vectorcall` + `at_most_total`
+/// model `unicode_vectorcall`'s dual arity wording.
 #[derive(FromArgs)]
-#[from_args(name = "str", style = c_named)]
+#[from_args(name = "str", at_most_total, vectorcall)]
 struct StrInitArgs {
     #[from_args(default)]
     object: Option<Value>,
+    #[from_args(default)]
+    encoding: Option<Value>,
+    #[from_args(default)]
+    errors: Option<Value>,
+}
+
+/// Rejects a non-str `encoding`/`errors` argument to `str()` with CPython's
+/// `str() argument '{name}' must be str, not {tp_name}` wording.
+fn str_ctor_arg_check(arg: Option<&Value>, name: &str, vm: &VM<'_, impl ResourceTracker>) -> RunResult<()> {
+    match arg {
+        Some(v) if !v.is_str(vm.heap) => Err(ExcType::type_error_bad_arg_named(
+            "str",
+            name,
+            "str",
+            v.py_type_name(vm),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Borrows a validated (str-typed) optional constructor argument's text,
+/// falling back to `default` when the argument was absent.
+fn ctor_str_arg<'a>(
+    arg: Option<&'a Value>,
+    default: &'a str,
+    vm: &'a VM<'_, impl ResourceTracker>,
+) -> RunResult<&'a str> {
+    match arg {
+        None => Ok(default),
+        Some(v) => v.to_str(vm),
+    }
 }
 
 /// Allocates a string, using interned versions when possible.

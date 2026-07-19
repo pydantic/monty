@@ -102,7 +102,7 @@ fn container_repr_with_huge_int_raises_value_error() {
     assert_eq!(err.exc_type(), ExcType::ValueError);
     assert_eq!(
         err.message().expect("should have a message"),
-        "Exceeds the limit (4300 digits) for integer string conversion"
+        "Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
     );
 }
 
@@ -156,6 +156,6 @@ fn monty_object_repr_or_error_with_huge_int() {
     };
     assert_eq!(
         s,
-        "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion')>"
+        "<dict_keys object, error on repr(): ValueError('Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit')>"
     );
 }

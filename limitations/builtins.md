@@ -50,6 +50,13 @@ mechanism beyond dataclass field inheritance.
   "getattr(): attribute is not a simple value"` rather than returning a
   bound method object. Use direct attribute access (`obj.name(...)`) for
   these.
+- **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
+  CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
+  which Monty rejects with `invalid literal for int() with base 10`.
+- **`bytes(source)`** — an iterable of ints is not supported: CPython's
+  `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert
+  'list' object to bytes`. The int / str-with-encoding / bytes source forms
+  all work.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
   `list`, ...), a built-in exception class, a sandbox-defined class (see
   [classes.md](classes.md)), or a tuple of those. Passing a host-supplied

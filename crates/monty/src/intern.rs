@@ -217,6 +217,7 @@ pub enum StaticStrings {
     Obj,
     Object,
     Source,
+    Base,
     // Additional string methods
     Encode,
     Isidentifier,

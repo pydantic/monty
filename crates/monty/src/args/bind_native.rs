@@ -136,6 +136,13 @@ fn bind_slow<const N: usize>(
             return Err(err);
         }
     }
+    // `tp_vectorcall` fast paths (`int`, `str`) check positional arity with
+    // `_PyArg_CheckPositional` before reaching the clinic parser, so kwarg-free
+    // overflow gets the un-parenthesised wording; with kwargs present the
+    // `at_most_total` check below fires with the clinic wording instead.
+    if spec.vectorcall && n_kw == 0 && n_pos > spec.n_positional {
+        return Err(ExcType::type_error_at_most(spec.func_name, spec.n_positional, n_pos));
+    }
     if spec.at_most_total && n_pos + n_kw > spec.n_positional {
         return Err(total_overflow_error(spec, n_pos + n_kw));
     }
@@ -291,6 +298,11 @@ pub(crate) struct ParamSpec {
     /// function from CPython's observed behaviour — not derivable from the
     /// field shapes (identical signatures differ by parser generation).
     pub at_most_total: bool,
+    /// Kwarg-free positional overflow uses `_PyArg_CheckPositional` wording
+    /// (`{name} expected at most N arguments, got M`) — models `tp_vectorcall`
+    /// fast paths (`int`, `str`) that bypass the clinic parser when no
+    /// keywords are passed. Requires `at_most_total` (enforced by the derive).
+    pub vectorcall: bool,
     /// Reject any kwarg up front with `NotImplementedError` — a Monty TODO
     /// marker for functions whose CPython kwargs aren't plumbed through yet.
     pub kwargs_not_supported_yet: bool,

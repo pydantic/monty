@@ -91,6 +91,12 @@ are all incompatible.
   don't. Only meaningful for the C-parser families (`clinic`/`c`/`c_named`)
   on signatures with a fixed maximum — rejected under `style = def` /
   `style = unpack` and with `varargs`/`varkwargs`.
+- `vectorcall` — kwarg-free calls check positional arity first with
+  `_PyArg_CheckPositional` wording (`{name} expected at most N arguments,
+  got M`), modeling `tp_vectorcall` fast paths (`int`, `str`) that only
+  fall back to the clinic parser when keywords are present. Requires the
+  default `clinic` style plus `at_most_total` (which supplies the
+  parenthesised wording for the kwargs path).
 - `bad_arg` / `bad_arg_named` — report `FromValue` wrong-type failures in
   CPython's `_PyArg_BadArgument` wording (`{name}() argument {pos|'arg'}
   must be {expected}, not {got}`).

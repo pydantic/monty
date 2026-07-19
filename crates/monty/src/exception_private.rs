@@ -1392,7 +1392,9 @@ impl ExcType {
     pub(crate) fn value_error_int_too_large_for_str() -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion"),
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit"
+            ),
         )
         .into()
     }
@@ -1405,7 +1407,7 @@ impl ExcType {
         SimpleException::new_msg(
             Self::ValueError,
             format!(
-                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits; use sys.set_int_max_str_digits() to increase the limit"
             ),
         )
         .into()
@@ -1413,15 +1415,41 @@ impl ExcType {
 
     /// Creates a ValueError for `int()` when a string cannot be parsed as an integer.
     ///
-    /// Matches CPython's format: `invalid literal for int() with base 10: '...'`.
-    /// The caller provides the value pre-formatted (e.g. via `StringRepr`).
+    /// Matches CPython's format: `invalid literal for int() with base {N}: '...'`.
+    /// `base` is the base the caller passed (0 included, before auto-detection);
+    /// the caller provides the value pre-formatted (e.g. via `StringRepr`).
     #[must_use]
-    pub(crate) fn value_error_invalid_literal_for_int(value: impl fmt::Display) -> RunError {
+    pub(crate) fn value_error_invalid_literal_for_int(base: u32, value: impl fmt::Display) -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!("invalid literal for int() with base 10: {value}"),
+            format!("invalid literal for int() with base {base}: {value}"),
         )
         .into()
+    }
+
+    /// Creates a ValueError for an `int()` base outside `{0} ∪ 2..=36`.
+    ///
+    /// Matches CPython's message: `int() base must be >= 2 and <= 36, or 0`.
+    #[must_use]
+    pub(crate) fn value_error_int_base_range() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "int() base must be >= 2 and <= 36, or 0").into()
+    }
+
+    /// Creates a TypeError for `int(base=N)` with no value to convert.
+    ///
+    /// Matches CPython's message: `int() missing string argument`. Raised
+    /// before the base is validated, matching `long_new_impl`'s ordering.
+    #[must_use]
+    pub(crate) fn type_error_int_missing_string_argument() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "int() missing string argument").into()
+    }
+
+    /// Creates a TypeError for `int(x, base)` where `x` is not str/bytes.
+    ///
+    /// Matches CPython's message: `int() can't convert non-string with explicit base`.
+    #[must_use]
+    pub(crate) fn type_error_int_non_string_with_base() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "int() can't convert non-string with explicit base").into()
     }
 
     /// Creates a ValueError for negative shift count in bitwise shift operations.
@@ -1638,6 +1666,50 @@ impl ExcType {
     #[must_use]
     pub(crate) fn lookup_error_unknown_encoding(encoding: &str) -> RunError {
         SimpleException::new_msg(Self::LookupError, format!("unknown encoding: {encoding}")).into()
+    }
+
+    /// Creates a TypeError for `str(s, encoding=...)` with a str object.
+    ///
+    /// Matches CPython's message: `decoding str is not supported`.
+    #[must_use]
+    pub(crate) fn type_error_decoding_str_not_supported() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "decoding str is not supported").into()
+    }
+
+    /// Creates a TypeError for `str(x, encoding=...)` with a non-bytes object.
+    ///
+    /// Matches CPython's format: `decoding to str: need a bytes-like object, {type} found`.
+    #[must_use]
+    pub(crate) fn type_error_decoding_need_bytes(type_: impl Display) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("decoding to str: need a bytes-like object, {type_} found"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for `bytes(s)` with a str source and no encoding.
+    ///
+    /// Matches CPython's message: `string argument without an encoding`.
+    #[must_use]
+    pub(crate) fn type_error_string_without_encoding() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "string argument without an encoding").into()
+    }
+
+    /// Creates a TypeError for `bytes(x, encoding=...)` with a non-str source.
+    ///
+    /// Matches CPython's message: `encoding without a string argument`.
+    #[must_use]
+    pub(crate) fn type_error_encoding_without_string() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "encoding without a string argument").into()
+    }
+
+    /// Creates a TypeError for `bytes(x, errors=...)` with a non-str source.
+    ///
+    /// Matches CPython's message: `errors without a string argument`.
+    #[must_use]
+    pub(crate) fn type_error_errors_without_string() -> RunError {
+        SimpleException::new_msg(Self::TypeError, "errors without a string argument").into()
     }
 
     /// Creates a UnicodeEncodeError for a run of `start..end` consecutive
