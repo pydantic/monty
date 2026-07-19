@@ -240,6 +240,47 @@ def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
         assert done.output == snapshot('hi')
 
 
+def test_load_snapshot_mid_os_call_serviced_by_mount(pool: Monty, tmp_path: Path):
+    # A dump taken while suspended on an OS call retains the call payload, so
+    # a mount supplied to load_snapshot services the re-announced call and the
+    # feed runs to completion without the suspension ever surfacing.
+    (tmp_path / 'hello.txt').write_text('hi')
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        # no mount: the read surfaces as an OS-call snapshot
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        assert snap.is_os_function
+        assert snap.function_name == snapshot('Path.read_text')
+        blob = snap.dump()
+
+    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    with pool.checkout() as session:
+        done = session.load_snapshot(blob, mount=mount)
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('hi')
+
+
+def test_load_snapshot_mid_os_call_retains_payload(pool: Monty, tmp_path: Path):
+    # Without a mount the re-announced OS call surfaces to the caller — with
+    # its full payload (name, args, and per-call not-handled error) intact.
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.is_os_function
+        assert loaded_snap.function_name == snapshot('Path.read_text')
+        assert loaded_snap.args == snapshot((Path('/data/hello.txt'),))
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            loaded_snap.resume_not_handled()
+    assert exc_info.value.display(format='msg') == snapshot("Permission denied: '/data/hello.txt'")
+
+
 def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):
     # Mounts are host configuration serviced by the parent and never part of a
     # dump. A restore that omits them is not validated — the resumed feed's

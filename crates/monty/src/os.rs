@@ -128,21 +128,12 @@ pub enum OsFunctionCall {
     /// Carries the timezone argument, `None` for a naive result.
     #[strum(serialize = "datetime.now")]
     DateTimeNow(Option<MontyTimeZone>),
-
-    /// Placeholder left behind by [`crate::OsCall::take_function_call`] and
-    /// [`crate::ReplOsCall::take_function_call`] after the real call has been
-    /// moved out for host dispatch. Never produced by the VM and never
-    /// dispatched — it just keeps the field droppable. Disabled for strum, so
-    /// [`OsFunctionCall::name`] panics on it.
-    #[strum(disabled)]
-    Used,
 }
 
 impl OsFunctionCall {
     /// Stable string name for this OS function — surfaces in
     /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
-    /// snapshots. The strum `serialize` string on each variant. Panics on
-    /// [`Self::Used`], which is never surfaced.
+    /// snapshots. The strum `serialize` string on each variant.
     #[must_use]
     pub fn name(&self) -> &'static str {
         self.into()
@@ -176,7 +167,6 @@ impl OsFunctionCall {
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
             Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
-            Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
         }
     }
 
@@ -184,8 +174,8 @@ impl OsFunctionCall {
     /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
     /// must fall through to the host callback.
     ///
-    /// Deliberately an allowlist: `Used` (and any future non-FS variant) must
-    /// return `false`, because `monty-fs` panics if a call without a
+    /// Deliberately an allowlist: any future non-FS variant must return
+    /// `false`, because `monty-fs` panics if a call without a
     /// [`Self::primary_path`] reaches its filesystem dispatch.
     #[must_use]
     pub fn is_filesystem(&self) -> bool {
@@ -266,7 +256,6 @@ impl OsFunctionCall {
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
-            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
         }
     }
 

@@ -471,11 +471,18 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
 
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
     let (event, _) = restored.restore(state, mount(), &mut no_print).unwrap();
-    // the suspension is re-announced with an empty payload (the wire carries
-    // no name/args on re-announcement, so it always surfaces even with mounts
-    // re-supplied); answering it lets the feed continue, and its remaining
-    // mounted read is serviced by the parent
-    assert!(matches!(&event, Some(TurnEvent::OsCall { .. })), "got {event:?}");
+    // the re-announcement carries the full call payload, so the uncovered
+    // call surfaces exactly like a fresh suspension — name and args intact;
+    // answering it lets the feed continue, and its remaining mounted read is
+    // serviced by the parent
+    let Some(TurnEvent::OsCall {
+        function_name, args, ..
+    }) = &event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "Path.read_text");
+    assert_eq!(args, &vec![MontyObject::Path("/external/answer.txt".to_owned())]);
     let event = restored
         .resume(
             ResumeValue::Return(MontyObject::String("hello".to_owned())),
@@ -486,6 +493,52 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
         expect_complete(event),
         MontyObject::String("hello after resume".to_owned())
     );
+    restored.finish().unwrap();
+}
+
+/// A dump taken while suspended on a mount-coverable OS call restores
+/// transparently: the re-announced call carries its full payload, so mounts
+/// supplied to `restore` service it immediately and the feed runs to
+/// completion without the caller ever seeing the suspension.
+#[test]
+fn restored_os_call_is_serviced_by_restore_mounts() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "from mount").unwrap();
+
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // feed with NO mounts: the read surfaces as an uncovered OsCall
+    let event = session
+        .feed(
+            "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
+            vec![],
+            vec![],
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let state = session.dump().unwrap();
+    drop(session);
+
+    // restore WITH the mount: the re-announced call is now covered, so the
+    // parent services it during `restore` and the feed completes
+    let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
+    let (event, _) = restored
+        .restore(
+            state,
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+            }],
+            &mut no_print,
+        )
+        .unwrap();
+    let event = event.expect("suspended dump must re-announce a turn event");
+    assert_eq!(expect_complete(event), MontyObject::String("from mount".to_owned()));
     restored.finish().unwrap();
 }
 

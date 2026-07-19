@@ -1,11 +1,6 @@
 //! Conversions for `OsCall` suspensions: the typed wire arms of
 //! `monty.v1.OsCall` and [`OsFunctionCall`] map 1:1, so payloads (write data,
 //! paths) *move* between the wire and the call — never clone.
-//!
-//! [`os_call::Call::Consumed`] is the one arm with no monty equivalent: it
-//! re-announces a call restored from a dump whose argument payload was
-//! consumed when the call was first announced. Receivers must match it before
-//! converting; `TryFrom` rejects it defensively.
 
 use monty::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
@@ -61,7 +56,6 @@ impl From<OsFunctionCall> for os_call::Call {
                     name: tz.name,
                 }),
             }),
-            OsFunctionCall::Used => unreachable!("OsFunctionCall::Used encoded after take_function_call"),
         }
     }
 }
@@ -115,14 +109,6 @@ impl TryFrom<os_call::Call> for OsFunctionCall {
                 offset_seconds: tz.offset_seconds,
                 name: tz.name,
             })),
-            // a consumed re-announcement carries no call — callers surface it
-            // to their fallback handler instead of converting it
-            os_call::Call::Consumed(_) => {
-                return Err(ProtoConvertError::InvalidValue {
-                    field: "OsCall.call",
-                    reason: "consumed re-announcement carries no call".to_owned(),
-                });
-            }
         })
     }
 }

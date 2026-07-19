@@ -329,7 +329,7 @@ export class WorkerTransport {
         const call = decodeOsCall(event.bytes)
         this.pendingCallId = call.callId
         this.pendingFunctionName = call.functionName
-        this.pendingNotHandled = call.notHandledError ? simpleExc(call.notHandledError) : null
+        this.pendingNotHandled = simpleExc(call.notHandledError)
         return {
           kind: 'osCall',
           functionName: call.functionName,
@@ -452,7 +452,6 @@ const Os = {
   GetEnviron: 22,
   DateToday: 23,
   DateTimeNow: 24,
-  Consumed: 25,
 }
 
 /** Stable call name for each path-only arm (the string payload is the path). */
@@ -476,15 +475,13 @@ interface DecodedOsCall {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
-  notHandledError?: NativeException
+  notHandledError: NativeException
 }
 
 /**
  * Decodes the typed `OsCall` oneof back into the `(name, args, kwargs)`
  * host-callback shape the native path surfaces, with the same per-call
- * not-handled error monty's `OsFunctionCall::on_no_handler` produces. A
- * `Consumed` re-announcement (after a snapshot restore) surfaces with an
- * empty name and no error.
+ * not-handled error monty's `OsFunctionCall::on_no_handler` produces.
  */
 function decodeOsCall(bytes: Uint8Array): DecodedOsCall {
   const reader = new Reader(bytes)
@@ -493,7 +490,7 @@ function decodeOsCall(bytes: Uint8Array): DecodedOsCall {
   while (!reader.done) {
     const f = reader.next()
     if (f.field === 1) callId = Number(f.value)
-    else if (f.field >= 2 && f.field <= 25) arm = { field: f.field, bytes: f.bytes }
+    else if (f.field >= 2 && f.field <= 24) arm = { field: f.field, bytes: f.bytes }
   }
   if (!arm) throw new Error('OsCall carried no call')
   return { callId, ...decodeOsArm(arm.field, arm.bytes) }
@@ -548,8 +545,6 @@ function decodeOsArm(field: number, bytes: Uint8Array): Omit<DecodedOsCall, 'cal
       // typed arm: `DateTimeNow.tz` (field 1) is an optional TimeZone
       // message; absent means a naive result (tz=None)
       return nonFsCall('datetime.now', [decodeDateTimeNowTz(bytes)])
-    case Os.Consumed:
-      return { functionName: '', args: [], kwargs: [] }
     default:
       throw new Error(`unknown OsCall arm ${field}`)
   }

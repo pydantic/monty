@@ -540,11 +540,6 @@ message OsCall {
     Unit date_today = 23;   // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
-
-    // Re-announced after `Load`: the argument payload was consumed when the
-    // call was first announced, before the dump was taken. The parent must
-    // answer from its own records (or with a not-handled error).
-    Unit consumed = 25;
   }
 
   message TextWrite {

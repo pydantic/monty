@@ -667,7 +667,7 @@ pub struct OsCall {
     pub call_id: u32,
     #[prost(
         oneof = "os_call::Call",
-        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24"
     )]
     pub call: ::core::option::Option<os_call::Call>,
 }
@@ -802,11 +802,6 @@ pub mod os_call {
         /// datetime.now(tz) — the timezone argument (absent for a naive result).
         #[prost(message, tag = "24")]
         DateTimeNow(DateTimeNow),
-        /// Re-announced after `Load`: the argument payload was consumed when the
-        /// call was first announced, before the dump was taken. The parent must
-        /// answer from its own records (or with a not-handled error).
-        #[prost(message, tag = "25")]
-        Consumed(super::Unit),
     }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether

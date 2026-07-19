@@ -61,7 +61,7 @@ export interface OsCallTurn {
    * exception (traceback included) is retained Rust-side and used by
    * `resumeNotHandled`.
    */
-  notHandledError?: { excType: string; message: string; frames: NativeFrame[] }
+  notHandledError: { excType: string; message: string; frames: NativeFrame[] }
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */

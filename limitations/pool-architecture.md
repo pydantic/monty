@@ -274,12 +274,6 @@ properties that real CPython does not provide, per the caveat above.
 - **`'overlay'` writes are not preserved across a dump.** A restored overlay
   mount starts empty; `read-only` / `read-write` mounts have no overlay state
   and restore fully.
-- **A re-announced OS-call snapshot after `load_snapshot` carries no
-  payload** — its arguments were consumed before the dump, so it surfaces
-  with an empty function name and empty `args`/`kwargs`, and there is no
-  per-call default error to decline with: `resume_not_handled()` raises
-  `RuntimeError` instead of resuming, so the host must answer from its own
-  records via `resume(...)` / `resume_error(...)`.
 - **Natural-JSON host serialization was removed.** Results now cross the
   subprocess boundary as structured protocol values; the old
   `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /

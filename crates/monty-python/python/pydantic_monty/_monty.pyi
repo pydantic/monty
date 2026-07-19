@@ -541,13 +541,10 @@ class MontySession:
         if the dump is actually an idle session.
 
         `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
-        `feed_start`. Two caveats apply to a *restored* snapshot: a restored
+        `feed_start`. One caveat applies to a *restored* snapshot: a restored
         `FutureSnapshot`'s pending coroutines are gone (they lived in the
         previous process), so `resume_auto()` on it raises — resolve it manually
-        with `resume({call_id: ...})`; and a re-announced OS-call snapshot
-        carries only its `not_handled_error`, not the original `args`/`kwargs`
-        (those were consumed before the dump), so prefer a manual `resume` /
-        `resume_not_handled` there.
+        with `resume({call_id: ...})`.
         """
 
     def dump(self) -> bytes:

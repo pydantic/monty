@@ -34,7 +34,7 @@ use std::{
     time::Duration,
 };
 
-use ::monty::{AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject};
+use ::monty::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use pyo3::{
@@ -324,12 +324,10 @@ impl PyMontySession {
     /// `checkout()` is reused. Raises if the dump is actually an idle session.
     ///
     /// `external_lookup` / `os` are captured on the restored snapshot so it
-    /// supports `resume_auto()`, just like `feed_start`. Two caveats apply to a
+    /// supports `resume_auto()`, just like `feed_start`. One caveat applies to a
     /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
     /// gone (they lived in the previous process), so async `resume_auto()` on it
-    /// raises — resolve it manually with `resume({call_id: ...})`; and a
-    /// restored OS-call snapshot carries no args/kwargs, so prefer manual
-    /// `resume` / `resume_not_handled` there rather than `resume_auto`.
+    /// raises — resolve it manually with `resume({call_id: ...})`.
     #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot(
         &self,
@@ -1217,15 +1215,7 @@ fn sync_turn_answer(
             not_handled_error,
             ..
         } => {
-            let result = dispatch_os_parts(
-                py,
-                &function_name,
-                &args,
-                &kwargs,
-                not_handled_error.as_ref(),
-                os,
-                dc_registry,
-            );
+            let result = dispatch_os_parts(py, &function_name, &args, &kwargs, &not_handled_error, os, dc_registry);
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
         TurnEvent::NameLookup { name } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
@@ -1342,15 +1332,7 @@ fn async_turn_answer(
             ..
         } => {
             let result = Python::attach(|py| {
-                dispatch_os_parts(
-                    py,
-                    &function_name,
-                    &args,
-                    &kwargs,
-                    not_handled_error.as_ref(),
-                    os,
-                    dc_registry,
-                )
+                dispatch_os_parts(py, &function_name, &args, &kwargs, &not_handled_error, os, dc_registry)
             });
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
@@ -1472,20 +1454,12 @@ pub(crate) fn dispatch_os_parts(
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    not_handled_error: Option<&MontyException>,
+    not_handled_error: &MontyException,
     os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> ExtFunctionResult {
-    let on_no_handler = || {
-        not_handled_error.cloned().unwrap_or_else(|| {
-            MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!("'{function_name}' is not supported in this environment")),
-            )
-        })
-    };
     let Some(os_callback) = os else {
-        return on_no_handler().into();
+        return not_handled_error.clone().into();
     };
     let call = || -> PyResult<ExtFunctionResult> {
         let py_args: Vec<Py<PyAny>> = args
@@ -1499,7 +1473,7 @@ pub(crate) fn dispatch_os_parts(
         }
         let result = os_callback.bind(py).call1((function_name, py_args, py_kwargs))?;
         if result.is(get_not_handled(py)?.bind(py)) {
-            return Ok(on_no_handler().into());
+            return Ok(not_handled_error.clone().into());
         }
         Ok(match py_to_monty_value(&result, dc_registry) {
             Ok(obj) => ExtFunctionResult::Return(obj),

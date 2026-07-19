@@ -657,12 +657,11 @@ impl Child {
                     }
                     return complete_event(value);
                 }
-                Ok(ReplProgress::OsCall(mut call)) => {
-                    let function_call = call.take_function_call();
+                Ok(ReplProgress::OsCall(call)) => {
                     // only `os.getenv`'s default carries an arbitrary sandbox
                     // value — every other arm is flat strings/bytes/typed
                     // structs, which cannot nest
-                    let too_deep = match &function_call {
+                    let too_deep = match &call.function_call {
                         OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
                         _ => false,
                     };
@@ -672,10 +671,7 @@ impl Child {
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = event(pb::child_event::Kind::OsCall(pb::OsCall {
-                        call_id: call.call_id,
-                        call: Some(function_call.into()),
-                    }));
+                    let event = suspension_event_os_call(&call);
                     if let Some(message) = oversize_suspension_error_message(&event) {
                         return self.abort_feed_with_runtime_error(call.into_repl(), &message);
                     }
@@ -821,8 +817,8 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
     (len > MAX_FRAME_LEN).then(|| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
 
-/// Builds the suspension event for a fresh `FunctionCall` (depth-checked by
-/// the caller).
+/// Builds the suspension event for a `FunctionCall` (depth-checked by the
+/// caller).
 ///
 /// Clones the argument payload: the suspension keeps its args so a `Dump` of
 /// the suspended state (and its replay on `Load`) stays complete.
@@ -836,48 +832,41 @@ fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb
     }))
 }
 
+/// Builds the suspension event for an `OsCall` (depth-checked by the caller).
+///
+/// Clones the call payload: the suspension keeps its args so a `Dump` of the
+/// suspended state (and its re-announcement on `Load`) stays complete — a
+/// restored session's parent can service the call from mounts or its `os`
+/// callback exactly like a fresh one.
+fn suspension_event_os_call(call: &monty::ReplOsCall<Tracker>) -> pb::ChildEvent {
+    event(pb::child_event::Kind::OsCall(pb::OsCall {
+        call_id: call.call_id,
+        call: Some(call.function_call.clone().into()),
+    }))
+}
+
 fn complete_event(value: MontyObject) -> pb::ChildEvent {
     event(pb::child_event::Kind::Complete(pb::Complete {
         value: Some(value.into()),
     }))
 }
 
-/// Builds the suspension event for a non-`Complete`, non-`OsCall` progress
-/// state (OS calls are special-cased in `drive` because emitting them consumes
-/// the call's argument payload).
+/// Builds the suspension event for a non-`Complete` progress state. Used on
+/// `Load` to re-announce a restored suspension; fresh suspensions go through
+/// `drive`, which adds depth/oversize checks before delegating to the same
+/// per-variant builders.
 fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
-    let kind = match progress {
-        ReplProgress::FunctionCall(call) => pb::child_event::Kind::FunctionCall(WireFunctionCall {
-            function_name: call.function_name.clone(),
-            args: call.args.clone(),
-            kwargs: call.kwargs.clone(),
-            call_id: call.call_id,
-            method_call: call.method_call,
-        }),
-        ReplProgress::OsCall(call) => {
-            // reached only on `Load` of a dumped OsCall suspension, where the
-            // payload was already consumed by `take_function_call` (leaving
-            // `Used`, announced as `Consumed` — the parent re-learns the call
-            // from its own records); a fresh suspension goes through `drive`
-            // instead, which moves the payload into the event
-            let kind = match &call.function_call {
-                OsFunctionCall::Used => pb::os_call::Call::Consumed(pb::Unit {}),
-                function_call => function_call.clone().into(),
-            };
-            pb::child_event::Kind::OsCall(pb::OsCall {
-                call_id: call.call_id,
-                call: Some(kind),
-            })
-        }
-        ReplProgress::NameLookup(lookup) => pb::child_event::Kind::NameLookup(pb::NameLookup {
+    match progress {
+        ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
+        ReplProgress::OsCall(call) => suspension_event_os_call(call),
+        ReplProgress::NameLookup(lookup) => event(pb::child_event::Kind::NameLookup(pb::NameLookup {
             name: lookup.name.clone(),
-        }),
-        ReplProgress::ResolveFutures(state) => pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
+        })),
+        ReplProgress::ResolveFutures(state) => event(pb::child_event::Kind::ResolveFutures(pb::ResolveFutures {
             pending_call_ids: state.pending_call_ids().to_vec(),
-        }),
+        })),
         ReplProgress::Complete { .. } => unreachable!("Complete is handled before suspension_event"),
-    };
-    event(kind)
+    }
 }
 
 /// Appends a `u32 LE`-length-prefixed string field to a dump envelope.

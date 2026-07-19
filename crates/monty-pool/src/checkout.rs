@@ -112,9 +112,8 @@ pub enum TurnEvent {
         call_id: u32,
         /// The exception the sandbox would raise if nothing handles this
         /// call; a caller with no handler should resume with
-        /// `ResumeValue::Error(not_handled_error)`. `None` only for calls
-        /// re-announced after [`Checkout::restore`].
-        not_handled_error: Option<MontyException>,
+        /// `ResumeValue::Error(not_handled_error)`.
+        not_handled_error: MontyException,
     },
     /// The sandbox read an undefined name — answer with
     /// [`Checkout::resume_name_lookup`].
@@ -242,8 +241,11 @@ impl Checkout {
     ///
     /// `mounts` re-establish a suspended feed's mounts, which are never part of
     /// the dump (they are host configuration the parent services itself). Pass
-    /// the same mounts the original feed used — a mount silently omitted here
-    /// degrades its filesystem calls into surfaced [`TurnEvent::OsCall`]s.
+    /// the same mounts the original feed used — the re-announcement carries the
+    /// full call payload, so a dump taken mid-OS-call resumes transparently: a
+    /// mount-covered call is serviced right here and the returned event is
+    /// whatever the feed does next. A mount silently omitted degrades its
+    /// filesystem calls into surfaced [`TurnEvent::OsCall`]s.
     /// The session's resource budget is taken from the dump, so the prior
     /// `Configure` limits are dropped here and re-adopted from the worker's
     /// reply.
@@ -643,77 +645,64 @@ impl Checkout {
                     deadline_guard = None;
                     remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
                     let call_id = call.call_id;
-                    // `Consumed` re-announcements (after `restore`) carry no
-                    // payload and always surface — the caller re-learns the
-                    // call from its own records. Everything else decodes into
-                    // a typed `OsFunctionCall`; a payload the child could
-                    // never legitimately produce is a protocol violation.
+                    // Every announcement (fresh or re-announced after
+                    // `restore`) decodes into a typed `OsFunctionCall`; a
+                    // payload the child could never legitimately produce is a
+                    // protocol violation.
                     let function_call = match call.call {
                         None => break Err(self.protocol_violation("OsCall event with no call")),
-                        Some(pb::os_call::Call::Consumed(_)) => None,
                         Some(kind) => match OsFunctionCall::try_from(kind) {
-                            Ok(function_call) => Some(function_call),
+                            Ok(function_call) => function_call,
                             Err(err) => {
                                 break Err(self.protocol_violation(&format!("invalid OS call payload: {err}")));
                             }
                         },
                     };
-                    let unhandled = match function_call {
-                        Some(function_call) => match self.try_mount_call(function_call) {
-                            MountCallOutcome::Handled(result) => {
-                                let wire_result = match result {
-                                    Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-                                    Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
+                    let unhandled = match self.try_mount_call(function_call) {
+                        MountCallOutcome::Handled(result) => {
+                            let wire_result = match result {
+                                Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+                                Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
+                            };
+                            // `armed_deadline` (the `Timeout` error's reported
+                            // value) stays at the turn deadline: the allowance
+                            // makes that the bound the whole turn is held to.
+                            let next_deadline = min_deadline(remaining, self.backstop_deadline());
+                            let worker = self.worker.as_mut().expect("checked above");
+                            armed_at = Instant::now();
+                            deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
+                            if let Err(err) = send_internal_resume(worker, call_id, wire_result) {
+                                // an oversize result frame is rejected before any
+                                // bytes are written, so the stream is intact and
+                                // the suspended child can be resumed with a small,
+                                // catchable error instead; anything else is a real
+                                // I/O break
+                                let FrameError::FrameTooLarge { len, max } = err else {
+                                    break Err(self.poison("resuming a mount-covered OS call"));
                                 };
-                                // `armed_deadline` (the `Timeout` error's reported
-                                // value) stays at the turn deadline: the allowance
-                                // makes that the bound the whole turn is held to.
-                                let next_deadline = min_deadline(remaining, self.backstop_deadline());
-                                let worker = self.worker.as_mut().expect("checked above");
-                                armed_at = Instant::now();
-                                deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
-                                if let Err(err) = send_internal_resume(worker, call_id, wire_result) {
-                                    // an oversize result frame is rejected before any
-                                    // bytes are written, so the stream is intact and
-                                    // the suspended child can be resumed with a small,
-                                    // catchable error instead; anything else is a real
-                                    // I/O break
-                                    let FrameError::FrameTooLarge { len, max } = err else {
-                                        break Err(self.poison("resuming a mount-covered OS call"));
-                                    };
-                                    let exc = MontyException::new(
-                                        ExcType::RuntimeError,
-                                        Some(format!(
-                                            "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
-                                        )),
-                                    );
-                                    let error_result = pb::ext_function_result::Kind::Error((&exc).into());
-                                    if send_internal_resume(worker, call_id, error_result).is_err() {
-                                        break Err(self.poison("resuming a mount-covered OS call"));
-                                    }
+                                let exc = MontyException::new(
+                                    ExcType::RuntimeError,
+                                    Some(format!(
+                                        "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
+                                    )),
+                                );
+                                let error_result = pb::ext_function_result::Kind::Error((&exc).into());
+                                if send_internal_resume(worker, call_id, error_result).is_err() {
+                                    break Err(self.poison("resuming a mount-covered OS call"));
                                 }
-                                // serviced internally — wait for the child's
-                                // next event
-                                continue;
                             }
-                            MountCallOutcome::NotHandled(function_call) => Some(function_call),
-                        },
-                        None => None,
+                            // serviced internally — wait for the child's
+                            // next event
+                            continue;
+                        }
+                        MountCallOutcome::NotHandled(function_call) => function_call,
                     };
                     // Not mount-covered: surface to the caller in the
                     // `(name, args, kwargs)` host-callback shape, with the
-                    // parent-computed no-handler error. A consumed
-                    // re-announcement surfaces with an empty name and no
-                    // error — the caller re-learns the call from its records.
-                    let (function_name, args, kwargs, not_handled_error) = match unhandled {
-                        Some(function_call) => {
-                            let not_handled_error = function_call.on_no_handler();
-                            let function_name = function_call.name().to_owned();
-                            let (args, kwargs) = function_call.to_args();
-                            (function_name, args, kwargs, Some(not_handled_error))
-                        }
-                        None => (String::new(), vec![], vec![], None),
-                    };
+                    // parent-computed no-handler error.
+                    let not_handled_error = unhandled.on_no_handler();
+                    let function_name = unhandled.name().to_owned();
+                    let (args, kwargs) = unhandled.to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),

@@ -1223,7 +1223,6 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
-        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 
@@ -1769,15 +1768,14 @@ fn run_mount_fs_iter_loop(
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
-            RunProgress::OsCall(mut call) => {
+            RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                let ext_result = match mount_table.handle_os_call(call.take_function_call()) {
+                progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
                     MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
                     MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     // Non-filesystem operation — dispatch to the regular handler.
                     MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
-                };
-                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+                })?;
             }
         }
     }

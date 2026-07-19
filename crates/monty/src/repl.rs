@@ -643,13 +643,16 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
-    /// REPL mirror of [`crate::OsCall::take_function_call`] — takes the
-    /// call out for host dispatch, leaving an [`OsFunctionCall::Used`]
-    /// placeholder. Afterwards `self` is only valid for [`Self::resume`]
-    /// or [`Self::into_repl`].
-    #[must_use]
-    pub fn take_function_call(&mut self) -> OsFunctionCall {
-        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    /// REPL mirror of [`crate::OsCall::resume_with`] — dispatches the call
+    /// to `handler` (which receives the [`OsFunctionCall`] by value, so
+    /// write payloads move without cloning) and resumes with its result.
+    pub fn resume_with(
+        self,
+        print: PrintWriter<'_>,
+        handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        let result = handler(self.function_call);
+        self.snapshot.run(result, print)
     }
 }
 

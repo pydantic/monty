@@ -544,7 +544,7 @@ impl NativeSession {
                     };
                     let outcome = compute(checkout, &mut on_print);
                     if let TurnOutcome::Event(TurnEvent::OsCall { not_handled_error, .. }) = &outcome {
-                        lock(&pending_not_handled).clone_from(not_handled_error);
+                        *lock(&pending_not_handled) = Some(not_handled_error.clone());
                     }
                     outcome
                 })
@@ -639,9 +639,7 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            if let Some(exc) = not_handled_error {
-                obj.set("notHandledError", exception_to_js(env, &exc)?)?;
-            }
+            obj.set("notHandledError", exception_to_js(env, &not_handled_error)?)?;
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name }) => {
             obj.set("kind", "nameLookup")?;
