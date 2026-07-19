@@ -20,13 +20,13 @@ use std::{borrow::Cow, mem};
 
 use monty::{
     AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    MontyRepl, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
+    MontyRepl, OsFunctionCall, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
 };
 use monty_type_checking::{SourceFile, type_check};
 use prost::Message;
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, WireOsCall, exceeds_max_value_depth,
+    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_value_depth,
     future_results_from_proto, pb, write_frame,
 };
 
@@ -660,29 +660,23 @@ impl Child {
                 }
                 Ok(ReplProgress::OsCall(mut call)) => {
                     let function_call = call.take_function_call();
-                    let name = function_call.name();
-                    // only the child knows per-call no-handler semantics, so
-                    // the event carries the error a handler-less parent
-                    // should answer with
-                    let not_handled_error = function_call.on_no_handler();
-                    let call_id = call.call_id;
-                    let (args, kwargs) = function_call.to_args();
-                    if args.iter().any(exceeds_max_value_depth)
-                        || kwargs
-                            .iter()
-                            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
-                    {
+                    // only `os.getenv`'s default and `datetime.now`'s tz carry
+                    // arbitrary sandbox values — every other arm is flat
+                    // strings/bytes, which cannot nest
+                    let too_deep = match &function_call {
+                        OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
+                        OsFunctionCall::DateTimeNow(tz) => exceeds_max_value_depth(tz),
+                        _ => false,
+                    };
+                    if too_deep {
                         let err =
                             MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
                         continue;
                     }
-                    let event = event(pb::child_event::Kind::OsCall(WireOsCall {
-                        function_name: name.to_owned(),
-                        args,
-                        kwargs,
-                        call_id,
-                        not_handled_error: Some((&not_handled_error).into()),
+                    let event = event(pb::child_event::Kind::OsCall(pb::OsCall {
+                        call_id: call.call_id,
+                        call: Some(function_call.into()),
                     }));
                     if let Some(message) = oversize_suspension_error_message(&event) {
                         return self.abort_feed_with_runtime_error(call.into_repl(), &message);
@@ -865,20 +859,16 @@ fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
         ReplProgress::OsCall(call) => {
             // reached only on `Load` of a dumped OsCall suspension, where the
             // payload was already consumed by `take_function_call` (leaving
-            // `Used`, whose `name()` would panic) — the parent re-learns the
-            // name/args from its own records; a fresh suspension goes through
-            // `drive` instead
-            let has_payload = !matches!(call.function_call, monty::OsFunctionCall::Used);
-            pb::child_event::Kind::OsCall(WireOsCall {
-                function_name: if has_payload {
-                    call.function_call.name().to_owned()
-                } else {
-                    String::new()
-                },
-                args: vec![],
-                kwargs: vec![],
+            // `Used`, announced as `Consumed` — the parent re-learns the call
+            // from its own records); a fresh suspension goes through `drive`
+            // instead, which moves the payload into the event
+            let kind = match &call.function_call {
+                OsFunctionCall::Used => pb::os_call::Call::Consumed(pb::Unit {}),
+                function_call => function_call.clone().into(),
+            };
+            pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: call.call_id,
-                not_handled_error: has_payload.then(|| (&call.function_call.on_no_handler()).into()),
+                call: Some(kind),
             })
         }
         ReplProgress::NameLookup(lookup) => pb::child_event::Kind::NameLookup(pb::NameLookup {

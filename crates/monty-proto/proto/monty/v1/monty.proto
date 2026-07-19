@@ -10,12 +10,12 @@
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
-// Evolution rules: changes must be additive only — new fields and new oneof
-// arms get fresh tag numbers, and removed tags are reserved. proto3 decoders
-// ignore unknown fields, so older children tolerate newer optional fields.
-// There is no in-band version negotiation: parent and child are expected to
-// be deployed in lockstep (the packages ship a matching `monty` binary), and
-// version skew is detected out of band (e.g. `monty --version`).
+// Evolution rules: parent and child are deployed in lockstep (the packages
+// ship a matching `monty` binary) and the child rejects a mismatched
+// `Configure.monty_version` with a `FatalError`, so schema changes need not
+// be wire-compatible across versions. Once the protocol stabilizes, prefer
+// additive changes (fresh tag numbers, `reserved` removals) so third-party
+// transports have a migration window.
 
 syntax = "proto3";
 
@@ -497,24 +497,83 @@ message FunctionCall {
   bool method_call = 5;
 }
 
-// Suspension: the sandbox performed an OS operation no mount handled, e.g.
-// "Path.read_text" or "os.getenv". Answer with `ResumeCall`. Some calls have
-// typed result expectations (e.g. "Open" must return a file_handle); a
-// mismatched result becomes a Python-level error inside the sandbox.
+// Suspension: the sandbox performed an OS operation, surfaced for the parent
+// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
+// per call; every path is a virtual POSIX sandbox path, never a host path.
+// Some calls have typed result expectations (e.g. `open` must return a
+// file_handle); a mismatched result becomes a Python-level error inside the
+// sandbox.
 //
-// NOTE: an OsCall re-announced after `Load` carries only `call_id` and
-// `not_handled_error` — the argument payload was consumed when the call was
-// first announced, before the dump was taken.
+// A parent with no handler should answer `ResumeCall` with the call's
+// not-handled error: PermissionError naming the path for filesystem calls,
+// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
 message OsCall {
-  string function_name = 1;
-  repeated MontyObject args = 2;
-  repeated Pair kwargs = 3;
-  uint32 call_id = 4;
-  // The exception monty would raise for this call when nothing handles it
-  // (e.g. PermissionError for filesystem calls). A parent with no handler
-  // should answer `ResumeCall` with this error — only the child knows the
-  // per-call semantics.
-  RaisedException not_handled_error = 5;
+  uint32 call_id = 1;
+
+  oneof call {
+    // ---- FS read / check / remove — the string is the virtual path -------
+    string exists = 2;      // Path.exists
+    string is_file = 3;     // Path.is_file
+    string is_dir = 4;      // Path.is_dir
+    string is_symlink = 5;  // Path.is_symlink
+    string read_text = 6;   // Path.read_text
+    string read_bytes = 7;  // Path.read_bytes
+    string stat = 8;        // Path.stat
+    string iterdir = 9;     // Path.iterdir
+    string resolve = 10;    // Path.resolve
+    string absolute = 11;   // Path.absolute
+    string unlink = 12;     // Path.unlink
+    string rmdir = 13;      // Path.rmdir
+
+    // ---- FS write / mutate -----------------------------------------------
+    TextWrite write_text = 14;     // Path.write_text (truncating)
+    TextWrite append_text = 15;    // Path.append_text
+    BytesWrite write_bytes = 16;   // Path.write_bytes (truncating)
+    BytesWrite append_bytes = 17;  // Path.append_bytes
+    Open open = 18;
+    Mkdir mkdir = 19;
+    Rename rename = 20;
+
+    // ---- Non-FS ----------------------------------------------------------
+    Getenv getenv = 21;     // os.getenv
+    Unit get_environ = 22;  // the os.environ snapshot
+    Unit date_today = 23;   // date.today()
+    // datetime.now(tz) — the timezone argument (`none` for a naive result).
+    MontyObject date_time_now = 24;
+
+    // Re-announced after `Load`: the argument payload was consumed when the
+    // call was first announced, before the dump was taken. The parent must
+    // answer from its own records (or with a not-handled error).
+    Unit consumed = 25;
+  }
+
+  message TextWrite {
+    string path = 1;
+    string data = 2;
+  }
+  message BytesWrite {
+    string path = 1;
+    bytes data = 2;
+  }
+  message Open {
+    string path = 1;
+    // Canonical open() mode string, same set as `FileHandle.mode`.
+    string mode = 2;
+  }
+  message Mkdir {
+    string path = 1;
+    bool parents = 2;
+    bool exist_ok = 3;
+  }
+  message Rename {
+    string src = 1;
+    string dst = 2;
+  }
+  // os.getenv(key, default) — `default` may be any Python value.
+  message Getenv {
+    string key = 1;
+    MontyObject default = 2;
+  }
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether

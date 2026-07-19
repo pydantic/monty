@@ -282,8 +282,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    assert_eq!(call.function_name, "Path.read_text");
-    assert_eq!(call.args, vec![MontyObject::Path("/data.txt".to_owned())]);
+    assert_eq!(call.call, Some(pb::os_call::Call::ReadText("/data.txt".to_owned())));
 
     let (_, event) = child.resume_call(
         call.call_id,

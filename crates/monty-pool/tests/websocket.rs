@@ -12,7 +12,7 @@ use std::{
 
 use monty::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
-use monty_proto::{WireOsCall, decode_frame, encode_to_capped_vec, pb};
+use monty_proto::{decode_frame, encode_to_capped_vec, pb};
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -136,12 +136,9 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::OsCall(WireOsCall {
-                function_name: "Path.read_text".to_owned(),
-                args: vec![MontyObject::Path("/mnt/data.txt".to_owned())],
-                kwargs: vec![],
+            &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 7,
-                not_handled_error: None,
+                call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
         // the parent must answer with the mounted file's contents, not
@@ -188,10 +185,11 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     server.join().expect("mock child thread");
 }
 
-/// A malformed filesystem `OsCall` from a (possibly compromised) child is a
+/// A malformed `OsCall` payload from a (possibly compromised) child is a
 /// protocol violation: the child validates and serializes these calls itself,
-/// so a recognized fs name with a bad shape can never be legitimate. No
-/// parent-side I/O happens and the worker is discarded.
+/// so a payload it could never legitimately produce (here an invalid open
+/// mode) is never serviced. No parent-side I/O happens and the worker is
+/// discarded.
 #[test]
 fn malformed_os_call_is_a_protocol_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -206,15 +204,15 @@ fn malformed_os_call_is_a_protocol_error() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
-        // args carry a String where a Path is required — must not parse
+        // "q" is not an open() mode — must not convert, let alone dispatch
         send_event(
             &mut socket,
-            &event_kind(pb::child_event::Kind::OsCall(WireOsCall {
-                function_name: "Path.read_text".to_owned(),
-                args: vec![MontyObject::String("/mnt/data.txt".to_owned())],
-                kwargs: vec![],
+            &event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id: 3,
-                not_handled_error: None,
+                call: Some(pb::os_call::Call::Open(pb::os_call::Open {
+                    path: "/mnt/data.txt".to_owned(),
+                    mode: "q".to_owned(),
+                })),
             })),
         );
         // the parent discards the worker instead of answering; wait for EOF
@@ -241,7 +239,7 @@ fn malformed_os_call_is_a_protocol_error() {
     let PoolError::Protocol(msg) = err else {
         panic!("expected Protocol error, got {err:?}");
     };
-    assert_eq!(msg, "invalid arguments for OS call 'Path.read_text'");
+    assert_eq!(msg, "invalid OS call payload: invalid file mode \"q\"");
     server.join().expect("mock child thread");
 }
 
@@ -308,12 +306,9 @@ fn mount_calls_do_not_reset_the_request_deadline() {
         let mut rounds = 0_u32;
         for call_id in 0..20 {
             thread::sleep(Duration::from_millis(200));
-            let call = event_kind(pb::child_event::Kind::OsCall(WireOsCall {
-                function_name: "Path.exists".to_owned(),
-                args: vec![MontyObject::Path("/mnt".to_owned())],
-                kwargs: vec![],
+            let call = event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
                 call_id,
-                not_handled_error: None,
+                call: Some(pb::os_call::Call::Exists("/mnt".to_owned())),
             }));
             let body = encode_to_capped_vec(&call).expect("encode event");
             if socket.send(Message::Binary(body.into())).is_err() {

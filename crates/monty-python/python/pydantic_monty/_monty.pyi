@@ -204,17 +204,17 @@ class MontyFileHandle:
     """Host-side handle to a file opened inside a Monty sandbox.
 
     Plain data holder — Monty never gives the host a live OS file descriptor.
-    Exposed to callbacks (e.g. as the first argument of an `Open` result or
+    Exposed to callbacks (e.g. as the first argument of an `open` result or
     a `read`/`write` request) so they can route on `path` and branch on
     `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
 
-    Construct one from a Python `Open` OS handler to return a handle back to
+    Construct one from a Python `open` OS handler to return a handle back to
     Monty: `MontyFileHandle('/data/foo.txt', 'r')`. The `mode` is canonicalized
     at construction (`'rt'` → `'r'`, `'r+b'` → `'rb+'`).
     """
 
     def __new__(cls, path: str, mode: str, *, position: int = 0) -> MontyFileHandle:
-        """Construct a `MontyFileHandle` to return from an `Open` OS callback.
+        """Construct a `MontyFileHandle` to return from an `open` OS callback.
 
         Arguments:
             path: Virtual sandbox path of the opened file (POSIX-style).

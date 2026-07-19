@@ -510,7 +510,7 @@ pub mod child_event {
         #[prost(message, tag = "2")]
         FunctionCall(crate::WireFunctionCall),
         #[prost(message, tag = "3")]
-        OsCall(crate::WireOsCall),
+        OsCall(super::OsCall),
         #[prost(message, tag = "4")]
         NameLookup(super::NameLookup),
         #[prost(message, tag = "5")]
@@ -537,6 +537,155 @@ pub struct Print {
     pub stream: i32,
     #[prost(string, tag = "2")]
     pub text: ::prost::alloc::string::String,
+}
+/// Suspension: the sandbox performed an OS operation, surfaced for the parent
+/// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
+/// per call; every path is a virtual POSIX sandbox path, never a host path.
+/// Some calls have typed result expectations (e.g. `open` must return a
+/// file_handle); a mismatched result becomes a Python-level error inside the
+/// sandbox.
+///
+/// A parent with no handler should answer `ResumeCall` with the call's
+/// not-handled error: PermissionError naming the path for filesystem calls,
+/// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct OsCall {
+    #[prost(uint32, tag = "1")]
+    pub call_id: u32,
+    #[prost(
+        oneof = "os_call::Call",
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+    )]
+    pub call: ::core::option::Option<os_call::Call>,
+}
+/// Nested message and enum types in `OsCall`.
+pub mod os_call {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct TextWrite {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub data: ::prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct BytesWrite {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(bytes = "vec", tag = "2")]
+        pub data: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Open {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        /// Canonical open() mode string, same set as `FileHandle.mode`.
+        #[prost(string, tag = "2")]
+        pub mode: ::prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Mkdir {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(bool, tag = "2")]
+        pub parents: bool,
+        #[prost(bool, tag = "3")]
+        pub exist_ok: bool,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Rename {
+        #[prost(string, tag = "1")]
+        pub src: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub dst: ::prost::alloc::string::String,
+    }
+    /// os.getenv(key, default) — `default` may be any Python value.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Getenv {
+        #[prost(string, tag = "1")]
+        pub key: ::prost::alloc::string::String,
+        #[prost(message, optional, tag = "2")]
+        pub default: ::core::option::Option<crate::WireObject>,
+    }
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Call {
+        /// ---- FS read / check / remove — the string is the virtual path -------
+        ///
+        /// Path.exists
+        #[prost(string, tag = "2")]
+        Exists(::prost::alloc::string::String),
+        /// Path.is_file
+        #[prost(string, tag = "3")]
+        IsFile(::prost::alloc::string::String),
+        /// Path.is_dir
+        #[prost(string, tag = "4")]
+        IsDir(::prost::alloc::string::String),
+        /// Path.is_symlink
+        #[prost(string, tag = "5")]
+        IsSymlink(::prost::alloc::string::String),
+        /// Path.read_text
+        #[prost(string, tag = "6")]
+        ReadText(::prost::alloc::string::String),
+        /// Path.read_bytes
+        #[prost(string, tag = "7")]
+        ReadBytes(::prost::alloc::string::String),
+        /// Path.stat
+        #[prost(string, tag = "8")]
+        Stat(::prost::alloc::string::String),
+        /// Path.iterdir
+        #[prost(string, tag = "9")]
+        Iterdir(::prost::alloc::string::String),
+        /// Path.resolve
+        #[prost(string, tag = "10")]
+        Resolve(::prost::alloc::string::String),
+        /// Path.absolute
+        #[prost(string, tag = "11")]
+        Absolute(::prost::alloc::string::String),
+        /// Path.unlink
+        #[prost(string, tag = "12")]
+        Unlink(::prost::alloc::string::String),
+        /// Path.rmdir
+        #[prost(string, tag = "13")]
+        Rmdir(::prost::alloc::string::String),
+        /// ---- FS write / mutate -----------------------------------------------
+        ///
+        /// Path.write_text (truncating)
+        #[prost(message, tag = "14")]
+        WriteText(TextWrite),
+        /// Path.append_text
+        #[prost(message, tag = "15")]
+        AppendText(TextWrite),
+        /// Path.write_bytes (truncating)
+        #[prost(message, tag = "16")]
+        WriteBytes(BytesWrite),
+        /// Path.append_bytes
+        #[prost(message, tag = "17")]
+        AppendBytes(BytesWrite),
+        #[prost(message, tag = "18")]
+        Open(Open),
+        #[prost(message, tag = "19")]
+        Mkdir(Mkdir),
+        #[prost(message, tag = "20")]
+        Rename(Rename),
+        /// ---- Non-FS ----------------------------------------------------------
+        ///
+        /// os.getenv
+        #[prost(message, tag = "21")]
+        Getenv(Getenv),
+        /// the os.environ snapshot
+        #[prost(message, tag = "22")]
+        GetEnviron(super::Unit),
+        /// date.today()
+        #[prost(message, tag = "23")]
+        DateToday(super::Unit),
+        /// datetime.now(tz) — the timezone argument (`none` for a naive result).
+        #[prost(message, tag = "24")]
+        DateTimeNow(crate::WireObject),
+        /// Re-announced after `Load`: the argument payload was consumed when the
+        /// call was first announced, before the dump was taken. The parent must
+        /// answer from its own records (or with a not-handled error).
+        #[prost(message, tag = "25")]
+        Consumed(super::Unit),
+    }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
 /// the parent provides an external function. Answer with `ResumeNameLookup`.

@@ -1461,7 +1461,7 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
 }
 
 /// Calls the Python `os=` fallback for a bubbled OS call. With no callback —
-/// or when it returns `NOT_HANDLED` — answers with the child-provided
+/// or when it returns `NOT_HANDLED` — answers with the pool-computed
 /// `not_handled_error`, preserving monty's per-call no-handler semantics.
 pub(crate) fn dispatch_os_parts(
     py: Python<'_>,

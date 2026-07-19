@@ -25,4 +25,4 @@ pub use frame::{
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};
+pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};

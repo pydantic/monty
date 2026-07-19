@@ -1,7 +1,6 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
 use std::{
-    mem,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
@@ -9,10 +8,9 @@ use std::{
 
 use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
-    WireArgsOutcome,
 };
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_proto::{FrameError, MONTY_VERSION, WireOsCall, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -623,7 +621,7 @@ impl Checkout {
                         })
                     });
                 }
-                Some(pb::child_event::Kind::OsCall(mut call)) => {
+                Some(pb::child_event::Kind::OsCall(call)) => {
                     // Parent-side mounts: service covered filesystem calls
                     // here and resume the child directly — the caller never
                     // sees them (mirroring `Print` handling). The watchdog is
@@ -635,49 +633,89 @@ impl Checkout {
                     // worker execution per turn stays bounded by `deadline`.
                     deadline_guard = None;
                     remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
-                    if let Some(result) = self.try_mount_call(&mut call)? {
-                        // `armed_deadline` (the `Timeout` error's reported
-                        // value) stays at the turn deadline: the allowance
-                        // makes that the bound the whole turn is held to.
-                        let next_deadline = min_deadline(remaining, self.backstop_deadline());
-                        let worker = self.worker.as_mut().expect("checked above");
-                        armed_at = Instant::now();
-                        deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
-                        if let Err(err) = send_internal_resume(worker, call.call_id, result) {
-                            // an oversize result frame is rejected before any
-                            // bytes are written, so the stream is intact and
-                            // the suspended child can be resumed with a small,
-                            // catchable error instead; anything else is a real
-                            // I/O break
-                            let FrameError::FrameTooLarge { len, max } = err else {
-                                break Err(self.poison("resuming a mount-covered OS call"));
-                            };
-                            let exc = MontyException::new(
-                                ExcType::RuntimeError,
-                                Some(format!(
-                                    "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
-                                )),
-                            );
-                            let error_result = pb::ext_function_result::Kind::Error((&exc).into());
-                            if send_internal_resume(worker, call.call_id, error_result).is_err() {
-                                break Err(self.poison("resuming a mount-covered OS call"));
+                    let call_id = call.call_id;
+                    // `Consumed` re-announcements (after `restore`) carry no
+                    // payload and always surface — the caller re-learns the
+                    // call from its own records. Everything else decodes into
+                    // a typed `OsFunctionCall`; a payload the child could
+                    // never legitimately produce is a protocol violation.
+                    let function_call = match call.call {
+                        None => break Err(self.protocol_violation("OsCall event with no call")),
+                        Some(pb::os_call::Call::Consumed(_)) => None,
+                        Some(kind) => match OsFunctionCall::try_from(kind) {
+                            Ok(function_call) => Some(function_call),
+                            Err(err) => {
+                                break Err(self.protocol_violation(&format!("invalid OS call payload: {err}")));
                             }
+                        },
+                    };
+                    let unhandled = match function_call {
+                        Some(function_call) => match self.try_mount_call(function_call) {
+                            MountCallOutcome::Handled(result) => {
+                                let wire_result = match result {
+                                    Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
+                                    Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
+                                };
+                                // `armed_deadline` (the `Timeout` error's reported
+                                // value) stays at the turn deadline: the allowance
+                                // makes that the bound the whole turn is held to.
+                                let next_deadline = min_deadline(remaining, self.backstop_deadline());
+                                let worker = self.worker.as_mut().expect("checked above");
+                                armed_at = Instant::now();
+                                deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
+                                if let Err(err) = send_internal_resume(worker, call_id, wire_result) {
+                                    // an oversize result frame is rejected before any
+                                    // bytes are written, so the stream is intact and
+                                    // the suspended child can be resumed with a small,
+                                    // catchable error instead; anything else is a real
+                                    // I/O break
+                                    let FrameError::FrameTooLarge { len, max } = err else {
+                                        break Err(self.poison("resuming a mount-covered OS call"));
+                                    };
+                                    let exc = MontyException::new(
+                                        ExcType::RuntimeError,
+                                        Some(format!(
+                                            "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
+                                        )),
+                                    );
+                                    let error_result = pb::ext_function_result::Kind::Error((&exc).into());
+                                    if send_internal_resume(worker, call_id, error_result).is_err() {
+                                        break Err(self.poison("resuming a mount-covered OS call"));
+                                    }
+                                }
+                                // serviced internally — wait for the child's
+                                // next event
+                                continue;
+                            }
+                            MountCallOutcome::NotHandled(function_call) => Some(function_call),
+                        },
+                        None => None,
+                    };
+                    // Not mount-covered: surface to the caller in the
+                    // `(name, args, kwargs)` host-callback shape, with the
+                    // parent-computed no-handler error. A consumed
+                    // re-announcement surfaces with an empty name and no
+                    // error — the caller re-learns the call from its records.
+                    let (function_name, args, kwargs, not_handled_error) = match unhandled {
+                        Some(function_call) => {
+                            let not_handled_error = function_call.on_no_handler();
+                            let function_name = function_call.name().to_owned();
+                            let (args, kwargs) = function_call.to_args();
+                            (function_name, args, kwargs, Some(not_handled_error))
                         }
-                    } else {
-                        self.pending = Some(Pending::Call {
-                            call_id: call.call_id,
-                            function_name: call.function_name.clone(),
-                        });
-                        break self.convert_turn(|| {
-                            Ok(TurnEvent::OsCall {
-                                function_name: call.function_name,
-                                args: call.args,
-                                kwargs: call.kwargs,
-                                call_id: call.call_id,
-                                not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
-                            })
-                        });
-                    }
+                        None => (String::new(), vec![], vec![], None),
+                    };
+                    self.pending = Some(Pending::Call {
+                        call_id,
+                        function_name: function_name.clone(),
+                    });
+                    break Ok(ControlEvent::Turn(TurnEvent::OsCall {
+                        function_name,
+                        args,
+                        kwargs,
+                        call_id,
+                        not_handled_error,
+                    }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
@@ -752,47 +790,16 @@ impl Checkout {
         }
     }
 
-    /// Attempts to service a filesystem `OsCall` from the parent-side mount
-    /// table, performing the host I/O here. `Ok(None)` when the call is not
-    /// mount-covered (it then surfaces to the caller); `Ok(Some)` carries the
-    /// wire result to resume the child with.
-    ///
-    /// The wire args are *moved* out of `call` so a covered write's payload
-    /// reaches overlay storage without a copy; when the call is not covered
-    /// they are moved back (via the `to_args` round trip, exact by
-    /// construction) so the caller can still surface the original call.
-    ///
-    /// The wire args come from an untrusted child, but the child validates
-    /// and serializes these calls itself — a recognized filesystem name with
-    /// a malformed shape is a protocol violation (`Err`, worker discarded),
-    /// never serviced. Path containment inside covered calls is enforced by
-    /// the `MountTable` itself.
-    fn try_mount_call(&mut self, call: &mut WireOsCall) -> Result<Option<pb::ext_function_result::Kind>, PoolError> {
-        let args = mem::take(&mut call.args);
-        let kwargs = mem::take(&mut call.kwargs);
-        match OsFunctionCall::from_wire_args(&call.function_name, args, kwargs) {
-            WireArgsOutcome::Success(function_call) => {
-                // With no mounts this feed, every call surfaces to the caller.
-                let outcome = match self.feed_mounts.as_mut() {
-                    Some(mounts) => mounts.handle_os_call(function_call),
-                    None => MountCallOutcome::NotHandled(function_call),
-                };
-                match outcome {
-                    MountCallOutcome::Handled(result) => Ok(Some(match result {
-                        Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-                        Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
-                    })),
-                    MountCallOutcome::NotHandled(function_call) => {
-                        (call.args, call.kwargs) = function_call.to_args();
-                        Ok(None)
-                    }
-                }
-            }
-            WireArgsOutcome::NoMatch(args, kwargs) => {
-                (call.args, call.kwargs) = (args, kwargs);
-                Ok(None)
-            }
-            WireArgsOutcome::Error(err) => Err(self.protocol_violation(&err)),
+    /// Routes a decoded OS call to this feed's parent-side mount table,
+    /// performing any covered host I/O here. The call is *moved* in so a
+    /// covered write's payload reaches overlay storage without a copy;
+    /// `NotHandled` hands it back for surfacing to the caller. With no
+    /// mounts this feed, every call comes back `NotHandled`. Path
+    /// containment inside covered calls is enforced by the `MountTable`.
+    fn try_mount_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
+        match self.feed_mounts.as_mut() {
+            Some(mounts) => mounts.handle_os_call(call),
+            None => MountCallOutcome::NotHandled(call),
         }
     }
 
