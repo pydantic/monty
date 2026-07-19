@@ -19,7 +19,7 @@ use std::mem;
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
@@ -191,11 +191,9 @@ impl MontyIter {
             IterValue::IterHeapRef { iter_id } => {
                 // Delegate to the terminal iterator so position is shared;
                 // `self.value` keeps it alive, so this always resolves to an Iter.
-                let Some(target) = resolve_delegate(*iter_id, vm.heap) else {
-                    return Err(ExcType::runtime_error_iter_delegation_too_deep());
-                };
+                let target = resolve_delegate(*iter_id, vm.heap).map_err(DelegateError::into_exception)?;
                 let HeapReadOutput::Iter(mut inner) = vm.heap.read(target) else {
-                    panic!("IterHeapRef: underlying value is not an iterator")
+                    unreachable!("resolve_delegate only returns Ok for an Iter")
                 };
                 inner.advance(vm)
             }
@@ -222,12 +220,14 @@ impl MontyIter {
             // The wrapper's own index is unused; report the terminal iterator's
             // remaining length. A cyclic/over-deep chain degrades to 0, which is
             // safe: this is only a capacity hint.
+            // A broken chain degrades to 0: this is only a capacity hint, and the
+            // consuming site raises the real error.
             IterValue::IterHeapRef { iter_id } => match resolve_delegate(*iter_id, heap) {
-                Some(target) => match heap.get(target) {
+                Ok(target) => match heap.get(target) {
                     HeapData::Iter(inner) => inner.size_hint(heap),
                     _ => 0,
                 },
-                None => 0,
+                Err(_) => 0,
             },
         };
         len.saturating_sub(self.index)
@@ -425,11 +425,9 @@ impl<'h> HeapRead<'h, MontyIter> {
             IterValue::IterHeapRef { iter_id } => {
                 // Delegate to the terminal iterator (see `for_next`).
                 let iter_id = *iter_id;
-                let Some(target) = resolve_delegate(iter_id, vm.heap) else {
-                    return Err(ExcType::runtime_error_iter_delegation_too_deep());
-                };
+                let target = resolve_delegate(iter_id, vm.heap).map_err(DelegateError::into_exception)?;
                 let HeapReadOutput::Iter(mut inner) = vm.heap.read(target) else {
-                    panic!("IterHeapRef: underlying value is not an iterator")
+                    unreachable!("resolve_delegate only returns Ok for an Iter")
                 };
                 inner.advance(vm)
             }
@@ -483,28 +481,48 @@ pub fn collect_iterable_bounded(
 /// chain, which is unreachable by construction but not from an untrusted snapshot.
 const MAX_DELEGATION_DEPTH: usize = 1000;
 
+/// Why [`resolve_delegate`] could not reach a terminal iterator.
+///
+/// Neither variant is reachable from Python — a delegating iterator always
+/// points at an `Iter` and chains never exceed depth 1 — so both exist to keep
+/// malformed snapshot data on a catchable path instead of panicking.
+enum DelegateError {
+    /// The chain exceeded [`MAX_DELEGATION_DEPTH`]; cyclic or absurdly deep.
+    TooDeep,
+    /// A link pointed at a heap entry that is not an iterator.
+    NotAnIterator,
+}
+
+impl DelegateError {
+    /// Converts to the `RuntimeError` the consuming site raises.
+    fn into_exception(self) -> RunError {
+        match self {
+            Self::TooDeep => ExcType::runtime_error_iter_delegation_too_deep(),
+            Self::NotAnIterator => ExcType::runtime_error_iter_delegation_invalid(),
+        }
+    }
+}
+
 /// Follows a chain of delegating (`IterHeapRef`) iterators to the terminal
-/// iterator holding the iteration state. `None` if the chain exceeds
-/// [`MAX_DELEGATION_DEPTH`] (cyclic or absurdly deep).
+/// iterator holding the iteration state.
 ///
 /// MUST stay iterative, never recursing into `advance`: chain depth is
 /// attacker-controlled, and native recursion would overflow the stack and abort
-/// the process — uncatchable, and beyond any `ResourceTracker` limit.
-fn resolve_delegate(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<HeapId> {
+/// the process — uncatchable, and beyond any `ResourceTracker` limit. For the
+/// same reason a non-iterator link is reported rather than passed on to the
+/// caller, whose `heap.read` would panic on it.
+fn resolve_delegate(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<HeapId, DelegateError> {
     let mut current = start;
     for _ in 0..MAX_DELEGATION_DEPTH {
         let HeapData::Iter(inner) = heap.get(current) else {
-            // Not an iterator: by construction unreachable (a delegating
-            // iterator's target is always an `Iter`), so let the caller's
-            // `heap.read` tripwire report it.
-            return Some(current);
+            return Err(DelegateError::NotAnIterator);
         };
         match inner.iter_value {
             IterValue::IterHeapRef { iter_id } => current = iter_id,
-            _ => return Some(current),
+            _ => return Ok(current),
         }
     }
-    None
+    Err(DelegateError::TooDeep)
 }
 
 /// Gets an item from a heap-allocated container at the given index.
@@ -821,5 +839,70 @@ impl HeapItem for MontyIter {
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.value.py_dec_ref_ids(stack);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{resource::NoLimitTracker, types::List};
+
+    /// Builds a delegating iterator pointing at `target`.
+    ///
+    /// Constructed directly because Python cannot produce one: `iter()` returns
+    /// an existing iterator unchanged, so chains only arise from a snapshot.
+    fn delegating(target: HeapId) -> MontyIter {
+        MontyIter {
+            index: 0,
+            iter_value: IterValue::IterHeapRef { iter_id: target },
+            value: Value::None,
+        }
+    }
+
+    /// Builds a terminal (non-delegating) iterator over three ints.
+    fn terminal() -> MontyIter {
+        MontyIter {
+            index: 0,
+            iter_value: IterValue::Range {
+                next: 0,
+                step: 1,
+                len: 3,
+            },
+            value: Value::None,
+        }
+    }
+
+    /// A well-formed chain resolves to the terminal iterator holding the state.
+    #[test]
+    fn resolve_delegate_walks_to_the_terminal_iterator() {
+        let heap = Heap::new(16, NoLimitTracker);
+        let end = heap.allocate(HeapData::Iter(terminal())).unwrap();
+        let mid = heap.allocate(HeapData::Iter(delegating(end))).unwrap();
+        let start = heap.allocate(HeapData::Iter(delegating(mid))).unwrap();
+        assert_eq!(resolve_delegate(start, &heap).ok(), Some(end));
+    }
+
+    /// A link pointing at a live non-iterator must raise, not panic: the
+    /// consuming site's `heap.read` would abort the process on it.
+    #[test]
+    fn resolve_delegate_rejects_a_non_iterator_target() {
+        let heap = Heap::new(16, NoLimitTracker);
+        let list = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        let start = heap.allocate(HeapData::Iter(delegating(list))).unwrap();
+        let err = resolve_delegate(start, &heap).expect_err("a non-iterator target must not resolve");
+        assert!(matches!(err, DelegateError::NotAnIterator));
+    }
+
+    /// An over-long chain stops at the cap rather than walking forever, which
+    /// is what a cyclic chain from a snapshot degrades to.
+    #[test]
+    fn resolve_delegate_caps_an_over_long_chain() {
+        let heap = Heap::new(16, NoLimitTracker);
+        let mut current = heap.allocate(HeapData::Iter(terminal())).unwrap();
+        for _ in 0..=MAX_DELEGATION_DEPTH {
+            current = heap.allocate(HeapData::Iter(delegating(current))).unwrap();
+        }
+        let err = resolve_delegate(current, &heap).expect_err("a chain past the cap must not resolve");
+        assert!(matches!(err, DelegateError::TooDeep));
     }
 }

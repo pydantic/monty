@@ -1143,6 +1143,15 @@ impl ExcType {
         SimpleException::new_msg(Self::RuntimeError, "iterator delegation nested too deeply").into()
     }
 
+    /// Creates a RuntimeError for a delegating iterator pointing at a non-iterator.
+    ///
+    /// Unreachable from Python; only a malformed snapshot can produce it. Raised
+    /// rather than panicking so untrusted snapshot data cannot abort the process.
+    #[must_use]
+    pub(crate) fn runtime_error_iter_delegation_invalid() -> RunError {
+        SimpleException::new_msg(Self::RuntimeError, "iterator delegates to a non-iterator").into()
+    }
+
     /// Creates a RuntimeError for set mutation during iteration.
     ///
     /// Matches CPython's format: `RuntimeError: Set changed size during iteration`
