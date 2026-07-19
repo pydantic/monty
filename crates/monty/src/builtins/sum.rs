@@ -6,7 +6,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, RunResult},
     heap::DropGuard,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait, Type},
@@ -29,8 +29,8 @@ struct SumArgs {
 /// Implementation of the sum() builtin function.
 ///
 /// Sums the items of an iterable from left to right with an optional start value.
-/// The default start value is 0. String start values are explicitly rejected
-/// (use `''.join(seq)` instead for string concatenation).
+/// The default start value is 0. Str and bytes start values are explicitly
+/// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
 pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
@@ -38,11 +38,11 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let iter = MontyIter::new(iterable, vm)?;
     defer_drop_mut!(iter, vm);
 
-    // Reject string start values - Python explicitly forbids this
-    if matches!(start.py_type(vm), Type::Str) {
-        return Err(
-            SimpleException::new_msg(ExcType::TypeError, "sum() can't sum strings [use ''.join(seq) instead]").into(),
-        );
+    // Reject str/bytes start values - Python explicitly forbids these
+    match start.py_type(vm) {
+        Type::Str => return Err(ExcType::type_error_sum_start("strings", "''")),
+        Type::Bytes => return Err(ExcType::type_error_sum_start("bytes", "b''")),
+        _ => {}
     }
     // Take the start value out of its guard (dropping `None` is a no-op).
     let accumulator = mem::replace(start, Value::None);

@@ -66,6 +66,11 @@ mechanism beyond dataclass field inheritance.
   `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
+- **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
+  clamped by sign. For floats this matches CPython (which clamps to
+  `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython
+  tries to materialise `10**-ndigits` and dies with `MemoryError` where
+  Monty returns `0` immediately.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
   not honoured; `sep=` and `end=` are.
 - **`id(f)` / `hash(f)` / `f is g` / `f == g` for host-supplied callables**

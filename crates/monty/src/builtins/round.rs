@@ -1,10 +1,13 @@
 //! Implementation of the round() builtin function.
 
+use num_bigint::Sign;
+
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
+    heap::HeapData,
     resource::ResourceTracker,
     value::Value,
 };
@@ -44,6 +47,14 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
         Value::None => None,
         Value::Int(n) => Some(*n),
         Value::Bool(b) => Some(i64::from(*b)),
+        // A genuine int wider than i64: clamp by sign — the saturating paths
+        // below then return the number unchanged (huge positive) or 0 / ±0.0
+        // (huge negative), matching CPython's `Py_ssize_t` clamp for floats.
+        v if is_long_int(v, vm) => Some(if long_int_is_negative(v, vm) {
+            i64::MIN
+        } else {
+            i64::MAX
+        }),
         v => {
             let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(
@@ -62,8 +73,9 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
                     Ok(Value::Int(*n))
                 } else {
                     // Negative digits: round to tens, hundreds, etc. using banker's rounding
-                    // -d is positive since d < 0; use try_from to safely convert
-                    let exp = u32::try_from(-d).unwrap_or(u32::MAX);
+                    // (`unsigned_abs` avoids the `-i64::MIN` overflow; an
+                    // out-of-u32 magnitude saturates the factor to i64::MAX)
+                    let exp = u32::try_from(d.unsigned_abs()).unwrap_or(u32::MAX);
                     let factor = 10_i64.saturating_pow(exp);
                     let rounded_f = bankers_round(*n as f64 / factor as f64);
                     let rounded = f64_to_i64(rounded_f) * factor;
@@ -100,6 +112,16 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
             )
             .into())
         }
+    }
+}
+
+/// True when a LongInt-valued `ndigits` (interned or heap-allocated) is
+/// negative — decides which i64 extreme [`builtin_round`] clamps it to.
+fn long_int_is_negative(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+    match value {
+        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
+        _ => false,
     }
 }
 

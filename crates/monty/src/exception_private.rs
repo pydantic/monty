@@ -1712,6 +1712,19 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, "errors without a string argument").into()
     }
 
+    /// Creates a TypeError for `sum()` rejecting a str/bytes `start` value.
+    ///
+    /// Matches CPython: `sum() can't sum {kind} [use {join}.join(seq) instead]`
+    /// — `("strings", "''")` for str, `("bytes", "b''")` for bytes.
+    #[must_use]
+    pub(crate) fn type_error_sum_start(kind: &str, join: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("sum() can't sum {kind} [use {join}.join(seq) instead]"),
+        )
+        .into()
+    }
+
     /// Creates a UnicodeEncodeError for a run of `start..end` consecutive
     /// characters (character indices, not byte offsets) of `object` — the
     /// full string being encoded — that can't be represented in the target

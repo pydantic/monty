@@ -9,6 +9,25 @@ assert sum(range(5)) == 10
 assert sum([1.5, 2.5, 3.0], 0.0) == 7.0
 # Note: sum of floats without start requires py_add to support int+float
 
+# str/bytes start values are rejected, pointing at join() instead
+try:
+    sum([], 'x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "sum() can't sum strings [use ''.join(seq) instead]"
+
+try:
+    sum([], b'x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "sum() can't sum bytes [use b''.join(seq) instead]"
+
+try:
+    sum([b'a'], start=b'')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "sum() can't sum bytes [use b''.join(seq) instead]"
+
 # sum with different iterables
 assert sum({1, 2, 3}) == 6
 assert sum({1: 'a', 2: 'b', 3: 'c'}) == 6
