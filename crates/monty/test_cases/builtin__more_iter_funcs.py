@@ -306,6 +306,14 @@ assert list(enumerate(['x'])) == [(0, 'x')]
 assert list(enumerate(['a', 'b'], 1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(['a', 'b'], 10)) == [(10, 'a'), (11, 'b')]
 
+# a non-iterable errors out of iterator construction without leaking a
+# heap-backed start=
+try:
+    enumerate(1, start=10**30)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "'int' object is not iterable"
+
 # enumerate keyword forms (CPython's vectorcall accepts all of these)
 assert list(enumerate(['a', 'b'], start=1)) == [(1, 'a'), (2, 'b')]
 assert list(enumerate(iterable=['a'])) == [(0, 'a')]

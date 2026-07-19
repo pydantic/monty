@@ -19,9 +19,11 @@ use crate::{
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
+    // Guard `start` before building the iterator: a non-iterable `iterable`
+    // errors out of `MontyIter::new`, and a heap-backed start must not leak.
+    defer_drop!(start, vm);
     let iter = MontyIter::new(iterable, vm)?;
     defer_drop_mut!(iter, vm);
-    defer_drop!(start, vm);
 
     // Get start index (default 0)
     let mut index: i64 = match start {

@@ -1,6 +1,6 @@
 //! Implementation of the round() builtin function.
 
-use num_bigint::Sign;
+use num_bigint::{BigInt, Sign};
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
@@ -9,6 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
     resource::ResourceTracker,
+    types::LongInt,
     value::Value,
 };
 
@@ -72,14 +73,29 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
                     // Positive or zero digits: return the integer unchanged
                     Ok(Value::Int(*n))
                 } else {
-                    // Negative digits: round to tens, hundreds, etc. using banker's rounding
-                    // (`unsigned_abs` avoids the `-i64::MIN` overflow; an
-                    // out-of-u32 magnitude saturates the factor to i64::MAX)
-                    let exp = u32::try_from(d.unsigned_abs()).unwrap_or(u32::MAX);
-                    let factor = 10_i64.saturating_pow(exp);
-                    let rounded_f = bankers_round(*n as f64 / factor as f64);
-                    let rounded = f64_to_i64(rounded_f) * factor;
-                    Ok(Value::Int(rounded))
+                    // Negative digits: round to the nearest multiple of 10^|d|,
+                    // half to even, exactly in integers — f64 division corrupts
+                    // large values and an i64 write-back multiply can overflow.
+                    // |n| < 10^19, so any |d| >= 20 rounds to 0, and the i128
+                    // intermediates stay far below their limits.
+                    let result: i128 = match u32::try_from(d.unsigned_abs()) {
+                        Ok(exp @ ..=19) => {
+                            let factor = 10_i128.pow(exp);
+                            let n = i128::from(*n);
+                            let mut q = n / factor;
+                            let r2 = (n % factor).abs() * 2;
+                            if r2 > factor || (r2 == factor && q % 2 != 0) {
+                                q += if n < 0 { -1 } else { 1 };
+                            }
+                            q * factor
+                        }
+                        _ => 0,
+                    };
+                    // Rounding up can cross i64::MAX (e.g. round(2**63 - 1, -1)).
+                    Ok(match i64::try_from(result) {
+                        Ok(i) => Value::Int(i),
+                        Err(_) => LongInt::new(BigInt::from(result)).into_value(vm.heap)?,
+                    })
                 }
             } else {
                 // No digits specified: return the integer unchanged

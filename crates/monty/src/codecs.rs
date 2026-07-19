@@ -84,6 +84,12 @@ impl Codec {
     /// CPython's `codecs.lookup_error` semantics. Only the ASCII codec can
     /// fail: UTF-8 is the native representation, and every Monty string is
     /// encodable as UTF-16/32 (no lone surrogates can exist).
+    ///
+    /// Like [`Codec::decode`], output is bounded by a small constant multiple
+    /// of the (already resource-tracked) input — ≤2x for UTF-16, ≤4x for
+    /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
+    /// ASCII error handlers can amplify further, and they build through the
+    /// tracker.
     pub(crate) fn encode(self, s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
             Self::Utf8 => Ok(s.as_bytes().to_vec()),
