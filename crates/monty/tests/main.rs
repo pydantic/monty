@@ -106,7 +106,7 @@ fn external_function_as_init_raises_not_implemented() {
         .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Traceback (most recent call last):\n  File \"test.py\", line 4, in <module>\n    Foo()\n    ~~~~~\nNotImplementedError: __init__: external functions are not yet supported in this context"
+        "Traceback (most recent call last):\n  File \"test.py\", line 4, in <module>\n    Foo()\n    ~~~~~\nNotImplementedError: __init__: external function 'ext_fn' is not yet supported in this context"
     );
 }
 

@@ -667,7 +667,7 @@ impl IntoIterator for Dict {
 /// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
 /// the reader count for the duration of iteration.
 ///
-/// **Two yield modes.** Pick the variant that matches the caller's natural
+/// **Yield modes.** Pick the variant that matches the caller's natural
 /// pattern to avoid redundant `clone_with_heap` / `drop_with` work:
 ///
 /// - [`next`](Self::next) returns `Option<(&Value, &Value)>`. The iterator
@@ -675,13 +675,15 @@ impl IntoIterator for Dict {
 ///   empty sentinel) and drops the previous pair at the start of each call,
 ///   so "use and discard" call sites do **not** need a per-item
 ///   `defer_drop!`.
+/// - [`next_value`](Self::next_value) returns only a borrowed value, avoiding
+///   key refcount churn for value-only operations.
 /// - [`next_owned`](Self::next_owned) returns `Option<(Value, Value)>` and
 ///   clones straight into the return value, leaving the internal slot
 ///   `Undefined`. Prefer this when feeding pairs into a sink that takes
 ///   ownership (e.g. [`HeapRead::set`], `Set::add`) — going through `next`
 ///   forces a second `clone_with_heap` per element.
 ///
-/// Mixing the two modes is supported: every step drops whatever the slot
+/// Mixing the yield modes is supported: every step drops whatever the slot
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
@@ -741,6 +743,20 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some((&self.current_key, &self.current_value)))
     }
 
+    /// Advances the iterator and returns a borrow of the next value.
+    ///
+    /// Prefer this for value-only operations so dictionary keys are not cloned.
+    /// The returned reference is valid until the next call that advances the
+    /// iterator, or until the iterator is dropped.
+    pub(crate) fn next_value<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_value = entry.value.clone_with_heap(vm.heap);
+        Ok(Some(&self.current_value))
+    }
+
     /// Advances the iterator and returns the next `(key, value)` pair as
     /// owned values, transferring ownership to the caller.
     ///
@@ -761,7 +777,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some(pair))
     }
 
-    /// Shared step for [`next`](Self::next) / [`next_owned`](Self::next_owned).
+    /// Shared step for the iterator's borrowed and owned yield modes.
     ///
     /// Releases the previously-yielded slot (no-op when each slot is
     /// `Undefined`), runs the per-step time check and the dict mutation

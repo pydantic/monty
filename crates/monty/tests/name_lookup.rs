@@ -553,14 +553,14 @@ fn resolve_function_with_non_interned_name() {
 }
 
 #[test]
-fn name_lookup_not_possible_inside_sort_callback() {
-    // `sorted([1], key=lambda x: missing)` cannot yet yield for external functions
-    // to resolve missing, should raise NotImplementedError
+fn name_lookup_inside_sort_callback_raises_name_error() {
+    // `evaluate_function` cannot suspend for the host to resolve the name, but
+    // must still distinguish an unresolved name from an external function call.
     let code = "
 try:
     sorted([1], key=lambda x: missing)
-except NotImplementedError as e:
-    assert str(e) == 'sorted() key argument: external functions are not yet supported in this context'
+except NameError as e:
+    assert str(e) == \"name 'missing' is not defined\"
 else:
     assert False
 

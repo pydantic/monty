@@ -363,13 +363,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         }
     }
 
-    /// Evaluates a function in a position that doesn't yet support suspending.
+    /// Evaluates a function in a synchronous position that cannot suspend to the host.
     ///
-    /// Calls the function and, if it's a user-defined function that pushes a frame,
-    /// runs the VM until that frame returns.
-    ///
-    /// Returns an error for external/OS functions since those require the host to
-    /// execute them and resume, which this synchronous context cannot support.
+    /// User-defined functions run until their frame returns. An unresolved name raises
+    /// `NameError`; external, OS, method, and future suspensions raise a variant-specific
+    /// `NotImplementedError` because this context cannot preserve and resume its state.
     ///
     /// The nested `self.run()` below recurses on the native Rust stack, so
     /// re-entry is bounded via [`enter_run_reentry`](Self::enter_run_reentry)
@@ -390,7 +388,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let mut guard = RunReentryGuard::new(self);
         let this = &mut *guard;
 
-        match this.call_function(callable, args)? {
+        let exit = match this.call_function(callable, args)? {
             CallResult::Value(v) => return Ok(v),
             CallResult::FramePushed => {
                 // A new frame was pushed for a defined function call - we need to run it
@@ -401,22 +399,74 @@ impl<T: ResourceTracker> VM<'_, T> {
                 match this.run()? {
                     FrameExit::Return(v) => return Ok(v),
                     exit => {
-                        exit.drop_with(this);
                         // Pop frames off the stack from this failed evaluation
                         // (including the one just pushed)
                         while this.frames.len() >= stack_depth {
                             this.pop_frame();
                         }
+                        exit
                     }
                 }
             }
-            other => other.drop_with(this),
-        }
+            unsupported => return Err(this.unsupported_call_result(ctx, unsupported)),
+        };
 
-        Err(ExcType::not_implemented(format!(
-            "{ctx}: external functions are not yet supported in this context"
-        ))
-        .into())
+        Err(this.unsupported_frame_exit(ctx, exit))
+    }
+
+    /// Converts a direct call suspension into a specific synchronous-context error.
+    #[cold]
+    fn unsupported_call_result(&mut self, ctx: &'static str, result: CallResult) -> RunError {
+        let error = match &result {
+            CallResult::External(function_name, _) => ExcType::not_implemented(format!(
+                "{ctx}: external function '{}' is not yet supported in this context",
+                function_name.as_str(self.interns)
+            )),
+            CallResult::OsCall(function_call) => ExcType::not_implemented(format!(
+                "{ctx}: OS function '{}' is not yet supported in this context",
+                function_call.name()
+            )),
+            CallResult::OsCallStoreBuffer { call, .. } => ExcType::not_implemented(format!(
+                "{ctx}: OS function '{}' is not yet supported in this context",
+                call.name()
+            )),
+            CallResult::MethodCall(method_name, _) => ExcType::not_implemented(format!(
+                "{ctx}: method call '{}' is not yet supported in this context",
+                method_name.as_str(self.interns)
+            )),
+            CallResult::AwaitValue(_) => {
+                ExcType::not_implemented(format!("{ctx}: awaiting a value is not yet supported in this context"))
+            }
+            CallResult::Value(_) | CallResult::FramePushed => unreachable!("completed calls are handled above"),
+        };
+        result.drop_with(self);
+        error.into()
+    }
+
+    /// Converts a nested VM suspension into a specific synchronous-context error.
+    #[cold]
+    fn unsupported_frame_exit(&mut self, ctx: &'static str, exit: FrameExit) -> RunError {
+        let error = match &exit {
+            FrameExit::Return(_) => unreachable!("return exits are handled above"),
+            FrameExit::ExternalCall { function_name, .. } => ExcType::not_implemented(format!(
+                "{ctx}: external function '{}' is not yet supported in this context",
+                function_name.as_str(self.interns)
+            )),
+            FrameExit::OsCall { function_call, .. } => ExcType::not_implemented(format!(
+                "{ctx}: OS function '{}' is not yet supported in this context",
+                function_call.name()
+            )),
+            FrameExit::MethodCall { method_name, .. } => ExcType::not_implemented(format!(
+                "{ctx}: method call '{}' is not yet supported in this context",
+                method_name.as_str(self.interns)
+            )),
+            FrameExit::ResolveFutures(_) => ExcType::not_implemented(format!(
+                "{ctx}: resolving async futures is not yet supported in this context"
+            )),
+            FrameExit::NameLookup { name_id, .. } => ExcType::name_error(self.interns.get_str(*name_id)),
+        };
+        exit.drop_with(self);
+        error.into()
     }
 
     /// Calls a callable value with the given arguments.
