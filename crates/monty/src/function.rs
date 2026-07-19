@@ -1,4 +1,7 @@
-use std::fmt::{self, Write};
+use std::{
+    fmt::{self, Write},
+    sync::Arc,
+};
 
 use crate::{args::Signature, bytecode::Code, expressions::Identifier, intern::Interns, namespace::NamespaceId};
 
@@ -64,8 +67,8 @@ pub(crate) struct Function {
     /// immediately pushing a frame. The coroutine captures the bound arguments
     /// and starts execution only when awaited.
     pub is_async: bool,
-    /// Compiled bytecode for this function body.
-    pub code: Code,
+    /// Compiled bytecode for this function body. Wrapped in `Arc` to avoid deep clone.
+    pub code: Arc<Code>,
 }
 
 impl Function {
@@ -107,7 +110,7 @@ impl Function {
             cell_param_indices,
             defaults_count,
             is_async,
-            code,
+            code: Arc::new(code),
         }
     }
 

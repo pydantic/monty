@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
@@ -47,8 +47,7 @@ use crate::{
 /// inline, while heap-allocated values (List, Str, Dict, etc.) are stored in the arena
 /// and referenced via `Ref(HeapId)`.
 ///
-/// NOTE: `Clone` is intentionally NOT derived. Use `clone_with_heap()` for heap values
-/// or `clone_immediate()` for immediate values only. Direct cloning via `.clone()` would
+/// NOTE: `Clone` is intentionally NOT derived. Use `clone_with_heap()`. Direct cloning via `.clone()` would
 /// bypass reference counting and cause memory leaks.
 ///
 /// NOTE: it's important to keep this size small to minimize memory overhead!
@@ -1762,23 +1761,10 @@ impl Value {
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
                             panic!("dict_values view must reference a dict");
                         };
-                        // Iterate by index, cloning each value for py_eq comparison
-                        let len = dict.get(vm.heap).len();
-                        for i in 0..len {
-                            // Two-phase clone: read ref discriminant, then inc_ref
-                            let ref_id = match dict.get(vm.heap).value_at(i) {
-                                Some(Self::Ref(id)) => Some(*id),
-                                _ => None,
-                            };
-                            let el = if let Some(id) = ref_id {
-                                vm.heap.inc_ref(id);
-                                Self::Ref(id)
-                            } else {
-                                dict.get(vm.heap).value_at(i).expect("index valid").clone_immediate()
-                            };
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
+                        let iter = dict.iter(vm)?;
+                        defer_drop_mut!(iter, vm);
+                        while let Some(value) = iter.next_value(vm)? {
+                            if item.py_eq(value, vm)? {
                                 return Ok(true);
                             }
                         }
@@ -2047,7 +2033,7 @@ impl Value {
         }
     }
 
-    /// Clones an value with proper heap reference counting.
+    /// Clones a value with proper heap reference counting.
     ///
     /// For immediate values (Int, Bool, None, etc.), this performs a simple copy.
     /// For heap-allocated values (Ref variant), this increments the reference count
@@ -2064,12 +2050,27 @@ impl Value {
     #[must_use]
     pub fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         match self {
+            Self::Undefined => Self::Undefined,
+            Self::Ellipsis => Self::Ellipsis,
+            Self::None => Self::None,
+            Self::Bool(b) => Self::Bool(*b),
+            Self::Int(v) => Self::Int(*v),
+            Self::Float(v) => Self::Float(*v),
+            Self::Builtin(b) => Self::Builtin(*b),
+            Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
+            Self::DefFunction(f) => Self::DefFunction(*f),
+            Self::ExtFunction(f) => Self::ExtFunction(*f),
+            Self::InternString(s) => Self::InternString(*s),
+            Self::InternBytes(b) => Self::InternBytes(*b),
+            Self::InternLongInt(bi) => Self::InternLongInt(*bi),
+            Self::Marker(m) => Self::Marker(*m),
+            Self::Property(p) => Self::Property(*p),
             Self::Ref(id) => {
                 heap.heap().inc_ref(*id);
                 Self::Ref(*id)
             }
-            // Immediate values can be copied without heap interaction
-            other => other.clone_immediate(),
+            #[cfg(feature = "memory-model-checks")]
+            Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
     }
 
@@ -2103,33 +2104,6 @@ impl Value {
         if let Self::Ref(id) = &old {
             heap.heap_mut().dec_ref(*id);
             mem::forget(old);
-        }
-    }
-
-    /// Internal helper for copying immediate values without heap interaction.
-    ///
-    /// This method should only be called by `clone_with_heap()` for immediate values.
-    /// Attempting to clone a Ref variant will panic.
-    pub fn clone_immediate(&self) -> Self {
-        match self {
-            Self::Undefined => Self::Undefined,
-            Self::Ellipsis => Self::Ellipsis,
-            Self::None => Self::None,
-            Self::Bool(b) => Self::Bool(*b),
-            Self::Int(v) => Self::Int(*v),
-            Self::Float(v) => Self::Float(*v),
-            Self::Builtin(b) => Self::Builtin(*b),
-            Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
-            Self::DefFunction(f) => Self::DefFunction(*f),
-            Self::ExtFunction(f) => Self::ExtFunction(*f),
-            Self::InternString(s) => Self::InternString(*s),
-            Self::InternBytes(b) => Self::InternBytes(*b),
-            Self::InternLongInt(bi) => Self::InternLongInt(*bi),
-            Self::Marker(m) => Self::Marker(*m),
-            Self::Property(p) => Self::Property(*p),
-            Self::Ref(_) => panic!("Ref clones must go through clone_with_heap to maintain refcounts"),
-            #[cfg(feature = "memory-model-checks")]
-            Self::Dereferenced => panic!("Cannot copy Dereferenced object"),
         }
     }
 

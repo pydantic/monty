@@ -10,7 +10,7 @@ use crate::{intern::StringId, parse::CodeRange, value::Value};
 ///
 /// This is the output of the bytecode compiler and the input to the VM.
 /// Each function has its own Code object; module-level code also gets one.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Code {
     /// Raw bytecode instructions as a byte vector.
     ///
@@ -145,13 +145,6 @@ impl Code {
 pub(crate) struct ConstPool {
     /// The constant values, indexed by the operand of `LoadConst`.
     values: Vec<Value>,
-}
-
-impl Clone for ConstPool {
-    fn clone(&self) -> Self {
-        let values = self.values.iter().map(Value::clone_immediate).collect();
-        Self { values }
-    }
 }
 
 impl ConstPool {
