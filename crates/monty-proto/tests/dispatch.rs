@@ -5,7 +5,7 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::MontyObject;
+use monty::{CompileOptions, LimitedTracker, MontyObject, MontyRepl, PrintWriter, ReplProgress, ResourceLimits};
 use monty_proto::{
     FrameReader, MONTY_VERSION, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
@@ -159,4 +159,56 @@ fn shutdown_request_reports_shutdown() {
         matches!(decode_events(&bytes).as_slice(), [pb::child_event::Kind::Ok(_)]),
         "Shutdown answers with a single Ok"
     );
+}
+
+/// A forged suspended dump whose call arguments nest deeper than the wire
+/// depth bound must be rejected at `Load` with a protocol violation — not
+/// re-announced as an event the parent cannot decode.
+#[test]
+fn load_rejects_dump_with_over_deep_suspension_args() {
+    // suspend in-process (no wire depth bound) at `f(x)` with x nested 100
+    // lists deep — over the ~48 wire bound, shallow enough that postcard's
+    // recursive deserialize doesn't overflow the test stack
+    let repl = MontyRepl::new(
+        "main.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
+    let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
+    let progress = repl
+        .feed_start(code, vec![], PrintWriter::Stdout)
+        .expect("feed_start suspends");
+    assert!(
+        matches!(progress, ReplProgress::FunctionCall(_)),
+        "expected a FunctionCall suspension"
+    );
+    let payload = progress.dump().expect("in-process dump has no depth bound");
+
+    // Assemble the dump envelope the way `Dump` does: [version u16 LE]
+    // [tag u8 = 1 (suspended)][script_name str][type_check u8 = 0][payload].
+    let mut state = 5u16.to_le_bytes().to_vec();
+    state.push(1);
+    let script_name = b"main.py";
+    state.extend_from_slice(&u32::try_from(script_name.len()).unwrap().to_le_bytes());
+    state.extend_from_slice(script_name);
+    state.push(0);
+    state.extend_from_slice(&payload);
+
+    let mut child = Child::new();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.unwrap().message.unwrap(),
+        "protocol violation: dump suspension arguments exceed the maximum wire depth"
+    );
+
+    // the rejected load adopted nothing: the child is still fresh and usable
+    let (_, event) = feed(&mut child, "1 + 1");
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
 }

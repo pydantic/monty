@@ -623,6 +623,40 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     session.finish().unwrap();
 }
 
+/// A `dump()` too large for the frame limit while the session is *suspended*
+/// must fail as a clean, session-preserving error — the suspension already
+/// announced its resume point, so the child stays suspended and resumable.
+///
+/// Allocates ~300 MiB in the worker (plus the dump copy), so it is
+/// memory-heavy; disable it if it proves flaky in CI.
+#[test]
+fn oversize_dump_while_suspended_fails_cleanly_and_resumes() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // a tiny suspension announcement on top of a heap too big to dump
+    let code = "data = 'x' * (300 * 1024 * 1024)\nf()\nlen(data)";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
+
+    let err = session.dump().unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize dump, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+
+    // the suspension is untouched: resuming completes the feed
+    let event = session
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(300 * 1024 * 1024));
+    session.finish().unwrap();
+}
+
 #[test]
 fn inputs_and_prints() {
     let pool = Pool::new(config()).unwrap();

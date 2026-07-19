@@ -754,8 +754,13 @@ impl Checkout {
                     });
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
-                    self.pending = None;
-                    self.feed_mounts = None;
+                    // an error reply to `Dump` (e.g. an oversize dump) does not
+                    // end the in-flight feed — the child stays suspended and
+                    // resumable, so keep the pending call and mounts
+                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                        self.pending = None;
+                        self.feed_mounts = None;
+                    }
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };

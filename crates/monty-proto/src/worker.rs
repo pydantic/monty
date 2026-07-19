@@ -303,7 +303,7 @@ impl Child {
         };
         self.stamp_execution_time(&mut event);
         if let Err(err) = sink.send(&event) {
-            self.recover_send_error(err, sink)?;
+            self.recover_send_error(&event, err, sink)?;
         }
         Ok(HandleOutcome::Continue)
     }
@@ -323,16 +323,29 @@ impl Child {
     /// Recovers from a failure to write a turn-ending event.
     ///
     /// [`write_frame`] rejects an oversize frame *before* writing any bytes, so
-    /// the stream stays synced. When the session is not mid-suspension — e.g.
-    /// a `Complete` result that is merely larger than the frame limit — we can
-    /// answer with a clean, session-preserving error and keep serving instead
-    /// of crashing the worker. An oversize *suspension* announcement is
-    /// unrecoverable (the worker is already suspended but the parent never
-    /// learned the resume point), so it propagates to the host loop's fatal
-    /// handling, as does any genuine I/O break.
-    fn recover_send_error(&mut self, err: FrameError, sink: &mut dyn EventSink) -> Result<(), FrameError> {
+    /// the stream stays synced and an oversize event (a large `Complete`, or a
+    /// `DumpResult` while suspended) can be answered with a clean,
+    /// session-preserving error. An oversize *suspension announcement* is
+    /// unrecoverable — the worker is suspended but the parent never learned the
+    /// resume point — so it propagates to the host loop's fatal handling, as
+    /// does any genuine I/O break.
+    fn recover_send_error(
+        &mut self,
+        failed: &pb::ChildEvent,
+        err: FrameError,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), FrameError> {
+        let announces_suspension = matches!(
+            failed.kind,
+            Some(
+                pb::child_event::Kind::FunctionCall(_)
+                    | pb::child_event::Kind::OsCall(_)
+                    | pb::child_event::Kind::NameLookup(_)
+                    | pb::child_event::Kind::ResolveFutures(_)
+            )
+        );
         match err {
-            FrameError::FrameTooLarge { len, max } if !matches!(self.state, SessionState::Suspended(_)) => {
+            FrameError::FrameTooLarge { len, max } if !announces_suspension => {
                 let mut event = error_event(
                     ExcType::RuntimeError,
                     &format!("result frame of {len} bytes exceeds the maximum of {max} bytes"),
@@ -618,16 +631,31 @@ impl Child {
                 Err(err) => protocol_violation(&format!("failed to load session: {err}")),
             },
             1 => match ReplProgress::load(payload) {
+                // the depth/oversize checks below can only fail on a forged or
+                // corrupted dump — `drive` enforces them on every fresh
+                // suspension before it is stored
                 Ok(ReplProgress::Complete { repl, value }) => {
-                    // a dump is never taken at Complete, but a forged/legacy
-                    // one could contain it; surface the value rather than fail
-                    self.state = SessionState::Ready(Box::new(repl));
-                    complete_event(value)
+                    if exceeds_max_value_depth(&value) {
+                        protocol_violation("dump value exceeds the maximum wire depth")
+                    } else {
+                        // a dump is never taken at Complete, but a forged one
+                        // could contain it; surface the value rather than fail
+                        self.state = SessionState::Ready(Box::new(repl));
+                        complete_event(value)
+                    }
                 }
                 Ok(progress) => {
-                    let event = suspension_event(&progress);
-                    self.state = SessionState::Suspended(Box::new(progress));
-                    event
+                    if suspension_args_too_deep(&progress) {
+                        protocol_violation("dump suspension arguments exceed the maximum wire depth")
+                    } else {
+                        let event = suspension_event(&progress);
+                        if let Some(message) = oversize_suspension_error_message(&event) {
+                            protocol_violation(&message)
+                        } else {
+                            self.state = SessionState::Suspended(Box::new(progress));
+                            event
+                        }
+                    }
                 }
                 Err(err) => protocol_violation(&format!("failed to load suspended session: {err}")),
             },
@@ -672,14 +700,7 @@ impl Child {
                     return complete_event(value);
                 }
                 Ok(ReplProgress::OsCall(call)) => {
-                    // only `os.getenv`'s default carries an arbitrary sandbox
-                    // value — every other arm is flat strings/bytes/typed
-                    // structs, which cannot nest
-                    let too_deep = match &call.function_call {
-                        OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
-                        _ => false,
-                    };
-                    if too_deep {
+                    if os_call_args_too_deep(&call) {
                         let err =
                             MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
@@ -695,12 +716,7 @@ impl Child {
                 Ok(ReplProgress::FunctionCall(call)) => {
                     // arguments too deep for the wire resume the call with a
                     // catchable error instead of corrupting the protocol
-                    if call.args.iter().any(exceeds_max_value_depth)
-                        || call
-                            .kwargs
-                            .iter()
-                            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
-                    {
+                    if function_call_args_too_deep(&call) {
                         let err =
                             MontyException::new(ExcType::RuntimeError, Some("Max argument depth exceeded".to_owned()));
                         result = call.resume(ExtFunctionResult::Error(err), PrintWriter::Callback(print));
@@ -863,6 +879,35 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
     event(pb::child_event::Kind::Complete(pb::Complete {
         value: Some(value.into()),
     }))
+}
+
+/// Whether a suspension's argument payload nests too deeply for the wire —
+/// used by `drive` (fresh) and `handle_load` (restored, i.e. forged dumps).
+fn suspension_args_too_deep(progress: &ReplProgress<Tracker>) -> bool {
+    match progress {
+        ReplProgress::FunctionCall(call) => function_call_args_too_deep(call),
+        ReplProgress::OsCall(call) => os_call_args_too_deep(call),
+        // name lookups / future resolutions carry no sandbox values
+        _ => false,
+    }
+}
+
+/// Whether an external call's args/kwargs nest too deeply for the wire.
+fn function_call_args_too_deep(call: &monty::ReplFunctionCall<Tracker>) -> bool {
+    call.args.iter().any(exceeds_max_value_depth)
+        || call
+            .kwargs
+            .iter()
+            .any(|(k, v)| exceeds_max_value_depth(k) || exceeds_max_value_depth(v))
+}
+
+/// Whether an OS call's payload nests too deeply for the wire — only
+/// `os.getenv`'s default carries an arbitrary (nestable) sandbox value.
+fn os_call_args_too_deep(call: &monty::ReplOsCall<Tracker>) -> bool {
+    match &call.function_call {
+        OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
+        _ => false,
+    }
 }
 
 /// Builds the suspension event for a non-`Complete` progress state. Used on

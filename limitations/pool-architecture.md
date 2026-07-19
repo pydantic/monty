@@ -114,6 +114,10 @@ properties that real CPython does not provide, per the caveat above.
   When an external-function argument makes the suspension announcement itself
   too large, the current feed is aborted with a host-visible `RuntimeError`;
   Monty code cannot catch that error inside the aborted feed.
+- The same frame limit applies to `dump()`: a session whose serialized state
+  (heap plus any retained suspension payload) exceeds 256 MiB cannot be
+  dumped. The call raises a `RuntimeError` and the session is unaffected — a
+  suspended session stays suspended and resumable.
 - Independently of the wire-byte limit, a frame is rejected if the values it
   decodes into would exceed a **per-frame host-memory budget** — a hard,
   non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
