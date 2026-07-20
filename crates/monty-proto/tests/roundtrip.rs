@@ -406,6 +406,29 @@ fn resource_limit_data_round_trips() {
     }
 }
 
+/// Regression: a genuine time-limit hit whose margin over the limit is
+/// sub-microsecond must still round-trip and pass the receive side's
+/// hit-validity check. Before the wire format used nanosecond precision, both
+/// durations truncated to microseconds before that check, so a hit this close
+/// to its limit would decode to `elapsed_nanos == limit_nanos` and get
+/// dropped as implausible — exactly the failure mode a lossy encoding
+/// introduces.
+#[test]
+fn sub_microsecond_time_limit_hit_survives_round_trip() {
+    let data = ResourceLimitData::Time {
+        limit: Duration::from_micros(50),
+        elapsed: Duration::from_micros(50) + Duration::from_nanos(200),
+    };
+    let exc = MontyException::new(ExcType::TimeoutError, Some("time limit exceeded".to_owned()))
+        .with_data(ExcData::ResourceLimit(Box::new(data)));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+    assert!(
+        back.resource_limit_data().is_some(),
+        "sub-microsecond-margin hit must survive as a genuine classification"
+    );
+}
+
 /// An empty `ResourceLimitData` wire message (a compromised or buggy child
 /// sending no `kind`) must be dropped, not trusted — same posture as
 /// [`bogus_unicode_payloads_are_dropped_not_trusted`]/[`bogus_json_payloads_are_dropped_not_trusted`].
@@ -434,8 +457,16 @@ fn implausible_resource_limit_data_is_dropped_not_trusted() {
         pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 0, count: 0 }),
         pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 5, count: 5 }),
         pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
-            limit_micros: 50_000,
-            elapsed_micros: 40_000,
+            limit_nanos: 50_000,
+            elapsed_nanos: 40_000,
+        }),
+        // Equal-to-the-nanosecond is exactly the boundary case the nanosecond
+        // wire precision exists to get right: not a hit (must be dropped),
+        // and must not be conflated with a genuine hit that merely lost
+        // precision through a lossy micros round trip.
+        pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
+            limit_nanos: 50_000,
+            elapsed_nanos: 50_000,
         }),
         pb::resource_limit_data::Kind::Memory(pb::resource_limit_data::Memory { limit: 100, used: 100 }),
         pb::resource_limit_data::Kind::Recursion(pb::resource_limit_data::Recursion { limit: 10, depth: 10 }),

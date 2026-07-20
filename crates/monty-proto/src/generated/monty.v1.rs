@@ -269,14 +269,18 @@ pub mod resource_limit_data {
         #[prost(uint64, tag = "2")]
         pub count: u64,
     }
-    /// Maximum execution time exceeded. Durations in microseconds, matching
-    /// `ResourceLimits.max_duration_micros`.
+    /// Maximum execution time exceeded. Durations in nanoseconds (unlike
+    /// `ResourceLimits.max_duration_micros`) so the receive side's hit-validity
+    /// check (`elapsed > limit`, see `is_genuine_hit`) can't be defeated by
+    /// truncation: a genuine hit whose margin over the limit is sub-microsecond
+    /// would otherwise round-trip to `elapsed_micros == limit_micros` and get
+    /// rejected as implausible.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Time {
         #[prost(uint64, tag = "1")]
-        pub limit_micros: u64,
+        pub limit_nanos: u64,
         #[prost(uint64, tag = "2")]
-        pub elapsed_micros: u64,
+        pub elapsed_nanos: u64,
     }
     /// Maximum memory usage exceeded, in bytes.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

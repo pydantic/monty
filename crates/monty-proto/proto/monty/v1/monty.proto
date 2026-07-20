@@ -277,11 +277,15 @@ message ResourceLimitData {
     uint64 limit = 1;
     uint64 count = 2;
   }
-  // Maximum execution time exceeded. Durations in microseconds, matching
-  // `ResourceLimits.max_duration_micros`.
+  // Maximum execution time exceeded. Durations in nanoseconds (unlike
+  // `ResourceLimits.max_duration_micros`) so the receive side's hit-validity
+  // check (`elapsed > limit`, see `is_genuine_hit`) can't be defeated by
+  // truncation: a genuine hit whose margin over the limit is sub-microsecond
+  // would otherwise round-trip to `elapsed_micros == limit_micros` and get
+  // rejected as implausible.
   message Time {
-    uint64 limit_micros = 1;
-    uint64 elapsed_micros = 2;
+    uint64 limit_nanos = 1;
+    uint64 elapsed_nanos = 2;
   }
   // Maximum memory usage exceeded, in bytes.
   message Memory {

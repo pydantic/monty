@@ -86,8 +86,8 @@ impl From<&ResourceLimitData> for pb::ResourceLimitData {
                 })
             }
             ResourceLimitData::Time { limit, elapsed } => resource_limit_data::Kind::Time(resource_limit_data::Time {
-                limit_micros: u64::try_from(limit.as_micros()).unwrap_or(u64::MAX),
-                elapsed_micros: u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+                limit_nanos: u64::try_from(limit.as_nanos()).unwrap_or(u64::MAX),
+                elapsed_nanos: u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
             }),
             ResourceLimitData::Memory { limit, used } => {
                 resource_limit_data::Kind::Memory(resource_limit_data::Memory {
@@ -121,8 +121,8 @@ fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<Resource
             count: usize_field(a.count),
         },
         resource_limit_data::Kind::Time(t) => ResourceLimitData::Time {
-            limit: Duration::from_micros(t.limit_micros),
-            elapsed: Duration::from_micros(t.elapsed_micros),
+            limit: Duration::from_nanos(t.limit_nanos),
+            elapsed: Duration::from_nanos(t.elapsed_nanos),
         },
         resource_limit_data::Kind::Memory(m) => ResourceLimitData::Memory {
             limit: usize_field(m.limit),
