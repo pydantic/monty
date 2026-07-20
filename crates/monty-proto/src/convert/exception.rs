@@ -107,13 +107,15 @@ impl From<&ResourceLimitData> for pb::ResourceLimitData {
 }
 
 /// Converts a wire `ResourceLimitData`, dropping it (returning `None`) when
-/// the `kind` oneof is unset — the worst a compromised child sending an empty
-/// message can do, same posture as [`sanitize_unicode_data`]/[`sanitize_json_data`].
-/// Every field here is a plain integer with no attacker-controlled length, so
-/// unlike those two there is no amplification size cap to enforce.
+/// the `kind` oneof is unset or the decoded fields don't describe a genuine
+/// hit (see [`is_genuine_hit`]) — the worst a compromised child can do is
+/// fall back to an unclassified exception, same posture as
+/// [`sanitize_unicode_data`]/[`sanitize_json_data`]. Every field here is a
+/// plain integer with no attacker-controlled length, so unlike those two
+/// there is no amplification size cap to enforce.
 fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<ResourceLimitData> {
     let usize_field = |v: u64| usize::try_from(v).unwrap_or(usize::MAX);
-    Some(match data.kind? {
+    let data = match data.kind? {
         resource_limit_data::Kind::Allocation(a) => ResourceLimitData::Allocation {
             limit: usize_field(a.limit),
             count: usize_field(a.count),
@@ -130,7 +132,24 @@ fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<Resource
             limit: usize_field(r.limit),
             depth: usize_field(r.depth),
         },
-    })
+    };
+    is_genuine_hit(&data).then_some(data)
+}
+
+/// Whether `data`'s observed value actually exceeds its limit — true for
+/// every real `ResourceError`-derived construction (`on_allocate`/`on_grow`/
+/// `check_large_result` require `used/count > limit` before erroring,
+/// `check_time` requires `elapsed > limit`, `check_recursion_depth`/
+/// `enter_run_reentry` require `depth > limit`). A wire payload that fails
+/// this — e.g. an empty inner message decoding to `limit: 0, count: 0` — is
+/// not a real limit hit and must not be trusted as one.
+fn is_genuine_hit(data: &ResourceLimitData) -> bool {
+    match *data {
+        ResourceLimitData::Allocation { limit, count } => count > limit,
+        ResourceLimitData::Time { limit, elapsed } => elapsed > limit,
+        ResourceLimitData::Memory { limit, used } => used > limit,
+        ResourceLimitData::Recursion { limit, depth } => depth > limit,
+    }
 }
 
 impl From<&JsonErrorData> for pb::JsonErrorData {

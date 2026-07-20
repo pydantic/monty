@@ -32,9 +32,11 @@ pub struct MontyException {
 }
 
 /// Structured payload attached to exception types whose CPython counterparts
-/// carry more than a message. Currently unicode and json decode errors have
-/// one; the enum leaves room for future variants (e.g. `OSError`'s
-/// `errno`/`filename`) without another field on every exception.
+/// carry more than a message, or that need to distinguish a sandbox
+/// resource-limit hit from an ordinary exception of the same type. Currently
+/// unicode errors, json decode errors, and resource-limit hits have one; the
+/// enum leaves room for future variants (e.g. `OSError`'s `errno`/`filename`)
+/// without another field on every exception.
 #[derive(Debug, Clone, Default, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ExcData {
     /// No structured payload — every exception type without a variant below.

@@ -423,6 +423,39 @@ fn empty_resource_limit_data_is_dropped_not_trusted() {
     assert_eq!(back.data(), &ExcData::None);
 }
 
+/// A well-formed but impossible `ResourceLimitData` payload — e.g. an empty
+/// `Allocation { limit: 0, count: 0 }`, which no real limit hit can ever
+/// produce (`count > limit` always holds — see `is_genuine_hit`) — must be
+/// dropped rather than trusted as a genuine classification. Covers all four
+/// variants, each with its observed value at or below its limit.
+#[test]
+fn implausible_resource_limit_data_is_dropped_not_trusted() {
+    let implausible_payloads = [
+        pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 0, count: 0 }),
+        pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 5, count: 5 }),
+        pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
+            limit_micros: 50_000,
+            elapsed_micros: 40_000,
+        }),
+        pb::resource_limit_data::Kind::Memory(pb::resource_limit_data::Memory { limit: 100, used: 100 }),
+        pb::resource_limit_data::Kind::Recursion(pb::resource_limit_data::Recursion { limit: 10, depth: 10 }),
+    ];
+    for kind in implausible_payloads {
+        let wire = pb::RaisedException {
+            exc_type: "MemoryError".to_owned(),
+            message: Some("limit exceeded".to_owned()),
+            traceback: vec![],
+            data: Some(pb::ExcData {
+                kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
+                    kind: Some(kind),
+                })),
+            }),
+        };
+        let back = MontyException::try_from(wire).unwrap();
+        assert_eq!(back.data(), &ExcData::None);
+    }
+}
+
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
 /// child controls, for probing the receive-side sanitizer.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
