@@ -10,12 +10,12 @@
 // followed by exactly one turn-ending event. There is no multiplexing, so a
 // parent can be implemented with a single blocking read loop in any language.
 //
-// Evolution rules: changes must be additive only — new fields and new oneof
-// arms get fresh tag numbers, and removed tags are reserved. proto3 decoders
-// ignore unknown fields, so older children tolerate newer optional fields.
-// There is no in-band version negotiation: parent and child are expected to
-// be deployed in lockstep (the packages ship a matching `monty` binary), and
-// version skew is detected out of band (e.g. `monty --version`).
+// Evolution rules: parent and child are deployed in lockstep (the packages
+// ship a matching `monty` binary) and the child rejects a mismatched
+// `Configure.monty_version` with a `FatalError`, so schema changes need not
+// be wire-compatible across versions. Once the protocol stabilizes, prefer
+// additive changes (fresh tag numbers, `reserved` removals) so third-party
+// transports have a migration window.
 
 syntax = "proto3";
 
@@ -294,28 +294,6 @@ message ResourceLimits {
   optional uint64 max_recursion_depth = 5;
 }
 
-enum MountMode {
-  MOUNT_MODE_UNSPECIFIED = 0;
-  MOUNT_MODE_READ_ONLY = 1;
-  MOUNT_MODE_READ_WRITE = 2;
-  // Copy-on-write overlay backed by child-local memory; writes are discarded
-  // when the session ends.
-  MOUNT_MODE_OVERLAY = 3;
-}
-
-// Mounts a host directory into the sandbox. The child builds its own
-// MountTable from these, so the host path must be valid on the machine the
-// child runs on.
-message Mount {
-  // Absolute virtual POSIX path, e.g. "/mnt/data".
-  string virtual_path = 1;
-  // Host-native directory path.
-  string host_path = 2;
-  MountMode mode = 3;
-  // Cap on total bytes written through this mount.
-  optional uint64 write_bytes_limit = 4;
-}
-
 // ============================================================================
 // Resume payloads
 // ============================================================================
@@ -395,11 +373,8 @@ message Configure {
 message Feed {
   string code = 1;
   repeated NamedValue inputs = 2;
-  // Mounts for this feed; handled entirely inside the child. OS calls the
-  // mounts do not cover bubble up as `OsCall` events.
-  repeated Mount mounts = 3;
   // Skip type checking for this feed even when the session enables it.
-  bool skip_type_check = 4;
+  bool skip_type_check = 3;
 }
 
 // Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -435,12 +410,6 @@ message Dump {}
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
   bytes state = 1;
-  // Mounts to re-establish for a suspended feed being resumed. Mounts are
-  // host configuration, not sandbox state, so they are never part of the dump
-  // — the parent re-supplies the same mounts it used for the original feed.
-  // Without them a restored feed has no mounts and its OS calls all bubble up.
-  // When the restored state is idle this must be empty.
-  repeated Mount mounts = 2;
 }
 
 // Ends the checkout: the child drops all session state and returns to the
@@ -528,24 +497,90 @@ message FunctionCall {
   bool method_call = 5;
 }
 
-// Suspension: the sandbox performed an OS operation no mount handled, e.g.
-// "Path.read_text" or "os.getenv". Answer with `ResumeCall`. Some calls have
-// typed result expectations (e.g. "Open" must return a file_handle); a
-// mismatched result becomes a Python-level error inside the sandbox.
+// Suspension: the sandbox performed an OS operation, surfaced for the parent
+// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
+// per call; every path is a virtual POSIX sandbox path, never a host path.
+// Some calls have typed result expectations (e.g. `open` must return a
+// file_handle); a mismatched result becomes a Python-level error inside the
+// sandbox.
 //
-// NOTE: an OsCall re-announced after `Load` carries only `call_id` and
-// `not_handled_error` — the argument payload was consumed when the call was
-// first announced, before the dump was taken.
+// A parent with no handler should answer `ResumeCall` with the call's
+// not-handled error: PermissionError naming the path for filesystem calls,
+// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
 message OsCall {
-  string function_name = 1;
-  repeated MontyObject args = 2;
-  repeated Pair kwargs = 3;
-  uint32 call_id = 4;
-  // The exception monty would raise for this call when nothing handles it
-  // (e.g. PermissionError for filesystem calls). A parent with no handler
-  // should answer `ResumeCall` with this error — only the child knows the
-  // per-call semantics.
-  RaisedException not_handled_error = 5;
+  uint32 call_id = 1;
+
+  oneof call {
+    // ---- FS read / check / remove — the string is the virtual path -------
+    string exists = 2;      // Path.exists
+    string is_file = 3;     // Path.is_file
+    string is_dir = 4;      // Path.is_dir
+    string is_symlink = 5;  // Path.is_symlink
+    string read_text = 6;   // Path.read_text
+    string read_bytes = 7;  // Path.read_bytes
+    string stat = 8;        // Path.stat
+    string iterdir = 9;     // Path.iterdir
+    string resolve = 10;    // Path.resolve
+    string absolute = 11;   // Path.absolute
+    string unlink = 12;     // Path.unlink
+    string rmdir = 13;      // Path.rmdir
+
+    // ---- FS write / mutate -----------------------------------------------
+    TextWrite write_text = 14;     // Path.write_text (truncating)
+    TextWrite append_text = 15;    // Path.append_text
+    BytesWrite write_bytes = 16;   // Path.write_bytes (truncating)
+    BytesWrite append_bytes = 17;  // Path.append_bytes
+    Open open = 18;
+    Mkdir mkdir = 19;
+    Rename rename = 20;
+
+    // ---- Non-FS ----------------------------------------------------------
+    Getenv getenv = 21;     // os.getenv
+    Unit get_environ = 22;  // the os.environ snapshot
+    Unit date_today = 23;   // date.today()
+    // datetime.now(tz) — the timezone argument (absent for a naive result).
+    DateTimeNow date_time_now = 24;
+
+    // Re-announced after `Load`: the argument payload was consumed when the
+    // call was first announced, before the dump was taken. The parent must
+    // answer from its own records (or with a not-handled error).
+    Unit consumed = 25;
+  }
+
+  message TextWrite {
+    string path = 1;
+    string data = 2;
+  }
+  message BytesWrite {
+    string path = 1;
+    bytes data = 2;
+  }
+  message Open {
+    string path = 1;
+    // Canonical open() mode string, same set as `FileHandle.mode`.
+    string mode = 2;
+  }
+  message Mkdir {
+    string path = 1;
+    bool parents = 2;
+    bool exist_ok = 3;
+  }
+  message Rename {
+    string src = 1;
+    string dst = 2;
+  }
+  // os.getenv(key, default) — `default` may be any Python value.
+  message Getenv {
+    string key = 1;
+    MontyObject default = 2;
+  }
+  // datetime.now(tz) — the VM validates the argument to None-or-timezone
+  // before suspending, so the wire carries a typed TimeZone rather than an
+  // arbitrary MontyObject.
+  message DateTimeNow {
+    // Fixed-offset timezone for an aware result; absent for a naive one.
+    optional TimeZone tz = 1;
+  }
 }
 
 // Suspension: the sandbox read an undefined name — typically probing whether

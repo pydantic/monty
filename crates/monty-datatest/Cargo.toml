@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
+monty-fs = { workspace = true }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 ahash = { workspace = true }
 chrono = "0.4"

@@ -105,3 +105,105 @@ try:
     assert False, 'bytes pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == "argument for bytes() given by name ('source') and position (1)", f'dup: {e}'
+
+# === bytes() encoding a str source ===
+assert bytes('x', 'utf-8') == b'x'
+assert bytes('x', encoding='utf-8') == b'x'
+assert bytes(source='x', encoding='utf-8') == b'x'
+assert bytes('€', 'utf-8') == b'\xe2\x82\xac'
+assert bytes('€', 'ascii', 'replace') == b'?'
+assert bytes('abc', 'ascii', 'strict') == b'abc'
+
+try:
+    bytes('€', 'ascii')
+    assert False, 'expected UnicodeEncodeError'
+except UnicodeEncodeError as e:
+    assert str(e) == "'ascii' codec can't encode character '\\u20ac' in position 0: ordinal not in range(128)"
+
+# a str source requires an encoding — no silent UTF-8 default
+try:
+    bytes('x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'string argument without an encoding'
+
+try:
+    bytes('x', errors='strict')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'string argument without an encoding'
+
+# and an encoding requires a str source, checked before a lone errors
+try:
+    bytes(1, 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'encoding without a string argument'
+
+try:
+    bytes(b'x', 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'encoding without a string argument'
+
+try:
+    bytes(encoding='utf-8', errors='x')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'encoding without a string argument'
+
+try:
+    bytes(b'x', errors='strict')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'errors without a string argument'
+
+try:
+    bytes(errors='strict')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'errors without a string argument'
+
+# encoding/errors use the bad-arg wording ('None', not 'NoneType')
+try:
+    bytes('x', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "bytes() argument 'encoding' must be str, not int"
+
+try:
+    bytes('x', None)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "bytes() argument 'encoding' must be str, not None"
+
+try:
+    bytes('x', 'utf-8', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "bytes() argument 'errors' must be str, not int"
+
+try:
+    bytes('x', 'bogus')
+    assert False, 'expected LookupError'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: bogus'
+
+# clinic's parenthesised total pre-count, with and without kwargs
+try:
+    bytes('x', 'utf-8', 'strict', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'bytes() takes at most 3 arguments (4 given)'
+
+try:
+    bytes('x', 'utf-8', 'strict', bogus=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'bytes() takes at most 3 arguments (4 given)'
+
+try:
+    bytes('x', 'utf-8', encoding='q')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument for bytes() given by name ('encoding') and position (2)"

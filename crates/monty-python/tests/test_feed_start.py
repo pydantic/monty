@@ -240,9 +240,10 @@ def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
         assert done.output == snapshot('hi')
 
 
-def test_load_errors_when_required_mount_not_resupplied(pool: Monty, tmp_path: Path):
-    # Omitting a mount the suspended feed had is a loud error, not a silent
-    # drop — load validates the dump's recorded mount requirements.
+def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):
+    # Mounts are host configuration serviced by the parent and never part of a
+    # dump. A restore that omits them is not validated — the resumed feed's
+    # filesystem calls simply surface as unhandled OS calls.
     (tmp_path / 'hello.txt').write_text('hi')
     mount = MountDir('/data', str(tmp_path), mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
@@ -252,29 +253,30 @@ def test_load_errors_when_required_mount_not_resupplied(pool: Monty, tmp_path: P
         blob = snap.dump()
 
     with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        os_snap = loaded_snap.resume({'return_value': None})
+        # without the mount, the read that a re-supplied mount would have
+        # serviced surfaces as an OS-call snapshot instead
+        assert isinstance(os_snap, FunctionSnapshot)
+        assert os_snap.is_os_function
+        assert os_snap.function_name == snapshot('Path.read_text')
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.load_snapshot(blob)
-        # a failed load (here a validation error) poisons the session
-        with pytest.raises(RuntimeError):
-            session.feed_run('1 + 1')
-    assert exc_info.value.display(format='msg') == snapshot(
-        'the dump was suspended with a mount at "/data" that was not re-supplied to load; pass the same mounts the original feed used'
-    )
+            os_snap.resume_not_handled()
+    assert exc_info.value.display(format='msg') == snapshot("Permission denied: '/data/hello.txt'")
 
 
-def test_load_errors_when_mount_supplied_to_idle_dump(pool: Monty, tmp_path: Path):
-    # An idle dump has no mount requirements, so supplying one is rejected.
+def test_load_accepts_mount_for_idle_dump(pool: Monty, tmp_path: Path):
+    # Supplying a mount to an idle dump is not validated (there is nothing to
+    # compare against); it is simply unused by the restored session.
     with pool.checkout() as session:
         session.feed_run('kept = 1')
         blob = session.dump()
 
     mount = MountDir('/data', str(tmp_path), mode='read-only')
     with pool.checkout() as session:
-        with pytest.raises(MontyRuntimeError) as exc_info:
-            session.load_snapshot(blob, mount=mount)
-    assert exc_info.value.display(format='msg') == snapshot(
-        'a mount at "/data" was supplied to load but the dump\'s feed had no such mount'
-    )
+        assert session.load(blob) is None
+        assert session.feed_run('kept + 1', mount=mount) == snapshot(2)
 
 
 def test_load_restores_idle_session(pool: Monty):

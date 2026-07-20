@@ -32,8 +32,10 @@ inside the sandbox).
   (≈ 4.3 × 10⁹) raises `OverflowError: "exponent too large"`.
 - `pow(base, exp, mod)` requires all integer arguments and rejects negative
   exponents (`ValueError`).
-- `int(str)` for very long decimal strings is rejected before the O(n²)
-  BigInt parse runs; the cut-off matches CPython's `sys.int_info.str_digits_check_threshold`.
+- `int(str_or_bytes, base)` rejects inputs over 4,300 digits before the
+  potentially quadratic BigInt parse when the effective base is not a power
+  of two. The fixed cap matches CPython's
+  `sys.int_info.default_max_str_digits`.
 
 ## Recursion
 

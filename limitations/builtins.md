@@ -50,6 +50,13 @@ mechanism beyond dataclass field inheritance.
   "getattr(): attribute is not a simple value"` rather than returning a
   bound method object. Use direct attribute access (`obj.name(...)`) for
   these.
+- **`int(x, base=10)`** — string/bytes parsing accepts ASCII digits only;
+  CPython also accepts non-ASCII Unicode decimal digits (`int('١٢')` == 12),
+  which Monty rejects with `invalid literal for int() with base 10`.
+- **`bytes(source)`** — an iterable of ints is not supported: CPython's
+  `bytes([65, 66])` == `b'AB'`, Monty raises `TypeError: cannot convert
+  'list' object to bytes`. The int / str-with-encoding / bytes source forms
+  all work.
 - **`isinstance(obj, T)`** — `T` must be a built-in type (`int`, `str`,
   `list`, ...), a built-in exception class, a sandbox-defined class (see
   [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
@@ -59,8 +66,11 @@ mechanism beyond dataclass field inheritance.
   `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
-- **`round(x, n)`** — `n` must be an integer; CPython accepts and truncates
-  floats.
+- **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
+  clamped by sign. For floats this matches CPython (which clamps to
+  `Py_ssize_t`); for an int `n` with a hugely negative `ndigits`, CPython
+  tries to materialise `10**-ndigits` and dies with `MemoryError` where
+  Monty returns `0` immediately.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
   not honoured; `sep=` and `end=` are.
 - **`id(f)` / `hash(f)` / `f is g` / `f == g` for host-supplied callables**
@@ -95,3 +105,15 @@ mechanism beyond dataclass field inheritance.
     `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
     class) is not preserved as a type — it degrades to a callable, appearing inside
     the sandbox as a `function` rather than a `type`.
+
+- **Iterator delegation** — consuming an existing iterator (`for x in it`,
+  `list(it)`) wraps it in a delegating iterator that shares its position, where
+  CPython iterates it directly. Not observable from Python: `iter(it)` returns
+  `it` unchanged, so no chain deeper than 1 can be built. Two `RuntimeError`s
+  guard malformed snapshot data, which can craft what Python cannot —
+  `iterator delegation nested too deeply` past 1000 links, and
+  `iterator delegates to a non-iterator` for a link pointing elsewhere. CPython
+  has neither.
+- **`reversed(x)`** — the `TypeError` for a non-reversible argument names Monty's
+  single `iterator` type rather than CPython's specific one, e.g.
+  `'iterator' object is not reversible` where CPython says `'list_iterator'`.

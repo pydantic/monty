@@ -1,14 +1,15 @@
 """Tests for MountDir filesystem mount support.
 
-These test the Rust-backed mount system that handles filesystem operations
-entirely inside the worker process, with optional Python fallback for
+These test the Rust-backed mount system that services filesystem operations
+on the host side of the worker pool, with optional Python fallback for
 non-filesystem ops via `os=`.
 
-Mounts are worker-local: a `MountDir` only contributes its configuration
-(virtual path, host path, mode, write limit) — the worker builds its own
-mount table per feed. `'overlay'` writes are visible within one `feed_run`
-call and discarded when the feed ends; `'read-write'` mounts write through
-to the real host directory.
+Mounts are host-side: a `MountDir` only contributes its configuration
+(virtual path, host path, mode, resource limits) — the pool builds a fresh mount
+table per feed and answers the worker's filesystem OS calls itself.
+`'overlay'` writes are visible within one `feed_run` call and discarded when
+the feed ends; `'read-write'` mounts write through to the real host
+directory.
 """
 
 import tempfile
@@ -61,6 +62,10 @@ def test_mount_directory_attributes(test_dir: Path):
     md = MountDir('/data', str(test_dir), mode='read-only')
     assert md.virtual_path == '/data'
     assert md.mode == 'read-only'
+    assert md.memory_usage_limit == 100_000_000
+
+    limited = MountDir('/limited', str(test_dir), memory_usage_limit=1234)
+    assert limited.memory_usage_limit == 1234
 
 
 def test_mount_directory_accepts_path_object(test_dir: Path):
@@ -69,6 +74,19 @@ def test_mount_directory_accepts_path_object(test_dir: Path):
     md_path = MountDir('/data', test_dir, mode='read-only')
     assert md_path.virtual_path == '/data'
     assert md_path.host_path == md_str.host_path
+
+
+def test_mount_memory_usage_limit_is_enforced(monty_run: RunMonty, test_dir: Path):
+    md = MountDir('/data', test_dir, mode='overlay', memory_usage_limit=1000)
+    code = """
+from pathlib import Path
+p = Path('/data/retained.bin')
+p.write_bytes(b'a' * 500)
+p.read_bytes()
+"""
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run(code, mount=md)
+    assert str(exc_info.value) == snapshot('MemoryError: mount memory usage limit of 1 KB exceeded')
 
 
 def test_nonexistent_host_path():
@@ -330,7 +348,7 @@ def test_no_fallback_not_implemented(monty_run: RunMonty, test_dir: Path):
 
 
 def test_mounted_calls_do_not_reach_os_callback(monty_run: RunMonty, test_dir: Path):
-    """Filesystem calls covered by a mount are handled inside the worker and
+    """Filesystem calls covered by a mount are serviced by the pool and
     never reach the `os=` callback."""
     calls: list[str] = []
 

@@ -35,7 +35,7 @@ use std::{
 };
 
 use ::monty::{AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject};
-use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
 use pyo3::{
     Borrowed,
@@ -317,10 +317,10 @@ impl PyMontySession {
     ///
     /// Valid only on a fresh session, before any feed or load; raises
     /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
-    /// mounts (whose host paths are not in the dump), validated against the
-    /// dump's recorded requirements. The dump restores its own config; the
-    /// dataclass registry from `checkout()` is reused. Raises if the dump is
-    /// actually an idle session.
+    /// mounts, which are never part of the dump — pass the same mounts the
+    /// original feed used, or its filesystem calls degrade into unhandled OS
+    /// calls. The dump restores its own config; the dataclass registry from
+    /// `checkout()` is reused. Raises if the dump is actually an idle session.
     ///
     /// `external_lookup` / `os` are captured on the restored snapshot so it
     /// supports `resume_auto()`, just like `feed_start`. Two caveats apply to a
@@ -1461,7 +1461,7 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
 }
 
 /// Calls the Python `os=` fallback for a bubbled OS call. With no callback —
-/// or when it returns `NOT_HANDLED` — answers with the child-provided
+/// or when it returns `NOT_HANDLED` — answers with the pool-computed
 /// `not_handled_error`, preserving monty's per-call no-handler semantics.
 pub(crate) fn dispatch_os_parts(
     py: Python<'_>,
@@ -1505,44 +1505,28 @@ pub(crate) fn dispatch_os_parts(
     call().unwrap_or_else(|err| ExtFunctionResult::Error(exc_py_to_monty(py, &err)))
 }
 
-/// Extracts `MountDir | list[MountDir] | None` into child-local mount specs.
-/// Only the mount *configuration* crosses the process boundary — overlay
-/// writes live in the worker and are discarded when the feed ends.
+/// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
+/// which services mount I/O on the parent side — nothing crosses the process
+/// boundary, and overlay writes are discarded when the feed ends.
 fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSpec>> {
     let Some(mount) = mount else {
         return Ok(vec![]);
     };
     if let Ok(single) = mount.extract::<PyRef<'_, PyMountDir>>() {
-        return Ok(vec![mount_spec(&single)?]);
+        return Ok(vec![single.spec()]);
     }
     if let Ok(list) = mount.cast::<PyList>() {
         return list
             .iter()
             .map(|item| {
                 let dir = item.extract::<PyRef<'_, PyMountDir>>()?;
-                mount_spec(&dir)
+                Ok(dir.spec())
             })
             .collect();
     }
     Err(PyTypeError::new_err(
         "mount must be a MountDir, a list of MountDir, or None",
     ))
-}
-
-fn mount_spec(dir: &PyRef<'_, PyMountDir>) -> PyResult<MountSpec> {
-    let (virtual_path, host_path, mode, write_bytes_limit) = dir.spec_parts()?;
-    let mode = match mode {
-        "read-only" => MountSpecMode::ReadOnly,
-        "read-write" => MountSpecMode::ReadWrite,
-        "overlay" => MountSpecMode::Overlay,
-        other => return Err(PyValueError::new_err(format!("unknown mount mode {other:?}"))),
-    };
-    Ok(MountSpec {
-        virtual_path,
-        host_path,
-        mode,
-        write_bytes_limit,
-    })
 }
 
 /// Maps a pool failure onto the Python exception hierarchy.

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { t } from './assertions.js'
 import { skipIfBrowser } from './env.js'
 
-import { Monty, MontyCrashedError, MountDir } from '@pydantic/monty/node'
+import { Monty, MontyCrashedError, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
 
 // =============================================================================
 // Pool lifecycle
@@ -163,11 +163,11 @@ test('requestTimeout kills a wedged worker', async (ctx) => {
   await session.close()
 })
 
-// Reading a FIFO blocks the worker inside the OS, where the sandbox's
-// periodic time check can never run — the host-side maxDurationSecs backstop
-// (remaining budget + durationLimitGrace) is the only thing that can end the
-// turn. Note no requestTimeout is configured. Unix-only (mkfifo).
-test('duration backstop kills a worker blocked in a syscall', async (ctx) => {
+// Mount I/O runs on the host side of the pool, so reading a FIFO must fail
+// fast (a real read would block the host with no watchdog able to rescue it).
+// The sandbox sees a catchable PermissionError and the session stays usable.
+// Unix-only (mkfifo).
+test('special files in mounts are rejected without blocking', async (ctx) => {
   skipIfBrowser(ctx)
   if (process.platform === 'win32') {
     ctx.skip()
@@ -175,16 +175,16 @@ test('duration backstop kills a worker blocked in a syscall', async (ctx) => {
   const dir = await mkdtemp(join(tmpdir(), 'monty-fifo-'))
   try {
     t.is(spawnSync('mkfifo', [join(dir, 'pipe')]).status, 0)
-    await using pool = await Monty.create({ durationLimitGrace: 0.3 })
-    const session = await pool.checkout({ limits: { maxDurationSecs: 0.1 } })
+    await using pool = await Monty.create()
+    const session = await pool.checkout()
     const error = await t.throwsAsync(
       () =>
         session.feedRun("from pathlib import Path\nPath('/mnt/pipe').read_text()", {
           mount: new MountDir('/mnt', dir, { mode: 'read-only' }),
         }),
-      { instanceOf: MontyCrashedError },
+      { instanceOf: MontyRuntimeError },
     )
-    t.true(error.timedOut)
+    t.is(error.message, "PermissionError: [Errno 13] Permission denied: '/mnt/pipe'")
     await session.close()
   } finally {
     await rm(dir, { recursive: true, force: true })

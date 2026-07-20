@@ -157,13 +157,42 @@ impl Bytes {
     ///
     /// - `bytes()` with no args returns empty bytes
     /// - `bytes(int)` returns bytes of that length filled with zeros
-    /// - `bytes(string)` encodes the string as UTF-8 (simplified, no encoding param)
+    /// - `bytes(string, encoding, errors)` encodes via the codec registry —
+    ///   like CPython, a str source *requires* an encoding
     /// - `bytes(bytes)` returns a copy of the bytes
-    ///
-    /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let BytesInitArgs { source } = BytesInitArgs::from_args(args, vm)?;
+        let BytesInitArgs {
+            source,
+            encoding,
+            errors,
+        } = BytesInitArgs::from_args(args, vm)?;
         defer_drop!(source, vm);
+        defer_drop!(encoding, vm);
+        defer_drop!(errors, vm);
+        let source_str = match source {
+            Some(v) if v.is_str(vm.heap) => Some(v),
+            _ => None,
+        };
+        // CPython's `bytes_new` ordering: an encoding demands a str source, a
+        // str source demands an encoding, and a lone `errors` is never valid.
+        if let Some(encoding) = encoding {
+            let Some(v) = source_str else {
+                return Err(ExcType::type_error_encoding_without_string());
+            };
+            let s = v.to_str(vm)?;
+            let errors = errors.as_ref().map_or("strict", |e| e.as_str(vm));
+            let encoding = encoding.as_str(vm);
+            let codec = Codec::find(encoding).ok_or_else(|| ExcType::lookup_error_unknown_encoding(encoding))?;
+            let encoded = codec.encode(s, errors, vm.heap.tracker())?;
+            let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(encoded)))?;
+            return Ok(Value::Ref(heap_id));
+        }
+        if source_str.is_some() {
+            return Err(ExcType::type_error_string_without_encoding());
+        }
+        if errors.is_some() {
+            return Err(ExcType::type_error_errors_without_string());
+        }
         let new_data = match source {
             None => Vec::new(),
             Some(Value::Int(n)) => {
@@ -179,16 +208,11 @@ impl Bytes {
                 check_repeat_size(size, 1, vm.heap.tracker())?;
                 vec![0u8; size]
             }
-            Some(Value::InternString(string_id)) => {
-                let s = vm.interns.get_str(*string_id);
-                s.as_bytes().to_vec()
-            }
             Some(Value::InternBytes(bytes_id)) => {
                 let b = vm.interns.get_bytes(*bytes_id);
                 b.to_vec()
             }
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
-                HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
                 _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
@@ -199,14 +223,19 @@ impl Bytes {
     }
 }
 
-/// Argument shape for `bytes(source=...)` — one optional pos-or-keyword arg
-/// (`source` is the CPython kwarg name) interpreted as the type-specific
-/// dispatch inside [`Bytes::init`].
+/// Argument shape for `bytes(source=..., encoding=..., errors=...)`, all
+/// pos-or-keyword. Unlike `str()`, CPython's `bytes_new` reports wrong-typed
+/// `encoding`/`errors` with `_PyArg_BadArgument`'s wording (`must be str, not
+/// None` for `None`), which is exactly the macro's `bad_arg_named` form.
 #[derive(FromArgs)]
-#[from_args(name = "bytes", style = c_named)]
+#[from_args(name = "bytes", at_most_total, bad_arg_named)]
 struct BytesInitArgs {
     #[from_args(default)]
     source: Option<Value>,
+    #[from_args(default)]
+    encoding: Option<StrArg>,
+    #[from_args(default)]
+    errors: Option<StrArg>,
 }
 
 impl From<Vec<u8>> for Bytes {

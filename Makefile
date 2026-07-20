@@ -125,7 +125,7 @@ format-lint-py: format-py lint-py ## Format and lint Python code with ruff
 
 .PHONY: test-no-features
 test-no-features: ## Run rust tests without any features enabled
-	cargo test -p monty
+	cargo test -p monty -p monty-fs
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks

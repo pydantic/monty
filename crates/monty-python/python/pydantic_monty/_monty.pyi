@@ -65,12 +65,13 @@ class CollectString:
 
 @final
 class MountDir:
-    """A single mount point configuration mapping a virtual path to a host directory."""
+    """A mount point mapping a virtual path to a host directory."""
 
     virtual_path: str
     host_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
     write_bytes_limit: int | None
+    memory_usage_limit: int
 
     def __new__(
         cls,
@@ -79,7 +80,29 @@ class MountDir:
         *,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
-    ) -> MountDir: ...
+        memory_usage_limit: int = 100_000_000,
+    ) -> MountDir:
+        """Configure a mount point; validation happens here, not at feed time.
+
+        Arguments:
+            virtual_path: Absolute POSIX-style path prefix inside the sandbox
+                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                if not absolute.
+            host_path: Real host directory to expose. Canonicalized at
+                construction; raises if it doesn't exist or isn't a directory.
+                Sandbox code can never see this path or reach outside it.
+            mode: `'read-only'` — reads only, writes raise `PermissionError`;
+                `'read-write'` — writes through to the host directory;
+                `'overlay'` (default) — reads fall through to the host, writes
+                are captured in memory per feed and discarded when it ends.
+            write_bytes_limit: Cap on cumulative bytes written through the
+                mount within one feed; exceeding it raises `OSError` in the
+                sandbox. `None` (default) means unlimited.
+            memory_usage_limit: Per-mount budget in bytes (default 100 MB,
+                matches DEFAULT_MEMORY_USAGE_LIMIT in rust) shared by retained
+                overlay data and transient filesystem results; an operation that
+                would exceed it raises `MemoryError` in the sandbox.
+        """
 
 class MontyError(Exception):
     """Base exception for all Monty interpreter errors.
@@ -197,17 +220,17 @@ class MontyFileHandle:
     """Host-side handle to a file opened inside a Monty sandbox.
 
     Plain data holder — Monty never gives the host a live OS file descriptor.
-    Exposed to callbacks (e.g. as the first argument of an `Open` result or
+    Exposed to callbacks (e.g. as the first argument of an `open` result or
     a `read`/`write` request) so they can route on `path` and branch on
     `mode`/`binary`/`readable`/`writable` without re-parsing the mode string.
 
-    Construct one from a Python `Open` OS handler to return a handle back to
+    Construct one from a Python `open` OS handler to return a handle back to
     Monty: `MontyFileHandle('/data/foo.txt', 'r')`. The `mode` is canonicalized
     at construction (`'rt'` → `'r'`, `'r+b'` → `'rb+'`).
     """
 
     def __new__(cls, path: str, mode: str, *, position: int = 0) -> MontyFileHandle:
-        """Construct a `MontyFileHandle` to return from an `Open` OS callback.
+        """Construct a `MontyFileHandle` to return from an `open` OS callback.
 
         Arguments:
             path: Virtual sandbox path of the opened file (POSIX-style).
@@ -399,8 +422,9 @@ class MontySession:
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for this feed.
-                Handled inside the worker — `'overlay'` writes live in the
-                worker and are discarded when the feed ends.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -462,7 +486,8 @@ class MontySession:
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for the whole feed
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
-                the worker and are discarded when the feed ends.
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
             os: Fallback handler for OS calls not covered by a mount, invoked as
                 `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
                 auto-dispatches uncovered OS calls until the next non-OS event;
@@ -502,9 +527,9 @@ class MontySession:
         `RuntimeError` otherwise. The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
         applied); the dataclass registry from `checkout()` is reused. `mount`
-        re-establishes the suspended feed's mounts (whose host paths are not in
-        the dump), validated against the dump's recorded requirements — a
-        missing, extra, or altered mount raises. `'overlay'` writes made before
+        re-establishes the suspended feed's mounts, which are never part of the
+        dump — pass the same mounts the original feed used, or its filesystem
+        calls degrade into unhandled OS calls. `'overlay'` writes made before
         the dump are not preserved (the restored overlay starts empty). Raises
         if the dump is actually an idle session.
 
@@ -721,8 +746,9 @@ class AsyncMontySession:
                 `(stream, text)`, or a `CollectStreams` / `CollectString`
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for this feed.
-                Handled inside the worker — `'overlay'` writes live in the
-                worker and are discarded when the feed ends.
+                Serviced by the pool on the host side — `'overlay'` writes
+                live in the pool's per-feed mount table and are discarded when
+                the feed ends.
             os: Fallback handler for OS calls (e.g. filesystem access) not
                 covered by a mount, invoked as `(function_name, args, kwargs)`,
                 or an `AbstractOS` instance.
@@ -768,7 +794,8 @@ class AsyncMontySession:
                 collector. Defaults to the host process stdout/stderr.
             mount: Host directories mounted into the sandbox for the whole feed
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
-                the worker and are discarded when the feed ends.
+                the pool's per-feed mount table and are discarded when the feed
+                ends.
             os: Fallback handler for OS calls not covered by a mount, invoked as
                 `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
                 auto-dispatches uncovered OS calls until the next non-OS event;

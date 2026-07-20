@@ -70,6 +70,10 @@ test('MountDir attributes', (ctx) => {
     t.is(md.virtualPath, '/data')
     t.is(md.hostPath, dir)
     t.is(md.mode, 'read-only')
+    t.is(md.memoryUsageLimit, 100_000_000)
+
+    const limited = new MountDir('/limited', dir, { memoryUsageLimit: 1234 })
+    t.is(limited.memoryUsageLimit, 1234)
   } finally {
     cleanup()
   }
@@ -77,15 +81,11 @@ test('MountDir attributes', (ctx) => {
 
 test('MountDir nonexistent host path', async (ctx) => {
   skipIfBrowser(ctx)
-  // Host paths are validated inside the worker, so the feed (not the
-  // constructor) rejects. The OS-error suffix is platform specific.
+  // Host paths are validated by the pool when the feed starts (not the
+  // constructor). The OS-error suffix is platform specific.
   const md = new MountDir('/data', '/nonexistent/path/that/does/not/exist')
   const error = await t.throwsAsync(() => run('1 + 1', { mount: md }), { instanceOf: MontyRuntimeError })
-  t.true(
-    error.message.startsWith(
-      "RuntimeError: protocol violation: invalid mounts: invalid mount: cannot canonicalize host path '/nonexistent/path/that/does/not/exist':",
-    ),
-  )
+  t.true(error.message.startsWith("TypeError: cannot canonicalize host path '/nonexistent/path/that/does/not/exist':"))
 })
 
 test('MountDir non-absolute virtual path', async (ctx) => {
@@ -94,10 +94,7 @@ test('MountDir non-absolute virtual path', async (ctx) => {
   try {
     const md = new MountDir('relative', dir)
     const error = await t.throwsAsync(() => run('1 + 1', { mount: md }), { instanceOf: MontyRuntimeError })
-    t.is(
-      error.message,
-      "RuntimeError: protocol violation: invalid mounts: invalid mount: virtual path must be absolute, got: 'relative'",
-    )
+    t.is(error.message, "TypeError: virtual path must be absolute, got: 'relative'")
   } finally {
     cleanup()
   }
@@ -302,7 +299,7 @@ test('overlay read falls through to host', async (ctx) => {
 
 test('overlay writes do not persist across runs', async (ctx) => {
   skipIfBrowser(ctx)
-  // Overlay state lives inside the worker for one feed, so unlike the old
+  // Overlay state lives in the pool's per-feed mount table, so unlike the old
   // in-process API it does NOT persist across runs sharing the same MountDir.
   const { dir, cleanup } = createTestDir()
   try {
@@ -313,6 +310,24 @@ test('overlay writes do not persist across runs', async (ctx) => {
       { instanceOf: MontyRuntimeError },
     )
     t.is(error.message, "FileNotFoundError: [Errno 2] No such file or directory: '/data/persistent.txt'")
+  } finally {
+    cleanup()
+  }
+})
+
+test('overlay memory usage limit is aggregate', async (ctx) => {
+  skipIfBrowser(ctx)
+  const { dir, cleanup } = createTestDir()
+  try {
+    const md = new MountDir('/data', dir, { mode: 'overlay', memoryUsageLimit: 1000 })
+    const code = `
+from pathlib import Path
+p = Path('/data/retained.bin')
+p.write_bytes(b'a' * 500)
+p.read_bytes()
+`
+    const error = await t.throwsAsync(() => run(code, { mount: md }), { instanceOf: MontyRuntimeError })
+    t.is(error.message, 'MemoryError: mount memory usage limit of 1 KB exceeded')
   } finally {
     cleanup()
   }
@@ -505,7 +520,7 @@ test('session feed with mount read', async (ctx) => {
   }
 })
 
-// The mount table is rebuilt per feed inside the worker (see
+// The mount table is rebuilt per feed on the host side of the pool (see
 // limitations/pool-architecture.md): overlay writes live for the duration of
 // one feed and are discarded when it ends, unlike the old in-process API
 // where overlay state persisted on the MountDir object.

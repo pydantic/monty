@@ -1873,6 +1873,22 @@ impl Value {
                         };
                         Ok(range.contains(n))
                     }
+                    // An iterator is consumed until the item is found, as
+                    // CPython's `in` does for any iterable without `__contains__`.
+                    HeapReadOutput::Iter(_) | HeapReadOutput::ListIterator(_) => {
+                        let iter = MontyIter::new(self.clone_with_heap(vm.heap), vm)?;
+                        defer_drop_mut!(iter, vm);
+                        loop {
+                            let Some(el) = iter.for_next(vm)? else {
+                                break Ok(false);
+                            };
+                            let eq = item.py_eq(&el, vm);
+                            el.drop_with(vm);
+                            if eq? {
+                                break Ok(true);
+                            }
+                        }
+                    }
                     _ => {
                         let type_name = self.py_type_name(vm);
                         Err(ExcType::type_error(format!(

@@ -65,7 +65,6 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
     let request = frame_request(pb::parent_request::Kind::Feed(pb::Feed {
         code: code.to_owned(),
         inputs: vec![],
-        mounts: vec![],
         skip_type_check: false,
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
@@ -127,7 +126,6 @@ fn inputs_are_injected() {
             name: "n".to_owned(),
             value: Some(WireObject::new(MontyObject::Int(41))),
         }],
-        mounts: vec![],
         skip_type_check: false,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);

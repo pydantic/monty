@@ -1,9 +1,13 @@
 // Filesystem mounts: expose a host directory inside the sandbox at a virtual
-// POSIX path. Mounts are sent per-feed and handled entirely inside the
-// worker, so the host path must be valid on the machine the worker runs on.
-// OS calls the mounts do not cover bubble up to the `os` callback.
+// POSIX path. Mounts apply per-feed and are serviced entirely on the host
+// side of the pool (the worker never sees host paths), so they work even for
+// remote workers. OS calls the mounts do not cover bubble up to the `os`
+// callback.
 
 import type { NativeMount } from '../native-addon.js'
+
+// Mirrors monty-fs's DEFAULT_MEMORY_USAGE_LIMIT (100 MB in decimal bytes).
+const DEFAULT_MEMORY_USAGE_LIMIT = 100_000_000
 
 /** Sandbox access mode for a mounted directory. */
 export type MountDirMode = 'read-only' | 'read-write' | 'overlay'
@@ -13,11 +17,13 @@ export interface MountDirOptions {
   /**
    * Access mode (default `'overlay'`): `'read-only'` rejects writes,
    * `'read-write'` writes through to the host, `'overlay'` keeps writes in
-   * worker-local memory and discards them when the feed ends.
+   * memory and discards them when the feed ends.
    */
   mode?: MountDirMode
   /** Cap on total bytes written through this mount. */
   writeBytesLimit?: number
+  /** Aggregate mount memory budget in bytes (default 100 MB). */
+  memoryUsageLimit?: number
 }
 
 const VALID_MODES: Record<MountDirMode, true> = {
@@ -28,6 +34,8 @@ const VALID_MODES: Record<MountDirMode, true> = {
 
 /**
  * Mounts a real host directory into the sandbox at a virtual path.
+ * Retained overlay data and filesystem results share a per-mount memory
+ * budget, `memoryUsageLimit` (100 MB by default).
  *
  * ```ts
  * const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
@@ -39,6 +47,7 @@ export class MountDir {
   readonly hostPath: string
   readonly mode: MountDirMode
   readonly writeBytesLimit: number | null
+  readonly memoryUsageLimit: number
 
   constructor(virtualPath: string, hostPath: string, options: MountDirOptions = {}) {
     const mode = options.mode ?? 'overlay'
@@ -50,6 +59,10 @@ export class MountDir {
     this.hostPath = hostPath
     this.mode = mode
     this.writeBytesLimit = options.writeBytesLimit ?? null
+    this.memoryUsageLimit = options.memoryUsageLimit ?? DEFAULT_MEMORY_USAGE_LIMIT
+    if (!Number.isSafeInteger(this.memoryUsageLimit) || this.memoryUsageLimit < 0) {
+      throw new Error('memoryUsageLimit must be a non-negative safe integer')
+    }
   }
 
   /** Returns a string representation of the mount. */
@@ -68,6 +81,7 @@ export function mountsToNative(mount: MountDir | MountDir[] | undefined): Native
     virtualPath: m.virtualPath,
     hostPath: m.hostPath,
     mode: m.mode,
+    memoryUsageLimit: m.memoryUsageLimit,
     ...(m.writeBytesLimit !== null ? { writeBytesLimit: m.writeBytesLimit } : {}),
   }))
 }

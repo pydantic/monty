@@ -5,6 +5,7 @@ export interface NativeMount {
   hostPath: string
   mode?: string
   writeBytesLimit?: number
+  memoryUsageLimit: number
 }
 
 export declare class NativePool {

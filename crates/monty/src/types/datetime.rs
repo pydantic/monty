@@ -20,9 +20,9 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    object::MontyObject,
+    object::MontyTimeZone,
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
     types::{
@@ -258,85 +258,30 @@ struct DatetimeInitArgs {
 }
 
 /// Classmethod implementation for `datetime.now(tz=None)`. Yields a
-/// `DateTimeNow` OS call with `tz` projected to [`MontyObject`] at the
-/// producer site (so the host sees a typed value directly).
-///
-/// Takes `&mut VM` rather than `&mut Heap` because the projection needs
-/// `MontyObject::new` to walk heap-allocated tzinfo objects.
+/// `DateTimeNow` OS call carrying the tz argument as a typed
+/// [`Option<MontyTimeZone>`] — validated here, so the call can never carry an
+/// arbitrary object.
 pub(crate) fn class_now(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<AttrCallResult> {
-    // Avoid `defer_drop_mut!` here: it would keep `vm` borrowed until end of
-    // scope, blocking the final `MontyObject::new(vm, ...)` call.
-    let tz_value = extract_now_tz(vm, args)?;
-    let tz_obj = MontyObject::new(tz_value, vm);
-    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz_obj)))
+    let NowArgs { tz } = NowArgs::from_args(args, vm)?;
+    defer_drop!(tz, vm);
+    let tz = tzinfo_from_value(tz, vm.heap, vm.interns)?.0.map(|tz| MontyTimeZone {
+        offset_seconds: tz.offset_seconds,
+        name: tz.name,
+    });
+    Ok(AttrCallResult::OsCall(OsFunctionCall::DateTimeNow(tz)))
 }
 
-/// Extracts the single `tz` argument from `datetime.now()`'s args
-/// (defaulting to `Value::None`), draining the iterators on every path so
-/// refcounts stay balanced.
-fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let interns = vm.interns;
-    let heap = &mut *vm.heap;
-    let (mut pos, kwargs) = args.into_parts();
-    let mut kwargs_iter = kwargs.into_iter();
-
-    let mut tz_value = Value::None;
-    let mut seen_tz = false;
-
-    for (index, arg) in pos.by_ref().enumerate() {
-        if index == 0 {
-            if let Err(e) = validate_tz_arg(&arg, heap, interns) {
-                arg.drop_with(heap);
-                pos.drop_with(heap);
-                kwargs_iter.drop_with(heap);
-
-                return Err(e);
-            }
-            tz_value = arg;
-            seen_tz = true;
-        } else {
-            arg.drop_with(heap);
-            pos.drop_with(heap);
-            kwargs_iter.drop_with(heap);
-            tz_value.drop_with(heap);
-            return Err(ExcType::type_error_method_at_most("now", 1, index + 1));
-        }
-    }
-
-    while let Some((key, value)) = kwargs_iter.next() {
-        let key_name = key.as_either_str(heap);
-        key.drop_with(heap);
-
-        let Some(key_name) = key_name else {
-            value.drop_with(heap);
-            kwargs_iter.drop_with(heap);
-            tz_value.drop_with(heap);
-            return Err(ExcType::type_error_kwargs_nonstring_key());
-        };
-        if key_name.string_id() != Some(StaticStrings::Tz.into()) {
-            value.drop_with(heap);
-            kwargs_iter.drop_with(heap);
-            tz_value.drop_with(heap);
-            return Err(ExcType::type_error_unexpected_keyword("now", key_name.as_str(interns)));
-        }
-        if seen_tz {
-            value.drop_with(heap);
-            kwargs_iter.drop_with(heap);
-            tz_value.drop_with(heap);
-            return Err(ExcType::type_error_method_at_most("now", 1, 2));
-        }
-
-        if let Err(e) = validate_tz_arg(&value, heap, interns) {
-            value.drop_with(heap);
-            kwargs_iter.drop_with(heap);
-            tz_value.drop_with(heap);
-
-            return Err(e);
-        }
-        tz_value = value;
-        seen_tz = true;
-    }
-    Ok(tz_value)
+/// Argument shape for `datetime.now(tz=None)`.
+///
+/// `tz` stays a raw [`Value`] so the None-or-timezone check runs in the body
+/// (`tzinfo_from_value`) with CPython's tzinfo wording. `at_most_total`
+/// matches CPython's `PyArg_ParseTupleAndKeywords` pre-count: a duplicate tz
+/// (`now(utc, tz=utc)`) reports "takes at most 1 argument (2 given)".
+#[derive(FromArgs)]
+#[from_args(name = "now", at_most_total)]
+struct NowArgs {
+    #[from_args(default = Value::None)]
+    tz: Value,
 }
 
 /// Classmethod `datetime.strptime(date_string, format)`.
@@ -615,22 +560,6 @@ fn tzinfo_from_value(
         Value::None => Ok((None, None)),
         Value::Ref(id) => match heap.get(*id) {
             HeapData::TimeZone(tz) => Ok((Some(tz.clone()), Some(*id))),
-            other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
-        },
-        _ => Err(ExcType::type_error_tzinfo(&value.py_type_shallow().name(heap, interns))),
-    }
-}
-
-/// Validates that a value is a valid timezone argument (`None` or `TimeZone`).
-///
-/// Used by `class_now` to validate the `tz` argument before passing it through
-/// to the OS call. Unlike `tzinfo_from_value`, this does not extract the timezone
-/// data — it only checks the type.
-fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<()> {
-    match value {
-        Value::None => Ok(()),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::TimeZone(_) => Ok(()),
             other => Err(ExcType::type_error_tzinfo(&other.py_type().name(heap, interns))),
         },
         _ => Err(ExcType::type_error_tzinfo(&value.py_type_shallow().name(heap, interns))),

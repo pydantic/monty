@@ -17,7 +17,7 @@ import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn } fro
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
 import type { Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
-import { decodeMontyObject, encodeMontyObject } from './value.js'
+import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
@@ -130,7 +130,7 @@ export class WorkerTransport {
       named.lengthDelimited(2, encodeMontyObject(value)) // NamedValue.value
       feed.lengthDelimited(2, named.finish()) // ReplFeed.inputs
     }
-    if (skipTypeCheck) feed.bool(4, true) // ReplFeed.skip_type_check
+    if (skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
     return this.turn(Req.ReplFeed, feed.finish(), onPrint)
   }
 
@@ -312,7 +312,7 @@ export class WorkerTransport {
       case Ev.TypingError:
         return { kind: 'typingError', diagnostics: decodeSingleString(event.bytes) }
       case Ev.FunctionCall: {
-        const call = decodeCall(event.bytes, false)
+        const call = decodeCall(event.bytes)
         this.pendingCallId = call.callId
         this.pendingFunctionName = call.functionName
         this.pendingNotHandled = null
@@ -326,7 +326,7 @@ export class WorkerTransport {
         }
       }
       case Ev.OsCall: {
-        const call = decodeCall(event.bytes, true)
+        const call = decodeOsCall(event.bytes)
         this.pendingCallId = call.callId
         this.pendingFunctionName = call.functionName
         this.pendingNotHandled = call.notHandledError ? simpleExc(call.notHandledError) : null
@@ -398,11 +398,10 @@ interface DecodedCall {
   kwargs: [unknown, unknown][]
   callId: number
   methodCall: boolean
-  notHandledError?: NativeException
 }
 
-/** Decodes a `FunctionCall` (field 5 = method_call) or `OsCall` (field 5 = not_handled_error). */
-function decodeCall(bytes: Uint8Array, isOsCall: boolean): DecodedCall {
+/** Decodes a `FunctionCall`. */
+function decodeCall(bytes: Uint8Array): DecodedCall {
   const reader = new Reader(bytes)
   const call: DecodedCall = { functionName: '', args: [], kwargs: [], callId: 0, methodCall: false }
   while (!reader.done) {
@@ -421,12 +420,244 @@ function decodeCall(bytes: Uint8Array, isOsCall: boolean): DecodedCall {
         call.callId = Number(f.value)
         break
       case 5:
-        if (isOsCall) call.notHandledError = decodeRaisedException(f.bytes)
-        else call.methodCall = f.value !== 0n
+        call.methodCall = f.value !== 0n
         break
     }
   }
   return call
+}
+
+// `OsCall.call` oneof field numbers (see monty.proto).
+const Os = {
+  Exists: 2,
+  IsFile: 3,
+  IsDir: 4,
+  IsSymlink: 5,
+  ReadText: 6,
+  ReadBytes: 7,
+  Stat: 8,
+  Iterdir: 9,
+  Resolve: 10,
+  Absolute: 11,
+  Unlink: 12,
+  Rmdir: 13,
+  WriteText: 14,
+  AppendText: 15,
+  WriteBytes: 16,
+  AppendBytes: 17,
+  Open: 18,
+  Mkdir: 19,
+  Rename: 20,
+  Getenv: 21,
+  GetEnviron: 22,
+  DateToday: 23,
+  DateTimeNow: 24,
+  Consumed: 25,
+}
+
+/** Stable call name for each path-only arm (the string payload is the path). */
+const OS_PATH_ARMS: Record<number, string> = {
+  [Os.Exists]: 'Path.exists',
+  [Os.IsFile]: 'Path.is_file',
+  [Os.IsDir]: 'Path.is_dir',
+  [Os.IsSymlink]: 'Path.is_symlink',
+  [Os.ReadText]: 'Path.read_text',
+  [Os.ReadBytes]: 'Path.read_bytes',
+  [Os.Stat]: 'Path.stat',
+  [Os.Iterdir]: 'Path.iterdir',
+  [Os.Resolve]: 'Path.resolve',
+  [Os.Absolute]: 'Path.absolute',
+  [Os.Unlink]: 'Path.unlink',
+  [Os.Rmdir]: 'Path.rmdir',
+}
+
+interface DecodedOsCall {
+  functionName: string
+  args: unknown[]
+  kwargs: [unknown, unknown][]
+  callId: number
+  notHandledError?: NativeException
+}
+
+/**
+ * Decodes the typed `OsCall` oneof back into the `(name, args, kwargs)`
+ * host-callback shape the native path surfaces, with the same per-call
+ * not-handled error monty's `OsFunctionCall::on_no_handler` produces. A
+ * `Consumed` re-announcement (after a snapshot restore) surfaces with an
+ * empty name and no error.
+ */
+function decodeOsCall(bytes: Uint8Array): DecodedOsCall {
+  const reader = new Reader(bytes)
+  let callId = 0
+  let arm: { field: number; bytes: Uint8Array } | null = null
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) callId = Number(f.value)
+    else if (f.field >= 2 && f.field <= 25) arm = { field: f.field, bytes: f.bytes }
+  }
+  if (!arm) throw new Error('OsCall carried no call')
+  return { callId, ...decodeOsArm(arm.field, arm.bytes) }
+}
+
+function decodeOsArm(field: number, bytes: Uint8Array): Omit<DecodedOsCall, 'callId'> {
+  const pathArm = OS_PATH_ARMS[field]
+  if (pathArm !== undefined) {
+    const path = decodeString(bytes)
+    return fsCall(pathArm, path, [path])
+  }
+  switch (field) {
+    case Os.WriteText:
+    case Os.AppendText: {
+      const [path, data] = decodePathAndString(bytes)
+      return fsCall(field === Os.WriteText ? 'Path.write_text' : 'Path.append_text', path, [path, data])
+    }
+    case Os.WriteBytes:
+    case Os.AppendBytes: {
+      const [path, data] = decodeBytesWrite(bytes)
+      return fsCall(field === Os.WriteBytes ? 'Path.write_bytes' : 'Path.append_bytes', path, [path, data])
+    }
+    case Os.Open: {
+      const [path, mode] = decodePathAndString(bytes)
+      return fsCall('open', path, [path, mode])
+    }
+    case Os.Mkdir: {
+      const { path, parents, existOk } = decodeMkdir(bytes)
+      return fsCall(
+        'Path.mkdir',
+        path,
+        [path],
+        [
+          ['parents', parents],
+          ['exist_ok', existOk],
+        ],
+      )
+    }
+    case Os.Rename: {
+      const [src, dst] = decodePathAndString(bytes)
+      return fsCall('Path.rename', src, [src, dst])
+    }
+    case Os.Getenv: {
+      const [key, dflt] = decodeGetenv(bytes)
+      return nonFsCall('os.getenv', [key, dflt])
+    }
+    case Os.GetEnviron:
+      return nonFsCall('os.environ', [])
+    case Os.DateToday:
+      return nonFsCall('date.today', [])
+    case Os.DateTimeNow:
+      // typed arm: `DateTimeNow.tz` (field 1) is an optional TimeZone
+      // message; absent means a naive result (tz=None)
+      return nonFsCall('datetime.now', [decodeDateTimeNowTz(bytes)])
+    case Os.Consumed:
+      return { functionName: '', args: [], kwargs: [] }
+    default:
+      throw new Error(`unknown OsCall arm ${field}`)
+  }
+}
+
+/**
+ * A surfaced filesystem call: `on_no_handler` semantics are a
+ * `PermissionError` naming the primary path. Plain single-quoting stands in
+ * for Python's repr — exotic path characters may render differently than the
+ * native parent, which is fine for an error message.
+ */
+function fsCall(
+  name: string,
+  primaryPath: string,
+  args: unknown[],
+  kwargs: [unknown, unknown][] = [],
+): Omit<DecodedOsCall, 'callId'> {
+  return {
+    functionName: name,
+    args,
+    kwargs,
+    notHandledError: {
+      excType: 'PermissionError',
+      message: `Permission denied: '${primaryPath}'`,
+      traceback: '',
+      frames: [],
+    },
+  }
+}
+
+/** A surfaced non-filesystem call: `on_no_handler` is a `RuntimeError`. */
+function nonFsCall(name: string, args: unknown[]): Omit<DecodedOsCall, 'callId'> {
+  return {
+    functionName: name,
+    args,
+    kwargs: [],
+    notHandledError: {
+      excType: 'RuntimeError',
+      message: `'${name}' is not supported in this environment`,
+      traceback: '',
+      frames: [],
+    },
+  }
+}
+
+/** `TextWrite`/`Open`/`Rename` bodies: two string fields. */
+function decodePathAndString(bytes: Uint8Array): [string, string] {
+  const reader = new Reader(bytes)
+  let first = ''
+  let second = ''
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) first = decodeString(f.bytes)
+    else if (f.field === 2) second = decodeString(f.bytes)
+  }
+  return [first, second]
+}
+
+/** `BytesWrite` body: `string path = 1; bytes data = 2`. */
+function decodeBytesWrite(bytes: Uint8Array): [string, unknown] {
+  const reader = new Reader(bytes)
+  let path = ''
+  let data: unknown = new Uint8Array(0)
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) path = decodeString(f.bytes)
+    else if (f.field === 2) data = typeof Buffer === 'undefined' ? f.bytes : Buffer.from(f.bytes)
+  }
+  return [path, data]
+}
+
+/** `Mkdir` body: `string path = 1; bool parents = 2; bool exist_ok = 3`. */
+function decodeMkdir(bytes: Uint8Array): { path: string; parents: boolean; existOk: boolean } {
+  const reader = new Reader(bytes)
+  let path = ''
+  let parents = false
+  let existOk = false
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) path = decodeString(f.bytes)
+    else if (f.field === 2) parents = f.value !== 0n
+    else if (f.field === 3) existOk = f.value !== 0n
+  }
+  return { path, parents, existOk }
+}
+
+/** `Getenv` body: `string key = 1; MontyObject default = 2`. */
+function decodeGetenv(bytes: Uint8Array): [string, unknown] {
+  const reader = new Reader(bytes)
+  let key = ''
+  let dflt: unknown = null
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) key = decodeString(f.bytes)
+    else if (f.field === 2) dflt = decodeMontyObject(f.bytes)
+  }
+  return [key, dflt]
+}
+
+/** Decodes `OsCall.DateTimeNow`: an optional `TimeZone` at field 1, `null` (naive) when absent. */
+function decodeDateTimeNowTz(bytes: Uint8Array): unknown {
+  const reader = new Reader(bytes)
+  let tz: unknown = null
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) tz = decodeTimeZone(f.bytes)
+  }
+  return tz
 }
 
 function decodePair(bytes: Uint8Array): [unknown, unknown] {

@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use monty::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, JsonErrorData, MontyDate, MontyDateTime,
-    MontyException, MontyFileHandle, MontyObject, MontyRun, MontyTimeDelta, MontyTimeZone, MontyType, NameLookupResult,
-    ResourceLimits, StackFrame, UnicodeErrorData,
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyRun, MontyTimeDelta,
+    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -546,7 +547,6 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
                 name: "v".to_owned(),
                 value: Some(WireObject::new(value.clone())),
             }],
-            mounts: vec![],
             skip_type_check: false,
         })),
     };
@@ -589,4 +589,127 @@ fn depth_check_matches_frame_decodability() {
             max_depth + 1
         );
     }
+}
+
+// =============================================================================
+// OsCall conversions — the typed wire arms and `OsFunctionCall` map 1:1.
+// =============================================================================
+
+/// Asserts `call` survives `OsFunctionCall -> wire bytes -> OsFunctionCall`
+/// through the generated `OsCall` message. Compared via `Debug` since
+/// `OsFunctionCall` has no `PartialEq`.
+#[track_caller]
+fn assert_os_call_round_trip(call: OsFunctionCall) {
+    let expected = format!("{call:?}");
+    let bytes = pb::OsCall {
+        call_id: 3,
+        call: Some(call.into()),
+    }
+    .encode_to_vec();
+    let decoded = pb::OsCall::decode(bytes.as_slice()).expect("wire bytes -> OsCall failed");
+    assert_eq!(decoded.call_id, 3);
+    let back = OsFunctionCall::try_from(decoded.call.expect("decoded OsCall has no call"))
+        .expect("wire call -> OsFunctionCall failed");
+    assert_eq!(format!("{back:?}"), expected);
+}
+
+#[test]
+fn os_calls_round_trip_all_variants() {
+    let p = || MontyPath::new("/mnt/data/f.txt".to_owned());
+    for call in [
+        OsFunctionCall::Exists(p()),
+        OsFunctionCall::IsFile(p()),
+        OsFunctionCall::IsDir(p()),
+        OsFunctionCall::IsSymlink(p()),
+        OsFunctionCall::ReadText(p()),
+        OsFunctionCall::ReadBytes(p()),
+        OsFunctionCall::Stat(p()),
+        OsFunctionCall::Iterdir(p()),
+        OsFunctionCall::Resolve(p()),
+        OsFunctionCall::Absolute(p()),
+        OsFunctionCall::Unlink(p()),
+        OsFunctionCall::Rmdir(p()),
+        OsFunctionCall::WriteText(PathStringDataArgs {
+            path: p(),
+            data: "hello".to_owned(),
+        }),
+        OsFunctionCall::AppendText(PathStringDataArgs {
+            path: p(),
+            data: String::new(),
+        }),
+        OsFunctionCall::WriteBytes(PathBytesDataArgs {
+            path: p(),
+            data: vec![1, 2, 3],
+        }),
+        OsFunctionCall::AppendBytes(PathBytesDataArgs {
+            path: p(),
+            data: vec![],
+        }),
+        OsFunctionCall::Mkdir(MkdirCallArgs {
+            path: p(),
+            parents: true,
+            exist_ok: false,
+        }),
+        OsFunctionCall::Rename(RenameCallArgs {
+            src: p(),
+            dst: MontyPath::new("/mnt/data/g.txt".to_owned()),
+        }),
+        OsFunctionCall::Getenv(GetenvArgs {
+            key: "HOME".to_owned(),
+            default: MontyObject::None,
+        }),
+        OsFunctionCall::Getenv(GetenvArgs {
+            key: "PATH".to_owned(),
+            default: MontyObject::List(vec![MontyObject::Int(1)]),
+        }),
+        OsFunctionCall::GetEnviron,
+        OsFunctionCall::DateToday,
+        OsFunctionCall::DateTimeNow(None),
+        OsFunctionCall::DateTimeNow(Some(MontyTimeZone {
+            offset_seconds: 3600,
+            name: Some("CET".to_owned()),
+        })),
+    ] {
+        assert_os_call_round_trip(call);
+    }
+}
+
+#[test]
+fn os_call_open_round_trips_all_modes() {
+    // Only the modes `FromStr` produces — the `+` update modes are reserved
+    // and unreachable from user input.
+    for mode in ["r", "rb", "w", "wb", "a", "ab"] {
+        assert_os_call_round_trip(OsFunctionCall::Open(OpenCallArgs {
+            path: MontyPath::new("/mnt/data/f.txt".to_owned()),
+            mode: mode.parse().unwrap(),
+        }));
+    }
+}
+
+#[test]
+fn os_call_conversion_rejects_invalid_payloads() {
+    // A bogus open mode the child could never produce.
+    let bad_mode = pb::os_call::Call::Open(pb::os_call::Open {
+        path: "/mnt/data/f.txt".to_owned(),
+        mode: "q".to_owned(),
+    });
+    assert!(matches!(
+        OsFunctionCall::try_from(bad_mode),
+        Err(ProtoConvertError::InvalidFileMode(mode)) if mode == "q"
+    ));
+    // os.getenv always carries a default (None when the sandbox omitted it).
+    let missing_default = pb::os_call::Call::Getenv(pb::os_call::Getenv {
+        key: "HOME".to_owned(),
+        default: None,
+    });
+    assert!(matches!(
+        OsFunctionCall::try_from(missing_default),
+        Err(ProtoConvertError::MissingField("Getenv.default"))
+    ));
+    // A consumed re-announcement carries no call — receivers must match it
+    // before converting.
+    assert!(matches!(
+        OsFunctionCall::try_from(pb::os_call::Call::Consumed(pb::Unit {})),
+        Err(ProtoConvertError::InvalidValue { .. })
+    ));
 }

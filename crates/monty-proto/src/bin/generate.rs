@@ -44,7 +44,6 @@ fn main() {
         .out_dir(&out_dir)
         .extern_path(".monty.v1.MontyObject", "crate::WireObject")
         .extern_path(".monty.v1.FunctionCall", "crate::WireFunctionCall")
-        .extern_path(".monty.v1.OsCall", "crate::WireOsCall")
         .compile_fds(descriptors.clone())
         .expect("failed to generate Rust code from monty.proto");
     prepend_header(&out_dir.join("monty.v1.rs"), HEADER);

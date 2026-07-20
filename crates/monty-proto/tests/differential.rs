@@ -19,7 +19,7 @@ use monty::{
     CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun,
     MontyTimeDelta, MontyTimeZone, MontyType,
 };
-use monty_proto::{WireFunctionCall, WireObject, WireOsCall, pb};
+use monty_proto::{WireFunctionCall, WireObject, pb};
 use num_bigint::{BigInt, Sign};
 use prost::Message;
 
@@ -379,58 +379,54 @@ fn hand_call_payloads_match_generated_encoding() {
         generated_call.encode_to_vec()
     );
 
-    let hand_error = pb::RaisedException {
-        exc_type: "PermissionError".to_owned(),
-        message: Some("denied".to_owned()),
-        traceback: vec![],
-        data: Some(pb::ExcData {
-            kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData {
-                encoding: "utf-8".to_owned(),
-                object: Some(pb::unicode_error_data::Object::ObjectBytes(vec![0x61, 0xFF])),
-                start: 1,
-                end: 2,
-                reason: "invalid start byte".to_owned(),
-            })),
-        }),
-    };
-    let generated_error = oracle::RaisedException {
-        exc_type: "PermissionError".to_owned(),
-        message: Some("denied".to_owned()),
-        traceback: vec![],
-        data: Some(oracle::ExcData {
-            kind: Some(oracle::exc_data::Kind::Unicode(oracle::UnicodeErrorData {
-                encoding: "utf-8".to_owned(),
-                object: Some(oracle::unicode_error_data::Object::ObjectBytes(vec![0x61, 0xFF])),
-                start: 1,
-                end: 2,
-                reason: "invalid start byte".to_owned(),
-            })),
-        }),
-    };
-    let hand_os = WireOsCall {
-        function_name: "Path.read_text".to_owned(),
-        args,
-        kwargs,
+    // `OsCall` is fully generated, but its `Getenv.default` field embeds the
+    // hand-written `WireObject` — check the embedding agrees with the oracle
+    // byte-for-byte.
+    let default = MontyObject::List(vec![MontyObject::None, MontyObject::Int(3)]);
+    let hand_os = pb::OsCall {
         call_id: 7,
-        not_handled_error: Some(hand_error),
+        call: Some(pb::os_call::Call::Getenv(pb::os_call::Getenv {
+            key: "HOME".to_owned(),
+            default: Some(WireObject::new(default.clone())),
+        })),
     };
     let generated_os = oracle::OsCall {
-        function_name: "Path.read_text".to_owned(),
-        args: hand_os.args.iter().map(to_oracle).collect(),
-        kwargs: oracle_pairs(&hand_os.kwargs),
         call_id: 7,
-        not_handled_error: Some(generated_error),
+        call: Some(oracle::os_call::Call::Getenv(oracle::os_call::Getenv {
+            key: "HOME".to_owned(),
+            default: Some(to_oracle(&default)),
+        })),
     };
     assert_eq!(hand_os.encode_to_vec(), generated_os.encode_to_vec());
     assert_eq!(
-        WireOsCall::decode(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
+        pb::OsCall::decode(generated_os.encode_to_vec().as_slice()).expect("generated os call decodes"),
         hand_os
     );
+
+    // `DateTimeNow` is fully typed (optional TimeZone) — no `WireObject`
+    // embedding, but keep the byte-compat check against the oracle.
+    let hand_now = pb::OsCall {
+        call_id: 9,
+        call: Some(pb::os_call::Call::DateTimeNow(pb::os_call::DateTimeNow {
+            tz: Some(pb::TimeZone {
+                offset_seconds: 3600,
+                name: Some("CET".to_owned()),
+            }),
+        })),
+    };
+    let generated_now = oracle::OsCall {
+        call_id: 9,
+        call: Some(oracle::os_call::Call::DateTimeNow(oracle::os_call::DateTimeNow {
+            tz: Some(oracle::TimeZone {
+                offset_seconds: 3600,
+                name: Some("CET".to_owned()),
+            }),
+        })),
+    };
+    assert_eq!(hand_now.encode_to_vec(), generated_now.encode_to_vec());
     assert_eq!(
-        oracle::OsCall::decode(hand_os.encode_to_vec().as_slice())
-            .expect("hand os call decodes")
-            .encode_to_vec(),
-        generated_os.encode_to_vec()
+        pb::OsCall::decode(generated_now.encode_to_vec().as_slice()).expect("generated now call decodes"),
+        hand_now
     );
 }
 

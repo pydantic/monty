@@ -75,9 +75,10 @@ properties that real CPython does not provide, per the caveat above.
   host arms each execution turn's watchdog with the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.
   The in-sandbox limit normally fires first with a clean `TimeoutError`; the
-  backstop covers cases where it cannot — e.g. a blocking syscall inside a
-  mount (reading a FIFO) — and surfaces as `MontyCrashedError`, losing the
-  session. Because the budget and consumed time are also stamped onto the
+  backstop covers cases where it cannot — a worker that stops answering
+  (e.g. compromised or wedged) — and surfaces as `MontyCrashedError`, losing
+  the session. Mount I/O runs on the host between watchdog exchanges and does
+  not count against the worker's deadline. Because the budget and consumed time are also stamped onto the
   worker's replies, sessions restored via the Rust `Pool::checkout_load`
   regain the backstop too. A *compromised* worker could under-report its
   total, stretching each turn to the full budget plus grace — turns stay
@@ -148,14 +149,47 @@ properties that real CPython does not provide, per the caveat above.
   protocol turn, not mid-`print`; if that turn had suspended (an external
   function, OS call, or name lookup), the binding resets/discards the
   suspension before surfacing the print error so later feeds can continue.
-- **Mounts are worker-local.** `MountDir` objects contribute configuration
-  only; `mode='overlay'` writes live in the worker for the duration of one
-  feed and are discarded when it ends — the host `MountDir` object's overlay
-  state is never updated. `read-write` mounts write through to the real host
-  directory as before.
+- **Mounts are host-side.** `MountDir` objects contribute configuration only;
+  the pool builds a fresh mount table per feed on the *host* and services the
+  worker's filesystem OS calls itself — the worker never sees host paths, so
+  mounts work identically for local subprocess and remote WebSocket workers.
+  `mode='overlay'` writes live in that per-feed table and are discarded when
+  the feed ends — the `MountDir` object's overlay state is never updated.
+  `read-write` mounts write through to the real host directory as before. An
+  invalid mount (host path missing / not a directory) raises at `feed` time,
+  before the snippet runs, as a session-preserving error.
+- **Special files are rejected.** Reading, writing, or `open()`ing a
+  non-regular file in a mounted directory (FIFO, socket, device) raises
+  `PermissionError` instead of blocking — CPython would block until a peer
+  appears, but mount I/O runs on the host thread driving the session and must
+  never block on sandbox-reachable input.
+- **Mount I/O is not covered by `request_timeout`.** Covered filesystem calls
+  run synchronously on the host thread driving the session; the watchdog's
+  only lever is killing the worker, which cannot interrupt host-side I/O.
+  Sandbox code cannot *hang* the host this way (special files are rejected,
+  above), but a mount on a pathological host filesystem — a stalled NFS or
+  FUSE volume — blocks the feed with no timeout. Like a blocking
+  `print_callback` or external function, hang-free host I/O is the embedder's
+  responsibility: do not mount directories on filesystems that can hang.
+  Worker execution time is still hard-bounded: each covered call deducts the
+  worker's elapsed interval from the turn's allowance, so cumulative worker
+  execution per turn never exceeds `request_timeout` no matter how many
+  covered calls it makes. The parent-side I/O itself is deducted from
+  nothing, though, so sandbox code *can* stretch a feed's wall clock well
+  beyond `request_timeout` on a perfectly healthy filesystem — e.g. a loop of
+  large mounted reads pays only its own (bounded) execution time while the
+  host does up to a mount-memory-budget's worth of free I/O per call. Feed
+  wall clock with mounts is therefore not a hard bound; only worker execution
+  is.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
-  filesystem calls are handled inside the worker and never reach the
-  callback.
+  filesystem calls are serviced by the pool and never reach the callback.
+- **Mounts have a 100 MB memory budget by default.** Retained overlay data and
+  transient filesystem results share the configurable per-mount budget.
+  Oversized operations raise `MemoryError` inside the sandbox before protocol
+  encoding. CPython has no equivalent default limit. Raising the budget above
+  256 MiB re-exposes the wire frame cap: a mounted read whose result exceeds
+  one 256 MiB frame raises `RuntimeError` inside the sandbox instead of
+  returning the data.
 - **`external_lookup` resolves undefined names lazily.** `feed_run` /
   `feedRun` take `external_lookup` (`externalLookup` in JS): a name the snippet
   leaves undefined is resolved on first reference against this dict — a
@@ -219,30 +253,33 @@ properties that real CPython does not provide, per the caveat above.
   `load_snapshot` — restoring would otherwise discard work. The dump restores
   its own `script_name` / limits / type-check state (the `checkout()` config
   for those is not applied); the dataclass registry from `checkout()` is reused.
-  A *failed* load (wrong dump kind, or a restore error such as a missing mount)
-  poisons the session — its worker is discarded, so every later feed fails too;
-  the load is not retryable and the caller must check out a fresh session.
+  A *failed* load (wrong dump kind, or a protocol desync) poisons the session
+  — its worker is discarded, so every later feed fails too; the load is not
+  retryable and the caller must check out a fresh session.
 - **`resume` takes no `mount=`.** Mounts are fixed for the whole feed (passed
   to `feed_start`), so there is no per-`resume` mount argument.
 - **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
-  are host configuration, not sandbox state, so their **host paths** never enter
-  the (opaque, possibly-transmitted) dump bytes — a dump that carried host paths
-  could otherwise be crafted to mount an arbitrary host directory on load. To
+  are host configuration serviced by the host, not sandbox state, so nothing
+  about them (host paths included) enters the (opaque, possibly-transmitted)
+  dump bytes — dump contents can never cause any directory to be mounted. To
   resume a suspended feed with its mounts, pass the same `mount=` the original
-  `feed_start` used to `load_snapshot`; the worker rebuilds the mount table.
+  `feed_start` used to `load_snapshot`; the pool rebuilds its mount table.
   (`load` takes no `mount` — an idle session has no in-flight feed; the next
   feed supplies its own.)
-- **`load_snapshot` validates the re-supplied mounts.** The dump records the
-  suspended feed's mount *requirements* (virtual path + mode + write limit, no
-  host path). `load_snapshot` must supply mounts that match them exactly (host
-  paths may differ); a missing, extra, or altered mount raises rather than
-  silently dropping the feed's mounts.
+- **Re-supplied mounts are not validated.** The dump records nothing about the
+  feed's mounts, so `load_snapshot` cannot check what you pass: a mount
+  silently omitted (or altered) simply degrades the resumed feed's covered
+  filesystem calls into surfaced OS calls — unhandled ones raise
+  `PermissionError` inside the sandbox.
 - **`'overlay'` writes are not preserved across a dump.** A restored overlay
-  mount starts empty; `read-only` / `read-write` mounts hold no in-worker state
+  mount starts empty; `read-only` / `read-write` mounts have no overlay state
   and restore fully.
-- **A re-announced OS-call snapshot after `load_snapshot` carries only its
-  `not_handled_error`** — its `args`/`kwargs` were consumed before the dump, so
-  they come back empty.
+- **A re-announced OS-call snapshot after `load_snapshot` carries no
+  payload** — its arguments were consumed before the dump, so it surfaces
+  with an empty function name and empty `args`/`kwargs`, and there is no
+  per-call default error to decline with: `resume_not_handled()` raises
+  `RuntimeError` instead of resuming, so the host must answer from its own
+  records via `resume(...)` / `resume_error(...)`.
 - **Natural-JSON host serialization was removed.** Results now cross the
   subprocess boundary as structured protocol values; the old
   `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /

@@ -390,23 +390,6 @@ pub struct ResourceLimits {
     #[prost(uint64, optional, tag = "5")]
     pub max_recursion_depth: ::core::option::Option<u64>,
 }
-/// Mounts a host directory into the sandbox. The child builds its own
-/// MountTable from these, so the host path must be valid on the machine the
-/// child runs on.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Mount {
-    /// Absolute virtual POSIX path, e.g. "/mnt/data".
-    #[prost(string, tag = "1")]
-    pub virtual_path: ::prost::alloc::string::String,
-    /// Host-native directory path.
-    #[prost(string, tag = "2")]
-    pub host_path: ::prost::alloc::string::String,
-    #[prost(enumeration = "MountMode", tag = "3")]
-    pub mode: i32,
-    /// Cap on total bytes written through this mount.
-    #[prost(uint64, optional, tag = "4")]
-    pub write_bytes_limit: ::core::option::Option<u64>,
-}
 /// Outcome of an external function / OS call, decided by the parent. Mirrors
 /// monty's `ExtFunctionResult`.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -517,12 +500,8 @@ pub struct Feed {
     pub code: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
     pub inputs: ::prost::alloc::vec::Vec<NamedValue>,
-    /// Mounts for this feed; handled entirely inside the child. OS calls the
-    /// mounts do not cover bubble up as `OsCall` events.
-    #[prost(message, repeated, tag = "3")]
-    pub mounts: ::prost::alloc::vec::Vec<Mount>,
     /// Skip type checking for this feed even when the session enables it.
-    #[prost(bool, tag = "4")]
+    #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
 }
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -567,17 +546,10 @@ pub struct Dump {}
 /// Restores state produced by `Dump`. Valid only from no session. If
 /// the restored state was suspended, the child re-emits the suspension event so
 /// the parent learns the resume point; otherwise it replies `Ok`.
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Load {
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
-    /// Mounts to re-establish for a suspended feed being resumed. Mounts are
-    /// host configuration, not sandbox state, so they are never part of the dump
-    /// — the parent re-supplies the same mounts it used for the original feed.
-    /// Without them a restored feed has no mounts and its OS calls all bubble up.
-    /// When the restored state is idle this must be empty.
-    #[prost(message, repeated, tag = "2")]
-    pub mounts: ::prost::alloc::vec::Vec<Mount>,
 }
 /// Ends the checkout: the child drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.
@@ -679,30 +651,163 @@ pub struct FunctionCall {
     #[prost(bool, tag = "5")]
     pub method_call: bool,
 }
-/// Suspension: the sandbox performed an OS operation no mount handled, e.g.
-/// "Path.read_text" or "os.getenv". Answer with `ResumeCall`. Some calls have
-/// typed result expectations (e.g. "Open" must return a file_handle); a
-/// mismatched result becomes a Python-level error inside the sandbox.
+/// Suspension: the sandbox performed an OS operation, surfaced for the parent
+/// to service (e.g. from a mount) or answer with `ResumeCall`. One typed arm
+/// per call; every path is a virtual POSIX sandbox path, never a host path.
+/// Some calls have typed result expectations (e.g. `open` must return a
+/// file_handle); a mismatched result becomes a Python-level error inside the
+/// sandbox.
 ///
-/// NOTE: an OsCall re-announced after `Load` carries only `call_id` and
-/// `not_handled_error` — the argument payload was consumed when the call was
-/// first announced, before the dump was taken.
+/// A parent with no handler should answer `ResumeCall` with the call's
+/// not-handled error: PermissionError naming the path for filesystem calls,
+/// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct OsCall {
-    #[prost(string, tag = "1")]
-    pub function_name: ::prost::alloc::string::String,
-    #[prost(message, repeated, tag = "2")]
-    pub args: ::prost::alloc::vec::Vec<MontyObject>,
-    #[prost(message, repeated, tag = "3")]
-    pub kwargs: ::prost::alloc::vec::Vec<Pair>,
-    #[prost(uint32, tag = "4")]
+    #[prost(uint32, tag = "1")]
     pub call_id: u32,
-    /// The exception monty would raise for this call when nothing handles it
-    /// (e.g. PermissionError for filesystem calls). A parent with no handler
-    /// should answer `ResumeCall` with this error — only the child knows the
-    /// per-call semantics.
-    #[prost(message, optional, tag = "5")]
-    pub not_handled_error: ::core::option::Option<RaisedException>,
+    #[prost(
+        oneof = "os_call::Call",
+        tags = "2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25"
+    )]
+    pub call: ::core::option::Option<os_call::Call>,
+}
+/// Nested message and enum types in `OsCall`.
+pub mod os_call {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct TextWrite {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub data: ::prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct BytesWrite {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(bytes = "vec", tag = "2")]
+        pub data: ::prost::alloc::vec::Vec<u8>,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Open {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        /// Canonical open() mode string, same set as `FileHandle.mode`.
+        #[prost(string, tag = "2")]
+        pub mode: ::prost::alloc::string::String,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Mkdir {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(bool, tag = "2")]
+        pub parents: bool,
+        #[prost(bool, tag = "3")]
+        pub exist_ok: bool,
+    }
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Rename {
+        #[prost(string, tag = "1")]
+        pub src: ::prost::alloc::string::String,
+        #[prost(string, tag = "2")]
+        pub dst: ::prost::alloc::string::String,
+    }
+    /// os.getenv(key, default) — `default` may be any Python value.
+    #[derive(Clone, PartialEq, ::prost::Message)]
+    pub struct Getenv {
+        #[prost(string, tag = "1")]
+        pub key: ::prost::alloc::string::String,
+        #[prost(message, optional, tag = "2")]
+        pub default: ::core::option::Option<super::MontyObject>,
+    }
+    /// datetime.now(tz) — the VM validates the argument to None-or-timezone
+    /// before suspending, so the wire carries a typed TimeZone rather than an
+    /// arbitrary MontyObject.
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct DateTimeNow {
+        /// Fixed-offset timezone for an aware result; absent for a naive one.
+        #[prost(message, optional, tag = "1")]
+        pub tz: ::core::option::Option<super::TimeZone>,
+    }
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Call {
+        /// ---- FS read / check / remove — the string is the virtual path -------
+        ///
+        /// Path.exists
+        #[prost(string, tag = "2")]
+        Exists(::prost::alloc::string::String),
+        /// Path.is_file
+        #[prost(string, tag = "3")]
+        IsFile(::prost::alloc::string::String),
+        /// Path.is_dir
+        #[prost(string, tag = "4")]
+        IsDir(::prost::alloc::string::String),
+        /// Path.is_symlink
+        #[prost(string, tag = "5")]
+        IsSymlink(::prost::alloc::string::String),
+        /// Path.read_text
+        #[prost(string, tag = "6")]
+        ReadText(::prost::alloc::string::String),
+        /// Path.read_bytes
+        #[prost(string, tag = "7")]
+        ReadBytes(::prost::alloc::string::String),
+        /// Path.stat
+        #[prost(string, tag = "8")]
+        Stat(::prost::alloc::string::String),
+        /// Path.iterdir
+        #[prost(string, tag = "9")]
+        Iterdir(::prost::alloc::string::String),
+        /// Path.resolve
+        #[prost(string, tag = "10")]
+        Resolve(::prost::alloc::string::String),
+        /// Path.absolute
+        #[prost(string, tag = "11")]
+        Absolute(::prost::alloc::string::String),
+        /// Path.unlink
+        #[prost(string, tag = "12")]
+        Unlink(::prost::alloc::string::String),
+        /// Path.rmdir
+        #[prost(string, tag = "13")]
+        Rmdir(::prost::alloc::string::String),
+        /// ---- FS write / mutate -----------------------------------------------
+        ///
+        /// Path.write_text (truncating)
+        #[prost(message, tag = "14")]
+        WriteText(TextWrite),
+        /// Path.append_text
+        #[prost(message, tag = "15")]
+        AppendText(TextWrite),
+        /// Path.write_bytes (truncating)
+        #[prost(message, tag = "16")]
+        WriteBytes(BytesWrite),
+        /// Path.append_bytes
+        #[prost(message, tag = "17")]
+        AppendBytes(BytesWrite),
+        #[prost(message, tag = "18")]
+        Open(Open),
+        #[prost(message, tag = "19")]
+        Mkdir(Mkdir),
+        #[prost(message, tag = "20")]
+        Rename(Rename),
+        /// ---- Non-FS ----------------------------------------------------------
+        ///
+        /// os.getenv
+        #[prost(message, tag = "21")]
+        Getenv(Getenv),
+        /// the os.environ snapshot
+        #[prost(message, tag = "22")]
+        GetEnviron(super::Unit),
+        /// date.today()
+        #[prost(message, tag = "23")]
+        DateToday(super::Unit),
+        /// datetime.now(tz) — the timezone argument (absent for a naive result).
+        #[prost(message, tag = "24")]
+        DateTimeNow(DateTimeNow),
+        /// Re-announced after `Load`: the argument payload was consumed when the
+        /// call was first announced, before the dump was taken. The parent must
+        /// answer from its own records (or with a not-handled error).
+        #[prost(message, tag = "25")]
+        Consumed(super::Unit),
+    }
 }
 /// Suspension: the sandbox read an undefined name — typically probing whether
 /// the parent provides an external function. Answer with `ResumeNameLookup`.
@@ -758,40 +863,6 @@ pub struct Ok {}
 pub struct FatalError {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
-#[repr(i32)]
-pub enum MountMode {
-    Unspecified = 0,
-    ReadOnly = 1,
-    ReadWrite = 2,
-    /// Copy-on-write overlay backed by child-local memory; writes are discarded
-    /// when the session ends.
-    Overlay = 3,
-}
-impl MountMode {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "MOUNT_MODE_UNSPECIFIED",
-            Self::ReadOnly => "MOUNT_MODE_READ_ONLY",
-            Self::ReadWrite => "MOUNT_MODE_READ_WRITE",
-            Self::Overlay => "MOUNT_MODE_OVERLAY",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "MOUNT_MODE_UNSPECIFIED" => Some(Self::Unspecified),
-            "MOUNT_MODE_READ_ONLY" => Some(Self::ReadOnly),
-            "MOUNT_MODE_READ_WRITE" => Some(Self::ReadWrite),
-            "MOUNT_MODE_OVERLAY" => Some(Self::Overlay),
-            _ => None,
-        }
-    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

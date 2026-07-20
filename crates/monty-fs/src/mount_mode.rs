@@ -25,7 +25,7 @@ pub enum MountMode {
     /// Copy-on-write overlay backed by in-memory storage.
     ///
     /// Reads fall through to the host directory. Writes are captured in the
-    /// contained [`OverlayState`]. Deletions insert [`OverlayEntry::Deleted`]
+    /// contained [`OverlayState`]. Deletions insert `OverlayEntry::Deleted`
     /// tombstones that hide real files from subsequent reads. Directory listings
     /// merge real and overlay entries, with overlay taking precedence.
     OverlayMemory(OverlayState),

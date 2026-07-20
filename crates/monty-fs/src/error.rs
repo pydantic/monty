@@ -6,7 +6,7 @@ use std::{
     io::{self, ErrorKind},
 };
 
-use crate::{ExcData, ExcType, MontyException, exception_private::unicode_decode_error_msg, types::str::StringRepr};
+use monty::{ExcData, ExcType, MontyException, StringRepr, unicode_decode_error_msg};
 
 /// Errors from mount configuration or filesystem operations.
 #[derive(Debug)]
@@ -37,7 +37,7 @@ pub enum MountError {
 
     /// A file contained bytes that could not be decoded as UTF-8. Carries the
     /// details needed to reproduce CPython's `UnicodeDecodeError` wording
-    /// exactly (see `exception_private::unicode_decode_error_msg`).
+    /// exactly (see [`monty::unicode_decode_error_msg`]).
     InvalidUtf8 {
         /// Byte offset of the first invalid byte.
         start: usize,
@@ -46,7 +46,7 @@ pub enum MountError {
         end: usize,
         /// The first invalid byte value, shown in the single-byte message form.
         first_byte: u8,
-        /// CPython's reason wording, from `codecs::utf8_error_reason`.
+        /// CPython's reason wording, from [`monty::utf8_error_reason`].
         reason: &'static str,
         /// Structured exception fields including the undecodable file bytes
         /// (omitted for files above `UnicodeErrorData::MAX_OBJECT_LEN`), so
@@ -60,6 +60,10 @@ pub enum MountError {
     /// Cumulative write bytes exceeded the configured per-mount limit.
     /// The configured byte limit that was exceeded.
     WriteLimitExceeded(u64),
+
+    /// An operation would exceed the mount's aggregate memory budget.
+    /// The configured byte limit that was exceeded.
+    MemoryUsageLimitExceeded(u64),
 }
 
 impl MountError {
@@ -138,6 +142,13 @@ impl MountError {
                 ExcType::OSError,
                 Some(format!("disk write limit of {} exceeded", format_bytes_pretty(limit))),
             ),
+            Self::MemoryUsageLimitExceeded(limit) => MontyException::new(
+                ExcType::MemoryError,
+                Some(format!(
+                    "mount memory usage limit of {} exceeded",
+                    format_bytes_pretty(limit)
+                )),
+            ),
         }
     }
 
@@ -166,6 +177,13 @@ impl fmt::Display for MountError {
             Self::InvalidMount(msg) => write!(f, "invalid mount: {msg}"),
             Self::WriteLimitExceeded(limit) => {
                 write!(f, "disk write limit of {} exceeded", format_bytes_pretty(*limit))
+            }
+            Self::MemoryUsageLimitExceeded(limit) => {
+                write!(
+                    f,
+                    "mount memory usage limit of {} exceeded",
+                    format_bytes_pretty(*limit)
+                )
             }
         }
     }

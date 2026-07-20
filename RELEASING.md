@@ -32,7 +32,7 @@ Once the tag is pushed, CI will:
 - Build wheels for all platforms
 - Publish to PyPI (`pydantic-monty`)
 - Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
-- Publish the Rust crates to crates.io (`monty`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
+- Publish the Rust crates to crates.io (`monty`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

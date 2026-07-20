@@ -3,14 +3,14 @@
 //! must surface as a clean error and never poison the pool.
 
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     sync::Once,
     thread,
     time::Duration,
 };
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
 use monty::{MontyObject, PrintStream, ResourceLimits};
@@ -152,26 +152,58 @@ fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
     session.finish().unwrap();
 }
 
-/// A mount whose host path is not valid UTF-8 cannot cross the wire (the
-/// proto `host_path` is a UTF-8 `string`). It must fail as a
-/// session-preserving error rather than silently transcoding to a different —
-/// possibly existing — path. Unix-only: non-UTF-8 paths cannot be constructed
-/// portably.
-#[cfg(unix)]
+/// A mount whose host path is not valid UTF-8 works: host paths never cross
+/// the wire (the parent services mount I/O itself), so the OS-native path is
+/// used as-is. Linux-only: macOS (APFS) rejects non-UTF-8 filenames outright
+/// and they cannot be constructed portably elsewhere.
+#[cfg(target_os = "linux")]
 #[test]
-fn non_utf8_mount_path_is_rejected_cleanly() {
+fn non_utf8_mount_path_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let weird_dir = dir.path().join(OsStr::from_bytes(b"weird-\xff"));
+    fs::create_dir(&weird_dir).unwrap();
+    fs::write(weird_dir.join("data.txt"), "non-utf8 host dir").unwrap();
+
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-    let bad_path = PathBuf::from(OsStr::from_bytes(b"/tmp/\xff"));
+    let event = session
+        .feed(
+            "from pathlib import Path\nPath('/mnt/data/data.txt').read_text()",
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt/data".to_owned(),
+                host_path: weird_dir,
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("non-utf8 host dir".to_owned())
+    );
+    session.finish().unwrap();
+}
+
+/// A mount whose host path does not exist fails at `feed()` — on the parent,
+/// before any frame is sent — as a session-preserving error.
+#[test]
+fn invalid_mount_host_path_is_rejected_cleanly() {
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let err = session
         .feed(
             "1 + 1",
             vec![],
             vec![MountSpec {
                 virtual_path: "/mnt/data".to_owned(),
-                host_path: bad_path,
+                host_path: PathBuf::from("/nonexistent/monty/mount/dir"),
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
@@ -181,7 +213,8 @@ fn non_utf8_mount_path_is_rejected_cleanly() {
         panic!("expected Runtime, got {err:?}");
     };
     assert!(
-        exc.message().is_some_and(|m| m.contains("not valid UTF-8")),
+        exc.message()
+            .is_some_and(|m| m.contains("cannot canonicalize host path")),
         "unexpected message: {:?}",
         exc.message()
     );
@@ -189,6 +222,271 @@ fn non_utf8_mount_path_is_rejected_cleanly() {
     let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().unwrap();
+}
+
+/// Mount-covered filesystem OS calls are serviced by the parent and never
+/// surface to the caller — the feed just completes. Covers read, write,
+/// mkdir kwargs, rename, and `open()` + file-handle ops through a mount.
+#[test]
+fn mounted_filesystem_ops_are_serviced_by_the_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
+
+    let mount = || {
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode: MountSpecMode::ReadWrite,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }]
+    };
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+
+    let event = session
+        .feed(
+            "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
+            vec![],
+            mount(),
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("mounted!".to_owned()));
+
+    let code = "\
+Path('/mnt/sub').mkdir(parents=True, exist_ok=True)
+Path('/mnt/sub/out.txt').write_text('written')
+Path('/mnt/sub/out.txt').rename('/mnt/sub/renamed.txt')
+with open('/mnt/sub/renamed.txt') as f:
+    body = f.read()
+body";
+    let event = session.feed(code, vec![], mount(), false, &mut no_print).unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("written".to_owned()));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("sub/renamed.txt")).unwrap(),
+        "written"
+    );
+    session.finish().unwrap();
+}
+
+/// A write through a read-only mount raises `PermissionError` inside the
+/// sandbox (catchable, session-preserving); overlay writes are visible within
+/// the feed, never reach the host, and are discarded when the feed ends.
+#[test]
+fn read_only_and_overlay_mount_semantics() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "original").unwrap();
+
+    let mount = |mode| {
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }]
+    };
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+
+    let err = session
+        .feed(
+            "from pathlib import Path\nPath('/mnt/new.txt').write_text('x')",
+            vec![],
+            mount(MountSpecMode::ReadOnly),
+            false,
+            &mut no_print,
+        )
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "PermissionError");
+
+    let code = "\
+from pathlib import Path
+Path('/mnt/data.txt').write_text('changed')
+Path('/mnt/data.txt').read_text()";
+    let event = session
+        .feed(code, vec![], mount(MountSpecMode::Overlay), false, &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("changed".to_owned()));
+    // the host file is untouched and the overlay does not persist to the next feed
+    assert_eq!(fs::read_to_string(dir.path().join("data.txt")).unwrap(), "original");
+    let event = session
+        .feed(
+            "Path('/mnt/data.txt').read_text()",
+            vec![],
+            mount(MountSpecMode::Overlay),
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("original".to_owned()));
+    session.finish().unwrap();
+}
+
+/// The per-mount `write_bytes_limit` is enforced by the parent-side table and
+/// surfaces as a catchable `OSError` inside the sandbox.
+#[test]
+fn mount_write_bytes_limit_is_enforced() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let code = "\
+from pathlib import Path
+try:
+    Path('/mnt/big.txt').write_text('x' * 100)
+except OSError as exc:
+    msg = str(exc)
+msg";
+    let event = session
+        .feed(
+            code,
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadWrite,
+                write_bytes_limit: Some(10),
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("disk write limit of 10 bytes exceeded".to_owned())
+    );
+    session.finish().unwrap();
+}
+
+/// A custom `MountSpec::memory_usage_limit` reaches the parent-side table and
+/// surfaces as a catchable `MemoryError` inside the sandbox.
+#[test]
+fn mount_memory_usage_limit_is_enforced() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // the retained overlay write and the transient read-back share the budget
+    let code = "\
+from pathlib import Path
+p = Path('/mnt/f.bin')
+p.write_bytes(b'a' * 600)
+msg = ''
+try:
+    p.read_bytes()
+except MemoryError as exc:
+    msg = str(exc)
+msg";
+    let mut spec = MountSpec::new("/mnt".to_owned(), dir.path().to_path_buf(), MountSpecMode::Overlay);
+    spec.memory_usage_limit = 1_000;
+    let event = session.feed(code, vec![], vec![spec], false, &mut no_print).unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("mount memory usage limit of 1 KB exceeded".to_owned())
+    );
+    session.finish().unwrap();
+}
+
+/// OS calls no mount covers still surface as `TurnEvent::OsCall`, while
+/// covered ones are serviced silently within the same feed.
+#[test]
+fn uncovered_os_calls_surface_alongside_mounted_ones() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "covered").unwrap();
+
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let code = "\
+from pathlib import Path
+covered = Path('/mnt/data.txt').read_text()
+covered + ':' + Path('/elsewhere/file.txt').read_text()";
+    let event = session
+        .feed(
+            code,
+            vec![],
+            vec![MountSpec {
+                virtual_path: "/mnt".to_owned(),
+                host_path: dir.path().to_path_buf(),
+                mode: MountSpecMode::ReadOnly,
+                write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+            }],
+            false,
+            &mut no_print,
+        )
+        .unwrap();
+    let TurnEvent::OsCall {
+        function_name, args, ..
+    } = event
+    else {
+        panic!("expected OsCall, got {event:?}");
+    };
+    assert_eq!(function_name, "Path.read_text");
+    assert_eq!(args, vec![MontyObject::Path("/elsewhere/file.txt".to_owned())]);
+    let event = session
+        .resume(
+            ResumeValue::Return(MontyObject::String("uncovered".to_owned())),
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("covered:uncovered".to_owned())
+    );
+    session.finish().unwrap();
+}
+
+/// A feed suspended mid-OsCall can be dumped and restored elsewhere; the
+/// re-supplied mounts service the resumed feed's filesystem calls.
+#[test]
+fn suspended_feed_restores_with_mounts_re_supplied() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("data.txt"), "after resume").unwrap();
+
+    let mount = || {
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode: MountSpecMode::ReadOnly,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }]
+    };
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    // suspend on an *uncovered* call, dump, and restore into a fresh worker
+    let code = "\
+from pathlib import Path
+external = Path('/external/answer.txt').read_text()
+external + ' ' + Path('/mnt/data.txt').read_text()";
+    let event = session.feed(code, vec![], mount(), false, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let state = session.dump().unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
+    let (event, _) = restored.restore(state, mount(), &mut no_print).unwrap();
+    // the suspension is re-announced with an empty payload (the wire carries
+    // no name/args on re-announcement, so it always surfaces even with mounts
+    // re-supplied); answering it lets the feed continue, and its remaining
+    // mounted read is serviced by the parent
+    assert!(matches!(&event, Some(TurnEvent::OsCall { .. })), "got {event:?}");
+    let event = restored
+        .resume(
+            ResumeValue::Return(MontyObject::String("hello".to_owned())),
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(
+        expect_complete(event),
+        MontyObject::String("hello after resume".to_owned())
+    );
+    restored.finish().unwrap();
 }
 
 /// An over-limit frame must fail as a clean, session-preserving error rather
@@ -458,24 +756,17 @@ fn child_resource_limits_do_not_kill_the_worker() {
 
 #[cfg(unix)]
 #[test]
-fn duration_backstop_kills_a_worker_blocked_in_a_syscall() {
-    // Reading a FIFO blocks the worker inside the OS, where the sandbox's
-    // periodic time check can never run — the parent-side `max_duration`
-    // backstop (remaining budget + grace) is the only thing that can end the
-    // turn. Note no `request_timeout` is configured here.
+fn special_files_in_mounts_are_rejected_without_blocking() {
+    // Mount I/O runs on the parent thread servicing the sandbox, so reading a
+    // FIFO must fail fast (a real read would block until a writer appears —
+    // with no watchdog able to rescue the parent). The sandbox sees a
+    // catchable PermissionError and the session stays usable.
     let dir = tempfile::tempdir().unwrap();
     let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
     assert!(status.success(), "mkfifo failed");
 
-    let mut config = config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
-    let pool = Pool::new(config).unwrap();
-    let mut session = pool
-        .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
-            ..ReplConfig::default()
-        })
-        .unwrap();
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let err = session
         .feed(
             "from pathlib import Path\nPath('/mnt/pipe').read_text()",
@@ -485,16 +776,17 @@ fn duration_backstop_kills_a_worker_blocked_in_a_syscall() {
                 host_path: dir.path().to_path_buf(),
                 mode: MountSpecMode::ReadOnly,
                 write_bytes_limit: None,
+                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
             &mut no_print,
         )
         .unwrap_err();
-    let PoolError::Timeout { timeout } = err else {
-        panic!("expected Timeout, got {err:?}");
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
     };
-    // the armed deadline was the remaining budget (≤100ms) plus the grace
-    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    assert_eq!(exc.exc_type().to_string(), "PermissionError");
+    session.finish().unwrap();
 }
 
 #[test]
@@ -527,20 +819,12 @@ fn suspension_time_does_not_consume_the_duration_budget() {
     session.finish().unwrap();
 }
 
-#[cfg(unix)]
 #[test]
-fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
+fn loaded_session_keeps_its_duration_budget() {
     // The `max_duration` budget and consumed execution time travel inside the
-    // dump, and the worker stamps them onto its replies — so a session
-    // restored via `restore` regains the parent-side backstop without
-    // the parent ever having seen the original `ReplConfig`.
-    let dir = tempfile::tempdir().unwrap();
-    let status = Command::new("mkfifo").arg(dir.path().join("pipe")).status().unwrap();
-    assert!(status.success(), "mkfifo failed");
-
-    let mut config = config();
-    config.duration_limit_grace = Some(Duration::from_millis(300));
-    let pool = Pool::new(config).unwrap();
+    // dump — a session restored via `restore` keeps the original limits even
+    // though the parent never saw the original `ReplConfig`.
+    let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
@@ -554,23 +838,13 @@ fn loaded_session_keeps_its_duration_budget_for_the_backstop() {
     let (event, _script_name) = restored.restore(state, vec![], &mut no_print).unwrap();
     assert!(event.is_none(), "idle dump should restore without a suspension");
     let err = restored
-        .feed(
-            "from pathlib import Path\nPath('/mnt/pipe').read_text()",
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-            }],
-            false,
-            &mut no_print,
-        )
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .unwrap_err();
-    let PoolError::Timeout { timeout } = err else {
-        panic!("expected Timeout, got {err:?}");
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
     };
-    assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
+    assert_eq!(exc.exc_type().to_string(), "TimeoutError");
+    restored.finish().unwrap();
 }
 
 // =============================================================================
@@ -742,8 +1016,7 @@ fn worker_environment_is_empty() {
 
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-    #[expect(clippy::absolute_paths)]
-    let environ = std::fs::read(format!("/proc/{}/environ", session.pid().unwrap())).unwrap();
+    let environ = fs::read(format!("/proc/{}/environ", session.pid().unwrap())).unwrap();
     assert!(
         environ.is_empty(),
         "worker environment should be empty, got: {}",

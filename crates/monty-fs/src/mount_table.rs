@@ -6,17 +6,29 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 
+use monty::{MontyObject, OsFunctionCall};
+
 use super::{
-    common::MountContext,
-    dispatch::{self, FsRequest},
-    error::MountError,
-    mount_mode::MountMode,
-    path_security::normalize_virtual_path,
+    common::MountContext, dispatch, error::MountError, mount_mode::MountMode, path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, os::OsFunctionCall};
+
+/// Default aggregate memory budget for one mount: 100 MB in decimal bytes.
+pub const DEFAULT_MEMORY_USAGE_LIMIT: u64 = 100_000_000;
+
+/// Outcome of [`MountTable::handle_os_call`].
+///
+/// The call is consumed so write payloads can be moved into overlay storage;
+/// when no mount covers it, ownership is handed back so the caller can
+/// surface the call to its fallback handler (host callback, `on_no_handler`).
+#[derive(Debug)]
+pub enum MountCallOutcome {
+    /// A mount covered the call and serviced it (successfully or not).
+    Handled(Result<MontyObject, MountError>),
+    /// Non-filesystem op or no matching mount — the call, returned unchanged.
+    NotHandled(OsFunctionCall),
+}
 
 /// A collection of mount points mapping virtual paths to host directories.
 ///
@@ -38,7 +50,8 @@ impl MountTable {
     /// Adds a mount point mapping a virtual path to a host directory.
     ///
     /// The host path is canonicalized at mount time so that all subsequent
-    /// boundary checks compare canonical-to-canonical.
+    /// boundary checks compare canonical-to-canonical. Mount memory uses
+    /// [`DEFAULT_MEMORY_USAGE_LIMIT`] unless a pre-built [`Mount`] overrides it.
     ///
     /// # Errors
     ///
@@ -58,8 +71,7 @@ impl MountTable {
 
     /// Adds a pre-built [`Mount`] to the table.
     ///
-    /// Use this when a `Mount` was constructed elsewhere (e.g. owned by a Python
-    /// `MountDir` and temporarily taken for the duration of a run).
+    /// Use this when a mount was validated before the table was assembled.
     pub fn push_mount(&mut self, mount: Mount) {
         // Keep mounts sorted longest-prefix-first so dispatch can stop at the
         // first match without re-sorting the whole table on every insertion.
@@ -69,73 +81,22 @@ impl MountTable {
         self.mounts.insert(insert_at, mount);
     }
 
-    /// Consumes this table and returns all mounts.
-    #[must_use]
-    pub fn into_mounts(self) -> Vec<Mount> {
-        self.mounts
-    }
-
-    /// Takes all mounts out of shared slots and assembles a [`MountTable`].
-    ///
-    /// Each slot is `Arc<Mutex<Option<Mount>>>`. The mount is taken via
-    /// `Option::take` so the slot becomes `None` during execution. Use
-    /// [`put_back_shared_mounts`] to restore them after the run completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if any mutex is poisoned or any mount is
-    /// already taken (concurrent use).
-    pub fn take_shared_mounts(slots: &[Arc<Mutex<Option<Mount>>>]) -> Result<Self, String> {
-        let mut taken: Vec<Mount> = Vec::with_capacity(slots.len());
-        for (i, shared) in slots.iter().enumerate() {
-            let Ok(mut guard) = shared.lock() else {
-                rollback_taken_mounts(taken, &slots[..i]);
-                return Err(format!("mount {i} lock is poisoned"));
-            };
-            let Some(mount) = guard.take() else {
-                drop(guard); // release this lock before restoring earlier slots
-                rollback_taken_mounts(taken, &slots[..i]);
-                return Err(format!("mount {i} is already in use by another run"));
-            };
-            taken.push(mount);
-        }
-        let mut table = Self::new();
-        for mount in taken {
-            table.push_mount(mount);
-        }
-        Ok(table)
-    }
-
-    /// Puts all mounts back into their shared slots after execution completes.
-    ///
-    /// Must be called after every [`take_shared_mounts`](Self::take_shared_mounts),
-    /// even on error paths, to avoid permanently losing the mounts.
-    pub fn put_back_shared_mounts(self, slots: &[Arc<Mutex<Option<Mount>>>]) {
-        for (shared, mount) in slots.iter().zip(self.into_mounts()) {
-            if let Ok(mut slot) = shared.lock() {
-                debug_assert!(slot.is_none(), "mount slot should be empty during put_back");
-                *slot = Some(mount);
-            }
-        }
-    }
-
     /// Handles an OS call using the mount table.
     ///
-    /// Returns `Some(Ok(result))` if handled, `Some(Err(..))` on error, or
-    /// `None` if the operation was not handled (non-filesystem op, or no
-    /// matching mount for the path). The caller should fall through to a
-    /// callback or use [`OsFunctionCall::on_no_handler`] for unhandled calls.
-    pub fn handle_os_call(&mut self, call: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
-        if !call.is_filesystem() {
-            return None;
-        }
-
-        let request = dispatch::fs_request_from_call(call);
-
-        match self.route_request(request) {
-            Some(Ok(index)) => Some(self.mounts[index].execute(request)),
-            Some(Err(err)) => Some(Err(err)),
-            None => None,
+    /// Consumes the call so a covered write's payload is *moved* into the
+    /// backend (overlay storage retains it without a copy). Routing happens
+    /// on a borrow first, so [`MountCallOutcome::NotHandled`] hands the call
+    /// back untouched for the caller's fallback handler (a host callback or
+    /// [`OsFunctionCall::on_no_handler`]).
+    pub fn handle_os_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
+        if call.is_filesystem() {
+            match self.route_call(&call) {
+                Some(Ok(index)) => MountCallOutcome::Handled(self.mounts[index].execute(call)),
+                Some(Err(err)) => MountCallOutcome::Handled(Err(err)),
+                None => MountCallOutcome::NotHandled(call),
+            }
+        } else {
+            MountCallOutcome::NotHandled(call)
         }
     }
 
@@ -151,18 +112,20 @@ impl MountTable {
         self.mounts.len()
     }
 
-    /// Selects the mount that should handle `request`.
+    /// Selects the mount that should handle `call`, routing on borrowed paths
+    /// so the call itself stays intact for [`MountCallOutcome::NotHandled`].
     ///
     /// Rename requests require both source and destination to resolve to the
     /// same longest-prefix mount. Other requests only route on the primary path.
-    fn route_request(&self, request: FsRequest<'_>) -> Option<Result<usize, MountError>> {
-        let src_mount_index = self.find_mount_index(request.primary_path())?;
+    fn route_call(&self, call: &OsFunctionCall) -> Option<Result<usize, MountError>> {
+        let primary_path = call.primary_path().expect("filesystem call always has a primary path");
+        let src_mount_index = self.find_mount_index(primary_path)?;
 
-        if let Some(dst_path) = request.rename_destination() {
+        if let Some(dst_path) = call.rename_destination() {
             let dst_mount_index = self.find_mount_index(dst_path)?;
             if src_mount_index != dst_mount_index {
                 return Some(Err(MountError::CrossMountRename {
-                    src: request.primary_path().to_owned(),
+                    src: primary_path.to_owned(),
                     dst: dst_path.to_owned(),
                 }));
             }
@@ -180,25 +143,11 @@ impl MountTable {
     }
 }
 
-/// Restores already-taken mounts back into their shared slots on failure.
-///
-/// Called by [`MountTable::take_shared_mounts`] when a later slot fails,
-/// so that earlier slots are not permanently emptied.
-fn rollback_taken_mounts(taken: Vec<Mount>, slots: &[Arc<Mutex<Option<Mount>>>]) {
-    for (shared, mount) in slots.iter().zip(taken) {
-        if let Ok(mut slot) = shared.lock() {
-            *slot = Some(mount);
-        }
-    }
-}
-
 /// A single mount point mapping a virtual path to a host directory.
 ///
 /// Owns the [`MountMode`] which includes overlay state for
-/// [`MountMode::OverlayMemory`] mounts. Can be stored externally (e.g. in a
-/// Python `MountDir`) and temporarily moved into a [`MountTable`] for
-/// the duration of execution via [`MountTable::push_mount`] /
-/// [`MountTable::take_shared_mounts`].
+/// [`MountMode::OverlayMemory`] mounts. It can be constructed before its table
+/// and transferred into it with [`MountTable::push_mount`].
 #[derive(Debug)]
 pub struct Mount {
     /// Virtual path prefix (absolute, normalized).
@@ -211,10 +160,13 @@ pub struct Mount {
     write_bytes_used: u64,
     /// Optional cap on cumulative bytes written. When exceeded, writes raise `OSError`.
     write_bytes_limit: Option<u64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    memory_usage_limit: u64,
 }
 
 impl Mount {
     /// Creates a new mount point, canonicalizing the host path.
+    /// Mount memory defaults to [`DEFAULT_MEMORY_USAGE_LIMIT`].
     ///
     /// # Errors
     ///
@@ -253,6 +205,7 @@ impl Mount {
             mode,
             write_bytes_used: 0,
             write_bytes_limit,
+            memory_usage_limit: DEFAULT_MEMORY_USAGE_LIMIT,
         })
     }
 
@@ -280,21 +233,45 @@ impl Mount {
         self.write_bytes_limit
     }
 
+    /// Returns the aggregate mount memory budget.
+    #[must_use]
+    pub fn memory_usage_limit(&self) -> u64 {
+        self.memory_usage_limit
+    }
+
+    /// Overrides the aggregate mount memory budget.
+    #[must_use]
+    pub fn with_memory_usage_limit(mut self, limit: u64) -> Self {
+        self.memory_usage_limit = limit;
+        self
+    }
+
+    /// Returns memory currently retained by this mount's overlay.
+    #[must_use]
+    pub fn memory_usage(&self) -> u64 {
+        match &self.mode {
+            MountMode::OverlayMemory(state) => state.memory_usage(),
+            MountMode::ReadWrite | MountMode::ReadOnly => 0,
+        }
+    }
+
     /// Returns the cumulative number of bytes written through this mount.
     #[must_use]
     pub fn write_bytes_used(&self) -> u64 {
         self.write_bytes_used
     }
 
-    /// Executes a parsed filesystem request against this mount.
-    fn execute(&mut self, request: FsRequest<'_>) -> Result<MontyObject, MountError> {
+    /// Executes a filesystem call against this mount, consuming it so write
+    /// payloads move into the backend.
+    fn execute(&mut self, call: OsFunctionCall) -> Result<MontyObject, MountError> {
         let mut ctx = MountContext {
             mount_virtual: &self.virtual_path,
             mount_host: &self.host_path,
             write_bytes_used: &mut self.write_bytes_used,
             write_bytes_limit: self.write_bytes_limit,
+            memory_usage_limit: self.memory_usage_limit,
         };
-        dispatch::execute(request, &mut ctx, &mut self.mode)
+        dispatch::execute(dispatch::fs_request_from_call(call), &mut ctx, &mut self.mode)
     }
 }
 

@@ -13,10 +13,11 @@
 //!
 //! # Adding a new OS call
 //!
-//! Add a variant carrying a struct (reuse [`PathOnlyArgs`] etc. if the shape
-//! matches), derive `ToArgs` on the struct, update [`OsFunctionCall::name`]
-//! and the other inherent methods, then wire the new variant into the fs/
-//! dispatcher and any host backends.
+//! Add a variant carrying a struct (reuse [`PathStringDataArgs`] etc. if the
+//! shape matches), derive `ToArgs` on the struct, update
+//! [`OsFunctionCall::name`] and the other inherent methods, add a matching
+//! typed arm to `monty.proto`'s `OsCall` and `monty-proto`'s conversions,
+//! then wire the new variant into the fs/ dispatcher and any host backends.
 
 use std::{fmt, ops::Deref};
 
@@ -27,6 +28,7 @@ use crate::{
     exception_private::RunResult,
     heap::{ContainsHeap, DropWithContext, Heap, HeapData},
     intern::{Interns, StaticStrings},
+    object::MontyTimeZone,
     resource::ResourceTracker,
     types::{file::FileMode, str::StringRepr},
     value::Value,
@@ -44,38 +46,52 @@ use crate::{
 /// via [`OsFunctionCall::to_args`].
 ///
 /// See the module docs for how to add a new variant.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, strum::IntoStaticStr)]
 pub enum OsFunctionCall {
     // ---- FS read / check (single path) ------------------------------------
     /// Check if a path exists.
+    #[strum(serialize = "Path.exists")]
     Exists(MontyPath),
     /// Check if path is a regular file.
+    #[strum(serialize = "Path.is_file")]
     IsFile(MontyPath),
     /// Check if path is a directory.
+    #[strum(serialize = "Path.is_dir")]
     IsDir(MontyPath),
     /// Check if path is a symbolic link.
+    #[strum(serialize = "Path.is_symlink")]
     IsSymlink(MontyPath),
     /// Read file contents as text.
+    #[strum(serialize = "Path.read_text")]
     ReadText(MontyPath),
     /// Read file contents as bytes.
+    #[strum(serialize = "Path.read_bytes")]
     ReadBytes(MontyPath),
     /// `stat()` — return a stat result tuple.
+    #[strum(serialize = "Path.stat")]
     Stat(MontyPath),
     /// List directory contents.
+    #[strum(serialize = "Path.iterdir")]
     Iterdir(MontyPath),
     /// Resolve symlinks and return absolute path.
+    #[strum(serialize = "Path.resolve")]
     Resolve(MontyPath),
     /// Absolute path without symlink resolution.
+    #[strum(serialize = "Path.absolute")]
     Absolute(MontyPath),
 
     // ---- FS write (path + data) -------------------------------------------
     /// Write text to file (truncating).
+    #[strum(serialize = "Path.write_text")]
     WriteText(PathStringDataArgs),
     /// Append text to file.
+    #[strum(serialize = "Path.append_text")]
     AppendText(PathStringDataArgs),
     /// Write bytes to file (truncating).
+    #[strum(serialize = "Path.write_bytes")]
     WriteBytes(PathBytesDataArgs),
     /// Append bytes to file.
+    #[strum(serialize = "Path.append_bytes")]
     AppendBytes(PathBytesDataArgs),
 
     // ---- FS mutate (custom shapes) ----------------------------------------
@@ -83,67 +99,53 @@ pub enum OsFunctionCall {
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
     /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
     /// handle across calls.
+    #[strum(serialize = "open")]
     Open(OpenCallArgs),
     /// Create directory (`parents`/`exist_ok` kwargs).
+    #[strum(serialize = "Path.mkdir")]
     Mkdir(MkdirCallArgs),
     /// Remove file.
+    #[strum(serialize = "Path.unlink")]
     Unlink(MontyPath),
     /// Remove directory.
+    #[strum(serialize = "Path.rmdir")]
     Rmdir(MontyPath),
     /// Rename / move (src → dst).
+    #[strum(serialize = "Path.rename")]
     Rename(RenameCallArgs),
 
     // ---- Non-FS -----------------------------------------------------------
     /// Get an environment variable value.
+    #[strum(serialize = "os.getenv")]
     Getenv(GetenvArgs),
     /// Get the entire environment as a dictionary.
+    #[strum(serialize = "os.environ")]
     GetEnviron,
     /// Get today's date from the host system (for `date.today()`).
+    #[strum(serialize = "date.today")]
     DateToday,
     /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
-    /// Carries the timezone argument (`MontyObject::None` for naive).
-    DateTimeNow(MontyObject),
+    /// Carries the timezone argument, `None` for a naive result.
+    #[strum(serialize = "datetime.now")]
+    DateTimeNow(Option<MontyTimeZone>),
 
     /// Placeholder left behind by [`crate::OsCall::take_function_call`] and
     /// [`crate::ReplOsCall::take_function_call`] after the real call has been
     /// moved out for host dispatch. Never produced by the VM and never
-    /// dispatched — it just keeps the field droppable.
+    /// dispatched — it just keeps the field droppable. Disabled for strum, so
+    /// [`OsFunctionCall::name`] panics on it.
+    #[strum(disabled)]
     Used,
 }
 
 impl OsFunctionCall {
     /// Stable string name for this OS function — surfaces in
-    /// [`Self::on_no_handler`] errors and serialised snapshots. Kept
-    /// byte-identical to the legacy `OsFunction` strum strings for snapshot
-    /// compatibility.
+    /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
+    /// snapshots. The strum `serialize` string on each variant. Panics on
+    /// [`Self::Used`], which is never surfaced.
     #[must_use]
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::Exists(_) => "Path.exists",
-            Self::IsFile(_) => "Path.is_file",
-            Self::IsDir(_) => "Path.is_dir",
-            Self::IsSymlink(_) => "Path.is_symlink",
-            Self::Open(_) => "Open",
-            Self::ReadText(_) => "Path.read_text",
-            Self::ReadBytes(_) => "Path.read_bytes",
-            Self::WriteText(_) => "Path.write_text",
-            Self::WriteBytes(_) => "Path.write_bytes",
-            Self::AppendText(_) => "Path.append_text",
-            Self::AppendBytes(_) => "Path.append_bytes",
-            Self::Mkdir(_) => "Path.mkdir",
-            Self::Unlink(_) => "Path.unlink",
-            Self::Rmdir(_) => "Path.rmdir",
-            Self::Iterdir(_) => "Path.iterdir",
-            Self::Stat(_) => "Path.stat",
-            Self::Rename(_) => "Path.rename",
-            Self::Resolve(_) => "Path.resolve",
-            Self::Absolute(_) => "Path.absolute",
-            Self::Getenv(_) => "os.getenv",
-            Self::GetEnviron => "os.environ",
-            Self::DateToday => "date.today",
-            Self::DateTimeNow(_) => "datetime.now",
-            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
-        }
+        self.into()
     }
 
     /// Projects this call's args into `(positional, keyword)` `MontyObject`
@@ -173,19 +175,41 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz], vec![]),
+            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
             Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
         }
     }
 
-    /// Whether this call can be handled by a [`MountTable`](crate::fs::MountTable).
+    /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
     /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
     /// must fall through to the host callback.
+    ///
+    /// Deliberately an allowlist: `Used` (and any future non-FS variant) must
+    /// return `false`, because `monty-fs` panics if a call without a
+    /// [`Self::primary_path`] reaches its filesystem dispatch.
     #[must_use]
     pub fn is_filesystem(&self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_)
+            Self::Exists(_)
+                | Self::IsFile(_)
+                | Self::IsDir(_)
+                | Self::IsSymlink(_)
+                | Self::ReadText(_)
+                | Self::ReadBytes(_)
+                | Self::WriteText(_)
+                | Self::WriteBytes(_)
+                | Self::AppendText(_)
+                | Self::AppendBytes(_)
+                | Self::Stat(_)
+                | Self::Iterdir(_)
+                | Self::Resolve(_)
+                | Self::Absolute(_)
+                | Self::Open(_)
+                | Self::Mkdir(_)
+                | Self::Unlink(_)
+                | Self::Rmdir(_)
+                | Self::Rename(_)
         )
     }
 
@@ -246,6 +270,17 @@ impl OsFunctionCall {
         }
     }
 
+    /// The rename destination path, or `None` for every other variant — the
+    /// second routing key a mount table needs (both rename endpoints must
+    /// resolve to the same mount).
+    #[must_use]
+    pub fn rename_destination(&self) -> Option<&str> {
+        match self {
+            Self::Rename(a) => Some(a.dst.as_str()),
+            _ => None,
+        }
+    }
+
     /// Exception to raise when no handler accepted this call: `PermissionError`
     /// for FS ops (with the path), `RuntimeError` for non-FS ops.
     #[must_use]
@@ -270,7 +305,6 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
-
 impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
     // Owned args (String/Vec<u8>/bool/MontyPath/MontyObject) hold no live
     // heap references, so a plain drop is correct.

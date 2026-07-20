@@ -19,7 +19,7 @@ use std::mem;
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
@@ -87,25 +87,31 @@ impl MontyIter {
             }
         }
 
-        if let Some(iter_value) = IterValue::new(&value, vm) {
-            // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
-            // to keep the heap object alive during iteration. Drop it immediately to avoid
-            // GC issues (the Range isn't in any namespace slot, so GC wouldn't see it).
-            // Same for IterStr which copies the string content.
-            if matches!(iter_value, IterValue::Range { .. } | IterValue::IterStr { .. }) {
-                value.drop_with(vm);
-                value = Value::None;
+        match IterValue::new(&value, vm) {
+            Ok(Some(iter_value)) => {
+                // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
+                // to keep the heap object alive during iteration. Drop it immediately to avoid
+                // GC issues (the Range isn't in any namespace slot, so GC wouldn't see it).
+                // Same for IterStr which copies the string content.
+                if matches!(iter_value, IterValue::Range { .. } | IterValue::IterStr { .. }) {
+                    value.drop_with(vm);
+                    value = Value::None;
+                }
+                Ok(Self {
+                    index: 0,
+                    iter_value,
+                    value,
+                })
             }
-            Ok(Self {
-                index: 0,
-                iter_value,
-                value,
-            })
-        } else {
-            let err = ExcType::type_error_not_iterable(&value.py_type_name(vm));
-            value.drop_with(vm);
-
-            Err(err)
+            Ok(None) => {
+                let err = ExcType::type_error_not_iterable(&value.py_type_name(vm));
+                value.drop_with(vm);
+                Err(err)
+            }
+            Err(err) => {
+                value.drop_with(vm);
+                Err(err)
+            }
         }
     }
 
@@ -133,7 +139,7 @@ impl MontyIter {
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         if let IterValue::Opaque { heap_id } = &self.iter_value {
-            return vm.heap.read(*heap_id).py_next(vm);
+            return advance_opaque(*heap_id, vm);
         }
 
         // Inline iterators own the timeout check; opaque iterators delegate it
@@ -202,9 +208,16 @@ impl MontyIter {
         let len = match &self.iter_value {
             IterValue::Range { len, .. } | IterValue::IterStr { len, .. } | IterValue::InternBytes { len, .. } => *len,
             IterValue::HeapRef { len, .. } => *len,
-            IterValue::Opaque { heap_id } => match heap.get(*heap_id) {
-                HeapData::ListIterator(iter) => iter.size_hint(heap),
-                _ => 0,
+            IterValue::Opaque { heap_id } => match opaque_target(*heap_id, heap) {
+                Ok(OpaqueTarget::Iter(heap_id)) => match heap.get(heap_id) {
+                    HeapData::Iter(iter) => iter.size_hint(heap),
+                    _ => unreachable!("opaque_target validated the iterator type"),
+                },
+                Ok(OpaqueTarget::ListIterator(heap_id)) => match heap.get(heap_id) {
+                    HeapData::ListIterator(iter) => iter.size_hint(heap),
+                    _ => unreachable!("opaque_target validated the iterator type"),
+                },
+                Err(_) => 0,
             },
         };
         len.saturating_sub(self.index)
@@ -266,8 +279,10 @@ impl MontyIter {
     pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<T> {
         let mut guard = DropGuard::new(self, vm);
         let (this, vm) = guard.as_parts_mut();
-        if matches!(this.iter_value, IterValue::Opaque { .. }) {
-            let mut iter = this.value.read(vm);
+        if let IterValue::Opaque { heap_id } = &this.iter_value {
+            let target = opaque_target(*heap_id, vm.heap).map_err(OpaqueError::into_exception)?;
+            let target_value = Value::Ref(target.heap_id());
+            let mut iter = target_value.read(vm);
             HeapedMontyIter {
                 iter: &mut iter,
                 vm,
@@ -376,7 +391,7 @@ impl<'h> HeapRead<'h, MontyIter> {
     /// Returns `Err` for dict/set size changes or allocation failures.
     pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         if let IterValue::Opaque { heap_id } = &self.get(vm.heap).iter_value {
-            return vm.heap.read(*heap_id).py_next(vm);
+            return advance_opaque(*heap_id, vm);
         }
 
         vm.heap.check_time()?;
@@ -436,6 +451,132 @@ impl<'h> HeapRead<'h, MontyIter> {
                 Ok(Some(item))
             }
             IterValue::Opaque { .. } => unreachable!("opaque iterators return before inline dispatch"),
+        }
+    }
+}
+
+/// Collects every remaining item of an iterable into a `Vec`.
+///
+/// For the sites that need all items at once (sequence unpacking, `*` literal
+/// unpack). Clones `value`, so callers holding a borrowed value — e.g. behind
+/// `defer_drop!` — can use it without giving up ownership.
+pub fn collect_iterable(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+    let cloned = value.clone_with_heap(vm.heap);
+    MontyIter::new(cloned, vm)?.collect(vm)
+}
+
+/// Pulls at most `limit` items from an iterable, stopping early.
+///
+/// Sequence unpacking only needs to know whether there is one item too many, and
+/// CPython stops consuming there. Draining instead would over-consume a shared
+/// iterator and change the error message.
+pub fn collect_iterable_bounded(
+    value: &Value,
+    limit: usize,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<Vec<Value>> {
+    let cloned = value.clone_with_heap(vm.heap);
+    let iter = MontyIter::new(cloned, vm)?;
+    let mut guard = DropGuard::new(iter, vm);
+    let (iter, vm) = guard.as_parts_mut();
+    let mut items = Vec::new();
+    while items.len() < limit {
+        match iter.for_next(vm) {
+            Ok(Some(value)) => items.push(value),
+            Ok(None) => break,
+            Err(e) => {
+                for item in items {
+                    item.drop_with(vm);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(items)
+}
+
+/// The most opaque iterator links [`flatten_opaque`] follows before rejecting a chain.
+const MAX_OPAQUE_DEPTH: usize = 1000;
+
+/// A heap iterator which can be driven without further delegation.
+#[derive(Clone, Copy)]
+enum OpaqueTarget {
+    /// A terminal general-purpose iterator.
+    Iter(HeapId),
+    /// A list iterator with independently retained state.
+    ListIterator(HeapId),
+}
+
+impl OpaqueTarget {
+    /// Returns the heap id of the validated terminal iterator.
+    fn heap_id(self) -> HeapId {
+        match self {
+            Self::Iter(heap_id) | Self::ListIterator(heap_id) => heap_id,
+        }
+    }
+}
+
+/// Why an opaque iterator could not be resolved safely.
+enum OpaqueError {
+    /// The chain was nested, cyclic, or unreasonably deep.
+    TooDeep,
+    /// A link pointed at a heap entry that is not an iterator.
+    NotAnIterator,
+}
+
+impl OpaqueError {
+    /// Converts malformed snapshot state into a catchable runtime error.
+    fn into_exception(self) -> RunError {
+        match self {
+            Self::TooDeep => ExcType::runtime_error_iter_delegation_too_deep(),
+            Self::NotAnIterator => ExcType::runtime_error_iter_delegation_invalid(),
+        }
+    }
+}
+
+/// Flattens opaque iterator chains while constructing a stack iterator.
+///
+/// The walk is iterative and bounded because restored snapshot data is untrusted.
+/// Its result is always safe to dispatch without another opaque hop.
+fn flatten_opaque(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<HeapId, OpaqueError> {
+    let mut current = start;
+    for _ in 0..MAX_OPAQUE_DEPTH {
+        match heap.get(current) {
+            HeapData::Iter(inner) => match inner.iter_value {
+                IterValue::Opaque { heap_id } => current = heap_id,
+                _ => return Ok(current),
+            },
+            HeapData::ListIterator(_) => return Ok(current),
+            _ => return Err(OpaqueError::NotAnIterator),
+        }
+    }
+    Err(OpaqueError::TooDeep)
+}
+
+/// Resolves a direct opaque target, rejecting nested links from malformed snapshots.
+fn opaque_target(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<OpaqueTarget, OpaqueError> {
+    match heap.get(heap_id) {
+        HeapData::Iter(inner) if matches!(inner.iter_value, IterValue::Opaque { .. }) => Err(OpaqueError::TooDeep),
+        HeapData::Iter(_) => Ok(OpaqueTarget::Iter(heap_id)),
+        HeapData::ListIterator(_) => Ok(OpaqueTarget::ListIterator(heap_id)),
+        _ => Err(OpaqueError::NotAnIterator),
+    }
+}
+
+/// Advances a direct opaque target without recursive iterator dispatch.
+fn advance_opaque(heap_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    match opaque_target(heap_id, vm.heap).map_err(OpaqueError::into_exception)? {
+        OpaqueTarget::Iter(heap_id) => {
+            let HeapReadOutput::Iter(mut iter) = vm.heap.read(heap_id) else {
+                unreachable!("opaque_target validated the iterator type")
+            };
+            iter.advance(vm)
+        }
+        OpaqueTarget::ListIterator(heap_id) => {
+            let HeapReadOutput::ListIterator(mut iter) = vm.heap.read(heap_id) else {
+                unreachable!("opaque_target validated the iterator type")
+            };
+            iter.py_next(vm)
         }
     }
 }
@@ -599,12 +740,12 @@ enum IterValue {
 }
 
 impl IterValue {
-    fn new(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Option<Self> {
-        match &value {
-            Value::InternString(string_id) => Some(Self::from_str(vm.interns.get_str(*string_id))),
-            Value::InternBytes(bytes_id) => Some(Self::from_intern_bytes(*bytes_id, vm.interns)),
+    fn new(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+        match value {
+            Value::InternString(string_id) => Ok(Some(Self::from_str(vm.interns.get_str(*string_id)))),
+            Value::InternBytes(bytes_id) => Ok(Some(Self::from_intern_bytes(*bytes_id, vm.interns))),
             Value::Ref(heap_id) => Self::from_heap_data(*heap_id, vm.heap),
-            _ => None,
+            _ => Ok(None),
         }
     }
 
@@ -639,8 +780,8 @@ impl IterValue {
     }
 
     /// Creates an iterator value from heap data.
-    fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<Self> {
-        match heap.get(heap_id) {
+    fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> RunResult<Option<Self>> {
+        let iter_value = match heap.get(heap_id) {
             // Tuple/NamedTuple/Bytes/FrozenSet: captured len, no mutation check
             HeapData::Tuple(tuple) => Some(Self::HeapRef {
                 heap_id,
@@ -692,12 +833,13 @@ impl IterValue {
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
-            // TODO might be nice to avoid allocating a second iterator object on this branch
-            HeapData::Iter(_) => Some(Self::Opaque { heap_id }),
-            HeapData::ListIterator(_) => Some(Self::Opaque { heap_id }),
+            HeapData::Iter(_) | HeapData::ListIterator(_) => Some(Self::Opaque {
+                heap_id: flatten_opaque(heap_id, heap).map_err(OpaqueError::into_exception)?,
+            }),
             // other types are not iterable
             _ => None,
-        }
+        };
+        Ok(iter_value)
     }
 }
 

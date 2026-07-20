@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use monty::{
     CompileOptions, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
-    fs::{MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
@@ -524,8 +524,8 @@ fn execute_repl_with_mounts<T: ResourceTracker>(
     loop {
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
-            ReplProgress::OsCall(call) => {
-                let result = handle_os_call(&call.function_call, mount_table);
+            ReplProgress::OsCall(mut call) => {
+                let result = handle_os_call(call.take_function_call(), mount_table);
                 match call.resume(result, PrintWriter::Stdout) {
                     Ok(p) => progress = p,
                     Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -589,8 +589,8 @@ fn run_until_complete(
                     .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
-            RunProgress::OsCall(call) => {
-                let result = handle_os_call(&call.function_call, mount_table);
+            RunProgress::OsCall(mut call) => {
+                let result = handle_os_call(call.take_function_call(), mount_table);
                 progress = call
                     .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
@@ -601,17 +601,18 @@ fn run_until_complete(
 
 /// Handles a filesystem `OsCall` using the mount table if available.
 ///
-/// Returns the operation result as an `ExtFunctionResult` — either a successful
-/// `MontyObject` or an exception for errors / unsupported operations.
-fn handle_os_call(call: &monty::OsFunctionCall, mount_table: &mut Option<MountTable>) -> monty::ExtFunctionResult {
-    if let Some(mounts) = mount_table.as_mut() {
-        match mounts.handle_os_call(call) {
-            Some(Ok(obj)) => obj.into(),
-            Some(Err(err)) => err.into_exception().into(),
-            None => call.on_no_handler().into(),
-        }
-    } else {
-        call.on_no_handler().into()
+/// Consumes the call (moving write payloads into the mount backend) and
+/// returns the operation result as an `ExtFunctionResult` — either a
+/// successful `MontyObject` or an exception for errors / unsupported
+/// operations.
+fn handle_os_call(call: monty::OsFunctionCall, mount_table: &mut Option<MountTable>) -> monty::ExtFunctionResult {
+    match mount_table.as_mut() {
+        Some(mounts) => match mounts.handle_os_call(call) {
+            MountCallOutcome::Handled(Ok(obj)) => obj.into(),
+            MountCallOutcome::Handled(Err(err)) => err.into_exception().into(),
+            MountCallOutcome::NotHandled(call) => call.on_no_handler().into(),
+        },
+        None => call.on_no_handler().into(),
     }
 }
 

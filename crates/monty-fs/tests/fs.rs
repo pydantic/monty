@@ -8,17 +8,13 @@
 use std::os::unix::fs::symlink as unix_symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as win_symlink_file;
-use std::{
-    fs,
-    path::Path,
-    sync::{Arc, Mutex},
-};
+use std::{fs, path::Path};
 
 use monty::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
-    fs::{Mount, MountError, MountMode, MountTable, OverlayState},
 };
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -60,9 +56,14 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
     mt
 }
 
-/// Shorthand: dispatch an `OsFunctionCall` through the mount table.
+/// Shorthand: dispatch an `OsFunctionCall` through the mount table, adapting
+/// the owning `handle_os_call` API back to the `Option` shape assertions use.
+/// Clones the call — fine here, test payloads are tiny.
 fn call(mt: &mut MountTable, c: &OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(c)
+    match mt.handle_os_call(c.clone()) {
+        MountCallOutcome::Handled(result) => Some(result),
+        MountCallOutcome::NotHandled(_) => None,
+    }
 }
 
 /// Shorthand: call and unwrap both the Option and Result.
@@ -1558,15 +1559,18 @@ fn mount_sorting_specific_wins() {
 }
 
 #[test]
-fn non_filesystem_ops_return_none() {
+fn non_filesystem_ops_not_handled() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let result = mt.handle_os_call(&OsFunctionCall::Getenv(monty::GetenvArgs {
+    let result = mt.handle_os_call(OsFunctionCall::Getenv(monty::GetenvArgs {
         key: "PATH".to_owned(),
         default: MontyObject::None,
     }));
-    assert!(result.is_none(), "non-filesystem ops should return None");
+    assert!(
+        matches!(result, MountCallOutcome::NotHandled(OsFunctionCall::Getenv(_))),
+        "non-filesystem ops should hand the call back"
+    );
 }
 
 #[test]
@@ -1640,6 +1644,276 @@ fn windows_style_write_paths_do_not_touch_host_mount() {
         !dir.path().join("created.txt").exists(),
         "the host mount should not be modified for an unhandled windows-style path"
     );
+}
+
+// =============================================================================
+// Mount memory usage limit
+// =============================================================================
+
+/// Creates a mount table with a small memory budget so tests can hit the
+/// limit without large allocations.
+fn mount_at_mnt_with_memory_limit(tmpdir: &TempDir, mode: MountMode, limit: u64) -> MountTable {
+    let mount = Mount::new("/mnt", tmpdir.path(), mode, None)
+        .unwrap()
+        .with_memory_usage_limit(limit);
+    let mut table = MountTable::new();
+    table.push_mount(mount);
+    table
+}
+
+#[test]
+fn mount_memory_usage_limit_defaults_to_100_mb() {
+    let dir = create_test_dir();
+    let mount = Mount::new("/mnt", dir.path(), MountMode::ReadOnly, None).unwrap();
+
+    assert_eq!(DEFAULT_MEMORY_USAGE_LIMIT, 100_000_000);
+    assert_eq!(mount.memory_usage_limit(), DEFAULT_MEMORY_USAGE_LIMIT);
+    assert_eq!(mount.memory_usage(), 0);
+}
+
+#[test]
+fn direct_reads_accept_exact_limit_and_reject_one_byte_over() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("exact.txt"), b"12345").unwrap();
+    fs::write(dir.path().join("large.txt"), b"123456").unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::ReadOnly, 5);
+
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/exact.txt".into())),
+        MontyObject::Bytes(b"12345".to_vec())
+    );
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 5 bytes exceeded",
+    );
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadText("/mnt/large.txt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 5 bytes exceeded",
+    );
+}
+
+#[test]
+fn directory_results_obey_mount_memory_budget() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("one"), b"").unwrap();
+    fs::write(dir.path().join("two"), b"").unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::ReadOnly, 100);
+
+    let exc = call_err(&mut mt, &OsFunctionCall::Iterdir("/mnt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 100 bytes exceeded",
+    );
+}
+
+#[test]
+fn overlay_retained_data_and_reads_share_one_memory_budget() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("large.bin"), vec![b'x'; 800]).unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call(&mut mt, &write_bytes("/mnt/overlay.bin", vec![b'a'; 500]))
+        .unwrap()
+        .unwrap();
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/overlay.bin".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+
+    let exc = call_err(&mut mt, &append_bytes("/mnt/large.bin", b"7".to_vec()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+    assert_eq!(fs::read(dir.path().join("large.bin")).unwrap(), vec![b'x'; 800]);
+}
+
+#[test]
+fn separate_overlay_files_share_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/one.bin", vec![b'a'; 300]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/two.bin", vec![b'b'; 300]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+}
+
+/// Replacing an overlay file must release the old entry's usage first: a
+/// same-path replacement larger than the original fits, while a *new* file of
+/// the replacement's size does not.
+#[test]
+fn overwriting_an_overlay_file_reuses_its_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 2_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/f.bin", vec![b'a'; 1_200]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/g.bin", vec![b'b'; 1_200]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 2 KB exceeded");
+
+    // the replacement releases the 1200 retained bytes, so 1400 fits...
+    // (write_text so the text path's replacement accounting is covered too)
+    call_ok(&mut mt, &write_text("/mnt/f.bin", "a".repeat(1_400)));
+    // ...while a second 1400-byte file alongside it does not
+    let exc = call_err(&mut mt, &write_bytes("/mnt/h.bin", vec![b'c'; 1_400]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 2 KB exceeded");
+}
+
+/// In-place appends to an existing overlay file are charged against the
+/// budget, and a rejected append leaves the content untouched.
+#[test]
+fn in_place_append_obeys_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 3_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/a.bin", vec![b'a'; 400]));
+    call_ok(&mut mt, &append_bytes("/mnt/a.bin", vec![b'b'; 200]));
+    let mut expected = vec![b'a'; 400];
+    expected.extend(vec![b'b'; 200]);
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
+        MontyObject::Bytes(expected.clone())
+    );
+
+    let exc = call_err(&mut mt, &append_bytes("/mnt/a.bin", vec![b'c'; 3_000]));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 3 KB exceeded");
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/a.bin".into())),
+        MontyObject::Bytes(expected)
+    );
+}
+
+/// Deleting an overlay file swaps it for a small tombstone, freeing budget
+/// for later writes.
+#[test]
+fn deleting_an_overlay_file_frees_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_600);
+
+    call_ok(&mut mt, &write_bytes("/mnt/big.bin", vec![b'a'; 600]));
+    let exc = call_err(&mut mt, &write_bytes("/mnt/b2.bin", vec![b'b'; 600]));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 1.6 KB exceeded",
+    );
+
+    call_ok(&mut mt, &OsFunctionCall::Unlink("/mnt/big.bin".into()));
+    call_ok(&mut mt, &write_bytes("/mnt/b2.bin", vec![b'b'; 600]));
+}
+
+/// Deleting a *real* mounted file records an in-memory tombstone, so even
+/// `unlink` raises `MemoryError` once the budget is exhausted.
+#[test]
+fn tombstones_are_charged_to_the_memory_budget() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    call_ok(&mut mt, &write_bytes("/mnt/x.bin", vec![b'a'; 600]));
+    let exc = call_err(&mut mt, &OsFunctionCall::Unlink("/mnt/hello.txt".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+}
+
+/// Overlay `iterdir` results are transient allocations charged against the
+/// budget remaining after the retained entries themselves.
+#[test]
+fn overlay_iterdir_obeys_memory_budget() {
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 4_500);
+
+    for i in 0..10 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/f{i}"), vec![b'x']));
+    }
+    let exc = call_err(&mut mt, &OsFunctionCall::Iterdir("/mnt".into()));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 4.5 KB exceeded",
+    );
+}
+
+/// A fall-through read of a real mounted file only gets the budget left over
+/// after retained overlay data.
+#[test]
+fn fall_through_reads_share_budget_with_retained_data() {
+    let dir = create_test_dir();
+    fs::write(dir.path().join("large.bin"), vec![b'x'; 800]).unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_000);
+
+    // with nothing retained the 800-byte host file fits...
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into())),
+        MontyObject::Bytes(vec![b'x'; 800])
+    );
+    // ...but after retaining overlay data it no longer does
+    call_ok(&mut mt, &write_bytes("/mnt/keep.bin", vec![b'k'; 100]));
+    let exc = call_err(&mut mt, &OsFunctionCall::ReadBytes("/mnt/large.bin".into()));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 1 KB exceeded");
+}
+
+/// Renaming an overlay directory tombstones every source entry, and the whole
+/// batch is checked atomically: it fits within a loose budget and is rejected
+/// under a tight one before any entry moves.
+#[test]
+fn overlay_directory_rename_obeys_memory_budget() {
+    // loose budget: the rename succeeds and the tree is intact at the new path
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 10_000);
+    call_ok(&mut mt, &mkdir("/mnt/d", false, false));
+    for i in 0..8 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/d/f{i}"), vec![b'x']));
+    }
+    call_ok(&mut mt, &rename("/mnt/d", "/mnt/e"));
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/d".into())),
+        MontyObject::Bool(false)
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/e/f0".into())),
+        MontyObject::Bytes(vec![b'x'])
+    );
+
+    // tight budget: the added tombstones and destination entries do not fit,
+    // and the atomic preflight leaves the source untouched
+    let dir = TempDir::new().unwrap();
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 5_000);
+    call_ok(&mut mt, &mkdir("/mnt/d", false, false));
+    for i in 0..8 {
+        call_ok(&mut mt, &write_bytes(&format!("/mnt/d/f{i}"), vec![b'x']));
+    }
+    let exc = call_err(&mut mt, &rename("/mnt/d", "/mnt/e"));
+    assert_exc(&exc, ExcType::MemoryError, "mount memory usage limit of 5 KB exceeded");
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::ReadBytes("/mnt/d/f0".into())),
+        MontyObject::Bytes(vec![b'x'])
+    );
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/e".into())),
+        MontyObject::Bool(false)
+    );
+}
+
+/// Renaming a real mounted directory captures its descendants into the
+/// overlay; that capture is bounded by the memory budget.
+#[test]
+fn real_directory_rename_capture_obeys_memory_budget() {
+    let dir = create_test_dir();
+    // 1500 is below the fixed per-entry capture charge for subdir's three
+    // descendants alone, so the capture must be rejected regardless of
+    // host path lengths
+    let mut mt = mount_at_mnt_with_memory_limit(&dir, MountMode::OverlayMemory(OverlayState::new()), 1_500);
+
+    let exc = call_err(&mut mt, &rename("/mnt/subdir", "/mnt/moved"));
+    assert_exc(
+        &exc,
+        ExcType::MemoryError,
+        "mount memory usage limit of 1.5 KB exceeded",
+    );
+    // the source is untouched in the overlay and on the host
+    assert_eq!(
+        call_ok(&mut mt, &OsFunctionCall::Exists("/mnt/subdir/nested.txt".into())),
+        MontyObject::Bool(true)
+    );
+    assert!(dir.path().join("subdir/nested.txt").is_file());
 }
 
 // =============================================================================
@@ -2119,87 +2393,4 @@ fn on_no_handler_includes_errno() {
     let exc = OsFunctionCall::Exists("/outside".into()).on_no_handler();
     assert_eq!(exc.exc_type(), ExcType::PermissionError);
     assert_eq!(exc.message().unwrap_or(""), "Permission denied: '/outside'");
-}
-
-// =============================================================================
-// take_shared_mounts rollback
-// =============================================================================
-
-/// Helper: wraps a mount in a shared slot.
-fn shared_slot(tmpdir: &TempDir, vpath: &str) -> Arc<Mutex<Option<Mount>>> {
-    let mount = Mount::new(vpath, tmpdir.path(), MountMode::ReadOnly, None).unwrap();
-    Arc::new(Mutex::new(Some(mount)))
-}
-
-/// Happy path: take and put back two mounts.
-#[test]
-fn take_shared_mounts_success() {
-    let dir1 = create_test_dir();
-    let dir2 = create_test_dir();
-    let slot1 = shared_slot(&dir1, "/a");
-    let slot2 = shared_slot(&dir2, "/b");
-    let slots = [Arc::clone(&slot1), Arc::clone(&slot2)];
-
-    let table = MountTable::take_shared_mounts(&slots).unwrap();
-    assert_eq!(table.len(), 2);
-    // Slots should be empty while table holds the mounts.
-    assert!(slot1.lock().unwrap().is_none());
-    assert!(slot2.lock().unwrap().is_none());
-
-    table.put_back_shared_mounts(&slots);
-    assert!(slot1.lock().unwrap().is_some());
-    assert!(slot2.lock().unwrap().is_some());
-}
-
-/// When a slot is already `None`, earlier successfully-taken mounts are restored.
-#[test]
-fn take_shared_mounts_rollback_on_none() {
-    let dir1 = create_test_dir();
-    let slot1 = shared_slot(&dir1, "/a");
-    let slot2: Arc<Mutex<Option<Mount>>> = Arc::new(Mutex::new(None)); // already empty
-    let slots = [Arc::clone(&slot1), Arc::clone(&slot2)];
-
-    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
-    assert_eq!(err, "mount 1 is already in use by another run");
-
-    // Slot 1 should be restored, not lost.
-    assert!(
-        slot1.lock().unwrap().is_some(),
-        "slot 1 must be restored after rollback"
-    );
-}
-
-/// Passing the same slot twice: second take sees `None` and rolls back the first.
-#[test]
-fn take_shared_mounts_duplicate_slot_rollback() {
-    let dir = create_test_dir();
-    let slot = shared_slot(&dir, "/mnt");
-    let slots = [Arc::clone(&slot), Arc::clone(&slot)];
-
-    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
-    assert_eq!(err, "mount 1 is already in use by another run");
-
-    // The mount should be back in the slot, not permanently lost.
-    assert!(
-        slot.lock().unwrap().is_some(),
-        "mount must be restored after duplicate-slot failure"
-    );
-}
-
-/// Rollback with three slots where the third fails.
-#[test]
-fn take_shared_mounts_rollback_restores_all_prior() {
-    let dir1 = create_test_dir();
-    let dir2 = create_test_dir();
-    let slot1 = shared_slot(&dir1, "/a");
-    let slot2 = shared_slot(&dir2, "/b");
-    let slot3: Arc<Mutex<Option<Mount>>> = Arc::new(Mutex::new(None));
-    let slots = [Arc::clone(&slot1), Arc::clone(&slot2), Arc::clone(&slot3)];
-
-    let err = MountTable::take_shared_mounts(&slots).unwrap_err();
-    assert_eq!(err, "mount 2 is already in use by another run");
-
-    // Both prior slots should be restored.
-    assert!(slot1.lock().unwrap().is_some(), "slot 1 must be restored");
-    assert!(slot2.lock().unwrap().is_some(), "slot 2 must be restored");
 }

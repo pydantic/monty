@@ -143,7 +143,9 @@ impl UnicodeErrorData {
 
     /// Builds the payload for a decode error on `object`, or
     /// [`ExcData::None`] when `object` exceeds [`Self::MAX_OBJECT_LEN`].
-    pub(crate) fn decode(encoding: &str, object: &[u8], start: usize, end: usize, reason: &str) -> ExcData {
+    /// Public so `monty-fs` can build the payload for text-mode file reads.
+    #[must_use]
+    pub fn decode(encoding: &str, object: &[u8], start: usize, end: usize, reason: &str) -> ExcData {
         if object.len() <= Self::MAX_OBJECT_LEN {
             ExcData::Unicode(Box::new(Self {
                 encoding: encoding.to_owned(),

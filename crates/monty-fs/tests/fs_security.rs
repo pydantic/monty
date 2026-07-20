@@ -13,8 +13,8 @@ use std::{fmt, fs, path::Path};
 use monty::{
     FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs,
-    fs::{MountError, MountMode, MountTable, OverlayState},
 };
+use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -102,9 +102,18 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
     mt
 }
 
+/// Adapts the owning `handle_os_call` API back to the `Option` shape the
+/// assertions below are written against.
+fn dispatch(mt: &mut MountTable, c: OsFunctionCall) -> Option<Result<MontyObject, MountError>> {
+    match mt.handle_os_call(c) {
+        MountCallOutcome::Handled(result) => Some(result),
+        MountCallOutcome::NotHandled(_) => None,
+    }
+}
+
 /// Shorthand: call handle_os_call with a single path argument.
 fn call(mt: &mut MountTable, op: PathOp, path: &str) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(&op.build_path_only(path))
+    dispatch(mt, op.build_path_only(path))
 }
 
 /// Shorthand: call `mkdir` handle_os_call with the supplied kwargs.
@@ -114,11 +123,14 @@ fn call_mkdir(
     parents: bool,
     exist_ok: bool,
 ) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(&OsFunctionCall::Mkdir(MkdirCallArgs {
-        path: MontyPath::new(path.to_owned()),
-        parents,
-        exist_ok,
-    }))
+    dispatch(
+        mt,
+        OsFunctionCall::Mkdir(MkdirCallArgs {
+            path: MontyPath::new(path.to_owned()),
+            parents,
+            exist_ok,
+        }),
+    )
 }
 
 /// Asserts that the operation is blocked: either an error (PathEscape, NoMountPoint, Io)
@@ -152,7 +164,7 @@ fn assert_write_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
         }),
         other => panic!("assert_write_blocked: unexpected op {other:?}"),
     };
-    let result = mt.handle_os_call(&call_variant);
+    let result = dispatch(mt, call_variant);
     match result {
         Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
@@ -163,10 +175,13 @@ fn assert_write_blocked(mt: &mut MountTable, op: PathOp, path: &str) {
 /// Asserts that `open(path, mode)` is blocked at open time.
 fn assert_open_blocked(mt: &mut MountTable, path: &str, mode: &str) {
     let mode = mode.parse::<FileMode>().expect("test mode parses");
-    let result = mt.handle_os_call(&OsFunctionCall::Open(OpenCallArgs {
-        path: MontyPath::new(path.to_owned()),
-        mode,
-    }));
+    let result = dispatch(
+        mt,
+        OsFunctionCall::Open(OpenCallArgs {
+            path: MontyPath::new(path.to_owned()),
+            mode,
+        }),
+    );
     match result {
         Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected open blocked, got Ok({val:?}) for path: {path} mode: {mode:?}"),
@@ -748,13 +763,15 @@ mod hard_link_tests {
         let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
 
         // Write succeeds (goes to overlay memory).
-        let result = mt
-            .handle_os_call(&OsFunctionCall::WriteText(PathStringDataArgs {
+        let result = dispatch(
+            &mut mt,
+            OsFunctionCall::WriteText(PathStringDataArgs {
                 path: MontyPath::new("/mnt/broken_link.txt".to_owned()),
                 data: "safe".to_owned(),
-            }))
-            .unwrap()
-            .unwrap();
+            }),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(result, MontyObject::Int(4));
 
         // Real FS target was NOT created.
@@ -1023,10 +1040,13 @@ fn rename_traversal_src() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let result = mt.handle_os_call(&OsFunctionCall::Rename(monty::RenameCallArgs {
-        src: MontyPath::new("/mnt/../etc/passwd".to_owned()),
-        dst: MontyPath::new("/mnt/stolen.txt".to_owned()),
-    }));
+    let result = dispatch(
+        &mut mt,
+        OsFunctionCall::Rename(monty::RenameCallArgs {
+            src: MontyPath::new("/mnt/../etc/passwd".to_owned()),
+            dst: MontyPath::new("/mnt/stolen.txt".to_owned()),
+        }),
+    );
     match result {
         Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) => {}
         // If src doesn't match any mount, handle_rename returns None and normal dispatch
@@ -1041,10 +1061,13 @@ fn rename_traversal_dst() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let result = mt.handle_os_call(&OsFunctionCall::Rename(monty::RenameCallArgs {
-        src: MontyPath::new("/mnt/hello.txt".to_owned()),
-        dst: MontyPath::new("/mnt/../escape.txt".to_owned()),
-    }));
+    let result = dispatch(
+        &mut mt,
+        OsFunctionCall::Rename(monty::RenameCallArgs {
+            src: MontyPath::new("/mnt/hello.txt".to_owned()),
+            dst: MontyPath::new("/mnt/../escape.txt".to_owned()),
+        }),
+    );
     match result {
         Some(Err(
             MountError::PathEscape { .. }
@@ -1088,10 +1111,13 @@ fn rename_symlink_escape_overlay_read_text() {
     let mut mt = mount_at_mnt(&mount_dir, MountMode::OverlayMemory(OverlayState::new()));
 
     // Step 1: Rename the symlink within the mount.
-    let rename_result = mt.handle_os_call(&OsFunctionCall::Rename(monty::RenameCallArgs {
-        src: MontyPath::new("/mnt/escape_link".to_owned()),
-        dst: MontyPath::new("/mnt/renamed".to_owned()),
-    }));
+    let rename_result = dispatch(
+        &mut mt,
+        OsFunctionCall::Rename(monty::RenameCallArgs {
+            src: MontyPath::new("/mnt/escape_link".to_owned()),
+            dst: MontyPath::new("/mnt/renamed".to_owned()),
+        }),
+    );
     // The rename itself may succeed or may be blocked — either is acceptable.
     // The critical invariant is that reading the renamed path must NEVER
     // return the outside file's contents.
@@ -1133,10 +1159,13 @@ fn rename_symlink_escape_overlay_read_bytes() {
 
     let mut mt = mount_at_mnt(&mount_dir, MountMode::OverlayMemory(OverlayState::new()));
 
-    let rename_result = mt.handle_os_call(&OsFunctionCall::Rename(monty::RenameCallArgs {
-        src: MontyPath::new("/mnt/escape_link".to_owned()),
-        dst: MontyPath::new("/mnt/renamed".to_owned()),
-    }));
+    let rename_result = dispatch(
+        &mut mt,
+        OsFunctionCall::Rename(monty::RenameCallArgs {
+            src: MontyPath::new("/mnt/escape_link".to_owned()),
+            dst: MontyPath::new("/mnt/renamed".to_owned()),
+        }),
+    );
 
     if matches!(rename_result, Some(Ok(_))) {
         let read_result = call(&mut mt, PathOp::ReadBytes, "/mnt/renamed");

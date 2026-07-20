@@ -19,12 +19,10 @@ pub mod worker;
 /// independently. Equals the workspace version, since every crate shares it.
 pub const MONTY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub use convert::{
-    MAX_VALUE_DEPTH, ProtoConvertError, build_mount_table, exceeds_max_value_depth, future_results_from_proto,
-};
+pub use convert::{MAX_VALUE_DEPTH, ProtoConvertError, exceeds_max_value_depth, future_results_from_proto};
 pub use frame::{
     DEFAULT_MAX_DECODE_BYTES, FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, write_frame,
 };
 pub use generated::pb;
 pub use requirement::validate_requirement;
-pub use wire::{WireFunctionCall, WireObject, WireOsCall, reset_decode_budget};
+pub use wire::{WireFunctionCall, WireObject, reset_decode_budget};
