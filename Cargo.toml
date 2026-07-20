@@ -101,6 +101,8 @@ num-integer = "0.1"
 pyo3 = "0.28"
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 # others
+chrono = { version = "0.4", features = ["serde"] }
+strum = { version = "0.27", features = ["derive"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
 indexmap = { version = "2.9", features = ["serde"] }

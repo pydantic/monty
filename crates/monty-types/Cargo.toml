@@ -16,8 +16,8 @@ name = "monty_types"
 
 [dependencies]
 serde = { workspace = true }
-strum = { version = "0.27", features = ["derive"] }
-chrono = { version = "0.4", features = ["serde"] }
+strum = { workspace = true }
+chrono = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
 indexmap = { workspace = true }
