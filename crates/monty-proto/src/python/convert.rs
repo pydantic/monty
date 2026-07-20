@@ -475,8 +475,9 @@ fn get_list_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
 fn get_callable_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     TYPE.get_or_try_init(py, || {
-        // `iter(callable, sentinel)` never calls `callable` until advanced, so a
-        // trivial lambda that is never invoked is enough.
+        // `iter(callable, sentinel)` does not call `callable` until advanced, and
+        // this iterator never is — so any callable serves, and a builtin avoids
+        // compiling a throwaway lambda.
         let callable = import_builtins(py)?.getattr(py, "id")?;
         let iterator = import_builtins(py)?.getattr(py, "iter")?.call1(py, (callable, 0))?;
         Ok(iterator.bind(py).get_type().into_any().unbind())
