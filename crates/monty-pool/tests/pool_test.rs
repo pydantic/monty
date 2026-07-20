@@ -189,21 +189,20 @@ fn non_utf8_mount_path_works() {
 
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-    let event = session
-        .feed(
-            "from pathlib import Path\nPath('/mnt/data/data.txt').read_text()",
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt/data".to_owned(),
-                host_path: weird_dir,
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
-            false,
-            &mut no_print,
-        )
-        .unwrap();
+    let result = session.feed(
+        "from pathlib import Path\nPath('/mnt/data/data.txt').read_text()",
+        vec![],
+        vec![MountSpec {
+            virtual_path: "/mnt/data".to_owned(),
+            host_path: weird_dir,
+            mode: MountSpecMode::ReadOnly,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }],
+        false,
+        &mut no_print,
+    );
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(
         expect_complete(event),
         MontyObject::String("non-utf8 host dir".to_owned())
