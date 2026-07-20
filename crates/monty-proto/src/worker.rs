@@ -429,6 +429,8 @@ impl Child {
         Ok(())
     }
 
+    /// Runs a `Feed` on the ready session: type-checks the snippet (unless
+    /// skipped), injects inputs, and drives execution to the turn-ending event.
     fn handle_repl_feed(&mut self, feed: pb::Feed, sink: &mut dyn EventSink) -> pb::ChildEvent {
         if let Err(event) = self.ensure_repl() {
             return *event;
@@ -464,6 +466,8 @@ impl Child {
         event
     }
 
+    /// Answers a suspended external function or OS call with the parent's
+    /// result, checking the `call_id` matches, then resumes execution.
     fn handle_resume_call(&mut self, resume: pb::ResumeCall, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let expected_call_id = match &self.state {
             SessionState::Suspended(progress) => match progress.as_ref() {
@@ -517,6 +521,8 @@ impl Child {
         event
     }
 
+    /// Answers a suspended name lookup with the value (or absence) the parent
+    /// resolved, then resumes execution.
     fn handle_resume_name_lookup(&mut self, resume: pb::ResumeNameLookup, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeNameLookup without a suspended name lookup");
@@ -541,6 +547,8 @@ impl Child {
         event
     }
 
+    /// Delivers the parent's resolved future results to a suspended
+    /// `ResolveFutures` state, then resumes execution.
     fn handle_resume_futures(&mut self, resume: pb::ResumeFutures, sink: &mut dyn EventSink) -> pb::ChildEvent {
         let SessionState::Suspended(progress) = &self.state else {
             return protocol_violation("ResumeFutures without suspended futures");
