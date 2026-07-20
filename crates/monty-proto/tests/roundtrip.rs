@@ -518,26 +518,41 @@ fn implausible_resource_limit_data_is_dropped_not_trusted() {
 /// forces a carry that overflows `secs`. A compromised child sending
 /// `secs: u64::MAX, subsec_nanos: u32::MAX` must not crash the parent
 /// process — the payload is dropped (like every other malformed field here),
-/// not passed through to `Duration::new` unchecked.
+/// not passed through to `Duration::new` unchecked. `checked_duration` is
+/// called once for `limit` and once for `elapsed`, each independently
+/// capable of rejecting the payload; covers both — an invalid `limit` (where
+/// the `?` short-circuits before `elapsed`'s check ever runs) and an invalid
+/// `elapsed` alongside a valid `limit` (so `elapsed`'s own rejection path is
+/// exercised, not just short-circuited past).
 #[test]
 fn out_of_range_subsec_nanos_is_dropped_not_a_panic() {
-    let wire = pb::RaisedException {
-        exc_type: "TimeoutError".to_owned(),
-        message: Some("limit exceeded".to_owned()),
-        traceback: vec![],
-        data: Some(pb::ExcData {
-            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
-                kind: Some(pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
-                    limit_secs: u64::MAX,
-                    limit_subsec_nanos: u32::MAX,
-                    elapsed_secs: u64::MAX,
-                    elapsed_subsec_nanos: u32::MAX,
+    for time in [
+        pb::resource_limit_data::Time {
+            limit_secs: u64::MAX,
+            limit_subsec_nanos: u32::MAX,
+            elapsed_secs: u64::MAX,
+            elapsed_subsec_nanos: u32::MAX,
+        },
+        pb::resource_limit_data::Time {
+            limit_secs: 0,
+            limit_subsec_nanos: 0,
+            elapsed_secs: u64::MAX,
+            elapsed_subsec_nanos: u32::MAX,
+        },
+    ] {
+        let wire = pb::RaisedException {
+            exc_type: "TimeoutError".to_owned(),
+            message: Some("limit exceeded".to_owned()),
+            traceback: vec![],
+            data: Some(pb::ExcData {
+                kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
+                    kind: Some(pb::resource_limit_data::Kind::Time(time)),
                 })),
-            })),
-        }),
-    };
-    let back = MontyException::try_from(wire).unwrap();
-    assert_eq!(back.data(), &ExcData::None);
+            }),
+        };
+        let back = MontyException::try_from(wire).unwrap();
+        assert_eq!(back.data(), &ExcData::None);
+    }
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
