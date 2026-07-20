@@ -68,6 +68,30 @@ unpacking form matches CPython exactly.
   system.
 - `__import__` is not defined.
 
+## `__future__` imports
+
+`from __future__ import ...` is a compiler directive, not a real import: it
+binds nothing and is accepted as a no-op. Of CPython's ten features, eight
+became mandatory in Python 3.7 or earlier and so are inert there too, and
+`annotations` is a no-op here because Monty already stringizes annotations
+(see [typing.md](typing.md)). Divergences:
+
+- **`barry_as_FLUFL`** (PEP 401) raises `NotImplementedError: "The monty
+  syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
+  CPython accepts it, making `<>` the inequality operator and `!=` a
+  `SyntaxError`; Monty parses neither differently, so the import is rejected
+  rather than silently ignored.
+- **Aliasing is rejected.** `from __future__ import annotations as ann` raises
+  `NotImplementedError: "The monty syntax parser does not yet support aliasing
+  a \`__future__\` feature"`. CPython binds `ann` to a `__future__._Feature`
+  object; a no-op would bind nothing and surface as a `NameError` far from the
+  import, so it is rejected at the import instead.
+- **Position is not enforced.** CPython requires `__future__` imports to
+  precede all other statements (`SyntaxError: "from __future__ imports must
+  occur at the beginning of the file"`); Monty accepts them anywhere.
+- `import __future__` (as opposed to `from __future__ import ...`) raises
+  `ModuleNotFoundError` — there is no `__future__` module object.
+
 ## Module-level dunder variables
 
 Monty has no module object and no `globals()` dict, but it exposes a fixed set

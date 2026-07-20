@@ -7,10 +7,13 @@ use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
     name::Name,
+    str::Quote,
     token::TokenKind,
-    visitor::{Visitor, walk_expr},
+    visitor::{Visitor, transformer::Transformer, walk_expr},
 };
+use ruff_python_codegen::{Generator, Indentation};
 use ruff_python_parser::parse_module;
+use ruff_source_file::LineEnding;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
@@ -37,6 +40,54 @@ pub const MAX_NESTING_DEPTH: u16 = 200;
 /// stack overflow while still catching the error before the recursion limit.
 #[cfg(debug_assertions)]
 pub const MAX_NESTING_DEPTH: u16 = 30;
+
+/// `from __future__ import ...` features whose semantics Monty already provides,
+/// so importing them is a no-op rather than an error.
+///
+/// All but the last became mandatory in Python 3.7 or earlier, so they are inert
+/// in CPython too — the imports survive only in code that once supported older
+/// versions. `annotations` is different in kind: it is still meaningful in
+/// CPython, and is a no-op here only because Monty stringizes annotations
+/// unconditionally (see `limitations/typing.md`), which is what it asks for.
+const SUPPORTED_FUTURES: [&str; 9] = [
+    "nested_scopes",
+    "generators",
+    "division",
+    "absolute_import",
+    "with_statement",
+    "print_function",
+    "unicode_literals",
+    "generator_stop",
+    "annotations",
+];
+
+/// `from __future__ import ...` features Monty does not implement, which are
+/// rejected rather than silently ignored — importing one asks for behaviour the
+/// sandbox will not deliver.
+///
+/// `barry_as_FLUFL` (PEP 401) makes `<>` the inequality operator and turns `!=`
+/// into a `SyntaxError`. Monty parses neither differently.
+///
+/// Together with [`SUPPORTED_FUTURES`] this must cover CPython's
+/// `__future__.all_feature_names`, since any name in neither list is reported as
+/// undefined.
+const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
+
+/// Rewrites every string literal in an expression to single-quoted, matching how
+/// CPython's PEP 563 stringizer renders them (`x: "int"` gives `"'int'"`).
+///
+/// Applied to class annotations before unparsing, because neither generator mode
+/// matches CPython alone — see [`Parser::parse_class_annotation`]. Nested
+/// literals are covered too, so `dict[str, "Foo"]` normalises throughout. Only
+/// the quote *style* changes; the generator still escapes as needed, so a
+/// literal containing a single quote stays valid.
+struct SingleQuoteStrings;
+
+impl Transformer for SingleQuoteStrings {
+    fn visit_string_literal(&self, string_literal: &mut ast::StringLiteral) {
+        string_literal.flags = string_literal.flags.with_quote_style(Quote::Single);
+    }
+}
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -574,6 +625,43 @@ impl<'a> Parser<'a> {
                 ..
             }) => {
                 let position = self.convert_range(range);
+                // Compiler directives, not real imports, so they bind nothing and
+                // lower to a no-op — real-world modules then import cleanly. A
+                // feature Monty does not implement is rejected rather than
+                // ignored, so the import never quietly fails to do what it says.
+                //
+                // `level == 0` matters: `from .__future__ import x` is an ordinary
+                // relative import of a module that happens to share the name, and
+                // must fall through to the `ImportError` below.
+                if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
+                    return match names
+                        .iter()
+                        .find(|a| a.asname.is_some() || !SUPPORTED_FUTURES.contains(&a.name.id.as_str()))
+                    {
+                        Some(alias) if UNSUPPORTED_FUTURES.contains(&alias.name.id.as_str()) => {
+                            Err(ParseError::not_implemented(
+                                format!("the '{}' future feature", alias.name.id),
+                                self.convert_range(alias.range),
+                            ))
+                        }
+                        // Name checks come first so an aliased unknown feature is
+                        // reported as undefined, as CPython does.
+                        Some(alias) if !SUPPORTED_FUTURES.contains(&alias.name.id.as_str()) => Err(ParseError::syntax(
+                            format!("future feature {} is not defined", alias.name.id),
+                            self.convert_range(alias.range),
+                        )),
+                        // A known feature, so the alias is what selected it. An
+                        // alias asks to bind a name and a no-op binds nothing, so
+                        // accepting it would fail exactly the way this branch
+                        // exists to prevent — the `NameError` would surface later,
+                        // far from the import.
+                        Some(alias) => Err(ParseError::not_implemented(
+                            "aliasing a `__future__` feature",
+                            self.convert_range(alias.range),
+                        )),
+                        None => Ok(Node::Pass),
+                    };
+                }
                 // We only support absolute imports (level 0)
                 if level != 0 {
                     return Err(ParseError::import_error(
@@ -716,9 +804,10 @@ impl<'a> Parser<'a> {
     /// recorded in `members`, in source order, for namespace assembly.
     ///
     /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
-    /// member. Class decorators are supported (enclosing scope, applied
-    /// bottom-up); inheritance, function/method decorators, and anything else in
-    /// the body are rejected as not-implemented, reserving the syntax for later.
+    /// member, and annotated names a stringized `__annotations__`. Class
+    /// decorators are supported (enclosing scope, applied bottom-up);
+    /// inheritance, function/method decorators, and anything else in the body
+    /// are rejected as not-implemented, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);
         // Parsed as ordinary expressions; the compiler emits the apply calls
@@ -746,6 +835,9 @@ impl<'a> Parser<'a> {
         // namespace dict from the body's locals.
         let mut body = Vec::new();
         let mut members = Vec::new();
+        // `(name, "source text")` pairs assembled into `__annotations__` below;
+        // always stringized (PEP 563). See `limitations/typing.md`.
+        let mut annotations: Vec<DictItem> = Vec::new();
 
         // CPython stores the class docstring as a real `__doc__` entry in the
         // class dict (`None` when absent), so synthesize a `__doc__ = <docstring
@@ -795,23 +887,37 @@ impl<'a> Parser<'a> {
                     let ident = self.identifier(id, *name_range);
                     self.parse_class_var(ident, *value, &mut members, &mut body)?;
                 }
-                // `name: T = <expr>` — an annotated class-level variable. A bare
-                // `name: T` (no value) is just an annotation and creates nothing.
+                // `name: T [= <expr>]` — an annotated class-level name. The
+                // annotation is recorded (stringized) in `__annotations__`; a
+                // value additionally makes it a class variable. A bare `name: T`
+                // records the annotation but binds no value (matching CPython).
                 Stmt::AnnAssign(ast::StmtAnnAssign {
-                    target, value, range, ..
+                    target,
+                    mut annotation,
+                    value,
+                    range,
+                    ..
                 }) => {
-                    if let Some(value) = value {
-                        let AstExpr::Name(ast::ExprName {
-                            id, range: name_range, ..
-                        }) = *target
-                        else {
-                            return Err(ParseError::not_implemented(
-                                "complex class variable targets (only `name = <expr>` is allowed)",
-                                self.convert_range(range),
-                            ));
-                        };
+                    if let AstExpr::Name(ast::ExprName {
+                        id, range: name_range, ..
+                    }) = *target
+                    {
                         let ident = self.identifier(&id, name_range);
-                        self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                        annotations.push(self.parse_class_annotation(ident, &mut annotation));
+                        if let Some(value) = value {
+                            self.parse_class_var(ident, *value, &mut members, &mut body)?;
+                        }
+                    } else if value.is_some() {
+                        // Complex target with a value (`x.y: T = v`) is unsupported;
+                        // a bare complex annotation (`x.y: T`) stores nothing in
+                        // CPython either, so it is ignored. CPython does still
+                        // evaluate the target expression (`undefined.attr: T` raises
+                        // `NameError`) where Monty drops it — see
+                        // `limitations/typing.md`.
+                        return Err(ParseError::not_implemented(
+                            "complex class variable targets (only `name = <expr>` is allowed)",
+                            self.convert_range(range),
+                        ));
                     }
                 }
                 // `pass` and `...` (the common `class C: ...` stub idiom) are
@@ -846,6 +952,24 @@ impl<'a> Parser<'a> {
                 object: doc_value,
             },
         );
+
+        // Last statement so the values are assembled after all members exist.
+        // Always present (empty dict) to match `Cls.__annotations__ == {}`.
+        let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
+        // Being last means this would silently clobber an explicit assignment in
+        // the body, losing its entries (CPython merges the two instead). Rejected
+        // rather than dropped quietly; the syntax is reserved for later.
+        if members.iter().any(|m| m.name_id == annotations_target.name_id) {
+            return Err(ParseError::not_implemented(
+                "assigning `__annotations__` in a class body",
+                position,
+            ));
+        }
+        members.push(annotations_target);
+        body.push(Node::Assign {
+            target: annotations_target,
+            object: ExprLoc::new(position, Expr::Dict(annotations)),
+        });
 
         // Wrap the body statements in a synthetic zero-arg function. The class
         // name's `name_id` is reused for nicer tracebacks; this function is never
@@ -897,6 +1021,30 @@ impl<'a> Parser<'a> {
             start_byte: start,
             end_byte: class.range.end().into(),
         }
+    }
+
+    /// Builds the `'name': 'annotation'` pair for one annotated class-body name.
+    ///
+    /// The annotation is stringized rather than evaluated (see
+    /// `limitations/typing.md`), and is produced by *unparsing* the expression
+    /// rather than slicing the source. CPython's PEP 563 stringizer unparses too,
+    /// so this is what makes `x: dict[str,int]` yield `'dict[str, int]'` on both
+    /// — slicing would leak the original spacing, newlines and quote style.
+    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> DictItem {
+        let ann_range = annotation.range();
+        // Neither generator mode matches CPython alone: `Mode::AstUnparse`
+        // normalises quotes but parenthesises tuple subscripts (`dict[(str,
+        // int)]`), while `Mode::Default` keeps subscripts but preserves the
+        // source quote style. So use `Default` and normalise the quotes first.
+        SingleQuoteStrings.visit_expr(annotation);
+        // `LineEnding::Lf` is pinned rather than defaulted: the default is
+        // platform-dependent, and Monty must stringize identically everywhere.
+        let unparsed = Generator::new(&Indentation::default(), LineEnding::Lf).expr(annotation);
+        let ann_id = self.interner.intern(&unparsed);
+        DictItem::Pair(
+            ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
+            ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
+        )
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope

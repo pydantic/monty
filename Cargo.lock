@@ -2008,8 +2008,10 @@ dependencies = [
  "num-traits",
  "postcard",
  "ruff_python_ast",
+ "ruff_python_codegen",
  "ruff_python_parser",
  "ruff_python_stdlib",
+ "ruff_source_file",
  "ruff_text_size",
  "serde",
  "serde_json",
@@ -3196,6 +3198,19 @@ dependencies = [
  "salsa",
  "thin-vec",
  "thiserror",
+]
+
+[[package]]
+name = "ruff_python_codegen"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1902d82ae0745be9d3d12a1aee4429acff987c768710dc38a6521eab05990ca0"
+dependencies = [
+ "ruff_python_ast",
+ "ruff_python_literal",
+ "ruff_python_parser",
+ "ruff_source_file",
+ "ruff_text_size",
 ]
 
 [[package]]

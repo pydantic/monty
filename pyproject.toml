@@ -84,9 +84,17 @@ known-first-party = ["pydantic_monty"]
     "F841", # unused variable - needed for testing exception variable cleanup
     "F401", # Intentionally imports unknown typing constructs to test silent ignore behavior
     "F403", # star import test intentionally uses `from sys import *`
+    "F407", # unknown `__future__` feature - the point of the test is that it's a SyntaxError
     "E402", # Typing test file has multiple import sections to test different import patterns
     "E401", # Multiple imports on one line - needed for testing `import a, b` syntax
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
+]
+
+"crates/monty/test_cases/class__annotations.py" = [
+    # Scoped to this file so the single-quote convention stays enforced across
+    # the other test cases: these tests exist to prove that double-quoted
+    # annotations normalize to single quotes exactly as CPython's does.
+    "Q000", # double quotes are the subject of the test, not a style slip
 ]
 
 "crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [

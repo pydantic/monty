@@ -61,6 +61,8 @@ monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19-beta.4" }
 ruff_python_parser = "0.0.3"
 ruff_python_stdlib = "0.0.3"
 ruff_python_ast = "0.0.3"
+ruff_python_codegen = "0.0.3"
+ruff_source_file = "0.0.3"
 ruff_text_size = "0.0.3"
 ruff_db = { version="0.0.3" ,features = ["serde"] }
 # ty_python_semantic, ty_python_core and ty_vendored are only published at 0.0.2,
