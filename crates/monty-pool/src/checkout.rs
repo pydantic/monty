@@ -6,9 +6,7 @@ use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_proto::{
-    FrameError, MAX_FRAME_LEN, MONTY_VERSION, exceeds_max_frame_len, exceeds_max_value_depth, pb, validate_requirement,
-};
+use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -359,8 +357,10 @@ impl Checkout {
                 result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             })),
         };
-        ensure_resume_frame_fits(&request)?;
-        self.pending = None;
+        // `pending` is deliberately NOT cleared here: an oversize answer is
+        // rejected by `Worker::send` before any bytes reach the child, and
+        // `request_turn` surfaces it with the suspension still answerable.
+        // Every turn-ending reply overwrites `pending` anyway.
         self.expect_turn(&request, on_print)
     }
 
@@ -404,8 +404,8 @@ impl Checkout {
                     // to encode), so the call is still suspended — answer it
                     // with that error instead, letting the sandbox raise a
                     // catchable exception rather than stranding the feed. Only
-                    // a pre-send rejection leaves `pending` set, so this cannot
-                    // catch a genuine sandbox exception.
+                    // a rejection before the frame is written leaves `pending`
+                    // set, so this cannot catch a genuine sandbox exception.
                     Err(PoolError::Runtime(exc)) if self.pending.is_some() => {
                         self.resume(ResumeValue::Error(exc), on_print).map(Some)
                     }
@@ -444,8 +444,7 @@ impl Checkout {
                 kind: Some(kind),
             })),
         };
-        ensure_resume_frame_fits(&request)?;
-        self.pending = None;
+        // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
 
@@ -484,8 +483,7 @@ impl Checkout {
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
         };
-        ensure_resume_frame_fits(&request)?;
-        self.pending = None;
+        // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
 
@@ -642,8 +640,11 @@ impl Checkout {
             // `write_frame` rejects an oversize frame *before* writing any
             // bytes, so the worker never saw the request and is still synced —
             // surface a clean, catchable error instead of discarding a healthy
-            // worker as if it had crashed. Every other send failure is a real
-            // I/O break (dead worker / closed pipe).
+            // worker as if it had crashed. For a `resume*` request this also
+            // leaves `pending` set (nothing overwrites it on this path), so
+            // the suspension stays answerable with a smaller value. Every
+            // other send failure is a real I/O break (dead worker / closed
+            // pipe).
             return Err(match err {
                 FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
                     ExcType::RuntimeError,
@@ -899,25 +900,6 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
         )))
     } else {
         Ok(())
-    }
-}
-
-/// Rejects a resume request whose encoded frame exceeds the wire limit.
-///
-/// An oversize frame is rejected before any bytes are written, so the child
-/// would never see the answer and would stay suspended for ever. Every
-/// `resume*` method must call this *before* clearing `pending`, so the
-/// suspension stays answerable and the caller can retry with a smaller value
-/// or an error.
-fn ensure_resume_frame_fits(request: &pb::ParentRequest) -> Result<(), PoolError> {
-    match exceeds_max_frame_len(request) {
-        Some(len) => Err(PoolError::Runtime(MontyException::new(
-            ExcType::RuntimeError,
-            Some(format!(
-                "result frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"
-            )),
-        ))),
-        None => Ok(()),
     }
 }
 

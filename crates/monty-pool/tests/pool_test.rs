@@ -659,7 +659,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     };
     assert!(
         exc.message()
-            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+            .is_some_and(|m| m.contains("request frame") && m.contains("exceeds the maximum")),
         "unexpected message: {:?}",
         exc.message()
     );
@@ -683,7 +683,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     };
     assert!(
         exc.message()
-            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+            .is_some_and(|m| m.contains("request frame") && m.contains("exceeds the maximum")),
         "unexpected message: {:?}",
         exc.message()
     );
@@ -710,7 +710,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     };
     assert!(
         exc.message()
-            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+            .is_some_and(|m| m.contains("request frame") && m.contains("exceeds the maximum")),
         "unexpected message: {:?}",
         exc.message()
     );
