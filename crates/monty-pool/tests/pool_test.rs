@@ -55,6 +55,29 @@ fn expect_complete(event: TurnEvent) -> MontyObject {
     }
 }
 
+/// Drives a feed the way an auto-answering host does: every `OsCall` is offered
+/// to the feed's mounts, returning the first event no mount covers.
+///
+/// Mount-covered calls surface like any other suspension now, so a test that
+/// only cares about the *result* of mounted I/O runs its feed through this.
+#[track_caller]
+fn feed_with_mounts(
+    checkout: &mut monty_pool::Checkout,
+    result: Result<TurnEvent, PoolError>,
+) -> Result<TurnEvent, PoolError> {
+    let event = result?;
+    let mut event = event;
+    loop {
+        if !matches!(event, TurnEvent::OsCall { .. }) {
+            return Ok(event);
+        }
+        match checkout.resume_from_mounts(&mut no_print)? {
+            Some(next) => event = next,
+            None => return Ok(event),
+        }
+    }
+}
+
 /// Kills a process by pid with SIGKILL — simulates a hard crash.
 fn kill_pid(pid: u32) {
     #[cfg(unix)]
@@ -244,15 +267,14 @@ fn mounted_filesystem_ops_are_serviced_by_the_parent() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
 
-    let event = session
-        .feed(
-            "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
-            vec![],
-            mount(),
-            false,
-            &mut no_print,
-        )
-        .unwrap();
+    let result = session.feed(
+        "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
+        vec![],
+        mount(),
+        false,
+        &mut no_print,
+    );
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("mounted!".to_owned()));
 
     let code = "\
@@ -262,7 +284,8 @@ Path('/mnt/sub/out.txt').rename('/mnt/sub/renamed.txt')
 with open('/mnt/sub/renamed.txt') as f:
     body = f.read()
 body";
-    let event = session.feed(code, vec![], mount(), false, &mut no_print).unwrap();
+    let result = session.feed(code, vec![], mount(), false, &mut no_print);
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("written".to_owned()));
     assert_eq!(
         fs::read_to_string(dir.path().join("sub/renamed.txt")).unwrap(),
@@ -291,15 +314,14 @@ fn read_only_and_overlay_mount_semantics() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
 
-    let err = session
-        .feed(
-            "from pathlib import Path\nPath('/mnt/new.txt').write_text('x')",
-            vec![],
-            mount(MountSpecMode::ReadOnly),
-            false,
-            &mut no_print,
-        )
-        .unwrap_err();
+    let result = session.feed(
+        "from pathlib import Path\nPath('/mnt/new.txt').write_text('x')",
+        vec![],
+        mount(MountSpecMode::ReadOnly),
+        false,
+        &mut no_print,
+    );
+    let err = feed_with_mounts(&mut session, result).unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
@@ -309,21 +331,19 @@ fn read_only_and_overlay_mount_semantics() {
 from pathlib import Path
 Path('/mnt/data.txt').write_text('changed')
 Path('/mnt/data.txt').read_text()";
-    let event = session
-        .feed(code, vec![], mount(MountSpecMode::Overlay), false, &mut no_print)
-        .unwrap();
+    let result = session.feed(code, vec![], mount(MountSpecMode::Overlay), false, &mut no_print);
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("changed".to_owned()));
     // the host file is untouched and the overlay does not persist to the next feed
     assert_eq!(fs::read_to_string(dir.path().join("data.txt")).unwrap(), "original");
-    let event = session
-        .feed(
-            "Path('/mnt/data.txt').read_text()",
-            vec![],
-            mount(MountSpecMode::Overlay),
-            false,
-            &mut no_print,
-        )
-        .unwrap();
+    let result = session.feed(
+        "Path('/mnt/data.txt').read_text()",
+        vec![],
+        mount(MountSpecMode::Overlay),
+        false,
+        &mut no_print,
+    );
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("original".to_owned()));
     session.finish().unwrap();
 }
@@ -342,21 +362,20 @@ try:
 except OSError as exc:
     msg = str(exc)
 msg";
-    let event = session
-        .feed(
-            code,
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadWrite,
-                write_bytes_limit: Some(10),
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
-            false,
-            &mut no_print,
-        )
-        .unwrap();
+    let result = session.feed(
+        code,
+        vec![],
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode: MountSpecMode::ReadWrite,
+            write_bytes_limit: Some(10),
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }],
+        false,
+        &mut no_print,
+    );
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(
         expect_complete(event),
         MontyObject::String("disk write limit of 10 bytes exceeded".to_owned())
@@ -384,7 +403,8 @@ except MemoryError as exc:
 msg";
     let mut spec = MountSpec::new("/mnt".to_owned(), dir.path().to_path_buf(), MountSpecMode::Overlay);
     spec.memory_usage_limit = 1_000;
-    let event = session.feed(code, vec![], vec![spec], false, &mut no_print).unwrap();
+    let result = session.feed(code, vec![], vec![spec], false, &mut no_print);
+    let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(
         expect_complete(event),
         MontyObject::String("mount memory usage limit of 1 KB exceeded".to_owned())
@@ -392,8 +412,8 @@ msg";
     session.finish().unwrap();
 }
 
-/// OS calls no mount covers still surface as `TurnEvent::OsCall`, while
-/// covered ones are serviced silently within the same feed.
+/// Every OS call surfaces; offering each to the mounts answers the covered
+/// one and leaves the uncovered one for the caller.
 #[test]
 fn uncovered_os_calls_surface_alongside_mounted_ones() {
     let dir = tempfile::tempdir().unwrap();
@@ -405,21 +425,22 @@ fn uncovered_os_calls_surface_alongside_mounted_ones() {
 from pathlib import Path
 covered = Path('/mnt/data.txt').read_text()
 covered + ':' + Path('/elsewhere/file.txt').read_text()";
-    let event = session
-        .feed(
-            code,
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
-            false,
-            &mut no_print,
-        )
-        .unwrap();
+    let result = session.feed(
+        code,
+        vec![],
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode: MountSpecMode::ReadOnly,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }],
+        false,
+        &mut no_print,
+    );
+    // the covered `/mnt` read is answered by the mount; the `/elsewhere` one
+    // is handed back for the caller to answer
+    let event = feed_with_mounts(&mut session, result).unwrap();
     let TurnEvent::OsCall {
         function_name, args, ..
     } = event
@@ -483,12 +504,12 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
     };
     assert_eq!(function_name, "Path.read_text");
     assert_eq!(args, &vec![MontyObject::Path("/external/answer.txt".to_owned())]);
-    let event = restored
-        .resume(
-            ResumeValue::Return(MontyObject::String("hello".to_owned())),
-            &mut no_print,
-        )
-        .unwrap();
+    let result = restored.resume(
+        ResumeValue::Return(MontyObject::String("hello".to_owned())),
+        &mut no_print,
+    );
+    // the feed's remaining `/mnt` read is answered by the re-supplied mount
+    let event = feed_with_mounts(&mut restored, result).unwrap();
     assert_eq!(
         expect_complete(event),
         MontyObject::String("hello after resume".to_owned())
@@ -496,10 +517,9 @@ external + ' ' + Path('/mnt/data.txt').read_text()";
     restored.finish().unwrap();
 }
 
-/// A dump taken while suspended on a mount-coverable OS call restores
-/// transparently: the re-announced call carries its full payload, so mounts
-/// supplied to `restore` service it immediately and the feed runs to
-/// completion without the caller ever seeing the suspension.
+/// A dump taken while suspended on a mount-coverable OS call re-announces the
+/// call in full, so mounts supplied to `restore` can answer it — the payload
+/// survives the round trip even though the original feed had no mounts.
 #[test]
 fn restored_os_call_is_serviced_by_restore_mounts() {
     let dir = tempfile::tempdir().unwrap();
@@ -521,8 +541,8 @@ fn restored_os_call_is_serviced_by_restore_mounts() {
     let state = session.dump().unwrap();
     drop(session);
 
-    // restore WITH the mount: the re-announced call is now covered, so the
-    // parent services it during `restore` and the feed completes
+    // restore WITH the mount: the call is re-announced, and offering it to the
+    // now-present mount answers it and runs the feed to completion
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
     let (event, _) = restored
         .restore(
@@ -538,6 +558,8 @@ fn restored_os_call_is_serviced_by_restore_mounts() {
         )
         .unwrap();
     let event = event.expect("suspended dump must re-announce a turn event");
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let event = feed_with_mounts(&mut restored, Ok(event)).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("from mount".to_owned()));
     restored.finish().unwrap();
 }
@@ -854,21 +876,20 @@ fn special_files_in_mounts_are_rejected_without_blocking() {
 
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-    let err = session
-        .feed(
-            "from pathlib import Path\nPath('/mnt/pipe').read_text()",
-            vec![],
-            vec![MountSpec {
-                virtual_path: "/mnt".to_owned(),
-                host_path: dir.path().to_path_buf(),
-                mode: MountSpecMode::ReadOnly,
-                write_bytes_limit: None,
-                memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
-            }],
-            false,
-            &mut no_print,
-        )
-        .unwrap_err();
+    let result = session.feed(
+        "from pathlib import Path\nPath('/mnt/pipe').read_text()",
+        vec![],
+        vec![MountSpec {
+            virtual_path: "/mnt".to_owned(),
+            host_path: dir.path().to_path_buf(),
+            mode: MountSpecMode::ReadOnly,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }],
+        false,
+        &mut no_print,
+    );
+    let err = feed_with_mounts(&mut session, result).unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };

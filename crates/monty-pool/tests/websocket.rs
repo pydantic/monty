@@ -118,8 +118,8 @@ fn no_print(_: PrintStream, _: &str) {}
 
 /// The headline scenario for parent-side mounts: the worker lives on the far
 /// side of a WebSocket, yet a mounted read is serviced from the *parent's*
-/// filesystem — the mock child emits the `OsCall` and receives the file's
-/// contents back in a `ResumeCall` without the caller ever seeing the call.
+/// filesystem — the mock child emits the `OsCall` and `resume_from_mounts`
+/// answers it with the file's contents, no host path ever crossing the wire.
 #[test]
 fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     let dir = tempfile::tempdir().unwrap();
@@ -141,8 +141,7 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
                 call: Some(pb::os_call::Call::ReadText("/mnt/data.txt".to_owned())),
             })),
         );
-        // the parent must answer with the mounted file's contents, not
-        // surface the call to its caller
+        // the parent answers with the mounted file's contents
         let pb::parent_request::Kind::ResumeCall(resume) = read_request(&mut socket) else {
             panic!("expected ResumeCall");
         };
@@ -177,6 +176,11 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             &mut no_print,
         )
         .expect("feed");
+    assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
+    let event = checkout
+        .resume_from_mounts(&mut no_print)
+        .expect("mount servicing")
+        .expect("the mount covers /mnt/data.txt");
     assert!(
         matches!(&event, TurnEvent::Complete(MontyObject::String(s)) if s == "done"),
         "got {event:?}"
@@ -281,16 +285,21 @@ fn duration_backstop_kills_an_unresponsive_worker() {
     server.join().expect("mock child thread");
 }
 
-/// A worker cannot extend a turn indefinitely by issuing covered mount calls:
-/// each exchange deducts the elapsed worker interval from the turn's
-/// allowance, so cumulative worker execution stays bounded by
-/// `request_timeout` no matter how many covered calls the worker makes.
+/// A single turn is still bounded by `request_timeout` even when the worker is
+/// making mount-coverable calls: the OS call surfaces rather than being
+/// serviced inside the turn, so a worker that simply runs too long before
+/// announcing it is killed by the watchdog exactly as without mounts.
+///
+/// Servicing a covered call is now a separate turn with its own deadline (see
+/// "Mount I/O is not covered by `request_timeout`" in
+/// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
+/// by `max_duration`, not by `request_timeout`.
 #[test]
-fn mount_calls_do_not_reset_the_request_deadline() {
+fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
 
     let (listener, mut config) = ws_pool_config();
-    config.request_timeout = Some(Duration::from_millis(500));
+    config.request_timeout = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
         let mut socket = accept_ws(&listener);
         assert!(matches!(
@@ -299,31 +308,8 @@ fn mount_calls_do_not_reset_the_request_deadline() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
-        // "run" for 200ms then issue a covered call, repeatedly: with the old
-        // per-exchange reset this loop would finish all 20 rounds (each well
-        // under the 500ms timeout); the allowance must kill the worker once
-        // cumulative execution passes the timeout.
-        let mut rounds = 0_u32;
-        for call_id in 0..20 {
-            thread::sleep(Duration::from_millis(200));
-            let call = event_kind(pb::child_event::Kind::OsCall(pb::OsCall {
-                call_id,
-                call: Some(pb::os_call::Call::Exists("/mnt".to_owned())),
-            }));
-            let body = encode_to_capped_vec(&call).expect("encode event");
-            if socket.send(Message::Binary(body.into())).is_err() {
-                break; // killed by the watchdog
-            }
-            match socket.read() {
-                Ok(Message::Binary(_)) => rounds += 1,
-                _ => break, // killed by the watchdog
-            }
-        }
-        assert!(rounds >= 1, "at least one covered exchange should be serviced");
-        assert!(
-            rounds < 20,
-            "the watchdog never fired — the deadline was reset per exchange"
-        );
+        // never announce anything: the turn must be killed by the watchdog
+        thread::sleep(Duration::from_secs(2));
     });
 
     let pool = Pool::new(config).expect("pool");
@@ -340,13 +326,13 @@ fn mount_calls_do_not_reset_the_request_deadline() {
             false,
             &mut no_print,
         )
-        .expect_err("cumulative worker time must exhaust the turn allowance");
+        .expect_err("the turn must exhaust the request timeout");
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
     };
-    // the reported timeout is the turn deadline, not a per-exchange residual
-    assert_eq!(timeout, Duration::from_millis(500));
-    server.join().expect("mock child thread");
+    assert_eq!(timeout, Duration::from_millis(300));
+    drop(checkout);
+    let _ = server.join();
 }
 
 /// A restored session re-adopts its `max_duration` budget from the timing

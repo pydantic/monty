@@ -302,6 +302,24 @@ impl NativeSession {
         })
     }
 
+    /// Offers an `osCall` suspension to this feed's mounts. Resolves to the
+    /// next turn when a mount serviced the call, or to `{kind: 'notMounted'}`
+    /// when none covered it and the caller must answer it itself.
+    #[napi]
+    pub fn resume_from_mounts<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, |checkout, on_print| {
+            match checkout.resume_from_mounts(on_print) {
+                Ok(Some(event)) => TurnOutcome::Event(event),
+                Ok(None) => TurnOutcome::NotMounted,
+                Err(err) => TurnOutcome::from(StdResult::<TurnEvent, PoolError>::Err(err)),
+            }
+        })
+    }
+
     /// Answers a `functionCall` suspension whose name has no handler: the
     /// sandbox raises `NameError`.
     #[napi]
@@ -563,6 +581,10 @@ enum TurnOutcome {
     /// A restore of an idle (between-feeds) dump — there is no suspension to
     /// resume. Only produced by [`NativeSession::restore`].
     LoadedIdle,
+    /// No mount covered the pending OS call, which is still suspended for the
+    /// caller to answer. Only produced by
+    /// [`NativeSession::resume_from_mounts`].
+    NotMounted,
     /// A non-feed request succeeded with no value or suspension. Produced by
     /// [`NativeSession::install_dependencies`].
     Ok,
@@ -660,6 +682,9 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         }
         TurnOutcome::LoadedIdle => {
             obj.set("kind", "loaded")?;
+        }
+        TurnOutcome::NotMounted => {
+            obj.set("kind", "notMounted")?;
         }
         TurnOutcome::Ok => {
             obj.set("kind", "ok")?;

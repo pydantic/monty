@@ -108,6 +108,12 @@ export interface OkTurn {
   kind: 'ok'
 }
 
+/** No mount covered the pending OS call, which stays suspended for the caller
+ *  to answer. Only produced by `NativeSession.resumeFromMounts`. */
+export interface NotMountedTurn {
+  kind: 'notMounted'
+}
+
 /** Everything one protocol turn can resolve to. */
 export type NativeTurn =
   | CompleteTurn

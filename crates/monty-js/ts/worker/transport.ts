@@ -13,7 +13,7 @@
 // `traceback` strings are not yet rendered (frames are decoded; the rendered
 // string is a follow-up); mounts are rejected (no host filesystem in a worker).
 
-import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn } from '../native.js'
+import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
 import type { Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
@@ -151,6 +151,14 @@ export class WorkerTransport {
     // ExtFunctionResult.not_handled (Unit): the child raises the suspended
     // call's own no-handler default.
     return this.resumeCall(extResult(5, new Uint8Array()), onPrint)
+  }
+
+  /**
+   * Always reports "not covered": a wasm worker has no host filesystem, so
+   * `feed`/`restore` reject mounts outright and none can service a call.
+   */
+  resumeFromMounts(_onPrint: OnPrint): Promise<NotMountedTurn> {
+    return Promise.resolve({ kind: 'notMounted' })
   }
 
   resumeFuture(onPrint: OnPrint): Promise<NativeTurn> {

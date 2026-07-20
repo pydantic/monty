@@ -1,10 +1,6 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
@@ -48,8 +44,9 @@ impl Default for ReplConfig {
 /// A host directory mounted into the sandbox for one feed. Mounts are handled
 /// entirely on the parent: the checkout services covered filesystem OS calls
 /// from the host path itself (so mounts work even when the worker runs on a
-/// remote machine), and OS calls the mounts don't cover surface as
-/// [`TurnEvent::OsCall`].
+/// remote machine). Every OS call still surfaces as a [`TurnEvent::OsCall`];
+/// mounts are consulted only when the caller asks, via
+/// [`Checkout::resume_from_mounts`].
 #[derive(Debug, Clone)]
 pub struct MountSpec {
     /// Absolute virtual POSIX path inside the sandbox, e.g. `/mnt/data`.
@@ -103,10 +100,12 @@ pub enum TurnEvent {
         call_id: u32,
         method_call: bool,
     },
-    /// The sandbox performed an OS operation no mount handled (e.g.
-    /// `"Path.read_text"`) — answer with [`Checkout::resume`]. A caller with
-    /// no handler should resume with [`ResumeValue::NotHandled`]; the sandbox
-    /// then raises the call's own no-handler default.
+    /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
+    /// Answer it from this feed's mounts with
+    /// [`Checkout::resume_from_mounts`], or directly with
+    /// [`Checkout::resume`]. A caller with no handler should resume with
+    /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
+    /// no-handler default.
     OsCall {
         function_name: String,
         args: Vec<MontyObject>,
@@ -180,22 +179,23 @@ pub struct Checkout {
     restored_script_name: Option<String>,
     /// Parent-side mount table for the in-flight feed, built from the
     /// [`MountSpec`]s passed to [`Checkout::feed`] / [`Checkout::restore`].
-    /// Covered filesystem `OsCall` events are serviced from it inside
-    /// [`Checkout::request_turn`] without surfacing to the caller. Dropped
-    /// when the feed ends so overlay writes never leak into the next feed.
+    /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
+    /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
 }
 
 /// Which kind of suspension is awaiting an answer.
 enum Pending {
     /// FunctionCall or OsCall; carries the call id and name (the name feeds
-    /// `ResumeValue::NotFound`'s NameError). `os_call` gates
-    /// [`ResumeValue::NotHandled`], which only an OS-call suspension can
-    /// resolve.
+    /// `ResumeValue::NotFound`'s NameError).
     Call {
         call_id: u32,
         function_name: String,
-        os_call: bool,
+        /// The typed OS call, retained so [`Checkout::resume_from_mounts`] can
+        /// offer it to this feed's mount table after the caller has seen it.
+        /// `None` for an external function call, which also gates
+        /// [`ResumeValue::NotHandled`] — only an OS call can resolve that way.
+        os_call: Option<Box<OsFunctionCall>>,
     },
     NameLookup,
     Futures,
@@ -231,7 +231,7 @@ impl Checkout {
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
-            other => Err(this.protocol_violation(&format!("unexpected reply to Configure: {other:?}"))),
+            other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
     }
 
@@ -247,11 +247,10 @@ impl Checkout {
     ///
     /// `mounts` re-establish a suspended feed's mounts, which are never part of
     /// the dump (they are host configuration the parent services itself). Pass
-    /// the same mounts the original feed used — the re-announcement carries the
-    /// full call payload, so a dump taken mid-OS-call resumes transparently: a
-    /// mount-covered call is serviced right here and the returned event is
-    /// whatever the feed does next. A mount silently omitted degrades its
-    /// filesystem calls into surfaced [`TurnEvent::OsCall`]s.
+    /// the same mounts the original feed used, so the resumed feed's covered
+    /// calls can still be answered by [`Checkout::resume_from_mounts`]. A dump
+    /// taken mid-OS-call re-announces the call in full, so the returned event
+    /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
     /// The session's resource budget is taken from the dump, so the prior
     /// `Configure` limits are dropped here and re-adopted from the worker's
     /// reply.
@@ -279,7 +278,7 @@ impl Checkout {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
             other @ ControlEvent::Dump(_) => {
-                return Err(self.protocol_violation(&format!("unexpected reply to Load: {other:?}")));
+                return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
         Ok((event, self.restored_script_name.take()))
@@ -305,7 +304,7 @@ impl Checkout {
     ) -> Result<TurnEvent, PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
-                "feed called while a suspension is awaiting an answer".to_owned(),
+                "feed called while a suspension is awaiting an answer".into(),
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
@@ -334,12 +333,12 @@ impl Checkout {
             os_call,
         }) = &self.pending
         else {
-            return Err(PoolError::Protocol("no suspended call to resume".to_owned()));
+            return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
-        let (call_id, function_name, os_call) = (*call_id, function_name.clone(), *os_call);
-        if matches!(value, ResumeValue::NotHandled) && !os_call {
+        let (call_id, function_name, is_os_call) = (*call_id, function_name.clone(), os_call.is_some());
+        if matches!(value, ResumeValue::NotHandled) && !is_os_call {
             return Err(PoolError::Protocol(
-                "NotHandled is only valid answering an OS call".to_owned(),
+                "NotHandled is only valid answering an OS call".into(),
             ));
         }
         if let ResumeValue::Return(obj) = &value {
@@ -362,6 +361,53 @@ impl Checkout {
         self.expect_turn(&request, on_print)
     }
 
+    /// Answers a pending [`TurnEvent::OsCall`] from this feed's mounts, when
+    /// they cover it.
+    ///
+    /// `Ok(None)` means no mount covers the call (or the feed has none): the
+    /// suspension is left intact for the caller to answer itself, typically via
+    /// its own `os` handler and then [`Checkout::resume`]. `Ok(Some(event))`
+    /// means a mount serviced the call — including servicing it into an error
+    /// such as `PermissionError` — and the feed ran on to `event`.
+    ///
+    /// This is how mounts are reached now that every OS call surfaces: an
+    /// auto-answering driver tries mounts first and falls back to its handler,
+    /// while a caller driving suspensions by hand can ignore mounts entirely.
+    /// Path containment inside covered calls is enforced by the [`MountTable`].
+    pub fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
+        let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
+            return Err(PoolError::Protocol("no suspended call to resume".into()));
+        };
+        let Some(call) = os_call.take() else {
+            return Err(PoolError::Protocol(
+                "resume_from_mounts is only valid answering an OS call".into(),
+            ));
+        };
+        // The call is *moved* into the table so a covered write's payload
+        // reaches overlay storage without a copy; an uncovered call comes back
+        // unchanged and is put back for the caller to answer.
+        let outcome = match self.feed_mounts.as_mut() {
+            Some(mounts) => mounts.handle_os_call(*call),
+            None => MountCallOutcome::NotHandled(*call),
+        };
+        match outcome {
+            MountCallOutcome::Handled(result) => {
+                let value = match result {
+                    Ok(obj) => ResumeValue::Return(obj),
+                    Err(err) => ResumeValue::Error(err.into_exception()),
+                };
+                self.resume(value, on_print).map(Some)
+            }
+            MountCallOutcome::NotHandled(call) => {
+                let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
+                    unreachable!("checked above");
+                };
+                *os_call = Some(Box::new(call));
+                Ok(None)
+            }
+        }
+    }
+
     /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
     /// `None` makes the sandbox raise `NameError`.
     pub fn resume_name_lookup(
@@ -370,7 +416,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         if !matches!(self.pending, Some(Pending::NameLookup)) {
-            return Err(PoolError::Protocol("no suspended name lookup to resume".to_owned()));
+            return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
         if let Some(obj) = &value {
             ensure_sendable([obj])?;
@@ -397,7 +443,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         if !matches!(self.pending, Some(Pending::Futures)) {
-            return Err(PoolError::Protocol("no suspended futures to resume".to_owned()));
+            return Err(PoolError::Protocol("no suspended futures to resume".into()));
         }
         let results = results
             .into_iter()
@@ -409,9 +455,9 @@ impl Checkout {
                     ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
                     ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
                     ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
-                        return Err(PoolError::Protocol(format!(
-                            "future {call_id} must resolve to Return or Error"
-                        )));
+                        return Err(PoolError::Protocol(
+                            format!("future {call_id} must resolve to Return or Error").into(),
+                        ));
                     }
                 };
                 Ok(pb::FutureResult {
@@ -444,7 +490,7 @@ impl Checkout {
     pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
-                "install_dependencies called while a suspension is awaiting an answer".to_owned(),
+                "install_dependencies called while a suspension is awaiting an answer".into(),
             ));
         }
         // Installing nothing trivially succeeds on any worker — including the
@@ -462,7 +508,7 @@ impl Checkout {
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(()),
-            other => Err(self.protocol_violation(&format!("unexpected reply to InstallDependencies: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
         }
     }
 
@@ -475,7 +521,7 @@ impl Checkout {
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.protocol_violation(&format!("unexpected reply to Dump: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
         }
     }
 
@@ -506,7 +552,7 @@ impl Checkout {
                 }
                 Ok(())
             }
-            other => Err(self.protocol_violation(&format!("unexpected reply to Reset: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to Reset: {other:?}"))),
         }
     }
 
@@ -525,7 +571,7 @@ impl Checkout {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
-            other => Err(self.protocol_violation(&format!("expected a turn event, got {other:?}"))),
+            other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
         }
     }
 
@@ -574,12 +620,7 @@ impl Checkout {
         // `Worker::reset_killed_for_timeout`).
         worker.reset_killed_for_timeout();
         self.armed_deadline = deadline;
-        // The turn's total worker-time allowance: each mount exchange consumes
-        // the interval the worker just ran, so a stream of covered OS calls
-        // cannot extend one turn beyond `deadline` of cumulative execution.
-        let mut remaining = deadline;
-        let mut armed_at = Instant::now();
-        let mut deadline_guard = self.pool.watchdog.arm(worker, deadline);
+        let deadline_guard = self.pool.watchdog.arm(worker, deadline);
 
         if let Err(err) = worker.send(request) {
             // `write_frame` rejects an oversize frame *before* writing any
@@ -605,7 +646,7 @@ impl Checkout {
                 // validation, which happens during decode) — the worker
                 // misbehaved, it didn't die
                 Err(FrameError::Decode(err)) => {
-                    return Err(self.protocol_violation(&format!("invalid payload from worker: {err}")));
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply")),
             };
@@ -629,7 +670,7 @@ impl Checkout {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
-                        os_call: false,
+                        os_call: None,
                     });
                     break self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
@@ -642,26 +683,6 @@ impl Checkout {
                     });
                 }
                 Some(pb::child_event::Kind::OsCall(call)) => {
-                    // Parent-side mounts: service covered filesystem calls
-                    // here and resume the child directly — the caller never
-                    // sees them (mirroring `Print` handling). The watchdog is
-                    // disarmed around the local I/O (the child is idle,
-                    // blocked on our reply — a slow host filesystem must not
-                    // count against its deadline). Each exchange deducts the
-                    // worker's just-elapsed interval from `remaining`, so
-                    // issuing covered calls cannot reset the deadline: total
-                    // worker execution per turn stays bounded by `deadline`.
-                    //
-                    // Deliberate trade-off: the host I/O window itself is
-                    // deducted from nothing and runs with no watchdog, so a
-                    // feed's *wall clock* is not bounded by the deadline — a
-                    // stalled filesystem blocks it indefinitely, and a loop
-                    // of covered calls gets its (per-call budget-bounded)
-                    // host I/O for free. Only worker execution is a hard
-                    // bound; see "Mount I/O is not covered by
-                    // `request_timeout`" in limitations/pool-architecture.md.
-                    deadline_guard = None;
-                    remaining = remaining.map(|allowance| allowance.saturating_sub(armed_at.elapsed()));
                     let call_id = call.call_id;
                     // Every announcement (fresh or re-announced after
                     // `restore`) decodes into a typed `OsFunctionCall`; a
@@ -672,57 +693,21 @@ impl Checkout {
                         Some(kind) => match OsFunctionCall::try_from(kind) {
                             Ok(function_call) => function_call,
                             Err(err) => {
-                                break Err(self.protocol_violation(&format!("invalid OS call payload: {err}")));
+                                break Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
                             }
                         },
                     };
-                    let unhandled = match self.try_mount_call(function_call) {
-                        MountCallOutcome::Handled(result) => {
-                            let wire_result = match result {
-                                Ok(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
-                                Err(err) => pb::ext_function_result::Kind::Error((&err.into_exception()).into()),
-                            };
-                            // `armed_deadline` (the `Timeout` error's reported
-                            // value) stays at the turn deadline: the allowance
-                            // makes that the bound the whole turn is held to.
-                            let next_deadline = min_deadline(remaining, self.backstop_deadline());
-                            let worker = self.worker.as_mut().expect("checked above");
-                            armed_at = Instant::now();
-                            deadline_guard = self.pool.watchdog.arm(worker, next_deadline);
-                            if let Err(err) = send_internal_resume(worker, call_id, wire_result) {
-                                // an oversize result frame is rejected before any
-                                // bytes are written, so the stream is intact and
-                                // the suspended child can be resumed with a small,
-                                // catchable error instead; anything else is a real
-                                // I/O break
-                                let FrameError::FrameTooLarge { len, max } = err else {
-                                    break Err(self.poison("resuming a mount-covered OS call"));
-                                };
-                                let exc = MontyException::new(
-                                    ExcType::RuntimeError,
-                                    Some(format!(
-                                        "OS call result frame of {len} bytes exceeds the maximum of {max} bytes"
-                                    )),
-                                );
-                                let error_result = pb::ext_function_result::Kind::Error((&exc).into());
-                                if send_internal_resume(worker, call_id, error_result).is_err() {
-                                    break Err(self.poison("resuming a mount-covered OS call"));
-                                }
-                            }
-                            // serviced internally — wait for the child's
-                            // next event
-                            continue;
-                        }
-                        MountCallOutcome::NotHandled(function_call) => function_call,
-                    };
-                    // Not mount-covered: surface to the caller in the
-                    // `(name, args, kwargs)` host-callback shape.
-                    let function_name = unhandled.name().to_owned();
-                    let (args, kwargs) = unhandled.to_args();
+                    // Every OS call surfaces, mount-covered or not: the caller
+                    // decides how to answer it, and reaches this feed's mounts
+                    // through `resume_from_mounts`. The typed call is retained
+                    // for that; the caller-facing `(name, args, kwargs)` shape
+                    // is projected from a clone.
+                    let function_name = function_call.name().to_owned();
+                    let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
                         call_id,
                         function_name: function_name.clone(),
-                        os_call: true,
+                        os_call: Some(Box::new(function_call)),
                     });
                     break Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
@@ -766,7 +751,7 @@ impl Checkout {
                     };
                     break match MontyException::try_from(exception) {
                         Ok(exc) => Err(PoolError::Runtime(exc)),
-                        Err(err) => Err(self.protocol_violation(&format!("invalid exception payload: {err}"))),
+                        Err(err) => Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
@@ -778,10 +763,9 @@ impl Checkout {
                 Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     self.discard_worker();
-                    break Err(PoolError::Protocol(format!(
-                        "worker reported fatal error: {}",
-                        fatal.message
-                    )));
+                    break Err(PoolError::Protocol(
+                        format!("worker reported fatal error: {}", fatal.message).into(),
+                    ));
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -809,19 +793,6 @@ impl Checkout {
         }
     }
 
-    /// Routes a decoded OS call to this feed's parent-side mount table,
-    /// performing any covered host I/O here. The call is *moved* in so a
-    /// covered write's payload reaches overlay storage without a copy;
-    /// `NotHandled` hands it back for surfacing to the caller. With no
-    /// mounts this feed, every call comes back `NotHandled`. Path
-    /// containment inside covered calls is enforced by the `MountTable`.
-    fn try_mount_call(&mut self, call: OsFunctionCall) -> MountCallOutcome {
-        match self.feed_mounts.as_mut() {
-            Some(mounts) => mounts.handle_os_call(call),
-            None => MountCallOutcome::NotHandled(call),
-        }
-    }
-
     /// Runs a fallible payload conversion; conversion failures mean the
     /// worker sent garbage, which discards it.
     fn convert_turn(
@@ -830,7 +801,7 @@ impl Checkout {
     ) -> Result<ControlEvent, PoolError> {
         match convert() {
             Ok(event) => Ok(ControlEvent::Turn(event)),
-            Err(err) => Err(self.protocol_violation(&format!("invalid payload from worker: {err}"))),
+            Err(err) => Err(self.protocol_violation(format!("invalid payload from worker: {err}"))),
         }
     }
 
@@ -838,9 +809,9 @@ impl Checkout {
     /// (unexpected event kind, undecodable payload). Unlike [`Self::poison`]
     /// this is not a crash — the worker answered, just wrongly — so it maps
     /// to [`PoolError::Protocol`] rather than `Crashed`/`Timeout`.
-    fn protocol_violation(&mut self, context: &str) -> PoolError {
+    fn protocol_violation(&mut self, context: impl Into<Cow<'static, str>>) -> PoolError {
         self.discard_worker();
-        PoolError::Protocol(context.to_owned())
+        PoolError::Protocol(context.into())
     }
 
     /// Discards the worker after an I/O failure and classifies it as a
@@ -954,20 +925,4 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolE
         table.push_mount(mount);
     }
     Ok(Some(table))
-}
-
-/// Sends the `ResumeCall` answering a mount-serviced OS call. Free function
-/// (not a method) so [`Checkout::request_turn`] can call it while the worker
-/// is already mutably borrowed.
-fn send_internal_resume(
-    worker: &mut Worker,
-    call_id: u32,
-    result: pb::ext_function_result::Kind,
-) -> Result<(), FrameError> {
-    worker.send(&pb::ParentRequest {
-        kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
-            call_id,
-            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
-        })),
-    })
 }
