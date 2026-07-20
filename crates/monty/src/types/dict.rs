@@ -814,6 +814,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Dict
     }

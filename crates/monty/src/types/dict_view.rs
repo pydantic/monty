@@ -127,6 +127,10 @@ impl DictView for DictKeysView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictKeys
     }
@@ -289,6 +293,10 @@ impl DictView for DictItemsView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictItems
     }
@@ -392,6 +400,10 @@ impl<'h> HeapRead<'h, DictValuesView> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictValues
     }

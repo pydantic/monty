@@ -870,6 +870,10 @@ impl HeapItem for MontyIter {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, MontyIter> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Iterator
     }

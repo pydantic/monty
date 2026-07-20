@@ -1471,6 +1471,16 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_is_iterable(&self, vm: &VM<'_, impl ResourceTracker>) -> bool {
+        match self {
+            // Interned string and bytes literals iterate without ever reaching
+            // the heap, so they answer here rather than in `HeapReadOutput`.
+            Self::InternString(_) | Self::InternBytes(_) => true,
+            Self::Ref(id) => vm.heap.read(*id).py_is_iterable(vm),
+            _ => false,
+        }
+    }
+
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iter(Some(*id), vm)

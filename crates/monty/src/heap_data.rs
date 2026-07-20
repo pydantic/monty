@@ -536,6 +536,52 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_is_iterable(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
+        // Exhaustive, mirroring `py_iter`: each type answers for itself, so a new
+        // heap variant cannot silently default to "not iterable" — it fails to
+        // compile until it says which it is.
+        match self {
+            Self::Str(value) => value.py_is_iterable(vm),
+            Self::Bytes(value) => value.py_is_iterable(vm),
+            Self::List(value) => value.py_is_iterable(vm),
+            Self::ListIterator(value) => value.py_is_iterable(vm),
+            Self::Tuple(value) => value.py_is_iterable(vm),
+            Self::NamedTuple(value) => value.py_is_iterable(vm),
+            Self::Dict(value) => value.py_is_iterable(vm),
+            Self::DictKeysView(value) => value.py_is_iterable(vm),
+            Self::DictItemsView(value) => value.py_is_iterable(vm),
+            Self::DictValuesView(value) => value.py_is_iterable(vm),
+            Self::Set(value) => value.py_is_iterable(vm),
+            Self::FrozenSet(value) => value.py_is_iterable(vm),
+            Self::Range(value) => value.py_is_iterable(vm),
+            Self::Slice(value) => value.py_is_iterable(vm),
+            Self::Dataclass(value) => value.py_is_iterable(vm),
+            Self::Class(value) => value.py_is_iterable(vm),
+            Self::Instance(value) => value.py_is_iterable(vm),
+            Self::BoundMethod(value) => value.py_is_iterable(vm),
+            Self::Iter(value) => value.py_is_iterable(vm),
+            Self::Path(value) => value.py_is_iterable(vm),
+            Self::OpenFile(value) => value.py_is_iterable(vm),
+            Self::ReMatch(value) => value.py_is_iterable(vm),
+            Self::RePattern(value) => value.py_is_iterable(vm),
+            Self::Date(value) => value.py_is_iterable(vm),
+            Self::DateTime(value) => value.py_is_iterable(vm),
+            Self::TimeDelta(value) => value.py_is_iterable(vm),
+            Self::TimeZone(value) => value.py_is_iterable(vm),
+            // Types `py_iter` cannot build an iterator for.
+            Self::Closure(_)
+            | Self::FunctionDefaults(_)
+            | Self::ExtFunction(_)
+            | Self::Cell(_)
+            | Self::Exception(_)
+            | Self::LongInt(_)
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_)
+            | Self::ExternalFuture(_) => false,
+        }
+    }
+
     fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
         // Only types that implement the protocol return true; everything else
         // inherits the default `false`. The `with` statement gates `py_enter`

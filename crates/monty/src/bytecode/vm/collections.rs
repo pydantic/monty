@@ -8,8 +8,8 @@ use crate::{
     intern::StringId,
     resource::ResourceTracker,
     types::{
-        Dict, List, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded, slice::value_to_option_i64,
-        str::allocate_char,
+        Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
+        slice::value_to_option_i64, str::allocate_char,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -123,8 +123,10 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     items
                 }
-                // An iterator is drained, as CPython does.
-                HeapData::Iter(_) | HeapData::ListIterator(_) => collect_iterable(iterable, this)?,
+                // Anything else Monty can iterate is drained generically — the
+                // arms above are fast paths, not a definition of what is legal.
+                // Each type answers via `py_is_iterable`, so nothing is listed here.
+                _ if iterable.py_is_iterable(this) => collect_iterable(iterable, this)?,
                 _ => {
                     let type_ = iterable.py_type_name(this);
                     return Err(ExcType::type_error_value_after_star(&type_));
@@ -139,6 +141,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                 }
                 items
             }
+            // Interned non-string iterables (notably `bytes` literals) never
+            // reach the heap match above.
+            _ if iterable.py_is_iterable(this) => collect_iterable(iterable, this)?,
             _ => {
                 let type_ = iterable.py_type_name(this);
                 return Err(ExcType::type_error_value_after_star(&type_));
@@ -388,8 +393,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                     items
                 }
-                // An iterator is drained, as CPython does.
-                HeapData::Iter(_) | HeapData::ListIterator(_) => collect_iterable(iterable, this)?,
+                // See `list_extend`: the arms above are fast paths, not the
+                // definition of what may follow a `*`.
+                _ if iterable.py_is_iterable(this) => collect_iterable(iterable, this)?,
                 _ => {
                     let type_ = iterable.py_type_name(this);
                     return Err(ExcType::type_error_not_iterable(&type_));
@@ -404,6 +410,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 }
                 items
             }
+            _ if iterable.py_is_iterable(this) => collect_iterable(iterable, this)?,
             _ => {
                 let type_ = iterable.py_type_name(this);
                 return Err(ExcType::type_error_not_iterable(&type_));
@@ -584,10 +591,12 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         return Ok(());
                     }
-                    // Pull one past `count` so a too-long iterator is detected
+                    // Pull one past `count` so a too-long iterable is detected
                     // without draining it — CPython stops consuming there too,
-                    // and so reports no total in the "too many" message.
-                    HeapData::Iter(_) | HeapData::ListIterator(_) => {
+                    // and so reports no total in the "too many" message. That
+                    // message is the same for every source type, so everything
+                    // Monty can iterate takes this path.
+                    _ if value.py_is_iterable(this) => {
                         let items = collect_iterable_bounded(value, count + 1, this)?;
                         if items.len() != count {
                             let err = if items.len() > count {
@@ -607,6 +616,23 @@ impl<T: ResourceTracker> VM<'_, T> {
                         return Err(unpack_type_error(&type_name));
                     }
                 }
+            }
+            // Interned iterables (string and bytes literals) never reach the
+            // heap match above.
+            _ if value.py_is_iterable(this) => {
+                let items = collect_iterable_bounded(value, count + 1, this)?;
+                if items.len() != count {
+                    let err = if items.len() > count {
+                        unpack_too_many_unknown_error(count)
+                    } else {
+                        unpack_size_error(count, items.len())
+                    };
+                    for item in items {
+                        item.drop_with(this);
+                    }
+                    return Err(err);
+                }
+                items
             }
             // Non-iterable types
             _ => {
@@ -681,8 +707,9 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         items
                     }
-                    // An iterator is drained to unpack it, as CPython does.
-                    HeapData::Iter(_) | HeapData::ListIterator(_) => {
+                    // Drained in full: a starred target consumes everything, so
+                    // unlike `unpack_sequence` there is no bound to stop at.
+                    _ if value.py_is_iterable(this) => {
                         let items = collect_iterable(value, this)?;
                         if items.len() < min_items {
                             let err = unpack_ex_too_few_error(min_items, items.len());
@@ -698,6 +725,18 @@ impl<T: ResourceTracker> VM<'_, T> {
                         return Err(unpack_type_error(&type_name));
                     }
                 }
+            }
+            // Interned iterables never reach the heap match above.
+            _ if value.py_is_iterable(this) => {
+                let items = collect_iterable(value, this)?;
+                if items.len() < min_items {
+                    let err = unpack_ex_too_few_error(min_items, items.len());
+                    for item in items {
+                        item.drop_with(this);
+                    }
+                    return Err(err);
+                }
+                items
             }
             _ => {
                 let type_name = value.py_type_name(this);

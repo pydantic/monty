@@ -263,6 +263,10 @@ impl ops::Deref for Str {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Str
     }

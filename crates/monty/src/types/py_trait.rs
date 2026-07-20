@@ -510,6 +510,23 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
+    /// Reports whether [`py_iter`](PyTrait::py_iter) would succeed for this
+    /// object, without building the iterator.
+    ///
+    /// Callers that iterate should just call `py_iter`; this exists for the
+    /// sites that must report their *own* error for a non-iterable — the `*`
+    /// literal unpack (`Value after * must be an iterable`), set unpack
+    /// (`'x' object is not iterable`) and assignment unpacking (`cannot unpack
+    /// non-iterable x object`) all word it differently, so they have to ask
+    /// before delegating rather than map a failure afterwards.
+    ///
+    /// Mirrors [`py_is_context_manager`](PyTrait::py_is_context_manager): a type
+    /// that can be iterated MUST return `true` here, or it will be reported as
+    /// non-iterable by those sites while `list()` and `for` still accept it.
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        false
+    }
+
     /// Returns a Python iterator for this object (`__iter__`).
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let Some(self_id) = self_id else {
