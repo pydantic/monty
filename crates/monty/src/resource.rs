@@ -744,3 +744,21 @@ impl ResourceTracker for LimitedTracker {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ResourceError::Exception` is not a limit hit — it wraps a
+    /// propagating exception — so `into_exception` must pass its type and
+    /// message through unchanged and attach no `ExcData::ResourceLimit`
+    /// payload, unlike the four true limit-hit variants above it.
+    #[test]
+    fn exception_variant_carries_no_resource_limit_data() {
+        let inner = MontyException::new(ExcType::ValueError, Some("boom".to_owned()));
+        let raised = ResourceError::Exception(inner).into_exception(None);
+        assert_eq!(raised.exc.exc_type(), ExcType::ValueError);
+        assert_eq!(raised.exc.arg().map(String::as_str), Some("boom"));
+        assert_eq!(raised.exc.data(), &ExcData::None);
+    }
+}
