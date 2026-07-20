@@ -162,11 +162,15 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
-# class decorator tests deliberately use untyped decorators (incl. bare lambdas)
+# decorator tests deliberately use untyped decorators (incl. bare lambdas)
 reportUntypedClassDecorator = false
-# unused variables, classes and imports are fine in test cases
+reportUntypedFunctionDecorator = false
+# unused variables, classes, functions and imports are fine in test cases —
+# e.g. the walrus-in-decorator tests decorate a throwaway `def f(): pass`, the
+# same way the class-side ones decorate a throwaway `class C: pass`
 reportUnusedVariable = false
 reportUnusedClass = false
+reportUnusedFunction = false
 reportUnusedImport = false
 reportDuplicateImport = false
 reportAssignmentType = false

@@ -241,8 +241,8 @@ pub struct Parser<'a> {
     /// never records where `class` sat, and its range starts at the first
     /// decorator. CPython locates a statement at its keyword, so a decorated
     /// class's traceback frame needs the concrete position. Read only by
-    /// [`Parser::class_keyword_range`]; `def`/`async def` will want the same
-    /// treatment if function decorators are supported.
+    /// [`Parser::class_keyword_range`]. A decorated `def` needs no equivalent:
+    /// `MakeFunction` pushes no frame, so nothing locates a `def` statement.
     class_keyword_offsets: Vec<TextSize>,
 }
 
@@ -346,7 +346,10 @@ impl<'a> Parser<'a> {
 
     fn parse_statement_impl(&mut self, statement: Stmt) -> Result<ParseNode, ParseError> {
         match statement {
-            Stmt::FunctionDef(function) => Ok(Node::FunctionDef(self.parse_function_def(function)?)),
+            Stmt::FunctionDef(function) => {
+                let (def, decorators) = self.parse_function_def(function)?;
+                Ok(Node::FunctionDef { def, decorators })
+            }
             Stmt::ClassDef(c) => self.parse_class_def(c),
             Stmt::Return(ast::StmtReturn { value, .. }) => Ok(Node::Return(match value {
                 Some(value) => Some(self.parse_expression(*value)?),
@@ -711,21 +714,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parses a `def` into a [`RawFunctionDef`].
+    /// Parses a `def` into a [`RawFunctionDef`] plus its decorators.
     ///
     /// Shared by the top-level `Stmt::FunctionDef` arm and by class-body method
-    /// parsing in [`parse_class_def`](Self::parse_class_def). Decorators are
-    /// rejected here rather than silently ignored — a silently-dropped decorator
-    /// changes behaviour without warning, which is unacceptable in a sandbox. The
-    /// class-body path rejects decorated methods earlier with a more specific
-    /// message, so this only fires for top-level `def`s in practice.
-    fn parse_function_def(&mut self, function: ast::StmtFunctionDef) -> Result<RawFunctionDef, ParseError> {
-        if !function.decorator_list.is_empty() {
-            return Err(ParseError::not_implemented(
-                "function decorators",
-                self.convert_range(function.range),
-            ));
-        }
+    /// parsing in [`parse_class_def`](Self::parse_class_def). The decorators are
+    /// returned separately because they belong to the statement, not the function
+    /// (see [`Node::FunctionDef`]); the class-body path rejects decorated methods
+    /// before calling here, so it always receives an empty list.
+    fn parse_function_def(
+        &mut self,
+        function: ast::StmtFunctionDef,
+    ) -> Result<(RawFunctionDef, Vec<ExprLoc>), ParseError> {
+        let decorators = self.parse_decorators(function.decorator_list)?;
 
         let params = &function.parameters;
 
@@ -757,12 +757,31 @@ impl<'a> Parser<'a> {
         let body = self.parse_statements(function.body)?;
         let is_async = function.is_async;
 
-        Ok(RawFunctionDef {
-            name,
-            signature,
-            body,
-            is_async,
-        })
+        Ok((
+            RawFunctionDef {
+                name,
+                signature,
+                body,
+                is_async,
+            },
+            decorators,
+        ))
+    }
+
+    /// Parses decorator expressions in source order.
+    ///
+    /// They are ordinary expressions evaluated in the enclosing scope; the
+    /// compiler emits the applying calls after building the decorated value.
+    /// Shared by [`parse_function_def`](Self::parse_function_def) and
+    /// [`parse_class_def`](Self::parse_class_def).
+    fn parse_decorators(
+        &mut self,
+        decorators: impl IntoIterator<Item = ast::Decorator>,
+    ) -> Result<Vec<ExprLoc>, ParseError> {
+        decorators
+            .into_iter()
+            .map(|d| self.parse_expression(d.expression))
+            .collect()
     }
 
     /// Parses a `class Foo: ...` definition into a [`Node::ClassDef`].
@@ -782,13 +801,7 @@ impl<'a> Parser<'a> {
     /// are rejected as not-implemented, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
         let position = self.class_keyword_range(&class);
-        // Parsed as ordinary expressions; the compiler emits the apply calls
-        // after building the class.
-        let decorators = class
-            .decorator_list
-            .into_iter()
-            .map(|d| self.parse_expression(d.expression))
-            .collect::<Result<Vec<_>, ParseError>>()?;
+        let decorators = self.parse_decorators(class.decorator_list)?;
         // `class.arguments` carries base classes and metaclass keywords.
         if class
             .arguments
@@ -837,9 +850,16 @@ impl<'a> Parser<'a> {
                             self.reject_class_body_walrus(default)?;
                         }
                     }
-                    let method = self.parse_function_def(function)?;
+                    let (method, decorators) = self.parse_function_def(function)?;
+                    // Rejected above, so a decorated method never reaches the
+                    // class namespace — where a decorator's return value, not a
+                    // function, would end up bound as the member.
+                    debug_assert!(decorators.is_empty(), "method decorators are rejected above");
                     members.push(method.name);
-                    body.push(Node::FunctionDef(method));
+                    body.push(Node::FunctionDef {
+                        def: method,
+                        decorators,
+                    });
                 }
                 // `name = <expr>` — a class-level variable.
                 Stmt::Assign(ast::StmtAssign {

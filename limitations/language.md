@@ -13,10 +13,11 @@ any code runs.
   class-body statements other than `def`, a simple `name [: T] = <expr>`
   assignment, `pass`, or a docstring. There is no inheritance and no general
   dunder protocol. See [classes.md](classes.md).
-- **Decorators** (`@deco`) — supported on classes, taking any callable in scope,
-  evaluated in the enclosing scope and applied bottom-up. Rejected at parse time
-  on functions and methods, so `@classmethod`, `@staticmethod`, `@property` and
-  any decorator on a `def` are unavailable. See [classes.md](classes.md).
+- **Decorators** (`@deco`) — supported on classes and on top-level or nested
+  `def`/`async def`, taking any callable in scope, evaluated in the enclosing
+  scope and applied bottom-up. Rejected at parse time on **methods**, so
+  `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
+  inside a class body are unavailable. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator
   *expressions* (`(x for x in ...)`) parse but currently materialize to a
@@ -131,6 +132,19 @@ exposing `None` would diverge on type — and a real loader is neither available
 nor safe to surface in the sandbox. `__file__` is omitted so no host path can
 leak into the sandbox.
 
+## Function objects
+
+A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
+`__module__` all raise `AttributeError: 'function' object has no attribute
+'<name>'`, and new ones cannot be set — `fn.tag = True` raises `AttributeError:
+'function' object has no attribute 'tag' and no __dict__ for setting new
+attributes`. CPython supports all of these.
+
+This is the ceiling on what a decorator can do: it can call, wrap, store or
+replace the function it receives, but cannot ask the function about itself, so
+`functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
+attribute tagging for later discovery all have no equivalent.
+
 ## Ordering comparisons
 
 `<`, `<=`, `>`, `>=` on operands with no defined ordering raise
@@ -157,8 +171,8 @@ give `False` on both.
 
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures (but not
-  decorators — see above).
+- Functions (`def`, `async def`), nested functions, closures, and decorators on
+  them (but not on methods — see above).
 - List / dict / set comprehensions (generator comprehensions degrade to
   lists — see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.
