@@ -397,8 +397,8 @@ impl NativeSession {
 
     /// Restores a dump into this session's freshly configured worker. Resolves
     /// to a turn object: a suspension when the dump was mid-feed, or `loaded`
-    /// for an idle dump. The TypeScript `load` / `loadSnapshot` split inspects
-    /// the kind and enforces "fresh session only".
+    /// for an idle dump. The TypeScript `loadSession` / `loadSnapshot` split
+    /// inspects the kind and enforces "fresh session only".
     #[napi]
     pub fn restore<'env>(
         &self,
@@ -511,7 +511,7 @@ impl NativeSession {
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
     /// checkout off the event loop, streams prints, and resolves the computed
     /// [`TurnOutcome`] to a JS turn object. `compute` returns the outcome
-    /// directly so the `load` turn (which yields `Option<TurnEvent>`) can map
+    /// directly so the restore turn (which yields `Option<TurnEvent>`) can map
     /// its idle case to [`TurnOutcome::LoadedIdle`].
     fn run_outcome<'env>(
         &self,
@@ -573,8 +573,8 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
-    /// A `load` restored an idle (between-feeds) session — there is no
-    /// suspension to resume. Only produced by [`NativeSession::load`].
+    /// A restore of an idle (between-feeds) dump — there is no suspension to
+    /// resume. Only produced by [`NativeSession::restore`].
     LoadedIdle,
     /// A non-feed request succeeded with no value or suspension. Produced by
     /// [`NativeSession::install_dependencies`].

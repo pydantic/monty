@@ -102,7 +102,7 @@ test('dump at a suspension, then loadSnapshot and resume', async () => {
   }
 })
 
-test('load restores an idle session', async () => {
+test('loadSession restores an idle session', async () => {
   let blob: Buffer
   {
     const session = await pool().checkout()
@@ -112,14 +112,14 @@ test('load restores an idle session', async () => {
   }
   const session = await pool().checkout()
   try {
-    await session.load(blob)
+    await session.loadSession(blob)
     t.is(await session.feedRun('kept + 1'), 8)
   } finally {
     await session.close()
   }
 })
 
-test('load and loadSnapshot reject the wrong dump kind', async () => {
+test('loadSession and loadSnapshot reject the wrong dump kind', async () => {
   let idle: Buffer
   let suspended: Buffer
   {
@@ -136,7 +136,7 @@ test('load and loadSnapshot reject the wrong dump kind', async () => {
   {
     const session = await pool().checkout()
     await t.throwsAsync(() => session.loadSnapshot(idle), {
-      message: 'this dump is an idle session — use load() to restore it',
+      message: 'this dump is an idle session — use loadSession() to restore it',
     })
     // the failed load poisons the session — it is not retryable
     await t.throwsAsync(() => session.feedRun('1 + 1'))
@@ -144,7 +144,7 @@ test('load and loadSnapshot reject the wrong dump kind', async () => {
   }
   {
     const session = await pool().checkout()
-    await t.throwsAsync(() => session.load(suspended), {
+    await t.throwsAsync(() => session.loadSession(suspended), {
       message: 'this dump is a suspended snapshot — use loadSnapshot() to resume it',
     })
     await t.throwsAsync(() => session.feedRun('1 + 1'))
@@ -159,7 +159,7 @@ test('load after a feed is rejected', async () => {
     await session.feedRun('x = 1')
     await t.throwsAsync(() => session.loadSnapshot(blob), {
       message:
-        'load / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / load / loadSnapshot',
+        'loadSession / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / loadSession / loadSnapshot',
     })
   } finally {
     await session.close()

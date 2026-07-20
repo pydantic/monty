@@ -102,8 +102,8 @@ export interface ProtocolTurn {
   message: string
 }
 
-/** A `load` restored an idle (between-feeds) session — no suspension to
- *  resume. Only produced by `NativeSession.load`. */
+/** A restore of an idle (between-feeds) dump — no suspension to resume. Only
+ *  produced by `NativeSession.restore`, surfaced by `MontySession.loadSession`. */
 export interface LoadedTurn {
   kind: 'loaded'
 }

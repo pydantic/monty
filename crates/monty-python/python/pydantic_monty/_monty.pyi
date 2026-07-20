@@ -496,14 +496,16 @@ class MontySession:
                 session was checked out with `type_check=True`.
         """
 
-    def load(self, state: bytes) -> None:
+    def load_session(self, state: bytes) -> None:
         """
-        Restore a dumped **idle** session — bytes from `session.dump()` taken
-        between feeds — so you can keep feeding it. Use `load_snapshot` for a
-        dump taken mid-execution.
+        Restore a session between feeds.
 
-        Valid only on a fresh session, before any feed or load; raises
-        `RuntimeError` otherwise. The dump restores its own `script_name` /
+        This method should take data from `session.dump()` taken when no block of
+        code is running (i.e. between feeds).
+
+        Use `load_snapshot` for a dump taken mid-execution.
+
+        The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
         applied); the dataclass registry from `checkout()` is reused. Raises if
         the dump is actually a suspended snapshot.
@@ -519,9 +521,10 @@ class MontySession:
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
-        Restore a dumped **suspended** snapshot — bytes from `feed_start` +
-        `snapshot.dump()` — and return the re-announced snapshot to resume. Use
-        `load` for a dump taken between feeds.
+        Restore a snapshot generated while a block of code is running (e.g. after `start_feed`)
+        and return the re-announced snapshot to resume.
+
+        Use `load_session` for a dump taken between feeds.
 
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its own `script_name` /
@@ -805,9 +808,9 @@ class AsyncMontySession:
                 session was checked out with `type_check=True`.
         """
 
-    async def load(self, state: bytes) -> None:
+    async def load_session(self, state: bytes) -> None:
         """
-        Async counterpart of `MontySession.load`: restores a dumped idle
+        Async counterpart of `MontySession.load_session`: restores a dumped idle
         session. Valid only on a fresh session; raises if the dump is actually a
         suspended snapshot.
         """

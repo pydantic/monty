@@ -234,7 +234,7 @@ impl Checkout {
     /// not-yet-fed) worker, returning the re-announced suspension event when the
     /// dump was taken mid-feed (`None` for an idle, between-feeds dump).
     ///
-    /// This is the low-level restore both `session.load` (idle dumps) and
+    /// This is the low-level restore both `session.load_session` (idle dumps) and
     /// `session.load_snapshot` (suspended dumps) drive: the caller inspects the
     /// returned `Option` to tell which kind of dump it was and reject a
     /// mismatch. Only valid before the worker has been fed (the child rejects a

@@ -275,7 +275,7 @@ def test_load_accepts_mount_for_idle_dump(pool: Monty, tmp_path: Path):
 
     mount = MountDir('/data', str(tmp_path), mode='read-only')
     with pool.checkout() as session:
-        assert session.load(blob) is None
+        assert session.load_session(blob) is None
         assert session.feed_run('kept + 1', mount=mount) == snapshot(2)
 
 
@@ -285,7 +285,7 @@ def test_load_restores_idle_session(pool: Monty):
         blob = session.dump()
 
     with pool.checkout() as session:
-        assert session.load(blob) is None
+        assert session.load_session(blob) is None
         assert session.feed_run('kept + 1') == snapshot(8)
 
 
@@ -297,14 +297,14 @@ def test_load_snapshot_on_idle_dump_raises(pool: Monty):
     with pool.checkout() as session:
         with pytest.raises(RuntimeError) as exc_info:
             session.load_snapshot(blob)
-        assert str(exc_info.value) == snapshot('this dump is an idle session — use load() to restore it')
+        assert str(exc_info.value) == snapshot('this dump is an idle session — use load_session() to restore it')
         # the failed load poisons the session — it is not retryable
         with pytest.raises(RuntimeError):
             session.feed_run('1 + 1')
 
 
 def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
-    # the converse mismatch: load() on a suspended snapshot raises
+    # the converse mismatch: load_session() on a suspended snapshot raises
     with pool.checkout() as session:
         snap = session.feed_start('f()')
         assert isinstance(snap, FunctionSnapshot)
@@ -312,7 +312,7 @@ def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
 
     with pool.checkout() as session:
         with pytest.raises(RuntimeError) as exc_info:
-            session.load(blob)
+            session.load_session(blob)
         assert str(exc_info.value) == snapshot('this dump is a suspended snapshot — use load_snapshot() to resume it')
         # the failed load poisons the session — it is not retryable
         with pytest.raises(RuntimeError):
@@ -320,7 +320,7 @@ def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
 
 
 def test_load_after_feed_raises(pool: Monty):
-    # load / load_snapshot are only valid on a fresh, undriven session.
+    # load_session / load_snapshot are only valid on a fresh, undriven session.
     with pool.checkout() as session:
         blob = session.dump()
     with pool.checkout() as session:
@@ -328,7 +328,7 @@ def test_load_after_feed_raises(pool: Monty):
         with pytest.raises(RuntimeError) as exc_info:
             session.load_snapshot(blob)
         assert str(exc_info.value) == snapshot(
-            'load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot'
+            'load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot'
         )
 
 

@@ -141,9 +141,9 @@ if (restored instanceof FunctionSnapshot) await restored.resume('value')
 ```
 
 `session.dump()` between feeds serializes an idle session instead; restore it
-with `await session.load(blob)` (which resolves to `void`) and keep feeding.
-Both `load` and `loadSnapshot` are valid only on a fresh session, before any
-feed; using the wrong one for a dump's kind throws.
+with `await session.loadSession(blob)` (which resolves to `void`) and keep
+feeding. Both `loadSession` and `loadSnapshot` are valid only on a fresh
+session, before any feed; using the wrong one for a dump's kind throws.
 
 ## Print Output
 

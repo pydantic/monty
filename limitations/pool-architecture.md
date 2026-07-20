@@ -235,7 +235,7 @@ properties that real CPython does not provide, per the caveat above.
   block is just a comment and its dependencies are never installed.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker of the same version, via
-  `session.load` / `session.load_snapshot` (Rust `Checkout::restore`).
+  `session.load_session` / `session.load_snapshot` (Rust `Checkout::restore`).
 - **`feed_start` snapshots are live cursors, not owned state.** The execution
   state lives in the worker, so only one suspension is live per session, each
   snapshot may be resumed at most once (a second resume raises
@@ -243,14 +243,14 @@ properties that real CPython does not provide, per the caveat above.
   pre-subprocess in-process API, where a snapshot owned freely-copyable state.
 - **Restoring a dump is a session method, split by dump kind.** The old
   module-level `load_snapshot` / `load_repl_snapshot` are replaced by two
-  fresh-session-only methods: `session.load(state)` restores a dump taken
-  between feeds (an idle session) so you can keep feeding it, and
+  fresh-session-only methods: `session.load_session(state)` restores a dump
+  taken between feeds (an idle session) so you can keep feeding it, and
   `session.load_snapshot(state, *, mount=…)` restores a dump taken mid-feed and
   returns the re-announced snapshot to resume. The caller knows which kind it
   dumped (`session.dump()` between feeds vs `snapshot.dump()`); using the wrong
   method raises. Both restore *into* a freshly checked-out worker, so they are
-  rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load` /
-  `load_snapshot` — restoring would otherwise discard work. The dump restores
+  rejected (`RuntimeError`) after any `feed_run` / `feed_start` / `load_session`
+  / `load_snapshot` — restoring would otherwise discard work. The dump restores
   its own `script_name` / limits / type-check state (the `checkout()` config
   for those is not applied); the dataclass registry from `checkout()` is reused.
   A *failed* load (wrong dump kind, or a protocol desync) poisons the session
@@ -264,8 +264,8 @@ properties that real CPython does not provide, per the caveat above.
   dump bytes — dump contents can never cause any directory to be mounted. To
   resume a suspended feed with its mounts, pass the same `mount=` the original
   `feed_start` used to `load_snapshot`; the pool rebuilds its mount table.
-  (`load` takes no `mount` — an idle session has no in-flight feed; the next
-  feed supplies its own.)
+  (`load_session` takes no `mount` — an idle session has no in-flight feed; the
+  next feed supplies its own.)
 - **Re-supplied mounts are not validated.** The dump records nothing about the
   feed's mounts, so `load_snapshot` cannot check what you pass: a mount
   silently omitted (or altered) simply degrades the resumed feed's covered

@@ -175,8 +175,9 @@ pub struct PyMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
-    /// Set once the session has been fed or restored. `load_snapshot` is valid
-    /// only while this is unset (a fresh, undriven session).
+    /// Set once the session has been fed or restored. `load_session` /
+    /// `load_snapshot` are valid only while this is unset (a fresh, undriven
+    /// session).
     used: AtomicBool,
 }
 
@@ -300,7 +301,7 @@ impl PyMontySession {
     /// limits / type-check state (the `checkout()` config for those is not
     /// applied); the dataclass registry from `checkout()` is reused. Raises if
     /// the dump is actually a suspended snapshot.
-    fn load(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
+    fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
         if self.restore_turn(py, state, Vec::new())?.0.is_some() {
             py.detach(|| discard_checkout(&self.checkout));
@@ -313,7 +314,7 @@ impl PyMontySession {
 
     /// Restores a dumped **suspended** snapshot — bytes from `feed_start` +
     /// `snapshot.dump()` — and returns the re-announced snapshot to resume. Use
-    /// [`load`](Self::load) for a dump taken between feeds.
+    /// [`load_session`](Self::load_session) for a dump taken between feeds.
     ///
     /// Valid only on a fresh session, before any feed or load; raises
     /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
@@ -350,7 +351,7 @@ impl PyMontySession {
         let Some(event) = event else {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
-                "this dump is an idle session — use load() to restore it",
+                "this dump is an idle session — use load_session() to restore it",
             ));
         };
         let ctx = DriveContext::new(
@@ -406,7 +407,8 @@ impl PyMontySession {
     /// restore off the GIL, returning the re-announced suspension (`Some`) or
     /// `None` for an idle dump, paired with the dump's adopted script name (for
     /// restored snapshots' `script_name`). The restore turn runs no sandbox
-    /// code, so it needs no print sink. Shared by [`load`](Self::load) and
+    /// code, so it needs no print sink. Shared by
+    /// [`load_session`](Self::load_session) and
     /// [`load_snapshot`](Self::load_snapshot).
     fn restore_turn(
         &self,
@@ -666,8 +668,9 @@ pub struct PyAsyncMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
-    /// Set once the session has been fed or restored; `load_snapshot` is valid
-    /// only while unset. See [`PyMontySession::load_snapshot`].
+    /// Set once the session has been fed or restored; `load_session` /
+    /// `load_snapshot` are valid only while unset. See
+    /// [`PyMontySession::load_snapshot`].
     used: AtomicBool,
 }
 
@@ -783,10 +786,10 @@ impl PyAsyncMontySession {
         feed_start_async(py, args, ext, self.repl_config.script_name.clone())
     }
 
-    /// Async counterpart of [`PyMontySession::load`]: the coroutine restores a
-    /// dumped idle session, resolving to `None`. Valid only on a fresh session;
-    /// raises if the dump is actually a suspended snapshot.
-    fn load<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+    /// Async counterpart of [`PyMontySession::load_session`]: the coroutine
+    /// restores a dumped idle session, resolving to `None`. Valid only on a
+    /// fresh session; raises if the dump is actually a suspended snapshot.
+    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         // claim the session in the synchronous prologue (which completes before
         // the future), so a concurrent call is rejected at call time and the
         // off-thread restore can't race onto a fresh session
@@ -847,7 +850,7 @@ impl PyAsyncMontySession {
                     .await
                     .map_err(join_error_to_py)?;
                 return Err(PyRuntimeError::new_err(
-                    "this dump is an idle session — use load() to restore it",
+                    "this dump is an idle session — use load_session() to restore it",
                 ));
             };
             // the dump's own script name, falling back to the session config
@@ -948,11 +951,12 @@ fn check_os_callable(py: Python<'_>, os: Option<&Py<PyAny>>) -> PyResult<()> {
     Ok(())
 }
 
-/// The error raised when `load` / `load_snapshot` is called on a session that
-/// has already been fed or restored (it would otherwise silently discard work).
+/// The error raised when `load_session` / `load_snapshot` is called on a
+/// session that has already been fed or restored (it would otherwise silently
+/// discard work).
 fn session_used_err() -> PyErr {
     PyRuntimeError::new_err(
-        "load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot",
+        "load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot",
     )
 }
 
@@ -960,7 +964,7 @@ fn session_used_err() -> PyErr {
 /// returning the re-announced suspension (`Some`) or `None` for an idle dump,
 /// paired with the dump's adopted script name. The restore turn runs no sandbox
 /// code, so it needs no print sink. Shared by the async
-/// [`PyAsyncMontySession::load`] / `load_snapshot`.
+/// [`PyAsyncMontySession::load_session`] / `load_snapshot`.
 async fn restore_turn_async(
     checkout: SharedCheckout,
     state: Vec<u8>,

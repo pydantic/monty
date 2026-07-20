@@ -146,8 +146,8 @@ export class MontySession {
   /** Set once the session is unusable: crashed worker or protocol error. */
   private broken: Error | null = null
   private closed = false
-  /** Set once the session has been fed or restored; `loadSnapshot` is valid
-   *  only while unset (a fresh session). */
+  /** Set once the session has been fed or restored; `loadSession` /
+   *  `loadSnapshot` are valid only while unset (a fresh session). */
   private driven = false
 
   /** @internal — sessions are created by `Monty.checkout`. */
@@ -247,7 +247,7 @@ export class MontySession {
    * whole session); throws otherwise. The dump restores its own resource limits
    * and type-check state. Throws if the dump is actually a suspended snapshot.
    */
-  async load(state: Uint8Array): Promise<void> {
+  async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
     const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
@@ -269,8 +269,8 @@ export class MontySession {
 
   /**
    * Restores a dumped **suspended** snapshot — bytes from `feedStart` +
-   * `snapshot.dump()` — and resolves to the snapshot to resume. Use [`load`]
-   * for a dump taken between feeds.
+   * `snapshot.dump()` — and resolves to the snapshot to resume. Use
+   * [`loadSession`] for a dump taken between feeds.
    *
    * Valid only on a fresh session, before any feed or load; throws otherwise.
    * Re-supply the same `mount`s the paused feed used (their host paths are not
@@ -284,7 +284,7 @@ export class MontySession {
       | NativeTurn
       | LoadedTurn
     if (turn.kind === 'loaded') {
-      throw await this.failedLoad(new Error('this dump is an idle session — use load() to restore it'))
+      throw await this.failedLoad(new Error('this dump is an idle session — use loadSession() to restore it'))
     }
     try {
       return await driver.advance(turn)
@@ -300,7 +300,7 @@ export class MontySession {
     this.ensureUsable()
     if (this.driven) {
       throw new Error(
-        'load / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / load / loadSnapshot',
+        'loadSession / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / loadSession / loadSnapshot',
       )
     }
     this.driven = true
@@ -352,8 +352,8 @@ export class MontySession {
    */
   async installDependencies(requirements: string[]): Promise<void> {
     this.ensureUsable()
-    // mark the session driven so a later load/loadSnapshot is rejected — it
-    // would discard the freshly installed environment
+    // mark the session driven so a later loadSession/loadSnapshot is rejected —
+    // it would discard the freshly installed environment
     this.driven = true
     const printTarget = new PrintTarget(undefined)
     const turn = (await this.native.installDependencies(requirements, printTarget.write.bind(printTarget))) as
