@@ -123,8 +123,8 @@ fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<Resource
             count: usize_field(a.count),
         },
         resource_limit_data::Kind::Time(t) => ResourceLimitData::Time {
-            limit: Duration::new(t.limit_secs, t.limit_subsec_nanos),
-            elapsed: Duration::new(t.elapsed_secs, t.elapsed_subsec_nanos),
+            limit: checked_duration(t.limit_secs, t.limit_subsec_nanos)?,
+            elapsed: checked_duration(t.elapsed_secs, t.elapsed_subsec_nanos)?,
         },
         resource_limit_data::Kind::Memory(m) => ResourceLimitData::Memory {
             limit: usize_field(m.limit),
@@ -136,6 +136,16 @@ fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<Resource
         },
     };
     is_genuine_hit(&data).then_some(data)
+}
+
+/// Builds a `Duration` from wire seconds + sub-second nanoseconds, rejecting
+/// (returning `None`) an out-of-range `subsec_nanos` (`>= 1_000_000_000`)
+/// rather than passing it to `Duration::new`, which panics on the resulting
+/// carry into `secs` when `secs` is already at or near `u64::MAX`. The wire
+/// value is untrusted — a compromised child sending exactly that combination
+/// would otherwise crash the parent process.
+fn checked_duration(secs: u64, subsec_nanos: u32) -> Option<Duration> {
+    (subsec_nanos < 1_000_000_000).then(|| Duration::new(secs, subsec_nanos))
 }
 
 /// Whether `data`'s observed value actually exceeds its limit — true for

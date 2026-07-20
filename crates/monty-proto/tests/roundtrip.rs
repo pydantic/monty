@@ -514,6 +514,32 @@ fn implausible_resource_limit_data_is_dropped_not_trusted() {
     }
 }
 
+/// Regression: `Duration::new` panics if `subsec_nanos >= 1_000_000_000`
+/// forces a carry that overflows `secs`. A compromised child sending
+/// `secs: u64::MAX, subsec_nanos: u32::MAX` must not crash the parent
+/// process — the payload is dropped (like every other malformed field here),
+/// not passed through to `Duration::new` unchecked.
+#[test]
+fn out_of_range_subsec_nanos_is_dropped_not_a_panic() {
+    let wire = pb::RaisedException {
+        exc_type: "TimeoutError".to_owned(),
+        message: Some("limit exceeded".to_owned()),
+        traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
+                kind: Some(pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
+                    limit_secs: u64::MAX,
+                    limit_subsec_nanos: u32::MAX,
+                    elapsed_secs: u64::MAX,
+                    elapsed_subsec_nanos: u32::MAX,
+                })),
+            })),
+        }),
+    };
+    let back = MontyException::try_from(wire).unwrap();
+    assert_eq!(back.data(), &ExcData::None);
+}
+
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
 /// child controls, for probing the receive-side sanitizer.
 fn json_exception(msg: String, doc: Option<String>, pos: u64, lineno: u64, colno: u64) -> pb::RaisedException {
