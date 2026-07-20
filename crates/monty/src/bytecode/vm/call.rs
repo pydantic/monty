@@ -494,6 +494,12 @@ impl<T: ResourceTracker> VM<'_, T> {
                 self.call_heap_callable(*heap_id, args)
             }
             _ => {
+                // Coupling check: reaching here means dispatch rejected the value,
+                // so `Value::is_callable` must agree it is not callable.
+                debug_assert!(
+                    !callable.is_callable(self.heap),
+                    "Value::is_callable accepts a value call_function rejects — the two drifted"
+                );
                 args.drop_with(self);
                 let ty = callable.py_type_name(self);
                 Err(ExcType::type_error(format!("'{ty}' object is not callable")))
@@ -532,6 +538,12 @@ impl<T: ResourceTracker> VM<'_, T> {
                 return Ok(CallResult::External(EitherStr::Heap(name), args));
             }
             _ => {
+                // Coupling check: dispatch rejected this Ref, so the heap-side
+                // callability predicate must agree (see `HeapData::is_callable`).
+                debug_assert!(
+                    !self.heap.get(heap_id).is_callable(),
+                    "HeapData::is_callable accepts a heap value call_heap_callable rejects — the two drifted"
+                );
                 args.drop_with(self);
                 let type_name = self.heap.get(heap_id).py_type().name(self.heap, self.interns);
                 return Err(ExcType::type_error_not_callable_object(&type_name));

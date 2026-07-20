@@ -1170,11 +1170,11 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
     }
 }
 
-/// Returns `true` if the value is a callable type.
+/// Whether a session global should be surfaced as a "function" by
+/// [`function_names`](MontyRepl::function_names) / [`has_function`](MontyRepl::has_function).
 ///
-/// For heap-allocated values (`Ref`), checks the actual `HeapData` variant
-/// rather than accepting all refs — only closures, functions with defaults,
-/// and heap-allocated external functions are callable.
+/// Deliberately narrower than [`Value::is_callable`]: it omits `Class` and
+/// `BoundMethod`, which are not what a host means by "a function it can invoke".
 fn is_callable(value: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
     match value {
         Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
