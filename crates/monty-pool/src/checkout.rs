@@ -6,7 +6,9 @@ use monty::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
-use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_proto::{
+    FrameError, MAX_FRAME_LEN, MONTY_VERSION, exceeds_max_frame_len, exceeds_max_value_depth, pb, validate_requirement,
+};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -351,13 +353,25 @@ impl Checkout {
             ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
             ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         };
-        self.pending = None;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
                 call_id,
                 result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             })),
         };
+        // An oversize frame is rejected before any bytes are written, so the
+        // child would never see this answer and would stay suspended for ever.
+        // Reject it while `pending` still marks the call as answerable, so the
+        // caller can retry with a smaller value or answer with an error.
+        if let Some(len) = exceeds_max_frame_len(&request) {
+            return Err(PoolError::Runtime(MontyException::new(
+                ExcType::RuntimeError,
+                Some(format!(
+                    "result frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"
+                )),
+            )));
+        }
+        self.pending = None;
         self.expect_turn(&request, on_print)
     }
 
@@ -396,7 +410,18 @@ impl Checkout {
                     Ok(obj) => ResumeValue::Return(obj),
                     Err(err) => ResumeValue::Error(err.into_exception()),
                 };
-                self.resume(value, on_print).map(Some)
+                match self.resume(value, on_print) {
+                    // The result never reached the child (too large or too deep
+                    // to encode), so the call is still suspended — answer it
+                    // with that error instead, letting the sandbox raise a
+                    // catchable exception rather than stranding the feed. Only
+                    // a pre-send rejection leaves `pending` set, so this cannot
+                    // catch a genuine sandbox exception.
+                    Err(PoolError::Runtime(exc)) if self.pending.is_some() => {
+                        self.resume(ResumeValue::Error(exc), on_print).map(Some)
+                    }
+                    other => other.map(Some),
+                }
             }
             MountCallOutcome::NotHandled(call) => {
                 let Some(Pending::Call { os_call, .. }) = &mut self.pending else {

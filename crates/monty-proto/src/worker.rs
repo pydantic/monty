@@ -23,11 +23,10 @@ use monty::{
     MontyRepl, OsFunctionCall, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
 };
 use monty_type_checking::{SourceFile, type_check};
-use prost::Message;
 
 use super::{
-    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_value_depth,
-    future_results_from_proto, pb, write_frame,
+    FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,
+    exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
 
 /// The child always runs with `LimitedTracker`: an absent/empty limits message
@@ -851,8 +850,8 @@ fn error_event(exc_type: ExcType, message: &str) -> pb::ChildEvent {
 /// The child turns this into a host-visible error before entering the
 /// suspension, because the parent cannot resume a call it never received.
 fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
-    let len = u32::try_from(event.encoded_len()).unwrap_or(u32::MAX);
-    (len > MAX_FRAME_LEN).then(|| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
+    exceeds_max_frame_len(event)
+        .map(|len| format!("argument frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"))
 }
 
 /// Builds the suspension event for a `FunctionCall` (depth-checked by the

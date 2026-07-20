@@ -643,6 +643,36 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 
     session.finish().unwrap();
+
+    // (4) parent -> child resume: a return value too large to send leaves the
+    // suspension *answerable*. The child never saw the oversize frame, so it is
+    // still waiting — clearing the pending call here would strand it for ever.
+    // A fresh checkout, so the earlier steps' namespace cannot interfere.
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    let event = session
+        .feed("len(grab())", vec![], vec![], false, &mut no_print)
+        .unwrap();
+    assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
+    let huge = MontyObject::String("x".repeat(OVERSIZE));
+    let err = session.resume(ResumeValue::Return(huge), &mut no_print).unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize resume value, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    // the same suspension still answers to a value that fits
+    let event = session
+        .resume(
+            ResumeValue::Return(MontyObject::String("small".to_owned())),
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(5));
+    session.finish().unwrap();
 }
 
 /// A `dump()` too large for the frame limit while the session is *suspended*
