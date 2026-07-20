@@ -6,10 +6,11 @@ use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
     name::Name,
+    token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::parse_module;
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     StackFrame,
@@ -165,6 +166,15 @@ pub(crate) fn parse_with_interner(
     let mut parser = Parser::new(code, filename, interner);
     let parsed =
         parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
+    // Harvested before `into_syntax` drops the token stream: `class_keyword_range`
+    // needs keyword offsets, and the lexer has already ruled out `class` occurring
+    // inside a comment or string literal.
+    parser.class_keyword_offsets = parsed
+        .tokens()
+        .iter()
+        .filter(|token| token.kind() == TokenKind::Class)
+        .map(Ranged::start)
+        .collect();
     let module = parsed.into_syntax();
     let nodes = parser.parse_statements(module.body)?;
     Ok(ParseResult {
@@ -187,6 +197,11 @@ pub struct Parser<'a> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
+    /// Source offset of every `class` keyword token, ascending. Populated by
+    /// [`parse_with_interner`] straight after parsing (empty until then, which is
+    /// why nothing may read it during construction) and consumed only by
+    /// [`Parser::class_keyword_range`].
+    class_keyword_offsets: Vec<TextSize>,
 }
 
 impl<'a> Parser<'a> {
@@ -197,6 +212,7 @@ impl<'a> Parser<'a> {
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            class_keyword_offsets: Vec::new(),
         }
     }
 
@@ -834,20 +850,27 @@ impl<'a> Parser<'a> {
     /// The range of a `class` statement from the `class` keyword, excluding
     /// decorators: ruff's `StmtClassDef::range` starts at the first decorator
     /// where CPython starts at the keyword, which would otherwise show decorator
-    /// lines in a class-body traceback frame. Scanning back for the keyword is
-    /// exact — only whitespace and continuations may sit between it and the name.
+    /// lines in a class-body traceback frame.
+    ///
+    /// The keyword is located from the lexer's tokens rather than by searching the
+    /// source text, so a `class` inside a comment or a decorator's string argument
+    /// cannot be mistaken for it. Offsets are ascending, so this class's keyword is
+    /// simply the first one at or after its final decorator.
     fn class_keyword_range(&self, class: &ast::StmtClassDef) -> CodeRange {
-        let start = if class.decorator_list.is_empty() {
+        let start = match class.decorator_list.last() {
             // Undecorated: ruff's range already starts at the keyword.
-            class.range.start().into()
-        } else {
-            let name_start = usize::from(class.name.range.start());
-            // Always fits in `u32`; the fallback is unreachable (a class statement
-            // always contains the keyword) but avoids a panic path.
-            self.code[..name_start]
-                .rfind("class")
-                .and_then(|i| u32::try_from(i).ok())
-                .unwrap_or_else(|| class.range.start().into())
+            None => class.range.start().into(),
+            Some(last_decorator) => {
+                let after_decorators = last_decorator.range.end();
+                let index = self.class_keyword_offsets.partition_point(|&o| o < after_decorators);
+                // Bounded by the name so a malformed lookup cannot borrow a later
+                // class's keyword; the fallback is unreachable (a decorated class
+                // always has a keyword in this window) but avoids a panic path.
+                self.class_keyword_offsets
+                    .get(index)
+                    .filter(|&&offset| offset < class.name.range.start())
+                    .map_or_else(|| class.range.start().into(), |&offset| offset.into())
+            }
         };
         CodeRange {
             filename: self.filename_id,

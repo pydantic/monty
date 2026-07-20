@@ -34,8 +34,7 @@ divergences below apply to. Working, CPython-matching features: instance
 methods, `__init__` (full parameter shapes), instance and class attribute
 get/set (including `setattr(Foo, ...)` and function-attributes-become-methods),
 bound methods, class variables (arbitrary expressions, evaluated in a real
-suspendable class-body scope), **class decorators** (`@deco class Foo`, applied
-bottom-up), `__repr__`/`__str__`/`__enter__`/`__exit__`
+suspendable class-body scope), **class decorators** (`@deco class Foo`), `__repr__`/`__str__`/`__enter__`/`__exit__`
 dispatch, `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg `type()` constructor. The
 `__enter__`/`__exit__` divergences are in [with.md](with.md). Everything else
@@ -182,10 +181,7 @@ e.g. return a `dict` of the fields.
   and any decorator on a top-level `def` or a method (rejected at parse time).
   Class decorators are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__`,
-  `__annotations__` and `dir()` are all unavailable (`cls.__name__` works). This
-  applies to every class, not just decorated ones, but it is what stops a class
-  decorator discovering the fields of the class it receives — it can only act on
-  names it was given up front.
+  `__annotations__` and `dir()` are all unavailable (`cls.__name__` works).
 - Dunder protocols other than `__init__`, `__repr__`, `__str__`,
   `__enter__`, and `__exit__`: `__new__`, `__call__`, `__iter__`,
   `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,

@@ -202,8 +202,7 @@ assert grandparent().mark == 1
 
 
 # Regression: a *nested scope inside the decorator expression* that captures an
-# enclosing local needs a cell var too. Scope analysis must walk the decorator
-# expressions, not just the class body, or MakeClosure finds no cell at runtime.
+# enclosing local needs a cell var too.
 def lambda_in_decorator_position():
     n = 5
 
