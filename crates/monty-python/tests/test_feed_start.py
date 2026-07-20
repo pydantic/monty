@@ -263,7 +263,7 @@ def test_load_snapshot_mid_os_call_serviced_by_mount(pool: Monty, tmp_path: Path
         assert snap.function_name == snapshot('Path.read_text')
         blob = snap.dump()
 
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=(tmp_path), virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
         loaded_snap = session.load_snapshot(blob, mount=mount)
         assert isinstance(loaded_snap, FunctionSnapshot)
