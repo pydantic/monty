@@ -525,8 +525,8 @@ class MontySession:
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
-        Restore a snapshot generated while a block of code is running (e.g. after `start_feed`)
-        and return the re-announced snapshot to resume.
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
 
         Use `load_session` for a dump taken between feeds.
 
@@ -813,11 +813,7 @@ class AsyncMontySession:
         """
 
     async def load_session(self, state: bytes) -> None:
-        """
-        Async counterpart of `MontySession.load_session`: restores a dumped idle
-        session. Valid only on a fresh session; raises if the dump is actually a
-        suspended snapshot.
-        """
+        """Async counterpart of `MontySession.load_session`: restore a session between feeds."""
 
     async def load_snapshot(
         self,
@@ -829,10 +825,10 @@ class AsyncMontySession:
         os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """
-        Async counterpart of `MontySession.load_snapshot`: restores a dumped
-        suspended snapshot and resolves to it (whose `resume(...)` /
-        `resume_auto()` is awaitable). Valid only on a fresh session; raises if
-        the dump is actually an idle session.
+        Async counterpart of `MontySession.load_snapshot`.
+
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
 
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
