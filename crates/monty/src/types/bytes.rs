@@ -74,12 +74,12 @@ use std::{
 
 use smallvec::smallvec;
 
-use super::{CmpOrder, LazyHeapSet, MontyIter, PyTrait, Type};
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
@@ -2004,15 +2004,16 @@ fn bytes_join<'h>(
     iterable: Value,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let Ok(iter) = MontyIter::new(iterable, vm) else {
+    let Ok(iter) = iterable.into_py_iter(vm) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
-    defer_drop_mut!(iter, vm);
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let mut result = Vec::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
         if index > 0 {

@@ -1676,6 +1676,16 @@ impl Value {
         <Self as PyTrait<'_>>::py_iter(self, None, vm)
     }
 
+    /// Converts an owned value into its Python iterator and releases the original reference.
+    ///
+    /// This is the ownership-preserving entry point for Rust consumers of the
+    /// iteration protocol; the returned iterator retains its source as needed.
+    pub(crate) fn into_py_iter(self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        let iterator = self.py_iter(vm);
+        self.drop_with(vm);
+        iterator
+    }
+
     /// Creates a scoped view that retains this value's heap reader when needed.
     pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h, impl ResourceTracker>) -> ValueRead<'h, 'v> {
         match self {
@@ -1875,10 +1885,11 @@ impl Value {
                     // An iterator is consumed until the item is found, as
                     // CPython's `in` does for any iterable without `__contains__`.
                     HeapReadOutput::Iter(_) | HeapReadOutput::ListIterator(_) => {
-                        let iter = MontyIter::new(self.clone_with_heap(vm.heap), vm)?;
-                        defer_drop_mut!(iter, vm);
+                        let iter = self.py_iter(vm)?;
+                        defer_drop!(iter, vm);
+                        let mut iter = iter.read(vm);
                         loop {
-                            let Some(el) = iter.for_next(vm)? else {
+                            let Some(el) = iter.py_next(vm)? else {
                                 break Ok(false);
                             };
                             let eq = item.py_eq(&el, vm);

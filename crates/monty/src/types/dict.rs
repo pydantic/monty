@@ -9,7 +9,7 @@ use hashbrown::HashTable;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, MontyIter, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -556,28 +556,30 @@ impl<'h> HeapRead<'h, Dict> {
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
     fn merge_from_iterable_pairs(&mut self, iterable: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        let iter = MontyIter::new(iterable, vm)?;
-        defer_drop_mut!(iter, vm);
+        let iter = iterable.into_py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
 
-        while let Some(item) = iter.for_next(vm)? {
-            let pair_iter = MontyIter::new(item, vm)?;
-            defer_drop_mut!(pair_iter, vm);
+        while let Some(item) = iter.py_next(vm)? {
+            let pair_iter = item.into_py_iter(vm)?;
+            defer_drop!(pair_iter, vm);
+            let mut pair_iter = pair_iter.read(vm);
 
-            let Some(key) = pair_iter.for_next(vm)? else {
+            let Some(key) = pair_iter.py_next(vm)? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 0; 2 is required",
                 ));
             };
             let mut key_guard = DropGuard::new(key, vm);
 
-            let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
+            let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 1; 2 is required",
                 ));
             };
             let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-            if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+            if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
                 extra.drop_with(value_guard.ctx());
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length > 2; 2 is required",
@@ -696,7 +698,7 @@ impl IntoIterator for Dict {
 /// **Mutation policy.** The initial length is captured at construction. If
 /// the dict's size changes between steps, the next step returns
 /// `RuntimeError: dictionary changed size during iteration` (matching
-/// CPython and [`MontyIter`]'s dict behavior). Same-size updates (replacing
+/// CPython and Monty's dict-iterator behavior). Same-size updates (replacing
 /// a value at an existing key) are allowed and observable.
 pub(crate) struct DictIter<'a, 'h> {
     dict: &'a HeapRead<'h, Dict>,
@@ -1129,29 +1131,31 @@ fn dict_merge_from_iterable_pairs(
     iterable: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = MontyIter::new(item, vm)?;
-        defer_drop_mut!(pair_iter, vm);
+        let pair_iter = item.into_py_iter(vm)?;
+        defer_drop!(pair_iter, vm);
+        let mut pair_iter = pair_iter.read(vm);
 
-        let Some(key) = pair_iter.for_next(vm)? else {
+        let Some(key) = pair_iter.py_next(vm)? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 0; 2 is required",
             ));
         };
         let mut key_guard = DropGuard::new(key, vm);
 
-        let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
+        let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 1; 2 is required",
             ));
         };
         let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-        if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+        if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
             extra.drop_with(value_guard.ctx());
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length > 2; 2 is required",
@@ -1290,8 +1294,9 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let dict = Dict::new();
     let mut dict_guard = DropGuard::new(dict, vm);
@@ -1299,7 +1304,7 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
     {
         let (dict, vm) = dict_guard.as_parts_mut();
 
-        while let Some(key) = iter.for_next(vm)? {
+        while let Some(key) = iter.py_next(vm)? {
             let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
             old_value.drop_with(vm);
         }

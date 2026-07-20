@@ -6,7 +6,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::HeapData,
     resource::ResourceTracker,
-    types::{List, MontyIter},
+    types::{List, iter::collect_owned_iterable},
     value::Value,
 };
 
@@ -38,7 +38,7 @@ pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) 
     }
 
     // Collect all items
-    let mut items: Vec<_> = MontyIter::new(sequence, vm)?.collect(vm)?;
+    let mut items: Vec<_> = collect_owned_iterable(sequence, vm)?;
 
     // Reverse in place
     items.reverse();

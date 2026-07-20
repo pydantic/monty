@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::DropGuard,
     resource::ResourceTracker,
-    types::{MontyIter, PyTrait, Type},
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -35,8 +35,9 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     // Reject str/bytes start values - Python explicitly forbids these
     match start.py_type(vm) {
@@ -53,7 +54,7 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
     // Sum all items
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
         // Try to add the item to accumulator

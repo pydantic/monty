@@ -7,7 +7,7 @@ use crate::{
     heap::{DropGuard, DropWithContext, HeapData},
     resource::ResourceTracker,
     sorting::parse_and_sort,
-    types::{List, MontyIter},
+    types::{List, iter::collect_owned_iterable},
     value::Value,
 };
 
@@ -31,7 +31,7 @@ pub fn builtin_sorted(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) ->
     }
     let iterable = pos_iter.next().expect("checked pos_count == 1");
 
-    let items: Vec<_> = MontyIter::new(iterable, vm)?.collect(vm)?;
+    let items: Vec<_> = collect_owned_iterable(iterable, vm)?;
     let mut items_guard = DropGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 
