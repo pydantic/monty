@@ -12,20 +12,18 @@ use num_traits::{FromPrimitive, ToPrimitive, Zero};
 use smallvec::SmallVec;
 
 use crate::{
+    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{
-        ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_mult_size, check_pow_size,
-        check_repeat_size,
-    },
+    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
     types::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, MontyIter, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
@@ -2722,9 +2720,7 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{
-        PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker, run::AssertMessageAnnotations,
-    };
+    use crate::{AssertMessageAnnotations, NoLimitTracker, PrintWriter, heap::HeapReader, intern::InternerBuilder};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///

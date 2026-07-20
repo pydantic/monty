@@ -2,6 +2,7 @@
 
 use super::VM;
 use crate::{
+    ResourceTracker,
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
@@ -9,7 +10,7 @@ use crate::{
         ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec, validate_string_spec,
     },
     heap::HeapReadOutput,
-    resource::{ResourceTracker, check_repeat_size},
+    resource_checks::check_repeat_size,
     types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
     value::Value,
 };

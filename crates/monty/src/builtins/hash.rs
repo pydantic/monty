@@ -1,11 +1,11 @@
 //! Implementation of the hash() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     value::Value,
 };
 

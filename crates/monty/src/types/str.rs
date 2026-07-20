@@ -1,14 +1,16 @@
+use std::{cell::Cell, fmt::Write, mem, ops};
+
+pub use monty_types::{StringRepr, string_repr_fmt};
+use smallvec::smallvec;
+
+use super::{Bytes, CmpOrder, PyTrait};
 /// Python string type, wrapping a Rust `String`.
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{cell::Cell, fmt, fmt::Write, mem, ops};
-
-use smallvec::smallvec;
-use unicode_general_category::{GeneralCategory, get_general_category};
-
-use super::{Bytes, CmpOrder, PyTrait};
+use crate::exception_private::ExcTypeExt;
 use crate::{
+    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
@@ -17,7 +19,7 @@ use crate::{
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker, check_replace_size},
+    resource_checks::check_replace_size,
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
@@ -580,90 +582,6 @@ fn str_join<'h>(
 
     // Allocate result (uses interned empty string if result is empty)
     Ok(allocate_string(result, vm.heap)?)
-}
-
-/// Writes a Python `repr()` string for a given string slice to a formatter.
-///
-/// Quote choice matches CPython: single quotes by default, switching to double
-/// quotes only when the string contains a `'` but no `"` (so the quote needn't
-/// be escaped). Backslash, the active quote, and `\n`/`\t`/`\r` use the short
-/// escapes; any other **non-printable** character is escaped numerically
-/// (`\xNN`/`\uNNNN`/`\UNNNNNNNN`), e.g. `repr('\x00') == "'\\x00'"` and
-/// `repr('\xa0') == "'\\xa0'"`.
-///
-/// "Non-printable" matches CPython's `str.isprintable` (see
-/// [`repr_needs_escape`]): Unicode categories `C*` and `Z*`, except the ASCII
-/// space. Category data comes from `unicode-general-category`, whose Unicode
-/// version may differ slightly from CPython's, affecting only recently
-/// (re)assigned code points.
-pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    f.write_char(quote)?;
-    for c in s.chars() {
-        match c {
-            '\\' => f.write_str("\\\\")?,
-            '\n' => f.write_str("\\n")?,
-            '\t' => f.write_str("\\t")?,
-            '\r' => f.write_str("\\r")?,
-            _ if c == quote => {
-                f.write_char('\\')?;
-                f.write_char(quote)?;
-            }
-            _ if repr_needs_escape(c) => write_char_escape(c, f)?,
-            _ => f.write_char(c)?,
-        }
-    }
-    f.write_char(quote)
-}
-
-/// Whether `c` is escaped numerically in a Python `repr` — i.e. it is not
-/// "printable" in CPython's sense.
-///
-/// Non-printable = Unicode general categories `Other` (`Cc`, `Cf`, `Cs`, `Co`,
-/// `Cn`) and `Separator` (`Zl`, `Zp`, `Zs`), with the sole exception of the
-/// ASCII space `U+0020`. The `\t`/`\n`/`\r` short escapes are handled by the
-/// caller before this is consulted.
-fn repr_needs_escape(c: char) -> bool {
-    c != ' '
-        && matches!(
-            get_general_category(c),
-            GeneralCategory::Control
-                | GeneralCategory::Format
-                | GeneralCategory::Surrogate
-                | GeneralCategory::PrivateUse
-                | GeneralCategory::Unassigned
-                | GeneralCategory::LineSeparator
-                | GeneralCategory::ParagraphSeparator
-                | GeneralCategory::SpaceSeparator
-        )
-}
-
-/// Writes the numeric repr escape for a single character, matching CPython's
-/// width selection: `\xNN` for code points `<= 0xFF`, `\uNNNN` for `<= 0xFFFF`,
-/// otherwise `\UNNNNNNNN`.
-fn write_char_escape(c: char, f: &mut impl Write) -> fmt::Result {
-    let cp = c as u32;
-    if cp <= 0xFF {
-        write!(f, "\\x{cp:02x}")
-    } else if cp <= 0xFFFF {
-        write!(f, "\\u{cp:04x}")
-    } else {
-        write!(f, "\\U{cp:08x}")
-    }
-}
-
-/// Formatter for a Python repr() string.
-#[derive(Debug)]
-pub struct StringRepr<'a>(pub &'a str);
-
-impl fmt::Display for StringRepr<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        string_repr_fmt(self.0, f)
-    }
 }
 
 // =============================================================================

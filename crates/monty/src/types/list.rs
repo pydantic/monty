@@ -5,13 +5,13 @@ use smallvec::SmallVec;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
+    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
@@ -1012,11 +1012,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        PrintWriter,
+        AssertMessageAnnotations, NoLimitTracker, PrintWriter,
         heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
-        resource::NoLimitTracker,
-        run::AssertMessageAnnotations,
         types::LongInt,
     };
 

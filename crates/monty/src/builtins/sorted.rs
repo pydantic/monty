@@ -1,11 +1,11 @@
 //! Implementation of the sorted() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData},
-    resource::ResourceTracker,
     sorting::parse_and_sort,
     types::{List, iter::collect_owned_iterable},
     value::Value,

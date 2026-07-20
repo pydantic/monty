@@ -14,13 +14,13 @@ use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem};
 use smallvec::smallvec;
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},

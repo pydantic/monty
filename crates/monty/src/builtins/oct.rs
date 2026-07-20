@@ -4,12 +4,12 @@ use num_bigint::BigInt;
 use num_traits::Signed;
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
-    resource::ResourceTracker,
     types::str::allocate_string_no_interning,
     value::Value,
 };

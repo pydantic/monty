@@ -10,14 +10,14 @@ use std::{
 };
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::Interns,
-    resource::ResourceTracker,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},

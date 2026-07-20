@@ -3,12 +3,12 @@
 use std::{cmp::Ordering, mem};
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropGuard,
-    resource::ResourceTracker,
     types::{CmpOrder, PyTrait},
     value::Value,
 };

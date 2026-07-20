@@ -1,12 +1,12 @@
 //! Implementation of the print() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };

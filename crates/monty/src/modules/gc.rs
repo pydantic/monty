@@ -14,13 +14,13 @@
 //!   Explicit `gc.collect()` calls still run while disabled.
 
 use crate::{
+    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     exception_private::RunResult,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::Value,
 };

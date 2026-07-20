@@ -3,12 +3,12 @@
 use smallvec::smallvec;
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::{List, allocate_tuple},
     value::Value,
 };

@@ -20,8 +20,8 @@ use std::ops::{Deref, DerefMut};
 
 use super::VM;
 use crate::{
+    ResourceError, ResourceTracker,
     heap::{ContainsHeap, DropWithContext},
-    resource::{ResourceError, ResourceTracker},
 };
 
 impl<'h, T: ResourceTracker> VM<'h, T> {

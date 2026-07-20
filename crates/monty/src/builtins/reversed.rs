@@ -1,11 +1,11 @@
 //! Implementation of the reversed() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
-    resource::ResourceTracker,
     types::{List, iter::collect_owned_iterable},
     value::Value,
 };

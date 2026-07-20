@@ -8,10 +8,10 @@
 //! though Monty doesn't perform static type checking.
 
 use crate::{
+    ResourceError, ResourceTracker,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::{Marker, Value},
 };

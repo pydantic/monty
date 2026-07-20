@@ -1,18 +1,221 @@
+//! Public exception types: [`ExcType`], [`MontyException`] and its
+//! traceback/payload components ([`StackFrame`], [`CodeLoc`], [`ExcData`]).
+
 use std::{
-    collections::HashMap,
     error,
     fmt::{self, Write},
     mem, str,
     sync::Arc,
 };
 
-use crate::{
-    exception_private::{ExcType, RawStackFrame},
-    intern::Interns,
-    parse::CodeRange,
-    types::str::StringRepr,
-};
+use serde::{Deserialize, Serialize};
+use strum::{Display, EnumString, IntoStaticStr};
 
+use crate::format::StringRepr;
+/// Python exception types supported by the interpreter.
+///
+/// Uses strum derives for automatic `Display`, `FromStr`, and `Into<&'static str>` implementations.
+/// The string representation matches the variant name exactly (e.g., `ValueError` -> "ValueError").
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Display, EnumString, IntoStaticStr, Serialize, Deserialize,
+)]
+pub enum ExcType {
+    /// primary exception class - matches any exception in isinstance checks.
+    ///
+    /// Also the `Default` — required so `Type` (which embeds an `ExcType` in
+    /// its `Exception` variant) can derive `strum::EnumIter`.
+    #[default]
+    Exception,
+
+    /// System exit exceptions
+    BaseException,
+    SystemExit,
+    KeyboardInterrupt,
+
+    // --- ArithmeticError hierarchy ---
+    /// Intermediate class for arithmetic errors.
+    ArithmeticError,
+    /// Subclass of ArithmeticError.
+    OverflowError,
+    /// Subclass of ArithmeticError.
+    ZeroDivisionError,
+
+    // --- LookupError hierarchy ---
+    /// Intermediate class for lookup errors.
+    LookupError,
+    /// Subclass of LookupError.
+    IndexError,
+    /// Subclass of LookupError.
+    KeyError,
+
+    // --- RuntimeError hierarchy ---
+    /// Intermediate class for runtime errors.
+    RuntimeError,
+    /// Subclass of RuntimeError.
+    NotImplementedError,
+    /// Subclass of RuntimeError.
+    RecursionError,
+
+    // --- AttributeError hierarchy ---
+    AttributeError,
+    /// Subclass of AttributeError (from dataclasses module).
+    FrozenInstanceError,
+
+    // --- NameError hierarchy ---
+    NameError,
+    /// Subclass of NameError - for accessing local variable before assignment.
+    UnboundLocalError,
+
+    // --- ValueError hierarchy ---
+    ValueError,
+    /// Subclass of ValueError - for encoding/decoding errors.
+    UnicodeDecodeError,
+    /// Subclass of ValueError - for encoding errors (e.g. `str.encode('ascii')`
+    /// on a string containing non-ASCII characters).
+    UnicodeEncodeError,
+    /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
+    #[strum(serialize = "json.JSONDecodeError")]
+    JsonDecodeError,
+
+    // --- ImportError hierarchy ---
+    /// Import-related errors (module not found, name not in module).
+    ImportError,
+    /// Subclass of ImportError - for when a module cannot be found.
+    ModuleNotFoundError,
+
+    // --- OSError hierarchy ---
+    /// OS-related errors (file not found, permission denied, etc.)
+    OSError,
+    /// Subclass of OSError - for when a file or directory cannot be found.
+    FileNotFoundError,
+    /// Subclass of OSError - for when a file already exists.
+    FileExistsError,
+    /// Subclass of OSError - for when a path is a directory but a file was expected.
+    IsADirectoryError,
+    /// Subclass of OSError - for when a path is not a directory but one was expected.
+    NotADirectoryError,
+    /// Subclass of OSError - for when an operation is not permitted (e.g., writing
+    /// to a read-only mount, or attempting to access a path outside a mounted directory).
+    PermissionError,
+    /// `io.UnsupportedOperation` - raised by file objects when a requested
+    /// operation isn't allowed by the open mode (e.g. `read()` on `'w'`).
+    ///
+    /// In CPython this inherits from both `OSError` and `ValueError`. Monty's
+    /// `ExcType` enum models single parents, but [`Self::is_subclass_of`]
+    /// matches `UnsupportedOperation` against both `OSError` and `ValueError`
+    /// so `except ValueError:` and `except OSError:` both catch it as in
+    /// CPython.
+    #[strum(serialize = "io.UnsupportedOperation")]
+    UnsupportedOperation,
+    /// Subclass of OSError since Python 3.3 (PEP 3151).
+    TimeoutError,
+
+    // --- Standalone exception types ---
+    AssertionError,
+    MemoryError,
+    StopIteration,
+    SyntaxError,
+    TypeError,
+
+    // --- Module-specific exception types ---
+
+    // --- re module ---
+    /// `re.PatternError` - raised for invalid regex patterns or unsupported regex features.
+    ///
+    /// # Behavior Note
+    ///
+    /// Limited to monty's exception type, `PatternError` does not provide `pattern`, `pos`,
+    /// `lineno` and `colno` attributes.
+    ///
+    /// As per CPython's implementation, it would be hard to convert `fancy-regex`'s error
+    /// representations into the required attributes.
+    #[strum(serialize = "re.PatternError")]
+    RePatternError,
+}
+impl ExcType {
+    /// Checks if this exception type is a subclass of another exception type.
+    ///
+    /// Implements Python's exception hierarchy for try/except matching:
+    /// - `Exception` is the base class for all standard exceptions
+    /// - `LookupError` is the base for `KeyError` and `IndexError`
+    /// - `ArithmeticError` is the base for `ZeroDivisionError` and `OverflowError`
+    /// - `RuntimeError` is the base for `RecursionError` and `NotImplementedError`
+    ///
+    /// Returns true if `self` would be caught by `except handler_type:`.
+    #[must_use]
+    pub fn is_subclass_of(self, handler_type: Self) -> bool {
+        if self == handler_type {
+            return true;
+        }
+        match handler_type {
+            // BaseException catches all exceptions
+            Self::BaseException => true,
+            // Exception catches everything except BaseException, and direct subclasses: KeyboardInterrupt, SystemExit
+            Self::Exception => !matches!(self, Self::BaseException | Self::KeyboardInterrupt | Self::SystemExit),
+            // LookupError catches KeyError and IndexError
+            Self::LookupError => matches!(self, Self::KeyError | Self::IndexError),
+            // ArithmeticError catches ZeroDivisionError and OverflowError
+            Self::ArithmeticError => matches!(self, Self::ZeroDivisionError | Self::OverflowError),
+            // RuntimeError catches RecursionError and NotImplementedError
+            Self::RuntimeError => matches!(self, Self::RecursionError | Self::NotImplementedError),
+            // AttributeError catches FrozenInstanceError
+            Self::AttributeError => matches!(self, Self::FrozenInstanceError),
+            // NameError catches UnboundLocalError
+            Self::NameError => matches!(self, Self::UnboundLocalError),
+            // ValueError catches UnicodeDecodeError, UnicodeEncodeError, json.JSONDecodeError,
+            // and io.UnsupportedOperation (which in CPython has dual OSError + ValueError parentage)
+            Self::ValueError => matches!(
+                self,
+                Self::UnicodeDecodeError
+                    | Self::UnicodeEncodeError
+                    | Self::JsonDecodeError
+                    | Self::UnsupportedOperation
+            ),
+            // ImportError catches ModuleNotFoundError
+            Self::ImportError => matches!(self, Self::ModuleNotFoundError),
+            // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError,
+            // NotADirectoryError, PermissionError, io.UnsupportedOperation, and
+            // TimeoutError (an OSError subclass since Python 3.3)
+            Self::OSError => matches!(
+                self,
+                Self::FileNotFoundError
+                    | Self::FileExistsError
+                    | Self::IsADirectoryError
+                    | Self::NotADirectoryError
+                    | Self::PermissionError
+                    | Self::UnsupportedOperation
+                    | Self::TimeoutError
+            ),
+            // All other types only match exactly (handled by self == handler_type above)
+            _ => false,
+        }
+    }
+}
+/// Formats the message for a `UnicodeDecodeError` covering the byte range
+/// `start..end`: CPython's single-byte form (`byte 0x{first_byte:02x} in
+/// position {start}`) when the range is one byte, otherwise the range form
+/// (`bytes in position {start}-{end - 1}`).
+///
+/// A free function (rather than folded into `ExcType::unicode_decode_error`),
+/// public and re-exported at the crate root, so `monty-fs` can produce the
+/// identical wording when converting a `MountError::InvalidUtf8` from a
+/// text-mode file read into an exception.
+#[must_use]
+pub fn unicode_decode_error_msg(codec: &str, first_byte: u8, start: usize, end: usize, reason: &str) -> String {
+    // Callers must pass a non-empty range; checked in debug builds only so a
+    // wrong caller can't panic the VM in release (it gets a garbled message
+    // position instead, which is harmless).
+    debug_assert!(
+        end > start,
+        "unicode_decode_error_msg: end ({end}) must be > start ({start})"
+    );
+    if end - start == 1 {
+        format!("'{codec}' codec can't decode byte 0x{first_byte:02x} in position {start}: {reason}")
+    } else {
+        let last = end - 1;
+        format!("'{codec}' codec can't decode bytes in position {start}-{last}: {reason}")
+    }
+}
 /// Public representation of a Monty exception.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MontyException {
@@ -27,7 +230,7 @@ pub struct MontyException {
     /// non-self-describing snapshot formats where skipped fields break
     /// deserialization.
     #[serde(default)]
-    pub(crate) data: ExcData,
+    data: ExcData,
 }
 
 /// Structured payload attached to exception types whose CPython counterparts
@@ -70,7 +273,7 @@ impl ExcData {
     /// Approximate byte footprint, used by the heap's memory accounting when
     /// an exception carrying this payload is stored on the sandbox heap.
     #[must_use]
-    pub(crate) fn estimate_size(&self) -> usize {
+    pub fn estimate_size(&self) -> usize {
         match self {
             Self::None => 0,
             Self::Unicode(data) => data.estimate_size(),
@@ -127,7 +330,8 @@ impl UnicodeErrorData {
 
     /// Builds the payload for an encode error on `object`, or
     /// [`ExcData::None`] when `object` exceeds [`Self::MAX_OBJECT_LEN`].
-    pub(crate) fn encode(encoding: &str, object: &str, start: usize, end: usize, reason: &str) -> ExcData {
+    #[must_use]
+    pub fn encode(encoding: &str, object: &str, start: usize, end: usize, reason: &str) -> ExcData {
         if object.len() <= Self::MAX_OBJECT_LEN {
             ExcData::Unicode(Box::new(Self {
                 encoding: encoding.to_owned(),
@@ -162,7 +366,7 @@ impl UnicodeErrorData {
     /// Approximate byte footprint, used by the heap's memory accounting when
     /// an exception carrying this payload is stored on the sandbox heap.
     #[must_use]
-    pub(crate) fn estimate_size(&self) -> usize {
+    pub fn estimate_size(&self) -> usize {
         let object_len = match &self.object {
             UnicodeErrorObject::Bytes(b) => b.len(),
             UnicodeErrorObject::Str(s) => s.len(),
@@ -205,7 +409,8 @@ impl JsonErrorData {
 
     /// Builds the payload for a decode error on `doc`, omitting the document
     /// when it exceeds [`Self::MAX_DOC_LEN`] or is not valid UTF-8.
-    pub(crate) fn build(msg: &str, doc: &[u8], pos: usize, lineno: usize, colno: usize) -> ExcData {
+    #[must_use]
+    pub fn build(msg: &str, doc: &[u8], pos: usize, lineno: usize, colno: usize) -> ExcData {
         let doc = if doc.len() <= Self::MAX_DOC_LEN {
             str::from_utf8(doc).ok().map(ToOwned::to_owned)
         } else {
@@ -223,7 +428,7 @@ impl JsonErrorData {
     /// Approximate byte footprint, used by the heap's memory accounting when
     /// an exception carrying this payload is stored on the sandbox heap.
     #[must_use]
-    pub(crate) fn estimate_size(&self) -> usize {
+    pub fn estimate_size(&self) -> usize {
         mem::size_of::<Self>() + self.msg.len() + self.doc.as_ref().map_or(0, String::len)
     }
 }
@@ -295,15 +500,6 @@ impl MontyException {
         }
     }
 
-    pub(crate) fn new_full(exc_type: ExcType, message: Option<String>, traceback: Vec<StackFrame>) -> Self {
-        Self {
-            exc_type,
-            message,
-            traceback,
-            data: ExcData::None,
-        }
-    }
-
     /// Creates an exception with an explicit traceback.
     ///
     /// Most callers should use [`MontyException::new`] — the traceback is
@@ -365,7 +561,11 @@ impl MontyException {
         self.traceback.extend(traceback);
     }
 
-    pub(crate) fn runtime_error(err: impl fmt::Display) -> Self {
+    /// Shorthand for a traceback-free `RuntimeError` wrapping `err`'s display
+    /// output — used at host boundaries (input conversion, REPL feeds) where
+    /// no sandbox stack frames exist.
+    #[must_use]
+    pub fn runtime_error(err: impl fmt::Display) -> Self {
         Self {
             exc_type: ExcType::RuntimeError,
             message: Some(err.to_string()),
@@ -537,84 +737,6 @@ impl fmt::Display for StackFrame {
         Ok(())
     }
 }
-
-impl StackFrame {
-    /// Builds a runtime `StackFrame` from an internal `RawStackFrame`.
-    ///
-    /// Resolves the raw filename/frame-name `StringId`s via `interns` and
-    /// expands the position's byte offsets to line/column and a preview
-    /// line via `source_map`.
-    pub(crate) fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &mut SourceMap<'_>) -> Self {
-        let filename = interns.get_str(f.position.filename).to_string();
-        let (start, end, preview_line) = source_map.resolve_range(f.position);
-        Self {
-            filename,
-            start,
-            end,
-            frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
-            preview_line,
-            hide_caret: f.hide_caret,
-            hide_frame_name: false,
-        }
-    }
-
-    /// Builds a `StackFrame` for a `SyntaxError`.
-    ///
-    /// Sets `hide_frame_name: true` because CPython's SyntaxError format
-    /// omits the trailing `, in <module>` part.
-    pub(crate) fn from_position_syntax_error(
-        position: CodeRange,
-        filename: &str,
-        source_map: &mut SourceMap<'_>,
-    ) -> Self {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        Self {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: false,
-            hide_frame_name: true,
-        }
-    }
-
-    /// Builds a generic `StackFrame` from a `CodeRange` and filename.
-    ///
-    /// Used for runtime-style errors raised outside the VM's frame tracking
-    /// (e.g. parse-phase `NotImplementedError`) where caret markers and the
-    /// `, in <module>` suffix are both shown.
-    pub(crate) fn from_position(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> Self {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        Self {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: false,
-            hide_frame_name: false,
-        }
-    }
-
-    /// Builds a `StackFrame` with caret markers suppressed.
-    ///
-    /// Used for errors like `ImportError` and `ModuleNotFoundError`, where
-    /// CPython shows the source preview line but no `~~~` carets beneath it.
-    pub(crate) fn from_position_no_caret(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> Self {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        Self {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: true,
-            hide_frame_name: false,
-        }
-    }
-}
-
 /// A line and column position in source code.
 ///
 /// Uses 1-based indexing for both line and column to match Python's conventions.
@@ -649,172 +771,5 @@ impl CodeLoc {
             line: line.saturating_add(1),
             column: column.saturating_add(1),
         }
-    }
-}
-
-/// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
-/// human-readable line/column/preview-line information.
-///
-/// Monty's parser stores only byte offsets per AST node to keep the post-parse
-/// hot path O(1) per node. `SourceMap` is built once at the diagnostic
-/// boundary — when converting an internal error into a public
-/// [`MontyException`] — and used to resolve every frame in the traceback.
-/// Building it scans the source once to index line starts; with a 100k-line
-/// source this is a few hundred microseconds and fires only when an exception
-/// is actually raised.
-///
-/// Column semantics remain exactly CPython-compatible: columns count Unicode
-/// scalar values, not bytes. The ASCII fast path (the overwhelmingly common
-/// case for Python source) skips the `chars()` iterator entirely.
-pub struct SourceMap<'s> {
-    source: &'s str,
-    /// Byte offset of the start of each line. Length equals the number of
-    /// lines; `line_starts[0]` is always 0.
-    line_starts: Vec<u32>,
-    /// Cache of preview lines, keyed by 0-based line index.
-    ///
-    /// Lets every `StackFrame` referencing the same source line share a
-    /// single `Arc<str>` allocation rather than each cloning the line into
-    /// its own `String`. This matters for deep recursion: without the
-    /// cache, a 1 MiB line referenced by 1000 frames would allocate ~1 GiB;
-    /// with the cache it allocates ~1 MiB. Built lazily — entries materialize
-    /// only as `resolve_range` actually requests them.
-    line_cache: HashMap<usize, Arc<str>>,
-}
-
-impl<'s> SourceMap<'s> {
-    /// Builds a line-start index over `source`.
-    ///
-    /// Amortizes across every frame in the traceback — one O(n) scan, then
-    /// O(log n) lookups per frame.
-    #[must_use]
-    pub fn new(source: &'s str) -> Self {
-        let mut line_starts = Vec::with_capacity(source.len() / 40 + 1);
-        line_starts.push(0);
-        for (i, b) in source.bytes().enumerate() {
-            if b == b'\n' {
-                // source should never exceed 4 GB
-                let start = u32::try_from(i + 1).unwrap_or(u32::MAX);
-                line_starts.push(start);
-            }
-        }
-        Self {
-            source,
-            line_starts,
-            line_cache: HashMap::new(),
-        }
-    }
-
-    /// Resolves a `CodeRange` into `(start, end, preview_line)`.
-    ///
-    /// When `start` and `end` lie on the same line, `preview_line` is that
-    /// single source line. The returned `Arc<str>` is shared with any other
-    /// frame in this traceback resolving to the same line, so repeated
-    /// lookups for the same line are O(1) and allocate only on the first
-    /// lookup.
-    ///
-    /// When the range spans multiple lines, `preview_line` holds a
-    /// pre-rendered CPython-style block (see
-    /// [`multiline_preview`](Self::multiline_preview)); the renderer
-    /// distinguishes the two cases by comparing `start`/`end` lines.
-    pub(crate) fn resolve_range(&mut self, range: CodeRange) -> (CodeLoc, CodeLoc, Option<Arc<str>>) {
-        let (start_line_idx, start) = self.resolve_byte(range.start_byte);
-        let (end_line_idx, end) = self.resolve_byte(range.end_byte);
-        let preview_line = if start_line_idx == end_line_idx {
-            // Cache materializes lazily — first request for a given line allocates
-            // the `Arc<str>`, subsequent requests for the same line clone the Arc.
-            let line_text = self.line_text(start_line_idx);
-            Some(Arc::clone(
-                self.line_cache
-                    .entry(start_line_idx)
-                    .or_insert_with(|| Arc::from(line_text)),
-            ))
-        } else {
-            // Multi-line ranges are rare (e.g. a traceback frame covering a
-            // whole `class` statement), so no caching.
-            Some(Arc::from(self.multiline_preview(start_line_idx, end_line_idx)))
-        };
-        (start, end, preview_line)
-    }
-
-    /// Renders the source preview for a range spanning several lines,
-    /// mirroring CPython's traceback formatting: all lines when the range
-    /// covers at most three, otherwise the first and last around a
-    /// `...<N lines>...` elision marker. Displayed lines are dedented by
-    /// their common leading whitespace; the caller adds the 4-space frame
-    /// indent (and no caret markers — CPython omits them for these
-    /// full-statement ranges).
-    fn multiline_preview(&self, start_line_idx: usize, end_line_idx: usize) -> String {
-        let total = end_line_idx - start_line_idx + 1;
-        let displayed: Vec<&str> = if total <= 3 {
-            (start_line_idx..=end_line_idx).map(|i| self.line_text(i)).collect()
-        } else {
-            vec![self.line_text(start_line_idx), self.line_text(end_line_idx)]
-        };
-        // Common leading-whitespace prefix across non-blank displayed lines.
-        let dedent = displayed
-            .iter()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| line.len() - line.trim_start().len())
-            .min()
-            .unwrap_or(0);
-        let stripped = |line: &str| line.get(dedent..).unwrap_or("").to_owned();
-        if total <= 3 {
-            displayed
-                .iter()
-                .map(|line| stripped(line))
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            format!(
-                "{}\n...<{} lines>...\n{}",
-                stripped(displayed[0]),
-                total - 2,
-                stripped(displayed[1])
-            )
-        }
-    }
-
-    /// Resolves a raw byte offset to `(0-based line index, CodeLoc)`.
-    ///
-    /// Column is the number of Unicode scalar values between the line start
-    /// and the offset; uses an ASCII fast path when the preceding slice is
-    /// pure ASCII.
-    fn resolve_byte(&self, byte: u32) -> (usize, CodeLoc) {
-        // partition_point(|&s| s <= byte) gives the index of the first line
-        // whose start is strictly greater than `byte`; subtracting one maps
-        // `byte` back to the line it actually lies on.
-        let line_idx = self.line_starts.partition_point(|&s| s <= byte).saturating_sub(1);
-        let line_start = self.line_starts[line_idx];
-        let slice_start = line_start as usize;
-        let slice_end = (byte as usize).min(self.source.len());
-        let slice = &self.source[slice_start..slice_end];
-        // Ruff caps source files at 4 GiB, so any byte-based column count fits
-        // comfortably in `u32`; saturate defensively if that ever changes.
-        let col = if slice.is_ascii() {
-            u32::try_from(slice.len()).unwrap_or(u32::MAX)
-        } else {
-            u32::try_from(slice.chars().count()).unwrap_or(u32::MAX)
-        };
-        (
-            line_idx,
-            CodeLoc::new(u32::try_from(line_idx).expect("line number exceeds u32"), col),
-        )
-    }
-
-    /// Returns the raw text of a 0-based line index, without the trailing
-    /// newline.
-    fn line_text(&self, line_idx: usize) -> &'s str {
-        let start = self.line_starts[line_idx] as usize;
-        let end = self
-            .line_starts
-            .get(line_idx + 1)
-            .map_or(self.source.len(), |&next| next.saturating_sub(1) as usize);
-        // Guard against a trailing empty "line" past the last newline with no
-        // content (e.g. when `start == source.len()`).
-        let end = end.max(start);
-        // Strip a trailing `\r` if the source uses CRLF line endings.
-        let line = &self.source[start..end];
-        line.strip_suffix('\r').unwrap_or(line)
     }
 }

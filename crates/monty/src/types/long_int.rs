@@ -20,10 +20,10 @@ use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 
 use crate::{
-    exception_private::{ExcType, RunResult},
+    ResourceError, ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData},
-    resource::{ResourceError, ResourceTracker},
     value::Value,
 };
 

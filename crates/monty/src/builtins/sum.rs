@@ -3,12 +3,12 @@
 use std::mem;
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::DropGuard,
-    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
 };

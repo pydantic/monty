@@ -8,17 +8,17 @@ use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait};
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, Value},
 };

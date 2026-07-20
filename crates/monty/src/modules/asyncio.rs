@@ -8,15 +8,15 @@
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
 use crate::{
+    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
     bytecode::{CallResult, VM},
     defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::Value,
 };

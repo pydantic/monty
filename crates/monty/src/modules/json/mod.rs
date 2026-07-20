@@ -18,13 +18,13 @@ pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
 use crate::{
+    ResourceError, ResourceTracker,
     args::ArgValues,
     builtins::Builtins,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::Value,
 };

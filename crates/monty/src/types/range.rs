@@ -13,13 +13,13 @@ use std::{
 use num_integer::div_ceil;
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };

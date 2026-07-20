@@ -14,10 +14,10 @@ use serde::ser::SerializeStruct;
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
 use crate::{
+    ResourceError, ResourceTracker,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    resource::{ResourceError, ResourceTracker},
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
@@ -1777,7 +1777,7 @@ mod heap_reader_compile_fail_cases;
 mod tests {
     use super::*;
     use crate::{
-        resource::NoLimitTracker,
+        NoLimitTracker,
         types::{List, callable_iterator::CallableIterator},
         value::Value,
     };

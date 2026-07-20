@@ -1,11 +1,11 @@
 //! Implementation of the chr() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    resource::ResourceTracker,
     types::str::allocate_char,
     value::Value,
 };

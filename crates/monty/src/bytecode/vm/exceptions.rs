@@ -4,13 +4,13 @@ use std::fmt::{self, Write};
 
 use super::VM;
 use crate::{
+    ResourceTracker,
     builtins::Builtins,
     defer_drop,
-    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };

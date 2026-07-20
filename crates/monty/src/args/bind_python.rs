@@ -16,14 +16,14 @@
 //! and `test_cases/args__macro_errors.py`.
 
 use crate::{
+    ResourceTracker,
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
     defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
     types::{Dict, allocate_tuple},
     value::Value,
 };

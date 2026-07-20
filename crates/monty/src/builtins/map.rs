@@ -3,12 +3,12 @@
 use std::{iter, mem};
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait, iter::checked_preallocation_hint},
     value::Value,
 };

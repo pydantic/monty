@@ -1,3 +1,9 @@
+use std::{cell::Cell, ffi::c_int, fmt::Write, mem, ops, str};
+
+pub use monty_types::{bytes_repr, bytes_repr_fmt};
+use smallvec::smallvec;
+
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -65,17 +71,9 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{
-    cell::Cell,
-    ffi::c_int,
-    fmt::{self, Write},
-    mem, ops, str,
-};
-
-use smallvec::smallvec;
-
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
+use crate::exception_private::ExcTypeExt;
 use crate::{
+    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
@@ -84,7 +82,7 @@ use crate::{
     hash::{HashValue, hash_python_bytes},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
+    resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
         slice::{normalize_sequence_index, slice_collect_iterator},
@@ -485,50 +483,6 @@ fn call_bytes_method_impl<'h>(
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
-}
-
-/// Writes a CPython-compatible repr string for bytes to a formatter.
-///
-/// Format: `b'...'` or `b"..."` depending on content.
-/// - Uses single quotes by default
-/// - Switches to double quotes if bytes contain `'` but not `"`
-/// - Escapes: `\\`, `\t`, `\n`, `\r`, `\xNN` for non-printable bytes
-pub fn bytes_repr_fmt(bytes: &[u8], f: &mut impl Write) -> fmt::Result {
-    // Determine quote character: use double quotes if single quote present but not double
-    let has_single = bytes.contains(&b'\'');
-    let has_double = bytes.contains(&b'"');
-    let quote = if has_single && !has_double { '"' } else { '\'' };
-
-    f.write_char('b')?;
-    f.write_char(quote)?;
-
-    for &byte in bytes {
-        match byte {
-            b'\\' => f.write_str("\\\\")?,
-            b'\t' => f.write_str("\\t")?,
-            b'\n' => f.write_str("\\n")?,
-            b'\r' => f.write_str("\\r")?,
-            b'\'' if quote == '\'' => f.write_str("\\'")?,
-            b'"' if quote == '"' => f.write_str("\\\"")?,
-            // Printable ASCII (32-126)
-            0x20..=0x7e => f.write_char(byte as char)?,
-            // Non-printable: use \xNN format
-            _ => write!(f, "\\x{byte:02x}")?,
-        }
-    }
-
-    f.write_char(quote)
-}
-
-/// Returns a CPython-compatible repr string for bytes.
-///
-/// Convenience wrapper around `bytes_repr_fmt` that returns an owned String.
-#[must_use]
-pub fn bytes_repr(bytes: &[u8]) -> String {
-    let mut result = String::new();
-    // Writing to String never fails
-    bytes_repr_fmt(bytes, &mut result).unwrap();
-    result
 }
 
 /// Implements Python's `bytes.decode([encoding[, errors]])` method.

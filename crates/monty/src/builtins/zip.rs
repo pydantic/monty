@@ -1,12 +1,12 @@
 //! Implementation of the zip() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };

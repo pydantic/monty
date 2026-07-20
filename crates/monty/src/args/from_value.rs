@@ -18,10 +18,10 @@
 use std::borrow::Cow;
 
 use crate::{
+    ResourceTracker,
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };

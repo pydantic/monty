@@ -10,11 +10,11 @@
 //! corresponding runtime types.
 
 use crate::{
+    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
     value::Value,
 };

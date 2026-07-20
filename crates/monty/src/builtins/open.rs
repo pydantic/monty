@@ -11,13 +11,12 @@
 use std::str;
 
 use crate::{
+    MontyPath, OpenCallArgs, OsFunctionCall, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
-    os::{MontyPath, OpenCallArgs, OsFunctionCall},
-    resource::ResourceTracker,
     types::{PyTrait, file::FileMode},
     value::Value,
 };

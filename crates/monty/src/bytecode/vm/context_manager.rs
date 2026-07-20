@@ -9,9 +9,8 @@
 
 use super::{CallResult, VM};
 use crate::{
-    defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    ResourceTracker, defer_drop,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     types::PyTrait,
     value::Value,
 };

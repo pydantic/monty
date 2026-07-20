@@ -2,13 +2,13 @@
 
 use super::Builtins;
 use crate::{
+    ResourceTracker,
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{Class, Dict, PyTrait},
     value::Value,
 };

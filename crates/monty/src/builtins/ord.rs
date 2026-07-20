@@ -1,12 +1,12 @@
 //! Implementation of the ord() builtin function.
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     value::Value,
 };
 

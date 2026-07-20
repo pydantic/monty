@@ -35,15 +35,15 @@ use std::rc::Rc;
 use ahash::RandomState;
 
 use crate::{
+    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::{
         BoundedCompileError, Module, RePattern, Type,
         re_pattern::{extract_count, extract_maxsplit},

@@ -8,12 +8,12 @@
 //! - User-defined functions (via `vm.evaluate_function`)
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait},
     value::Value,
 };

@@ -10,11 +10,11 @@ use std::os::unix::fs::symlink;
 use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
 use std::{fmt, fs, path::Path};
 
-use monty::{
+use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
+use monty_types::{
     FileMode, MkdirCallArgs, MontyObject, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs,
 };
-use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -1042,7 +1042,7 @@ fn rename_traversal_src() {
 
     let result = dispatch(
         &mut mt,
-        OsFunctionCall::Rename(monty::RenameCallArgs {
+        OsFunctionCall::Rename(monty_types::RenameCallArgs {
             src: MontyPath::new("/mnt/../etc/passwd".to_owned()),
             dst: MontyPath::new("/mnt/stolen.txt".to_owned()),
         }),
@@ -1063,7 +1063,7 @@ fn rename_traversal_dst() {
 
     let result = dispatch(
         &mut mt,
-        OsFunctionCall::Rename(monty::RenameCallArgs {
+        OsFunctionCall::Rename(monty_types::RenameCallArgs {
             src: MontyPath::new("/mnt/hello.txt".to_owned()),
             dst: MontyPath::new("/mnt/../escape.txt".to_owned()),
         }),
@@ -1113,7 +1113,7 @@ fn rename_symlink_escape_overlay_read_text() {
     // Step 1: Rename the symlink within the mount.
     let rename_result = dispatch(
         &mut mt,
-        OsFunctionCall::Rename(monty::RenameCallArgs {
+        OsFunctionCall::Rename(monty_types::RenameCallArgs {
             src: MontyPath::new("/mnt/escape_link".to_owned()),
             dst: MontyPath::new("/mnt/renamed".to_owned()),
         }),
@@ -1161,7 +1161,7 @@ fn rename_symlink_escape_overlay_read_bytes() {
 
     let rename_result = dispatch(
         &mut mt,
-        OsFunctionCall::Rename(monty::RenameCallArgs {
+        OsFunctionCall::Rename(monty_types::RenameCallArgs {
             src: MontyPath::new("/mnt/escape_link".to_owned()),
             dst: MontyPath::new("/mnt/renamed".to_owned()),
         }),

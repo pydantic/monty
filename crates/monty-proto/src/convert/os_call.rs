@@ -2,7 +2,7 @@
 //! `monty.v1.OsCall` and [`OsFunctionCall`] map 1:1, so payloads (write data,
 //! paths) *move* between the wire and the call — never clone.
 
-use monty::{
+use monty_types::{
     GetenvArgs, MkdirCallArgs, MontyPath, MontyTimeZone, OpenCallArgs, OsFunctionCall, PathBytesDataArgs,
     PathStringDataArgs, RenameCallArgs,
 };

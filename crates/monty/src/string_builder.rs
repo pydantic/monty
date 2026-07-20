@@ -53,11 +53,7 @@
 use std::{fmt, mem};
 
 use crate::{
-    exception_private::RunResult,
-    heap::Heap,
-    resource::{ResourceError, ResourceTracker},
-    types::str::allocate_string,
-    value::Value,
+    ResourceError, ResourceTracker, exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value,
 };
 
 /// Resource-tracked builder for a `String`.

@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use monty::{
+use monty_types::{
     FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
     MontyType, StringRepr,
 };

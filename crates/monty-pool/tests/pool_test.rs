@@ -13,8 +13,8 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-use monty::{MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_types::{MontyObject, PrintStream, ResourceLimits};
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {

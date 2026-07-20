@@ -34,9 +34,9 @@ use std::{
     time::Duration,
 };
 
-use ::monty::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_types::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject};
 use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},

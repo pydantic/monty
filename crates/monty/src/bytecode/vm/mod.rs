@@ -22,7 +22,7 @@ pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
 use crate::{
-    MontyObject,
+    InvalidInputError, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker,
     args::ArgValues,
     asyncio::{CallId, TaskId},
     builtins::Builtins,
@@ -30,16 +30,13 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
-    object::InvalidInputError,
-    os::OsFunctionCall,
+    object_bridge::MontyObjectExt,
     parse::CodeRange,
-    resource::ResourceTracker,
     types::{
         Dict, LongInt, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},

@@ -21,8 +21,8 @@ use std::iter;
 use ahash::RandomState;
 
 use crate::{
+    ResourceError, ResourceTracker,
     heap::{ContainsHeap, HeapReader},
-    resource::{ResourceError, ResourceTracker},
     types::str::{allocate_string, allocate_string_no_interning},
     value::Value,
 };

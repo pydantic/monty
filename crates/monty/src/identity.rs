@@ -9,11 +9,11 @@ use serde::Serialize;
 use smallvec::SmallVec;
 
 use crate::{
+    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     heap::{Heap, HeapData},
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::{LongInt, Property},
     value::{Marker, Value},
 };

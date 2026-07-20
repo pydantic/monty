@@ -1,7 +1,9 @@
+//! Print-output plumbing: [`PrintStream`], [`PrintWriter`] and the
+//! [`PrintWriterCallback`] trait used by hosts to capture `print()` output.
+
 use std::borrow::Cow;
 
-use crate::exception_public::MontyException;
-
+use crate::exceptions::MontyException;
 /// Identifies the output stream for a single print fragment.
 ///
 /// Today the `print()` builtin only writes to `Stdout`. The `Stderr` variant is

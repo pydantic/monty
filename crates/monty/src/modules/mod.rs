@@ -8,12 +8,12 @@ use std::fmt::{self, Write};
 use strum::FromRepr;
 
 use crate::{
+    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,
     heap::HeapId,
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
 };
 
 pub(crate) mod asyncio;

@@ -1,12 +1,11 @@
 //! Implementation of the setattr() builtin function.
 
 use crate::{
-    ExcType,
+    ExcType, ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{RunResult, SimpleException},
-    resource::ResourceTracker,
+    exception_private::{ExcTypeExt, RunResult, SimpleException},
     value::Value,
 };
 

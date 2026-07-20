@@ -2,11 +2,11 @@
 
 use super::VM;
 use crate::{
+    ResourceTracker,
     bytecode::vm::CallResult,
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError},
     intern::StringId,
-    resource::ResourceTracker,
     value::EitherStr,
 };
 

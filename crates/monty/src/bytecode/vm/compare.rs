@@ -2,10 +2,9 @@
 
 use super::VM;
 use crate::{
-    defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
+    ResourceTracker, defer_drop,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
-    resource::ResourceTracker,
     types::{CmpOrder, PyTrait},
     value::Value,
 };

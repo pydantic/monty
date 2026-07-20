@@ -13,14 +13,14 @@ use std::{
 
 use super::LazyHeapSet;
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{PyTrait, Type},
     value::{EitherStr, Value},
 };

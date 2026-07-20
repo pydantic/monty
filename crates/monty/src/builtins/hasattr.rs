@@ -1,13 +1,12 @@
 //! Implementation of the hasattr() builtin function.
 
 use crate::{
-    ExcType,
+    ExcType, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
-    resource::ResourceTracker,
     value::Value,
 };
 

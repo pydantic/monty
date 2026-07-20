@@ -11,11 +11,11 @@
 use std::cmp::Ordering;
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     types::{CmpOrder, PyTrait},
     value::Value,
 };

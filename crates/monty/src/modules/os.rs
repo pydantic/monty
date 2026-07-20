@@ -9,15 +9,14 @@
 //! which executes the operation and returns the result.
 
 use crate::{
-    MontyObject,
+    GetenvArgs, MontyObject, OsFunctionCall, ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os::{GetenvArgs, OsFunctionCall},
-    resource::{ResourceError, ResourceTracker},
+    object_bridge::MontyObjectExt,
     types::{Module, Property, property::ZeroArgOsProperty},
     value::Value,
 };

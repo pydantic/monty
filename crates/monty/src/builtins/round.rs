@@ -3,12 +3,12 @@
 use num_bigint::{BigInt, Sign};
 
 use crate::{
+    ResourceTracker,
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     types::LongInt,
     value::Value,
 };

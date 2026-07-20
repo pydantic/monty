@@ -7,11 +7,11 @@
 //! filesystem methods (require I/O, yield external function calls for host resolution).
 
 use crate::{
+    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
     value::Value,
 };

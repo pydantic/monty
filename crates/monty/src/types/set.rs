@@ -5,17 +5,17 @@ use smallvec::SmallVec;
 
 use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
         HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{LazyHeapSet, Type},
     value::{EitherStr, Value},
 };

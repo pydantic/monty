@@ -5,12 +5,13 @@ use num_integer::Integer;
 use smallvec::smallvec;
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
-    resource::{ResourceTracker, check_div_size},
+    resource_checks::check_div_size,
     types::{LongInt, allocate_tuple},
     value::{Value, floor_divmod},
 };

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use monty::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty_types::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
 
 use crate::{convert::ProtoConvertError, pb};
 

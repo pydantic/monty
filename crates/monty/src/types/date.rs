@@ -13,15 +13,14 @@ use std::{
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
+    OsFunctionCall, ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os::OsFunctionCall,
-    resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, Type,
         str::{allocate_string, allocate_string_no_interning},

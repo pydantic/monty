@@ -18,11 +18,12 @@
 
 use std::{borrow::Cow, mem};
 
-use monty::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    MontyRepl, OsFunctionCall, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
-};
+use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, type_check};
+use monty_types::{
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
+    OsFunctionCall, PrintWriter, PrintWriterCallback,
+};
 
 use super::{
     FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,

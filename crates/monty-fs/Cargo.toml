@@ -16,7 +16,7 @@ repository = { workspace = true }
 name = "monty_fs"
 
 [dependencies]
-monty = { workspace = true }
+monty-types = { workspace = true }
 ahash = { workspace = true }
 
 [dev-dependencies]

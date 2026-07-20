@@ -9,11 +9,11 @@ use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberI
 
 use super::JsonStringCache;
 use crate::{
+    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
-    resource::{ResourceError, ResourceTracker},
     types::{
         Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},

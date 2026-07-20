@@ -12,19 +12,19 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
-#[cfg(feature = "test-hooks")]
 use crate::{
-    args::ArgValues,
-    exception_private::{ExcType, RunResult},
-    modules::ModuleFunctions,
-};
-use crate::{
+    ResourceError, ResourceTracker,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, NamedTuple},
     value::{Marker, Value},
+};
+#[cfg(feature = "test-hooks")]
+use crate::{
+    args::ArgValues,
+    exception_private::{ExcType, ExcTypeExt, RunResult},
+    modules::ModuleFunctions,
 };
 
 /// Functions exposed by the `sys` module under the `test-hooks` feature.

@@ -19,10 +19,10 @@ use super::{
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
+    MontyException, StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
         Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
@@ -34,6 +34,7 @@ use crate::{
     name_map::NameMap,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
+    source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -4027,7 +4028,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 

@@ -3,13 +3,13 @@
 use std::mem;
 
 use crate::{
+    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, HeapId, HeapItem, HeapRead},
     intern::StringId,
-    resource::ResourceTracker,
     types::Dict,
     value::{EitherStr, Value},
 };
