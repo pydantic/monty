@@ -154,6 +154,18 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     parse_with_interner(code, filename, InternerBuilder::new(code))
 }
 
+/// Builds a [`CodeRange`] from an interned filename and a ruff range.
+///
+/// Free rather than a `Parser` method so a syntax error raised before the parser
+/// exists can be located the same way [`Parser::convert_range`] does.
+fn code_range(filename: StringId, range: TextRange) -> CodeRange {
+    CodeRange {
+        filename,
+        start_byte: range.start().into(),
+        end_byte: range.end().into(),
+    }
+}
+
 /// Parses code using a caller-provided interner seed.
 ///
 /// This enables incremental compilation flows (e.g. REPL) where existing
@@ -161,22 +173,22 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: InternerBuilder,
+    mut interner: InternerBuilder,
 ) -> Result<ParseResult, ParseError> {
-    let mut parser = Parser::new(code, filename, interner);
+    // Interned up front so a syntax error can be located without a `Parser`,
+    // leaving the parser to be built once, fully populated, after parsing.
+    let filename_id = interner.intern(filename);
     let parsed =
-        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
-    // Harvested before `into_syntax` drops the token stream: `class_keyword_range`
-    // needs keyword offsets, and the lexer has already ruled out `class` occurring
-    // inside a comment or string literal.
-    parser.class_keyword_offsets = parsed
+        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // Harvested before `into_syntax` drops the token stream.
+    let class_keyword_offsets = parsed
         .tokens()
         .iter()
         .filter(|token| token.kind() == TokenKind::Class)
         .map(Ranged::start)
         .collect();
-    let module = parsed.into_syntax();
-    let nodes = parser.parse_statements(module.body)?;
+    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
+    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
     Ok(ParseResult {
         nodes,
         interner: parser.interner,
@@ -197,22 +209,30 @@ pub struct Parser<'a> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
-    /// Source offset of every `class` keyword token, ascending. Populated by
-    /// [`parse_with_interner`] straight after parsing (empty until then, which is
-    /// why nothing may read it during construction) and consumed only by
-    /// [`Parser::class_keyword_range`].
+    /// Ascending source offsets of every `class` keyword, taken from the lexer.
+    ///
+    /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
+    /// never records where `class` sat, and its range starts at the first
+    /// decorator. CPython locates a statement at its keyword, so a decorated
+    /// class's traceback frame needs the concrete position. Read only by
+    /// [`Parser::class_keyword_range`]; `def`/`async def` will want the same
+    /// treatment if function decorators are supported.
     class_keyword_offsets: Vec<TextSize>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        let filename_id = interner.intern(filename);
+    fn new(
+        code: &'a str,
+        filename_id: StringId,
+        interner: InternerBuilder,
+        class_keyword_offsets: Vec<TextSize>,
+    ) -> Self {
         Self {
             code,
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
-            class_keyword_offsets: Vec::new(),
+            class_keyword_offsets,
         }
     }
 
@@ -1977,11 +1997,7 @@ impl<'a> Parser<'a> {
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
-        CodeRange {
-            filename: self.filename_id,
-            start_byte: range.start().into(),
-            end_byte: range.end().into(),
-        }
+        code_range(self.filename_id, range)
     }
 
     /// Decrements the depth remaining for nested parentheses.
