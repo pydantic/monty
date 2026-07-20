@@ -37,6 +37,7 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     for iterable in iterables.drain(..) {
         iterators.push(iterable.into_py_iter(vm)?);
     }
+    let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 
     let mut result_guard = DropGuard::new(Vec::new(), vm);
     let (result, vm) = result_guard.as_parts_mut();
