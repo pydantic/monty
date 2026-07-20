@@ -408,11 +408,11 @@ fn resource_limit_data_round_trips() {
 
 /// Regression: a genuine time-limit hit whose margin over the limit is
 /// sub-microsecond must still round-trip and pass the receive side's
-/// hit-validity check. Before the wire format used nanosecond precision, both
-/// durations truncated to microseconds before that check, so a hit this close
-/// to its limit would decode to `elapsed_nanos == limit_nanos` and get
-/// dropped as implausible — exactly the failure mode a lossy encoding
-/// introduces.
+/// hit-validity check. Before the wire format used sub-second-nanosecond
+/// precision, both durations truncated to microseconds before that check, so
+/// a hit this close to its limit would decode to an equal `elapsed`/`limit`
+/// and get dropped as implausible — exactly the failure mode a lossy
+/// encoding introduces.
 #[test]
 fn sub_microsecond_time_limit_hit_survives_round_trip() {
     let data = ResourceLimitData::Time {
@@ -426,6 +426,29 @@ fn sub_microsecond_time_limit_hit_survives_round_trip() {
     assert!(
         back.resource_limit_data().is_some(),
         "sub-microsecond-margin hit must survive as a genuine classification"
+    );
+}
+
+/// Regression: a genuine time-limit hit at a magnitude beyond ~584 years
+/// (`u64::MAX` nanoseconds) must still round-trip. A single-nanosecond-count
+/// wire encoding saturates durations past that point to `u64::MAX`, which
+/// would make an even-more-extreme `elapsed` collapse to equal `limit` and
+/// get dropped as implausible; encoding as seconds + sub-second nanoseconds
+/// has no such ceiling for any representable `Duration`.
+#[test]
+fn extreme_duration_time_limit_hit_survives_round_trip() {
+    let limit = Duration::from_secs(20_000_000_000); // ~634 years > u64::MAX nanoseconds
+    let data = ResourceLimitData::Time {
+        limit,
+        elapsed: limit + Duration::from_nanos(500),
+    };
+    let exc = MontyException::new(ExcType::TimeoutError, Some("time limit exceeded".to_owned()))
+        .with_data(ExcData::ResourceLimit(Box::new(data)));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+    assert!(
+        back.resource_limit_data().is_some(),
+        "extreme-magnitude hit must survive as a genuine classification"
     );
 }
 
@@ -457,16 +480,20 @@ fn implausible_resource_limit_data_is_dropped_not_trusted() {
         pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 0, count: 0 }),
         pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 5, count: 5 }),
         pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
-            limit_nanos: 50_000,
-            elapsed_nanos: 40_000,
+            limit_secs: 0,
+            limit_subsec_nanos: 50_000,
+            elapsed_secs: 0,
+            elapsed_subsec_nanos: 40_000,
         }),
-        // Equal-to-the-nanosecond is exactly the boundary case the nanosecond
+        // Equal-to-the-nanosecond is exactly the boundary case the exact
         // wire precision exists to get right: not a hit (must be dropped),
         // and must not be conflated with a genuine hit that merely lost
-        // precision through a lossy micros round trip.
+        // precision through a lossy round trip.
         pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
-            limit_nanos: 50_000,
-            elapsed_nanos: 50_000,
+            limit_secs: 0,
+            limit_subsec_nanos: 50_000,
+            elapsed_secs: 0,
+            elapsed_subsec_nanos: 50_000,
         }),
         pb::resource_limit_data::Kind::Memory(pb::resource_limit_data::Memory { limit: 100, used: 100 }),
         pb::resource_limit_data::Kind::Recursion(pb::resource_limit_data::Recursion { limit: 10, depth: 10 }),

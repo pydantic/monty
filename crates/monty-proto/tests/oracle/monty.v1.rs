@@ -366,18 +366,24 @@ pub mod resource_limit_data {
         #[prost(uint64, tag = "2")]
         pub count: u64,
     }
-    /// Maximum execution time exceeded. Durations in nanoseconds (unlike
-    /// `ResourceLimits.max_duration_micros`) so the receive side's hit-validity
-    /// check (`elapsed > limit`, see `is_genuine_hit`) can't be defeated by
-    /// truncation: a genuine hit whose margin over the limit is sub-microsecond
-    /// would otherwise round-trip to `elapsed_micros == limit_micros` and get
-    /// rejected as implausible.
+    /// Maximum execution time exceeded. Each duration is split into seconds +
+    /// sub-second nanoseconds (mirroring `std::time::Duration`'s own
+    /// representation) rather than a single nanosecond count, so encoding is
+    /// always exact — no truncation at the low end (unlike
+    /// `ResourceLimits.max_duration_micros`) and no saturation at the high end
+    /// for any representable `Duration`. Either lossiness would let the receive
+    /// side's hit-validity check (`elapsed > limit`, see `is_genuine_hit`)
+    /// reject a genuine hit whose encoded value collapsed to equal its limit.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
     pub struct Time {
         #[prost(uint64, tag = "1")]
-        pub limit_nanos: u64,
-        #[prost(uint64, tag = "2")]
-        pub elapsed_nanos: u64,
+        pub limit_secs: u64,
+        #[prost(uint32, tag = "2")]
+        pub limit_subsec_nanos: u32,
+        #[prost(uint64, tag = "3")]
+        pub elapsed_secs: u64,
+        #[prost(uint32, tag = "4")]
+        pub elapsed_subsec_nanos: u32,
     }
     /// Maximum memory usage exceeded, in bytes.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
