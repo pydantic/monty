@@ -359,18 +359,7 @@ impl Checkout {
                 result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             })),
         };
-        // An oversize frame is rejected before any bytes are written, so the
-        // child would never see this answer and would stay suspended for ever.
-        // Reject it while `pending` still marks the call as answerable, so the
-        // caller can retry with a smaller value or answer with an error.
-        if let Some(len) = exceeds_max_frame_len(&request) {
-            return Err(PoolError::Runtime(MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!(
-                    "result frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"
-                )),
-            )));
-        }
+        ensure_resume_frame_fits(&request)?;
         self.pending = None;
         self.expect_turn(&request, on_print)
     }
@@ -446,7 +435,6 @@ impl Checkout {
         if let Some(obj) = &value {
             ensure_sendable([obj])?;
         }
-        self.pending = None;
         let kind = match value {
             Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
@@ -456,6 +444,8 @@ impl Checkout {
                 kind: Some(kind),
             })),
         };
+        ensure_resume_frame_fits(&request)?;
+        self.pending = None;
         self.expect_turn(&request, on_print)
     }
 
@@ -491,10 +481,11 @@ impl Checkout {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.pending = None;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
         };
+        ensure_resume_frame_fits(&request)?;
+        self.pending = None;
         self.expect_turn(&request, on_print)
     }
 
@@ -908,6 +899,25 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
         )))
     } else {
         Ok(())
+    }
+}
+
+/// Rejects a resume request whose encoded frame exceeds the wire limit.
+///
+/// An oversize frame is rejected before any bytes are written, so the child
+/// would never see the answer and would stay suspended for ever. Every
+/// `resume*` method must call this *before* clearing `pending`, so the
+/// suspension stays answerable and the caller can retry with a smaller value
+/// or an error.
+fn ensure_resume_frame_fits(request: &pb::ParentRequest) -> Result<(), PoolError> {
+    match exceeds_max_frame_len(request) {
+        Some(len) => Err(PoolError::Runtime(MontyException::new(
+            ExcType::RuntimeError,
+            Some(format!(
+                "result frame of {len} bytes exceeds the maximum of {MAX_FRAME_LEN} bytes"
+            )),
+        ))),
+        None => Ok(()),
     }
 }
 

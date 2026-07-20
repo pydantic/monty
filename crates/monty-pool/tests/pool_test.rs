@@ -672,6 +672,56 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
         )
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(5));
+
+    // (5) parent -> child name-lookup resume: same invariant as (4) — the
+    // rejected answer leaves the lookup answerable.
+    let event = session.feed("missing", vec![], vec![], false, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
+    let huge = MontyObject::String("x".repeat(OVERSIZE));
+    let err = session.resume_name_lookup(Some(huge), &mut no_print).unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize name-lookup value, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    let event = session
+        .resume_name_lookup(Some(MontyObject::String("small".to_owned())), &mut no_print)
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("small".to_owned()));
+
+    // (6) parent -> child future resolution: the pending futures stay
+    // resolvable after an oversize result is rejected.
+    let code = "import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())";
+    let event = session.feed(code, vec![], vec![], false, &mut no_print).unwrap();
+    let TurnEvent::FunctionCall { call_id, .. } = event else {
+        panic!("expected FunctionCall, got {event:?}");
+    };
+    let event = session.resume(ResumeValue::Future, &mut no_print).unwrap();
+    assert!(matches!(event, TurnEvent::ResolveFutures { .. }), "got {event:?}");
+    let huge = MontyObject::String("x".repeat(OVERSIZE));
+    let err = session
+        .resume_futures(vec![(call_id, ResumeValue::Return(huge))], &mut no_print)
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime for oversize future result, got {err:?}");
+    };
+    assert!(
+        exc.message()
+            .is_some_and(|m| m.contains("result frame") && m.contains("exceeds the maximum")),
+        "unexpected message: {:?}",
+        exc.message()
+    );
+    let event = session
+        .resume_futures(
+            vec![(call_id, ResumeValue::Return(MontyObject::Int(99)))],
+            &mut no_print,
+        )
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(99));
     session.finish().unwrap();
 }
 
