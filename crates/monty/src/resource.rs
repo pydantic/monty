@@ -197,22 +197,22 @@ impl ResourceError {
             Self::Allocation { limit, count } => (
                 ExcType::MemoryError,
                 Some(format!("allocation limit exceeded: {count} > {limit}")),
-                ExcData::ResourceLimit(ResourceLimitData::Allocation { limit, count }),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Allocation { limit, count })),
             ),
             Self::Memory { limit, used } => (
                 ExcType::MemoryError,
                 Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
-                ExcData::ResourceLimit(ResourceLimitData::Memory { limit, used }),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Memory { limit, used })),
             ),
             Self::Time { limit, elapsed } => (
                 ExcType::TimeoutError,
                 Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
-                ExcData::ResourceLimit(ResourceLimitData::Time { limit, elapsed }),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Time { limit, elapsed })),
             ),
             Self::Recursion { limit, depth } => (
                 ExcType::RecursionError,
                 Some("maximum recursion depth exceeded".to_string()),
-                ExcData::ResourceLimit(ResourceLimitData::Recursion { limit, depth }),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Recursion { limit, depth })),
             ),
             Self::Exception(exc) => (exc.exc_type(), exc.into_message(), ExcData::None),
         };

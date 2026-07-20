@@ -4,7 +4,7 @@ use monty::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyRun, MontyTimeDelta,
     MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
+    RenameCallArgs, ResourceLimitData, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -381,6 +381,46 @@ fn json_error_payload_round_trips() {
     ));
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
+}
+
+/// All four `ResourceLimitData` variants survive the trip through
+/// `monty-pool`'s subprocess wire format — this is the primary execution
+/// path for embedders using `monty-pool`/`pydantic_monty`, so a resource
+/// limit hit in a worker must still classify correctly once it reaches the
+/// parent process.
+#[test]
+fn resource_limit_data_round_trips() {
+    for data in [
+        ResourceLimitData::Allocation { limit: 4, count: 5 },
+        ResourceLimitData::Time {
+            limit: Duration::from_millis(50),
+            elapsed: Duration::from_millis(52),
+        },
+        ResourceLimitData::Memory { limit: 100, used: 128 },
+        ResourceLimitData::Recursion { limit: 10, depth: 11 },
+    ] {
+        let exc = MontyException::new(ExcType::MemoryError, Some("limit exceeded".to_owned()))
+            .with_data(ExcData::ResourceLimit(Box::new(data)));
+        let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+        assert_eq!(back, exc, "{data:?} did not round-trip");
+    }
+}
+
+/// An empty `ResourceLimitData` wire message (a compromised or buggy child
+/// sending no `kind`) must be dropped, not trusted — same posture as
+/// [`bogus_unicode_payloads_are_dropped_not_trusted`]/[`bogus_json_payloads_are_dropped_not_trusted`].
+#[test]
+fn empty_resource_limit_data_is_dropped_not_trusted() {
+    let wire = pb::RaisedException {
+        exc_type: "MemoryError".to_owned(),
+        message: Some("limit exceeded".to_owned()),
+        traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData { kind: None })),
+        }),
+    };
+    let back = MontyException::try_from(wire).unwrap();
+    assert_eq!(back.data(), &ExcData::None);
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine

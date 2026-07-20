@@ -2,11 +2,17 @@
 //! frames so an exception raised on one side of the process boundary renders
 //! identically on the other.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use monty::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty::{
+    CodeLoc, ExcData, JsonErrorData, MontyException, ResourceLimitData, StackFrame, UnicodeErrorData,
+    UnicodeErrorObject,
+};
 
-use crate::{convert::ProtoConvertError, pb};
+use crate::{
+    convert::ProtoConvertError,
+    pb::{self, resource_limit_data},
+};
 
 impl From<&MontyException> for pb::RaisedException {
     fn from(exc: &MontyException) -> Self {
@@ -41,6 +47,8 @@ impl TryFrom<pb::RaisedException> for MontyException {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
             Some(pb::exc_data::Kind::Json(json)) => sanitize_json_data(json).map_or(ExcData::None, ExcData::Json),
+            Some(pb::exc_data::Kind::ResourceLimit(resource_limit)) => resource_limit_data_from_wire(resource_limit)
+                .map_or(ExcData::None, |data| ExcData::ResourceLimit(Box::new(data))),
             None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
@@ -49,15 +57,9 @@ impl TryFrom<pb::RaisedException> for MontyException {
 
 /// Maps monty's `ExcData` onto the wire message; `ExcData::None` becomes an
 /// absent field rather than an empty message.
-///
-/// `ExcData::ResourceLimit` has no wire representation yet (no `pb::ExcData`
-/// oneof variant carries it) and is dropped here, same as `None` — a worker
-/// process's resource-limit classification does not yet survive the trip
-/// back to the parent. Extending the proto schema to close this gap is
-/// tracked as follow-up work.
 fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
     match data {
-        ExcData::None | ExcData::ResourceLimit(_) => None,
+        ExcData::None => None,
         ExcData::Unicode(unicode) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData::from(
                 unicode.as_ref(),
@@ -66,7 +68,69 @@ fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
         ExcData::Json(json) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData::from(json.as_ref()))),
         }),
+        ExcData::ResourceLimit(resource_limit) => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData::from(
+                resource_limit.as_ref(),
+            ))),
+        }),
     }
+}
+
+impl From<&ResourceLimitData> for pb::ResourceLimitData {
+    fn from(data: &ResourceLimitData) -> Self {
+        let kind = match *data {
+            ResourceLimitData::Allocation { limit, count } => {
+                resource_limit_data::Kind::Allocation(resource_limit_data::Allocation {
+                    limit: limit as u64,
+                    count: count as u64,
+                })
+            }
+            ResourceLimitData::Time { limit, elapsed } => resource_limit_data::Kind::Time(resource_limit_data::Time {
+                limit_micros: u64::try_from(limit.as_micros()).unwrap_or(u64::MAX),
+                elapsed_micros: u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX),
+            }),
+            ResourceLimitData::Memory { limit, used } => {
+                resource_limit_data::Kind::Memory(resource_limit_data::Memory {
+                    limit: limit as u64,
+                    used: used as u64,
+                })
+            }
+            ResourceLimitData::Recursion { limit, depth } => {
+                resource_limit_data::Kind::Recursion(resource_limit_data::Recursion {
+                    limit: limit as u64,
+                    depth: depth as u64,
+                })
+            }
+        };
+        Self { kind: Some(kind) }
+    }
+}
+
+/// Converts a wire `ResourceLimitData`, dropping it (returning `None`) when
+/// the `kind` oneof is unset — the worst a compromised child sending an empty
+/// message can do, same posture as [`sanitize_unicode_data`]/[`sanitize_json_data`].
+/// Every field here is a plain integer with no attacker-controlled length, so
+/// unlike those two there is no amplification size cap to enforce.
+fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<ResourceLimitData> {
+    let usize_field = |v: u64| usize::try_from(v).unwrap_or(usize::MAX);
+    Some(match data.kind? {
+        resource_limit_data::Kind::Allocation(a) => ResourceLimitData::Allocation {
+            limit: usize_field(a.limit),
+            count: usize_field(a.count),
+        },
+        resource_limit_data::Kind::Time(t) => ResourceLimitData::Time {
+            limit: Duration::from_micros(t.limit_micros),
+            elapsed: Duration::from_micros(t.elapsed_micros),
+        },
+        resource_limit_data::Kind::Memory(m) => ResourceLimitData::Memory {
+            limit: usize_field(m.limit),
+            used: usize_field(m.used),
+        },
+        resource_limit_data::Kind::Recursion(r) => ResourceLimitData::Recursion {
+            limit: usize_field(r.limit),
+            depth: usize_field(r.depth),
+        },
+    })
 }
 
 impl From<&JsonErrorData> for pb::JsonErrorData {

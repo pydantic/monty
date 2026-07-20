@@ -52,8 +52,9 @@ pub enum ExcData {
     /// configured [`ResourceLimits`](crate::ResourceLimits) bound was
     /// exceeded) rather than an exception raised by sandboxed code of the
     /// same type. Lets embedders distinguish the two without parsing the
-    /// message.
-    ResourceLimit(ResourceLimitData),
+    /// message. Boxed like [`ExcData::Unicode`]/[`ExcData::Json`] to keep the
+    /// enum small.
+    ResourceLimit(Box<ResourceLimitData>),
 }
 
 impl ExcData {
