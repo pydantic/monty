@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    ExcType, MontyException,
+    ExcData, ExcType, MontyException, ResourceLimitData,
     exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
 };
 
@@ -186,28 +186,37 @@ impl ResourceError {
     /// - `Memory` → `MemoryError`
     /// - `Time` → `TimeoutError`
     /// - `Recursion` → `RecursionError`
+    ///
+    /// The four limit-hit variants also attach an [`ExcData::ResourceLimit`]
+    /// payload carrying the original typed fields, so embedders can tell a
+    /// limit hit apart from sandboxed code raising the same exception type
+    /// (e.g. `raise MemoryError()`) without parsing the message.
     #[must_use]
     pub(crate) fn into_exception(self, frame: Option<RawStackFrame>) -> ExceptionRaise {
-        let (exc_type, msg) = match self {
+        let (exc_type, msg, data) = match self {
             Self::Allocation { limit, count } => (
                 ExcType::MemoryError,
                 Some(format!("allocation limit exceeded: {count} > {limit}")),
+                ExcData::ResourceLimit(ResourceLimitData::Allocation { limit, count }),
             ),
             Self::Memory { limit, used } => (
                 ExcType::MemoryError,
                 Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
+                ExcData::ResourceLimit(ResourceLimitData::Memory { limit, used }),
             ),
             Self::Time { limit, elapsed } => (
                 ExcType::TimeoutError,
                 Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
+                ExcData::ResourceLimit(ResourceLimitData::Time { limit, elapsed }),
             ),
-            Self::Recursion { .. } => (
+            Self::Recursion { limit, depth } => (
                 ExcType::RecursionError,
                 Some("maximum recursion depth exceeded".to_string()),
+                ExcData::ResourceLimit(ResourceLimitData::Recursion { limit, depth }),
             ),
-            Self::Exception(exc) => (exc.exc_type(), exc.into_message()),
+            Self::Exception(exc) => (exc.exc_type(), exc.into_message(), ExcData::None),
         };
-        let exc = SimpleException::new(exc_type, msg);
+        let exc = SimpleException::new(exc_type, msg).with_data(data);
         match frame {
             Some(f) => exc.with_frame(f),
             None => exc.into(),

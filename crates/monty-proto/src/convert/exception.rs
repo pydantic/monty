@@ -49,9 +49,15 @@ impl TryFrom<pb::RaisedException> for MontyException {
 
 /// Maps monty's `ExcData` onto the wire message; `ExcData::None` becomes an
 /// absent field rather than an empty message.
+///
+/// `ExcData::ResourceLimit` has no wire representation yet (no `pb::ExcData`
+/// oneof variant carries it) and is dropped here, same as `None` — a worker
+/// process's resource-limit classification does not yet survive the trip
+/// back to the parent. Extending the proto schema to close this gap is
+/// tracked as follow-up work.
 fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
     match data {
-        ExcData::None => None,
+        ExcData::None | ExcData::ResourceLimit(_) => None,
         ExcData::Unicode(unicode) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Unicode(pb::UnicodeErrorData::from(
                 unicode.as_ref(),

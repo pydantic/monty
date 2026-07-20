@@ -4,6 +4,7 @@ use std::{
     fmt::{self, Write},
     mem, str,
     sync::Arc,
+    time::Duration,
 };
 
 use crate::{
@@ -46,6 +47,13 @@ pub enum ExcData {
     /// `json.JSONDecodeError` attribute fields. Boxed like
     /// [`ExcData::Unicode`] to keep the enum small.
     Json(Box<JsonErrorData>),
+    /// Set when this exception represents a sandbox resource-limit hit
+    /// (`MemoryError`/`TimeoutError`/`RecursionError` raised because a
+    /// configured [`ResourceLimits`](crate::ResourceLimits) bound was
+    /// exceeded) rather than an exception raised by sandboxed code of the
+    /// same type. Lets embedders distinguish the two without parsing the
+    /// message.
+    ResourceLimit(ResourceLimitData),
 }
 
 impl ExcData {
@@ -67,6 +75,15 @@ impl ExcData {
         }
     }
 
+    /// The resource-limit fields, if this is [`ExcData::ResourceLimit`].
+    #[must_use]
+    pub fn resource_limit(&self) -> Option<&ResourceLimitData> {
+        match self {
+            Self::ResourceLimit(data) => Some(data),
+            _ => None,
+        }
+    }
+
     /// Approximate byte footprint, used by the heap's memory accounting when
     /// an exception carrying this payload is stored on the sandbox heap.
     #[must_use]
@@ -75,8 +92,45 @@ impl ExcData {
             Self::None => 0,
             Self::Unicode(data) => data.estimate_size(),
             Self::Json(data) => data.estimate_size(),
+            Self::ResourceLimit(_) => mem::size_of::<ResourceLimitData>(),
         }
     }
+}
+
+/// Structured fields identifying which resource limit was hit and by how
+/// much. Mirrors the limit-hit variants of `ResourceError` (its
+/// `ResourceError::Exception` variant is not a limit hit, so has no
+/// counterpart here) — see [`ExcData::ResourceLimit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ResourceLimitData {
+    /// Maximum number of allocations exceeded.
+    Allocation {
+        /// The configured allocation-count limit.
+        limit: usize,
+        /// The allocation count that would have resulted.
+        count: usize,
+    },
+    /// Maximum execution time exceeded.
+    Time {
+        /// The configured duration limit.
+        limit: Duration,
+        /// The elapsed execution time observed.
+        elapsed: Duration,
+    },
+    /// Maximum memory usage exceeded.
+    Memory {
+        /// The configured memory limit, in bytes.
+        limit: usize,
+        /// The memory usage that would have resulted, in bytes.
+        used: usize,
+    },
+    /// Maximum recursion depth exceeded.
+    Recursion {
+        /// The configured recursion-depth limit.
+        limit: usize,
+        /// The call-stack depth that would have resulted.
+        depth: usize,
+    },
 }
 
 /// Structured fields of a `UnicodeDecodeError` / `UnicodeEncodeError`,
@@ -350,6 +404,14 @@ impl MontyException {
     #[must_use]
     pub fn json_data(&self) -> Option<&JsonErrorData> {
         self.data.json()
+    }
+
+    /// Structured resource-limit fields, present only when this exception
+    /// represents a sandbox resource-limit hit rather than an exception of
+    /// the same type raised by sandboxed code (e.g. `raise MemoryError()`).
+    #[must_use]
+    pub fn resource_limit_data(&self) -> Option<&ResourceLimitData> {
+        self.data.resource_limit()
     }
 
     /// Removes and returns the structured payload, for consumers (like the
