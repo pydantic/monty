@@ -17,14 +17,14 @@
 use std::mem;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
-    types::{PyTrait, Range, Type, dict_view::DictView, str::allocate_char},
+    types::{PyTrait, Range, Type, callable_iterator::CallableIterator, dict_view::DictView, str::allocate_char},
     value::{VALUE_SIZE, Value, ValueRead},
 };
 
@@ -49,20 +49,25 @@ impl MontyIter {
     ///
     /// - `iter(iterable)` - Returns an iterator for the iterable. If the argument is
     ///   already an iterator, returns the same object.
-    /// - `iter(callable, sentinel)` - Not yet supported.
+    /// - `iter(callable, sentinel)` - builds a [`CallableIterator`].
     pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let (iterable, sentinel) = args.get_one_two_args("iter", vm.heap)?;
+        let IterArgs { object, sentinel } = IterArgs::from_args(args, vm)?;
 
-        if let Some(s) = sentinel {
-            // Two-argument form: iter(callable, sentinel)
-            // This is the sentinel iteration protocol, not yet supported
-            iterable.drop_with(vm);
-            s.drop_with(vm);
-            return Err(ExcType::type_error("iter(callable, sentinel) is not yet supported"));
+        if let Some(sentinel) = sentinel {
+            // CPython rejects a non-callable `v` when the iterator is built,
+            // not at the first `next()`, so mirror that.
+            return if object.is_callable(vm.heap) {
+                let iter = CallableIterator::new(object, sentinel);
+                Ok(Value::Ref(vm.heap.allocate(HeapData::CallableIterator(iter))?))
+            } else {
+                object.drop_with(vm);
+                sentinel.drop_with(vm);
+                Err(ExcType::type_error("iter(v, w): v must be callable"))
+            };
         }
 
-        let iterator = iterable.py_iter(vm);
-        iterable.drop_with(vm);
+        let iterator = object.py_iter(vm);
+        object.drop_with(vm);
         iterator
     }
 
@@ -213,9 +218,10 @@ impl MontyIter {
                     HeapData::Iter(iter) => iter.size_hint(heap),
                     _ => unreachable!("opaque_target validated the iterator type"),
                 },
-                Ok(OpaqueTarget::ListIterator(heap_id)) => match heap.get(heap_id) {
+                // A `callable_iterator` has no knowable length, hence 0.
+                Ok(OpaqueTarget::Protocol(heap_id)) => match heap.get(heap_id) {
                     HeapData::ListIterator(iter) => iter.size_hint(heap),
-                    _ => unreachable!("opaque_target validated the iterator type"),
+                    _ => 0,
                 },
                 Err(_) => 0,
             },
@@ -293,6 +299,23 @@ impl MontyIter {
             .collect()
         }
     }
+}
+
+/// Argument shape for `iter(object, /)` and `iter(object, sentinel, /)`.
+///
+/// Both stay raw `Value`s: the one-argument form accepts anything iterable
+/// (checked by `py_iter`) and the two-argument form needs the bespoke
+/// [`Value::is_callable`] check, neither of which has a `FromArgs` equivalent.
+/// `style = unpack` reproduces the `PyArg_UnpackTuple` arity wording CPython
+/// uses here (`iter expected at most 2 arguments, got 3`) and rejects keywords,
+/// which `iter` never accepts.
+#[derive(FromArgs)]
+#[from_args(name = "iter", style = unpack)]
+struct IterArgs {
+    #[from_args(pos_only)]
+    object: Value,
+    #[from_args(pos_only, default)]
+    sentinel: Option<Value>,
 }
 
 /// Validates and clamps an iterator capacity hint before native allocation.
@@ -512,15 +535,16 @@ const MAX_OPAQUE_DEPTH: usize = 1000;
 enum OpaqueTarget {
     /// A terminal general-purpose iterator.
     Iter(HeapId),
-    /// A list iterator with independently retained state.
-    ListIterator(HeapId),
+    /// A heap-resident iterator with independently retained state, advanced
+    /// through `PyTrait::py_next` (`list_iterator`, `callable_iterator`, ...).
+    Protocol(HeapId),
 }
 
 impl OpaqueTarget {
     /// Returns the heap id of the validated terminal iterator.
     fn heap_id(self) -> HeapId {
         match self {
-            Self::Iter(heap_id) | Self::ListIterator(heap_id) => heap_id,
+            Self::Iter(heap_id) | Self::Protocol(heap_id) => heap_id,
         }
     }
 }
@@ -555,7 +579,7 @@ fn flatten_opaque(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<He
                 IterValue::Opaque { heap_id } => current = heap_id,
                 _ => return Ok(current),
             },
-            HeapData::ListIterator(_) => return Ok(current),
+            HeapData::ListIterator(_) | HeapData::CallableIterator(_) => return Ok(current),
             _ => return Err(OpaqueError::NotAnIterator),
         }
     }
@@ -567,7 +591,7 @@ fn opaque_target(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<O
     match heap.get(heap_id) {
         HeapData::Iter(inner) if matches!(inner.iter_value, IterValue::Opaque { .. }) => Err(OpaqueError::TooDeep),
         HeapData::Iter(_) => Ok(OpaqueTarget::Iter(heap_id)),
-        HeapData::ListIterator(_) => Ok(OpaqueTarget::ListIterator(heap_id)),
+        HeapData::ListIterator(_) | HeapData::CallableIterator(_) => Ok(OpaqueTarget::Protocol(heap_id)),
         _ => Err(OpaqueError::NotAnIterator),
     }
 }
@@ -581,12 +605,9 @@ fn advance_opaque(heap_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> Run
             };
             iter.advance(vm)
         }
-        OpaqueTarget::ListIterator(heap_id) => {
-            let HeapReadOutput::ListIterator(mut iter) = vm.heap.read(heap_id) else {
-                unreachable!("opaque_target validated the iterator type")
-            };
-            iter.py_next(vm)
-        }
+        // Dispatched through `HeapReadOutput` so every protocol iterator is
+        // covered without a per-type arm here.
+        OpaqueTarget::Protocol(heap_id) => vm.heap.read(heap_id).py_next(vm),
     }
 }
 
@@ -842,7 +863,7 @@ impl IterValue {
             HeapData::Str(s) => Some(Self::from_str(s.as_str())),
             // Range: copy values for iteration
             HeapData::Range(range) => Some(Self::from_range(range)),
-            HeapData::Iter(_) | HeapData::ListIterator(_) => Some(Self::Opaque {
+            HeapData::Iter(_) | HeapData::ListIterator(_) | HeapData::CallableIterator(_) => Some(Self::Opaque {
                 heap_id: flatten_opaque(heap_id, heap).map_err(OpaqueError::into_exception)?,
             }),
             // other types are not iterable

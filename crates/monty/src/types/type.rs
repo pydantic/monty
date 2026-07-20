@@ -108,6 +108,8 @@ pub enum Type {
     Iterator,
     #[strum(serialize = "list_iterator")]
     ListIterator,
+    #[strum(serialize = "callable_iterator")]
+    CallableIterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,

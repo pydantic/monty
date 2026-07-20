@@ -2278,6 +2278,19 @@ impl Value {
             _ => false,
         }
     }
+
+    /// Whether calling this value would succeed at dispatch.
+    ///
+    /// Dispatch can't double as the predicate — it pushes a frame, clones
+    /// defaults, constructs an instance — so the two are kept in lockstep by
+    /// `debug_assert!`s in dispatch's "not callable" arms.
+    pub(crate) fn is_callable(&self, heap: &Heap<impl ResourceTracker>) -> bool {
+        match self {
+            Self::Builtin(_) | Self::ModuleFunction(_) | Self::ExtFunction(_) | Self::DefFunction(_) => true,
+            Self::Ref(id) => heap.get(*id).is_callable(),
+            _ => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
