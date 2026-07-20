@@ -1,12 +1,4 @@
-//! Public data types shared between the `monty` interpreter and its host-side
-//! crates (`monty-proto`, `monty-pool`, the Python/JS bindings).
-//!
-//! This crate contains only owned, heap-free boundary types — values
-//! ([`MontyObject`]), exceptions ([`MontyException`]), OS-call payloads
-//! ([`OsFunctionCall`]), resource limits ([`ResourceLimits`]) and print
-//! plumbing — with **no interpreter implementation**. Hosts that only spawn
-//! `monty` worker subprocesses depend on this crate instead of `monty`, so
-//! their binaries never link the interpreter itself.
+#![doc = include_str!("../README.md")]
 
 pub mod args;
 mod builtins;
