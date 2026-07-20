@@ -19,6 +19,7 @@ use std::mem;
 use crate::{
     args::ArgValues,
     bytecode::VM,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
@@ -138,13 +139,12 @@ impl MontyIter {
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
     pub fn for_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        // Rust-side loops do not return to the bytecode dispatch loop between
+        // items, so this is their shared timeout boundary.
+        vm.heap.check_time()?;
         if let IterValue::Opaque { heap_id } = &self.iter_value {
             return advance_opaque(*heap_id, vm);
         }
-
-        // Inline iterators own the timeout check; opaque iterators delegate it
-        // to the concrete heap iterator above.
-        vm.heap.check_time()?;
         match &mut self.iter_value {
             IterValue::Range { next, step, len } => {
                 if self.index >= *len {
@@ -243,15 +243,7 @@ impl MontyIter {
         elem_size: usize,
         vm: &VM<'_, impl ResourceTracker>,
     ) -> Result<usize, ResourceError> {
-        /// Upper bound on the number of slots we are willing to reserve up front.
-        ///
-        /// Chosen so the worst-case pre-allocation (a few MiB) is small relative
-        /// to any realistic memory budget, while still avoiding repeated
-        /// reallocations for the common case of building moderate containers.
-        const MAX_PREALLOCATION_HINT: usize = 65_536;
-        let hint = self.size_hint(vm.heap);
-        check_estimated_size(hint.saturating_mul(elem_size), vm.heap.tracker())?;
-        Ok(hint.min(MAX_PREALLOCATION_HINT))
+        checked_preallocation_hint(self.size_hint(vm.heap), elem_size, vm.heap.tracker())
     }
 
     /// Materializes all remaining items into a `T` (typically `Vec<Value>`).
@@ -281,7 +273,10 @@ impl MontyIter {
         let (this, vm) = guard.as_parts_mut();
         if let IterValue::Opaque { heap_id } = &this.iter_value {
             let target = opaque_target(*heap_id, vm.heap).map_err(OpaqueError::into_exception)?;
-            let target_value = Value::Ref(target.heap_id());
+            let target_id = target.heap_id();
+            vm.heap.inc_ref(target_id);
+            let target_value = Value::Ref(target_id);
+            defer_drop!(target_value, vm);
             let mut iter = target_value.read(vm);
             HeapedMontyIter {
                 iter: &mut iter,
@@ -298,6 +293,22 @@ impl MontyIter {
             .collect()
         }
     }
+}
+
+/// Validates and clamps an iterator capacity hint before native allocation.
+///
+/// The clamp bounds untracked preallocation to a few MiB while retaining the
+/// performance benefit for moderate containers.
+pub(crate) fn checked_preallocation_hint(
+    hint: usize,
+    elem_size: usize,
+    tracker: &impl ResourceTracker,
+) -> Result<usize, ResourceError> {
+    /// Upper bound on the number of slots reserved from an untrusted hint.
+    const MAX_PREALLOCATION_HINT: usize = 65_536;
+
+    check_estimated_size(hint.saturating_mul(elem_size), tracker)?;
+    Ok(hint.min(MAX_PREALLOCATION_HINT))
 }
 
 /// Adapts an internal iterator driver to [`Iterator`] while enforcing the
@@ -385,16 +396,14 @@ impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
 }
 
 impl<'h> HeapRead<'h, MontyIter> {
-    /// Advances an iterator and returns the next value.
+    /// Advances an iterator without checking the execution timeout.
     ///
-    /// Returns `Ok(None)` when the iterator is exhausted.
-    /// Returns `Err` for dict/set size changes or allocation failures.
+    /// Bytecode callers are checked by the VM dispatch loop; Rust-side loops
+    /// must use [`MontyIter::for_next`] or [`ValueRead::py_next`].
     pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
         if let IterValue::Opaque { heap_id } = &self.get(vm.heap).iter_value {
             return advance_opaque(*heap_id, vm);
         }
-
-        vm.heap.check_time()?;
         let this = self.get_mut(vm.heap);
         match &mut this.iter_value {
             IterValue::Range { next, step, len } => {

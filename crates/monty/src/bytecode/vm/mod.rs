@@ -41,7 +41,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        Dict, LongInt, MontyIter, PyTrait,
+        Dict, LongInt, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
@@ -1426,26 +1426,22 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    // Create a MontyIter from the value and store on heap
-                    match MontyIter::new(value, self) {
-                        Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
-                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => catch_sync!(self, cached_frame, e.into()),
-                        },
+                    let iterator = value.py_iter(self);
+                    value.drop_with(self);
+                    match iterator {
+                        Ok(iterator) => self.push(iterator),
                         Err(e) => catch_sync!(self, cached_frame, e),
                     }
                 }
                 Opcode::ForIter => {
                     let offset = cached_frame.fetch_i16();
-                    // Peek at the iterator on TOS and extract heap_id
+                    // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
-                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
-                    };
+                    let mut iter = self.heap.read(heap_id);
 
-                    match iter.advance(self) {
+                    match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Drop the HeapRead before dec_ref to release the reader count

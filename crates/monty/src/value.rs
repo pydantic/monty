@@ -113,7 +113,11 @@ pub(crate) enum ValueRead<'h, 'v> {
 
 impl<'h> ValueRead<'h, '_> {
     /// Advances this value without reacquiring its heap entry.
+    ///
+    /// This is the timeout boundary for Rust-side loops over retained iterators.
+    /// Bytecode iteration dispatches directly after the VM's per-opcode check.
     pub(crate) fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        vm.heap.check_time()?;
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
             Self::Heap { value, .. } => value.py_next(vm),
@@ -1670,11 +1674,6 @@ impl Value {
     /// Returns an iterator for this value using its type-specific protocol when available.
     pub fn py_iter(&self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         <Self as PyTrait<'_>>::py_iter(self, None, vm)
-    }
-
-    /// Advances this value if it implements the iterator protocol.
-    pub fn py_next(&mut self, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
-        <Self as PyTrait<'_>>::py_next(self, vm)
     }
 
     /// Creates a scoped view that retains this value's heap reader when needed.

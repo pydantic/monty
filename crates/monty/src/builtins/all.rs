@@ -1,8 +1,8 @@
 //! Implementation of the all() builtin function.
 
 use crate::{
-    args::ArgValues, bytecode::VM, defer_drop, defer_drop_mut, exception_private::RunResult, resource::ResourceTracker,
-    types::PyTrait, value::Value,
+    args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, resource::ResourceTracker, types::PyTrait,
+    value::Value,
 };
 
 /// Implementation of the all() builtin function.
@@ -13,7 +13,8 @@ pub fn builtin_all(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let iterable = args.get_one_arg("all", vm.heap)?;
     defer_drop!(iterable, vm);
     let iter = iterable.py_iter(vm)?;
-    defer_drop_mut!(iter, vm);
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);

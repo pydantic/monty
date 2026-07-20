@@ -10,7 +10,7 @@ use crate::{
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceTracker,
-    types::{Dict, FrozenSet, LazyHeapSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
+    types::{Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint},
     value::{EitherStr, Value},
 };
 
@@ -549,30 +549,14 @@ fn write_dict_values_contents<'h>(
 /// binary operators and `isdisjoint(...)` consistent with each other.
 pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Set, RunError> {
     let mut value_guard = DropGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts_mut();
-
-    // Fast path existing iterators
-    if let Value::Ref(heap_id) = value
-        && let HeapReadOutput::Iter(mut iter) = vm.heap.read(*heap_id)
-    {
-        let mut set_guard = DropGuard::new(Set::new(), vm);
-        let (set, vm) = set_guard.as_parts_mut();
-        while let Some(item) = iter.advance(vm)? {
-            set.add(item, vm)?;
-        }
-        return Ok(set_guard.into_inner());
-    }
-
-    let (value, vm) = value_guard.into_parts();
-    let iter = MontyIter::new(value, vm)?;
-    defer_drop_mut!(iter, vm);
-    // `preallocation_hint` validates the requested capacity against the
-    // resource tracker and clamps it so an attacker-controlled iterable length
-    // cannot drive an unbounded native pre-allocation.
-    let cap = iter.preallocation_hint(mem::size_of::<Value>() * 2, vm)?;
+    let (value, vm) = value_guard.as_parts();
+    let iter = value.py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
+    let cap = checked_preallocation_hint(iter.iter_size_hint(vm), mem::size_of::<Value>() * 2, vm.heap.tracker())?;
     let mut set_guard = DropGuard::new(Set::with_capacity(cap), vm);
     let (set, vm) = set_guard.as_parts_mut();
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         set.add(item, vm)?;
     }
     Ok(set_guard.into_inner())

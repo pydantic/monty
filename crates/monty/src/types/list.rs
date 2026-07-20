@@ -983,7 +983,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
     }
 
     fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        vm.heap.check_time()?;
         let (list_id, index) = {
             let iterator = self.get(vm.heap);
             (iterator.list, iterator.index)
