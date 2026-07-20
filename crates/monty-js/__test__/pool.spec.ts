@@ -180,7 +180,7 @@ test('special files in mounts are rejected without blocking', async (ctx) => {
     const error = await t.throwsAsync(
       () =>
         session.feedRun("from pathlib import Path\nPath('/mnt/pipe').read_text()", {
-          mount: new MountDir('/mnt', dir, { mode: 'read-only' }),
+          mount: new MountDir({ hostPath: dir, virtualPath: '/mnt', mode: 'read-only' }),
         }),
       { instanceOf: MontyRuntimeError },
     )

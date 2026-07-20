@@ -12,8 +12,17 @@ const DEFAULT_MEMORY_USAGE_LIMIT = 100_000_000
 /** Sandbox access mode for a mounted directory. */
 export type MountDirMode = 'read-only' | 'read-write' | 'overlay'
 
-/** Options for [`MountDir`]. */
+/** Configuration for [`MountDir`]. The paths are named fields (never
+ *  positional): mount tools disagree on host-first (docker `-v`) vs
+ *  virtual-first (nginx `alias`) ordering, so requiring names removes the
+ *  ambiguity. */
 export interface MountDirOptions {
+  /** Real host directory to expose. Sandbox code can never see this path or
+   *  reach outside it. */
+  hostPath: string
+  /** Absolute virtual POSIX path prefix inside the sandbox (e.g. `'/data'`),
+   *  regardless of host OS. */
+  virtualPath: string
   /**
    * Access mode (default `'overlay'`): `'read-only'` rejects writes,
    * `'read-write'` writes through to the host, `'overlay'` keeps writes in
@@ -38,25 +47,25 @@ const VALID_MODES: Record<MountDirMode, true> = {
  * budget, `memoryUsageLimit` (100 MB by default).
  *
  * ```ts
- * const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
+ * const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
  * await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
  * ```
  */
 export class MountDir {
-  readonly virtualPath: string
   readonly hostPath: string
+  readonly virtualPath: string
   readonly mode: MountDirMode
   readonly writeBytesLimit: number | null
   readonly memoryUsageLimit: number
 
-  constructor(virtualPath: string, hostPath: string, options: MountDirOptions = {}) {
+  constructor(options: MountDirOptions) {
     const mode = options.mode ?? 'overlay'
     // hasOwn, not `in`: prototype keys like 'toString' must not pass as modes
     if (!Object.hasOwn(VALID_MODES, mode)) {
       throw new Error(`invalid mount mode: '${mode}'. Expected 'read-only', 'read-write' or 'overlay'`)
     }
-    this.virtualPath = virtualPath
-    this.hostPath = hostPath
+    this.hostPath = options.hostPath
+    this.virtualPath = options.virtualPath
     this.mode = mode
     this.writeBytesLimit = options.writeBytesLimit ?? null
     this.memoryUsageLimit = options.memoryUsageLimit ?? DEFAULT_MEMORY_USAGE_LIMIT
@@ -67,7 +76,7 @@ export class MountDir {
 
   /** Returns a string representation of the mount. */
   repr(): string {
-    return `MountDir(virtual_path='${this.virtualPath}', host_path='${this.hostPath}', mode='${this.mode}')`
+    return `MountDir(host_path='${this.hostPath}', virtual_path='${this.virtualPath}', mode='${this.mode}')`
   }
 }
 

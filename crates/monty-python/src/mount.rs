@@ -34,11 +34,13 @@ pub struct PyMountDir {
 
 #[pymethods]
 impl PyMountDir {
-    /// Creates a new mount directory.
+    /// Creates a new mount directory. All arguments are keyword-only: mount
+    /// tools disagree on host-first (docker `-v`) vs virtual-first (nginx
+    /// `alias`) ordering, so requiring names removes the ambiguity.
     ///
     /// # Arguments
-    /// * `virtual_path` — absolute virtual path prefix (e.g. `"/data"`)
     /// * `host_path` — path to the real host directory
+    /// * `virtual_path` — absolute virtual path prefix (e.g. `"/data"`)
     /// * `mode` — access mode: `"read-only"`, `"read-write"`, or `"overlay"` (default)
     ///
     /// # Raises
@@ -46,9 +48,9 @@ impl PyMountDir {
     /// is not absolute, or the host path doesn't exist or isn't a directory.
     #[new]
     #[pyo3(signature = (
-        virtual_path,
-        host_path,
         *,
+        host_path,
+        virtual_path,
         mode = "overlay",
         // must stay a literal mirroring monty_fs::DEFAULT_MEMORY_USAGE_LIMIT: a
         // const default renders as `...` in the text signature, breaking stubtest
@@ -58,8 +60,8 @@ impl PyMountDir {
     #[expect(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf for conversion from Python str/Path
     fn new(
         py: Python<'_>,
-        virtual_path: &str,
         host_path: PathBuf,
+        virtual_path: &str,
         mode: &str,
         write_bytes_limit: Option<u64>,
         memory_usage_limit: u64,
@@ -82,16 +84,16 @@ impl PyMountDir {
         })
     }
 
-    /// The normalized virtual path prefix inside the sandbox.
-    #[getter]
-    fn virtual_path(&self) -> String {
-        self.spec.virtual_path.clone()
-    }
-
     /// The canonical host directory path.
     #[getter]
     fn host_path(&self) -> String {
         self.spec.host_path.display().to_string()
+    }
+
+    /// The normalized virtual path prefix inside the sandbox.
+    #[getter]
+    fn virtual_path(&self) -> String {
+        self.spec.virtual_path.clone()
     }
 
     /// The access mode: `"read-only"`, `"read-write"`, or `"overlay"`.
@@ -114,9 +116,9 @@ impl PyMountDir {
 
     fn __repr__(&self) -> String {
         format!(
-            "MountDir('{}', '{}', '{}')",
-            self.spec.virtual_path,
+            "MountDir(host_path='{}', virtual_path='{}', mode='{}')",
             self.spec.host_path.display(),
+            self.spec.virtual_path,
             mount_mode_name(self.spec.mode)
         )
     }

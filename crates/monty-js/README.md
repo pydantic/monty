@@ -163,7 +163,7 @@ Mount host directories into the sandbox at virtual POSIX paths:
 ```ts
 import { MountDir } from '@pydantic/monty'
 
-const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
+const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 

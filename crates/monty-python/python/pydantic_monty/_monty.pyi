@@ -67,30 +67,34 @@ class CollectString:
 class MountDir:
     """A mount point mapping a virtual path to a host directory."""
 
-    virtual_path: str
     host_path: str
+    virtual_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
     write_bytes_limit: int | None
     memory_usage_limit: int
 
     def __new__(
         cls,
-        virtual_path: str,
-        host_path: str | Path,
         *,
+        host_path: str | Path,
+        virtual_path: str,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
         memory_usage_limit: int = 100_000_000,
     ) -> MountDir:
         """Configure a mount point; validation happens here, not at feed time.
 
+        All arguments are keyword-only: mount tools disagree on host-first
+        (docker `-v`) vs virtual-first (nginx `alias`) ordering, so requiring
+        names removes the ambiguity.
+
         Arguments:
-            virtual_path: Absolute POSIX-style path prefix inside the sandbox
-                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
-                if not absolute.
             host_path: Real host directory to expose. Canonicalized at
                 construction; raises if it doesn't exist or isn't a directory.
                 Sandbox code can never see this path or reach outside it.
+            virtual_path: Absolute POSIX-style path prefix inside the sandbox
+                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
                 `'read-write'` — writes through to the host directory;
                 `'overlay'` (default) — reads fall through to the host, writes

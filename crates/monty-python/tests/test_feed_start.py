@@ -224,7 +224,7 @@ def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
     # Re-supplying the feed's mounts to load_snapshot rebuilds the mount table,
     # so the mounted read after resume is served in-worker and never surfaces.
     (tmp_path / 'hello.txt').write_text('hi')
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
     with pool.checkout() as session:
         snap = session.feed_start(code, mount=mount)
@@ -245,7 +245,7 @@ def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_pat
     # dump. A restore that omits them is not validated — the resumed feed's
     # filesystem calls simply surface as unhandled OS calls.
     (tmp_path / 'hello.txt').write_text('hi')
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
     with pool.checkout() as session:
         snap = session.feed_start(code, mount=mount)
@@ -273,7 +273,7 @@ def test_load_accepts_mount_for_idle_dump(pool: Monty, tmp_path: Path):
         session.feed_run('kept = 1')
         blob = session.dump()
 
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
         assert session.load_session(blob) is None
         assert session.feed_run('kept + 1', mount=mount) == snapshot(2)

@@ -187,7 +187,7 @@ test('mounts are re-supplied to loadSnapshot', async () => {
 
   const dir = await mkdtemp(join(tmpdir(), 'monty-js-snap-'))
   await writeFile(join(dir, 'hello.txt'), 'hi')
-  const mount = new MountDir('/data', dir, { mode: 'read-only' })
+  const mount = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
   const code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
 
   let blob: Buffer
