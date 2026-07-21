@@ -111,7 +111,11 @@ except TypeError as e:
 # that reach the check. `5`/`None`/`1.5`/`True` are immediates while a big int
 # lives on the heap, and each site used to answer the two from a separate arm
 # with its own copy of the message.
-for bad, name in ((5, 'int'), (big, 'int'), (None, 'NoneType'), (1.5, 'float'), (True, 'bool')):
+# typed `object` so the unpacks below are checked the same way as the helpers
+# further down, rather than being flagged for the `None` case alone
+bad_values: list[tuple[object, str]] = [(5, 'int'), (big, 'int'), (None, 'NoneType'), (1.5, 'float'), (True, 'bool')]
+
+for bad, name in bad_values:
     try:
         [*bad]
         raise AssertionError('expected list unpack to raise')
@@ -230,6 +234,7 @@ assert {*txt} == {'a', 'b'}
 
 assert add2(*lst) == 3
 assert add2(*tup) == 3
+assert add2(*st) == 3
 assert add2(*dct) == 3
 assert add2(*txt) == 'ab'
 
@@ -237,6 +242,8 @@ u1, u2 = lst
 assert (u1, u2) == (1, 2)
 u1, u2 = tup
 assert (u1, u2) == (1, 2)
+u1, u2 = st
+assert {u1, u2} == {1, 2}
 u1, u2 = dct
 assert (u1, u2) == (1, 2)
 u1, u2 = txt
@@ -246,6 +253,9 @@ u1, *urest = lst
 assert (u1, urest) == (1, [2])
 u1, *urest = tup
 assert (u1, urest) == (1, [2])
+u1, *urest = st
+assert {u1, *urest} == {1, 2}
+assert len(urest) == 1
 u1, *urest = dct
 assert (u1, urest) == (1, [2])
 u1, *urest = txt
