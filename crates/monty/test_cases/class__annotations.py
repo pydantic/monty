@@ -96,6 +96,20 @@ assert Literals.__annotations__['g'] == "f'pre{1}post'"
 assert Literals.__annotations__['h'] == "dict[str, 'AB']"
 
 
+# === bytes literals canonicalize the same way, minus the `u` prefix ===
+class ByteLiterals:
+    a: b'foo'
+    b: b'foo' b'bar'  # fmt: skip
+    c: rb'raw\d'
+    d: b"""triple"""  # fmt: skip
+
+
+assert ByteLiterals.__annotations__['a'] == "b'foo'"
+assert ByteLiterals.__annotations__['b'] == "b'foobar'"
+assert ByteLiterals.__annotations__['c'] == "b'raw\\\\d'"
+assert ByteLiterals.__annotations__['d'] == "b'triple'"
+
+
 # === Empty class: __annotations__ is an empty dict ===
 class E:
     p = 1

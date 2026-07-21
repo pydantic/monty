@@ -10,7 +10,7 @@
 use ruff_python_ast::{
     self as ast, AtomicNodeIndex, Expr as AstExpr,
     str::{Quote, TripleQuotes},
-    str_prefix::StringLiteralPrefix,
+    str_prefix::{ByteStringPrefix, StringLiteralPrefix},
     visitor::transformer::{Transformer, walk_expr, walk_f_string},
 };
 use ruff_python_codegen::{Generator, Indentation};
@@ -38,6 +38,7 @@ pub(crate) fn stringize_annotation(annotation: &mut AstExpr) -> String {
 /// | `f"x" "y"`     | `f'x' 'y'`     | `f'xy'`             |
 /// | `r"raw\d"`     | `r'raw\d'`     | `'raw\\d'`          |
 /// | `"""triple"""` | `"""triple"""` | `'triple'`          |
+/// | `b"foo" b"bar"`| `b"foo" b"bar"`| `b'foobar'`         |
 struct CanonicalStringLiterals;
 
 impl Transformer for CanonicalStringLiterals {
@@ -46,6 +47,7 @@ impl Transformer for CanonicalStringLiterals {
     fn visit_expr(&self, expr: &mut AstExpr) {
         match expr {
             AstExpr::StringLiteral(s) => rebuild_string_literal(s),
+            AstExpr::BytesLiteral(b) => rebuild_bytes_literal(b),
             AstExpr::FString(f) if f.value.is_implicit_concatenated() => merge_f_string_parts(f),
             _ => {}
         }
@@ -96,6 +98,24 @@ fn rebuild_string_literal(expr: &mut ast::ExprStringLiteral) {
         flags: canonical_string_flags(expr.value.first_literal_flags()),
     };
     expr.value = ast::StringLiteralValue::single(canonical);
+}
+
+/// The `bytes` counterpart of [`rebuild_string_literal`], collapsing
+/// `b"foo" b"bar"` into `b'foobar'`.
+///
+/// Simpler than the `str` case only in the flags: `bytes` has no `u` prefix, so
+/// the canonical form keeps no prefix at all.
+fn rebuild_bytes_literal(expr: &mut ast::ExprBytesLiteral) {
+    let canonical = ast::BytesLiteral {
+        range: expr.range,
+        node_index: AtomicNodeIndex::default(),
+        value: expr.value.bytes().collect(),
+        flags: ast::BytesLiteralFlags::empty()
+            .with_prefix(ByteStringPrefix::Regular)
+            .with_quote_style(Quote::Single)
+            .with_triple_quotes(TripleQuotes::No),
+    };
+    expr.value = ast::BytesLiteralValue::single(canonical);
 }
 
 /// Collapses `f"x" "y"` into the single f-string `f'xy'`.
