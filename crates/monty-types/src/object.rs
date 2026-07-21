@@ -11,7 +11,6 @@ use std::{
 };
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta};
-use indexmap::IndexMap;
 use num_bigint::BigInt;
 use num_traits::{ToPrimitive, Zero};
 
@@ -1074,18 +1073,6 @@ pub struct DictPairs(Vec<(MontyObject, MontyObject)>);
 impl From<Vec<(MontyObject, MontyObject)>> for DictPairs {
     fn from(pairs: Vec<(MontyObject, MontyObject)>) -> Self {
         Self(pairs)
-    }
-}
-
-impl From<IndexMap<MontyObject, MontyObject>> for DictPairs {
-    fn from(map: IndexMap<MontyObject, MontyObject>) -> Self {
-        Self(map.into_iter().collect())
-    }
-}
-
-impl From<DictPairs> for IndexMap<MontyObject, MontyObject> {
-    fn from(pairs: DictPairs) -> Self {
-        pairs.into_iter().collect()
     }
 }
 

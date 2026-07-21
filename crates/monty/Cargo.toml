@@ -17,13 +17,14 @@ name = "monty"
 path = "src/lib.rs"
 
 [dependencies]
+monty-macros = { workspace = true }
+monty-types = { workspace = true }
 ruff_python_parser = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { workspace = true }
 itoa = { workspace = true }
-indexmap = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
 strum = { workspace = true }
@@ -41,8 +42,6 @@ chrono = { workspace = true }
 speedate = "0.17.0"
 itertools = "0.14.0"
 jiter = { version = "0.15.0", features = ["num-bigint"] }
-monty-macros = { workspace = true }
-monty-types = { workspace = true }
 
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct

@@ -16,14 +16,13 @@ repository = { workspace = true }
 name = "monty_types"
 
 [dependencies]
+monty-macros = { workspace = true }
 serde = { workspace = true }
 strum = { workspace = true }
 chrono = { workspace = true }
 num-bigint = { workspace = true }
 num-traits = { workspace = true }
-indexmap = { workspace = true }
 unicode-general-category = { workspace = true }
-monty-macros = { workspace = true }
 
 # `std::time::Instant` panics on `wasm32-unknown-unknown`, so the resource
 # tracker uses `web_time::Instant` (a `performance.now()`-backed drop-in) there
