@@ -142,3 +142,57 @@ fn dynamic_type_with_non_string_key_raises_type_error() {
         "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (), {1: 'one'})\n    ~~~~~~~~~~~~~~~~~~~~~~~~~\nTypeError: non-string key (int) in the namespace of class 'A'"
     );
 }
+
+// === Result-conversion reentrancy tests ===
+// Converting a result to `MontyObject` can run a user `__repr__` on nested
+// instances; a `__repr__` that mutates the containing collection must not
+// panic the conversion (children are snapshotted before recursing).
+
+#[test]
+fn output_list_mutated_by_nested_repr() {
+    let code = "\
+class Evil:
+    def __repr__(self):
+        lst.clear()
+        return 'evil'
+
+lst = [Evil(), 1, 2]
+lst";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::Repr("evil".to_owned()),
+            MontyObject::Int(1),
+            MontyObject::Int(2),
+        ])
+    );
+}
+
+#[test]
+fn output_dict_mutated_by_nested_repr() {
+    let code = "\
+class Evil:
+    def __repr__(self):
+        d.clear()
+        return 'evil'
+
+d = {'k': Evil(), 'a': 1}
+d";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::Dict(
+            vec![
+                (
+                    MontyObject::String("k".to_owned()),
+                    MontyObject::Repr("evil".to_owned())
+                ),
+                (MontyObject::String("a".to_owned()), MontyObject::Int(1)),
+            ]
+            .into()
+        )
+    );
+}

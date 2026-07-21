@@ -5,8 +5,8 @@
 
 use ahash::AHashSet;
 use monty_types::{
-    InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
-    MontyType, ResourceTracker,
+    DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
+    MontyTimeZone, MontyType, ResourceTracker,
 };
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{RunError, SimpleException},
-    heap::{Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapReadOutput},
     intern::Interns,
     types::{
         Dataclass, LongInt, NamedTuple, OpenFile, Path, PyTrait, TimeZone, Type, allocate_tuple,
@@ -86,58 +86,42 @@ impl MontyObjectExt for MontyObject {
             Self::String(s) => Ok(allocate_string(s, vm.heap)?),
             Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
             Self::List(items) => {
-                let values: Vec<Value> = items
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
+                let values = convert_values(items, vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))?))
             }
             Self::Tuple(items) => {
-                let values = items
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
-                allocate_tuple(values, vm.heap).map_err(InvalidInputError::Resource)
+                let values = convert_values(items, vm)?;
+                allocate_tuple(values.into(), vm.heap).map_err(InvalidInputError::Resource)
             }
             Self::NamedTuple {
                 type_name,
                 field_names,
                 values,
             } => {
-                let values: Vec<Value> = values
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
+                // `NamedTuple::new` asserts equal lengths; malformed host input
+                // (e.g. untrusted serialized data) must error, not panic.
+                if field_names.len() != values.len() {
+                    return Err(InvalidInputError::invalid_type(
+                        "NamedTuple field_names and values must have the same length",
+                    ));
+                }
+                let values = convert_values(values, vm)?;
                 let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
                 let nt = NamedTuple::new(type_name, field_name_strs, values);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
-                let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = map
-                    .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
-                    .collect();
-                let dict = Dict::from_pairs(pairs?, vm)
-                    .map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
+                let pairs = convert_pairs(map, vm)?;
+                let dict =
+                    Dict::from_pairs(pairs, vm).map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
             }
             Self::Set(items) => {
-                let mut set = Set::new();
-                for item in items {
-                    let value = item.to_value(vm)?;
-                    set.add(value, vm)
-                        .map_err(|_| InvalidInputError::invalid_type("unhashable set element"))?;
-                }
+                let set = convert_set(items, vm, "unhashable set element")?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))?))
             }
             Self::FrozenSet(items) => {
-                let mut set = Set::new();
-                for item in items {
-                    let value = item.to_value(vm)?;
-                    set.add(value, vm)
-                        .map_err(|_| InvalidInputError::invalid_type("unhashable frozenset element"))?;
-                }
-                // Convert to frozenset by extracting storage
+                let set = convert_set(items, vm, "unhashable frozenset element")?;
                 let frozenset = FrozenSet::from_set(set);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))?))
             }
@@ -207,12 +191,8 @@ impl MontyObjectExt for MontyObject {
                 attrs,
                 frozen,
             } => {
-                // Convert attrs to Dict
-                let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
-                    .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
-                    .collect();
-                let dict = Dict::from_pairs(pairs?, vm)
+                let pairs = convert_pairs(attrs, vm)?;
+                let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
@@ -261,10 +241,13 @@ impl MontyObjectExt for MontyObject {
     /// never recurse through the heap. `Ref` variants dispatch via
     /// `vm.heap.read(id)` so the resulting [`HeapRead`] keeps the heap entry
     /// alive (through its reader count) without retaining a borrow on
-    /// `vm.heap`. Container children are walked via short-lived borrows that
-    /// `clone_with_heap` the next child before recursing — the `inc_ref` makes
-    /// it safe for a future user-defined `__repr__` to mutate the surrounding
-    /// container during the recursive call without freeing the value mid-format.
+    /// `vm.heap`. Recursing can run a user-defined `__repr__` (via
+    /// [`repr_or_error`] on nested instances), so mutable containers (list,
+    /// dict, set, dataclass attrs) snapshot ALL children up front — the
+    /// `inc_ref`s keep each child alive and the snapshot keeps iteration valid
+    /// even if that `__repr__` mutates the container. Immutable containers
+    /// (tuple, namedtuple, frozenset) clone per-item: their length and slots
+    /// cannot change mid-iteration.
     fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
@@ -302,14 +285,15 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::Str(s) => Self::String(s.get(vm.heap).as_str().to_owned()),
                     HeapReadOutput::Bytes(b) => Self::Bytes(b.get(vm.heap).as_slice().to_owned()),
                     HeapReadOutput::List(list) => {
-                        let len = list.get(vm.heap).len();
-                        let mut items = Vec::with_capacity(len);
-                        for i in 0..len {
-                            let item = list.get(vm.heap).as_slice()[i].clone_with_heap(vm.heap);
-                            defer_drop!(item, vm);
-                            items.push(Self::from_value_inner(item, vm, visited));
-                        }
-                        Self::List(items)
+                        // Snapshot before recursing: a nested `__repr__` may mutate this list.
+                        let children: Vec<Value> = list
+                            .get(vm.heap)
+                            .as_slice()
+                            .iter()
+                            .map(|item| item.clone_with_heap(vm.heap))
+                            .collect();
+                        defer_drop!(children, vm);
+                        Self::List(values_to_objects(children, vm, visited))
                     }
                     HeapReadOutput::Tuple(tuple) => {
                         let len = tuple.get(vm.heap).as_slice().len();
@@ -343,41 +327,27 @@ impl MontyObjectExt for MontyObject {
                         }
                     }
                     HeapReadOutput::Dict(dict) => {
-                        let len = dict.get(vm.heap).len();
-                        let mut pairs = Vec::with_capacity(len);
-                        for i in 0..len {
-                            let key = dict
-                                .get(vm.heap)
-                                .key_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap);
-                            defer_drop!(key, vm);
-                            let k = Self::from_value_inner(key, vm, visited);
-                            let value = dict
-                                .get(vm.heap)
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap);
-                            defer_drop!(value, vm);
-                            let v = Self::from_value_inner(value, vm, visited);
-                            pairs.push((k, v));
-                        }
-                        Self::Dict(pairs.into())
+                        // Snapshot before recursing: a nested `__repr__` may mutate this dict.
+                        let children = snapshot_dict_pairs(dict.get(vm.heap), vm.heap);
+                        defer_drop!(children, vm);
+                        Self::Dict(pairs_to_objects(children, vm, visited).into())
                     }
                     HeapReadOutput::Set(set) => {
-                        let len = set.get(vm.heap).len();
-                        let mut items = Vec::with_capacity(len);
-                        for i in 0..len {
-                            let item = set
-                                .get(vm.heap)
-                                .storage()
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap);
-                            defer_drop!(item, vm);
-                            items.push(Self::from_value_inner(item, vm, visited));
-                        }
-                        Self::Set(items)
+                        // Snapshot before recursing: a nested `__repr__` may mutate this set.
+                        let children: Vec<Value> = {
+                            let set_ref = set.get(vm.heap);
+                            (0..set_ref.len())
+                                .map(|i| {
+                                    set_ref
+                                        .storage()
+                                        .value_at(i)
+                                        .expect("index in range")
+                                        .clone_with_heap(vm.heap)
+                                })
+                                .collect()
+                        };
+                        defer_drop!(children, vm);
+                        Self::Set(values_to_objects(children, vm, visited))
                     }
                     HeapReadOutput::FrozenSet(fs) => {
                         let len = fs.get(vm.heap).len();
@@ -451,41 +421,23 @@ impl MontyObjectExt for MontyObject {
                         }
                     }
                     HeapReadOutput::Dataclass(dc) => {
-                        let (name, type_id, field_names, frozen, attrs_len) = {
+                        let (name, type_id, field_names, frozen) = {
                             let dc_ref = dc.get(vm.heap);
                             (
                                 dc_ref.name(vm.interns).to_owned(),
                                 dc_ref.type_id(),
                                 dc_ref.field_names().to_vec(),
                                 dc_ref.is_frozen(),
-                                dc_ref.attrs().len(),
                             )
                         };
-                        let mut pairs = Vec::with_capacity(attrs_len);
-                        for i in 0..attrs_len {
-                            let key = dc
-                                .get(vm.heap)
-                                .attrs()
-                                .key_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap);
-                            defer_drop!(key, vm);
-                            let k = Self::from_value_inner(key, vm, visited);
-                            let value = dc
-                                .get(vm.heap)
-                                .attrs()
-                                .value_at(i)
-                                .expect("index in range")
-                                .clone_with_heap(vm.heap);
-                            defer_drop!(value, vm);
-                            let v = Self::from_value_inner(value, vm, visited);
-                            pairs.push((k, v));
-                        }
+                        // Snapshot before recursing: attrs are mutable via `setattr`.
+                        let children = snapshot_dict_pairs(dc.get(vm.heap).attrs(), vm.heap);
+                        defer_drop!(children, vm);
                         Self::Dataclass {
                             name,
                             type_id,
                             field_names,
-                            attrs: pairs.into(),
+                            attrs: pairs_to_objects(children, vm, visited).into(),
                             frozen,
                         }
                     }
@@ -677,6 +629,104 @@ impl MontyTypeExt for MontyType {
             other => Self::from_internal_static(other),
         }
     }
+}
+
+/// Converts a sequence of `MontyObject`s into runtime `Value`s, releasing all
+/// already-converted values if a later conversion fails (invalid nested input
+/// or a resource limit) so no refcounts leak on the error path.
+fn convert_values(
+    items: Vec<MontyObject>,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> Result<Vec<Value>, InvalidInputError> {
+    let mut guard = DropGuard::new(Vec::with_capacity(items.len()), vm);
+    let (values, vm) = guard.as_parts_mut();
+    for item in items {
+        values.push(item.to_value(vm)?);
+    }
+    Ok(guard.into_inner())
+}
+
+/// Converts `(key, value)` `MontyObject` pairs into runtime `Value` pairs with
+/// the same all-paths cleanup guarantee as [`convert_values`].
+fn convert_pairs(
+    map: DictPairs,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> Result<Vec<(Value, Value)>, InvalidInputError> {
+    let mut guard = DropGuard::new(Vec::with_capacity(map.len()), vm);
+    let (pairs, vm) = guard.as_parts_mut();
+    for (key_obj, value_obj) in map {
+        let key = key_obj.to_value(vm)?;
+        // Guard the key while the value converts so a failing value doesn't leak it.
+        let mut key_guard = DropGuard::new(key, &mut *vm);
+        let value = value_obj.to_value(key_guard.ctx())?;
+        pairs.push((key_guard.into_inner(), value));
+    }
+    Ok(guard.into_inner())
+}
+
+/// Builds a `Set` from `MontyObject` elements, dropping the partially-built
+/// set (and every value already added to it) if any element fails to convert
+/// or hash.
+fn convert_set(
+    items: Vec<MontyObject>,
+    vm: &mut VM<'_, impl ResourceTracker>,
+    unhashable_msg: &'static str,
+) -> Result<Set, InvalidInputError> {
+    let mut guard = DropGuard::new(Set::new(), vm);
+    let (set, vm) = guard.as_parts_mut();
+    for item in items {
+        let value = item.to_value(vm)?;
+        set.add(value, vm)
+            .map_err(|_| InvalidInputError::invalid_type(unhashable_msg))?;
+    }
+    Ok(guard.into_inner())
+}
+
+/// Converts a guarded snapshot of container children to `MontyObject`s.
+///
+/// Taking a `&[Value]` snapshot (cloned and guarded by the caller) is what
+/// keeps [`from_value_inner`](MontyObjectExt::from_value_inner) safe against a
+/// nested `__repr__` mutating the source container mid-iteration.
+fn values_to_objects(
+    children: &[Value],
+    vm: &mut VM<'_, impl ResourceTracker>,
+    visited: &mut AHashSet<HeapId>,
+) -> Vec<MontyObject> {
+    children
+        .iter()
+        .map(|child| MontyObject::from_value_inner(child, vm, visited))
+        .collect()
+}
+
+/// Converts a guarded snapshot of dict entries to `MontyObject` pairs — the
+/// pair-wise counterpart of [`values_to_objects`].
+fn pairs_to_objects(
+    children: &[(Value, Value)],
+    vm: &mut VM<'_, impl ResourceTracker>,
+    visited: &mut AHashSet<HeapId>,
+) -> Vec<(MontyObject, MontyObject)> {
+    children
+        .iter()
+        .map(|(key, value)| {
+            (
+                MontyObject::from_value_inner(key, vm, visited),
+                MontyObject::from_value_inner(value, vm, visited),
+            )
+        })
+        .collect()
+}
+
+/// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
+/// recursive conversion cannot be invalidated by user code mutating it.
+fn snapshot_dict_pairs(dict: &Dict, heap: &Heap<impl ResourceTracker>) -> Vec<(Value, Value)> {
+    (0..dict.len())
+        .map(|i| {
+            (
+                dict.key_at(i).expect("index in range").clone_with_heap(heap),
+                dict.value_at(i).expect("index in range").clone_with_heap(heap),
+            )
+        })
+        .collect()
 }
 
 /// Converts a value to its repr string for `MontyObject`, falling back to a
