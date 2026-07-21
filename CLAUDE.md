@@ -23,8 +23,11 @@ The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCal
 its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
-depends on `monty-types` and re-exports everything, so `monty::MontyObject` etc.
-keep working unchanged.
+depends on `monty-types` but does not blanket re-export it — only a few types
+are re-exported inline where they appear in `monty`'s public API (e.g.
+`run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
+Code needing `MontyObject`, `MontyException`, `OsFunctionCall`, etc. must
+depend on `monty-types` directly.
 
 Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker`
 feature, `monty-python`, `monty-js`) MUST depend on `monty-types`, NOT `monty` —

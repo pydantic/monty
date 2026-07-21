@@ -24,11 +24,14 @@ implementation**.
 
 ## Who should depend on it
 
-Host-side crates that talk to Monty workers over the wire — `monty-fs`,
-`monty-pool`, the `pydantic-monty` Python bindings and the `@pydantic/monty`
-JS bindings — depend on this crate **instead of `monty`**, so their binaries
-never link the interpreter itself. Only the worker side (`monty-runtime`,
-`monty-wasm-runtime`) links `monty`.
+Host-side crates that need these types without linking the interpreter —
+`monty-fs` (which services `OsFunctionCall`s locally via
+`MountTable::handle_os_call`), `monty-pool` (which talks to Monty workers
+over the wire), the `pydantic-monty` Python bindings and the
+`@pydantic/monty` JS bindings — depend on this crate **instead of `monty`**,
+so their binaries never link the interpreter itself. Only worker-side crates
+(`monty-runtime`, `monty-wasm-runtime`, and `monty-proto` with its `worker`
+feature) link `monty`.
 
 ```rust
 use monty_types::MontyObject;
