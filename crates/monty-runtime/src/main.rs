@@ -7,11 +7,12 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use monty::{
-    CompileOptions, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
-    ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
-};
+use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{
+    CompileOptions, ExtFunctionResult, LimitedTracker, MontyObject, NameLookupResult, NoLimitTracker, OsFunctionCall,
+    PrintWriter, ResourceLimits, ResourceTracker,
+};
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
@@ -603,7 +604,7 @@ fn run_until_complete(
 /// returns the operation result as an `ExtFunctionResult` — either a
 /// successful `MontyObject` or an exception for errors / unsupported
 /// operations.
-fn handle_os_call(call: monty::OsFunctionCall, mount_table: &mut Option<MountTable>) -> monty::ExtFunctionResult {
+fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
     match mount_table.as_mut() {
         Some(mounts) => match mounts.handle_os_call(call) {
             MountCallOutcome::Handled(Ok(obj)) => obj.into(),

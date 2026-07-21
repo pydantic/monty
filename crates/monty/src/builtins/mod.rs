@@ -37,8 +37,9 @@ mod zip;
 
 use std::{fmt, fmt::Write, str::FromStr};
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult},
@@ -65,7 +66,7 @@ impl Builtins {
     /// Most builtins complete synchronously and produce a [`CallResult::Value`].
     /// `open()` is the exception: it must touch the host filesystem at call
     /// time to perform the open-time effect, so it returns a
-    /// [`CallResult::OsCall`] for [`OsFunctionCall::Open`](crate::OsFunctionCall) (see
+    /// [`CallResult::OsCall`] for [`OsFunctionCall::Open`](monty_types::OsFunctionCall) (see
     /// [`crate::builtins::open`]).
     pub fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {

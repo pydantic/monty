@@ -8,8 +8,9 @@ use std::{
     fmt::{Display, Write},
 };
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::{ContainsVM, VM},
     defer_drop, defer_drop_mut,

@@ -19,9 +19,9 @@
 use std::iter;
 
 use ahash::RandomState;
+use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    ResourceError, ResourceTracker,
     heap::{ContainsHeap, HeapReader},
     types::str::{allocate_string, allocate_string_no_interning},
     value::Value,

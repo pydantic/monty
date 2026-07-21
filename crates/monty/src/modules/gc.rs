@@ -13,8 +13,9 @@
 //! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
-    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     exception_private::RunResult,

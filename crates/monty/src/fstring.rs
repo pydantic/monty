@@ -9,9 +9,9 @@
 use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
 
 pub use monty_types::FormatFloat;
+use monty_types::ResourceTracker;
 
 use crate::{
-    ResourceTracker,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},

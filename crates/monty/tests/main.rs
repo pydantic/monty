@@ -1,4 +1,5 @@
-use monty::{CompileOptions, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject};
 
 /// Test we can reuse exec without borrow checker issues.
 #[test]

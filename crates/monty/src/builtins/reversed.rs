@@ -1,7 +1,8 @@
 //! Implementation of the reversed() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},

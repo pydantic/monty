@@ -6,10 +6,10 @@ use std::{
     ops::Deref,
 };
 
+use monty_types::{ExcType, ResourceError, ResourceTracker};
 use num_integer::Integer;
 
 use crate::{
-    ExcType, ResourceTracker,
     args::ArgValues,
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
@@ -906,11 +906,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
                 a.get(vm.heap).as_str(),
@@ -957,11 +953,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_sub(
-        &self,
-        other: &Self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::ResourceError> {
+    fn py_sub(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
                 let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
@@ -1021,7 +1013,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         other: &Value,
         vm: &mut VM<'h, impl ResourceTracker>,
         self_id: Option<HeapId>,
-    ) -> Result<bool, crate::ResourceError> {
+    ) -> Result<bool, ResourceError> {
         match self {
             HeapReadOutput::List(list) => list.py_iadd(other, vm, self_id),
             _ => Ok(false),

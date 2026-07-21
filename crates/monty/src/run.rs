@@ -5,10 +5,10 @@ use std::sync::{
 };
 
 pub use monty_types::CompileOptions;
+use monty_types::{ExcType, MontyException, MontyObject, NoLimitTracker, PrintWriter, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
-    ExcType, MontyException, MontyObject, NoLimitTracker, PrintWriter, ResourceTracker,
     bytecode::{Code, Compiler, FrameExit, VM},
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
@@ -32,7 +32,8 @@ use crate::{
 ///
 /// # Example
 /// ```
-/// use monty::{CompileOptions, MontyRun, MontyObject};
+/// use monty::MontyRun;
+/// use monty_types::{CompileOptions, MontyObject};
 ///
 /// let runner = MontyRun::new(
 ///     "x + 1".to_owned(),

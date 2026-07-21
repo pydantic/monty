@@ -12,10 +12,10 @@ use std::{
     mem,
 };
 
+use monty_types::{MontyPath, ResourceTracker};
 use smallvec::SmallVec;
 
 use crate::{
-    MontyPath, ResourceTracker,
     args::ArgValues,
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},

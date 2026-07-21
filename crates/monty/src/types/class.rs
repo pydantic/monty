@@ -1,8 +1,9 @@
 use std::{fmt::Write, mem};
 
+use monty_types::ResourceTracker;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

@@ -11,10 +11,10 @@
 
 use std::{cell::OnceCell, cmp::Ordering, fmt::Write, mem};
 
+use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop_mut,

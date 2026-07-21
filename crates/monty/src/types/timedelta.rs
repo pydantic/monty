@@ -13,9 +13,9 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_types::ResourceTracker;
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},

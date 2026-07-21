@@ -7,8 +7,9 @@
 //! - Type constructors (int, str, float, etc.)
 //! - User-defined functions (via `vm.evaluate_function`)
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

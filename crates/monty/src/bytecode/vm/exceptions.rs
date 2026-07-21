@@ -2,9 +2,10 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
-    ResourceTracker,
     builtins::Builtins,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},

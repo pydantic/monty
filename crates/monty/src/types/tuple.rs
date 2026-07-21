@@ -7,9 +7,6 @@ use std::{
     mem,
 };
 
-use smallvec::SmallVec;
-
-use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -26,13 +23,15 @@ use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use crate::exception_private::ExcTypeExt;
+use monty_types::{ResourceError, ResourceTracker};
+use smallvec::SmallVec;
+
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,

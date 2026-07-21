@@ -1,8 +1,9 @@
 //! Attribute access helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
-    ResourceTracker,
     bytecode::vm::CallResult,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},

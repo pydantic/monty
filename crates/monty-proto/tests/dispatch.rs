@@ -5,12 +5,13 @@
 //! `Child` state machine over the message-based transport without any wasm
 //! toolchain.
 
-use monty::{CompileOptions, LimitedTracker, MontyObject, MontyRepl, PrintWriter, ReplProgress, ResourceLimits};
+use monty::{MontyRepl, ReplProgress};
 use monty_proto::{
     FrameReader, MONTY_VERSION, WireObject, pb,
     worker::{Child, HandleOutcome, dispatch_frame},
     write_frame,
 };
+use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {

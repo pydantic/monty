@@ -4,12 +4,12 @@
 //! must distinguish every identity category. Compact identities remain inline
 //! Python integers; only encodings outside `i64` require a heap `LongInt`.
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::{BigInt, Sign};
 use serde::Serialize;
 use smallvec::SmallVec;
 
 use crate::{
-    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     heap::{Heap, HeapData},

@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyException, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyException};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {

@@ -4,9 +4,10 @@
 //! See `limitations/assert.md`.
 
 use insta::assert_snapshot;
-use monty::{
-    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, MontyRepl,
-    MontyRun, NoLimitTracker, PrintWriter, ResourceLimits,
+use monty::{MontyRepl, MontyRun};
+use monty_types::{
+    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NoLimitTracker,
+    PrintWriter, ResourceLimits,
 };
 
 /// Runs `code` and returns the exception it raises.

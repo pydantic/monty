@@ -9,11 +9,11 @@
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
 use ahash::AHashMap;
+use monty_types::{MontyException, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
-    MontyException, ResourceTracker,
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, TaskId, awaited_state_size,

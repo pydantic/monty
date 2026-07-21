@@ -24,11 +24,11 @@
 
 use std::f64::consts;
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,

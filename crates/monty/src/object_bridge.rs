@@ -5,11 +5,11 @@
 
 use ahash::AHashSet;
 use monty_types::{
-    InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
+    InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
+    MontyType, ResourceTracker,
 };
 
 use crate::{
-    ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     defer_drop,

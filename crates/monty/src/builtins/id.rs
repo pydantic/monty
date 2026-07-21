@@ -1,6 +1,8 @@
 //! Implementation of the id() builtin function.
 
-use crate::{ResourceTracker, args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, value::Value};
+use monty_types::ResourceTracker;
+
+use crate::{args::ArgValues, bytecode::VM, defer_drop, exception_private::RunResult, value::Value};
 
 /// Implementation of the id() builtin function.
 ///

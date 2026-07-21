@@ -9,9 +9,9 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    ResourceError, ResourceTracker,
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
     exception_private::RunError,
     heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},

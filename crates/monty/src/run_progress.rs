@@ -8,10 +8,10 @@
 
 use std::mem;
 
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker,
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
     exception_private::{ExcTypeExt, RunError, RunResult},

@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
 use ruff_python_ast::{
@@ -13,7 +14,6 @@ use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
-    MontyException, StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     exception_private::ExcType,
     expressions::{

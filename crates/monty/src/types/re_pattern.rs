@@ -12,11 +12,11 @@
 use std::{borrow::Cow, cell::OnceCell, cmp::Ordering, fmt::Write, iter, mem, str};
 
 use fancy_regex::{CompileError, Error as RegexError, Regex, RegexBuilder};
+use monty_types::ResourceTracker;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::SmallVec;
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop,

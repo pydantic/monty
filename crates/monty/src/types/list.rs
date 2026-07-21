@@ -1,11 +1,11 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_types::{ResourceError, ResourceTracker};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
-    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
@@ -1008,11 +1008,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
 
 #[cfg(test)]
 mod tests {
+    use monty_types::{AssertMessageAnnotations, NoLimitTracker, PrintWriter};
     use num_bigint::BigInt;
 
     use super::*;
     use crate::{
-        AssertMessageAnnotations, NoLimitTracker, PrintWriter,
         heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
         types::LongInt,

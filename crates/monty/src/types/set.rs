@@ -1,11 +1,11 @@
 use std::{cell::Cell, fmt::Write, mem};
 
 use hashbrown::HashTable;
+use monty_types::ResourceTracker;
 use smallvec::SmallVec;
 
 use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,

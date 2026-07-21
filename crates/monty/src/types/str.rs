@@ -1,21 +1,20 @@
 use std::{cell::Cell, fmt::Write, mem, ops};
 
-pub use monty_types::{StringRepr, string_repr_fmt};
-use smallvec::smallvec;
-
-use super::{Bytes, CmpOrder, PyTrait};
 /// Python string type, wrapping a Rust `String`.
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use crate::exception_private::ExcTypeExt;
+use monty_types::{ResourceError, ResourceTracker};
+pub use monty_types::{StringRepr, string_repr_fmt};
+use smallvec::smallvec;
+
+use super::{Bytes, CmpOrder, PyTrait};
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},

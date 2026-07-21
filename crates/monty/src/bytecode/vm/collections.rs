@@ -1,8 +1,10 @@
 //! Collection building and unpacking helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
-    ResourceTracker, defer_drop, defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StringId,

@@ -9,8 +9,9 @@
 //! Behavior for constructors, arithmetic, and classmethods is implemented by the
 //! corresponding runtime types.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
-    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},

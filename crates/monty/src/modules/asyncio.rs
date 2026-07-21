@@ -7,8 +7,9 @@
 //! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     asyncio::GatherFuture,
     bytecode::{CallResult, VM},

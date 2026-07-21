@@ -2,8 +2,9 @@
 
 use std::{iter, mem};
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,

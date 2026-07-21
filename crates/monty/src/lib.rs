@@ -33,16 +33,6 @@ mod string_builder;
 mod types;
 mod value;
 
-pub use monty_types::{
-    AssertMessageAnnotations, CodeLoc, CompileOptions, DEFAULT_MAX_RECURSION_DEPTH, DictPairs, ExcData, ExcType,
-    ExtFunctionResult, FileMode, GetenvArgs, InvalidInputError, JsonErrorData, LimitedTracker, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
-    MontyType, NameLookupResult, NoLimitTracker, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    PrintStream, PrintWriter, PrintWriterCallback, RenameCallArgs, ResourceError, ResourceLimits, ResourceTracker,
-    StackFrame, StringRepr, UnicodeErrorData, UnicodeErrorObject, dir_stat, file_stat, stat_result, symlink_stat,
-    unicode_decode_error_msg, utf8_error_reason,
-};
-
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{

@@ -4,7 +4,7 @@
 //! objects store only the virtual path, requested mode, a small Python-visible
 //! state such as `closed`, and (lazily) a heap-resident full-file buffer
 //! populated on the first sized/line read or `seek()`. Each OS round-trip is a
-//! complete one-shot [`OsFunctionCall`](crate::OsFunctionCall) operation, so host
+//! complete one-shot [`OsFunctionCall`] operation, so host
 //! filesystem access remains mediated by the same boundary used by
 //! `pathlib.Path`.
 //!
@@ -64,13 +64,14 @@
 
 use std::{fmt::Write, mem};
 
+use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, ResourceTracker};
+
 use super::{
     LazyHeapSet, List, PyTrait, Type,
     bytes::Bytes,
     str::{allocate_string, allocate_string_no_interning},
 };
 use crate::{
-    MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -245,7 +246,7 @@ struct BufferMeta {
 impl OpenFile {
     /// Creates a path-backed file wrapper from a parsed `open()` mode and the
     /// `position` carried across the host boundary by a
-    /// [`MontyObject::FileHandle`](crate::MontyObject::FileHandle).
+    /// [`monty_types::MontyObject::FileHandle`].
     ///
     /// Truncating modes (`w`/`w+`) have already had the file emptied by the
     /// host at `open()` time, so the wrapper starts with `first_write_done`

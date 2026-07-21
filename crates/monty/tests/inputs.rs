@@ -4,7 +4,8 @@
 //! and can be used in Python code execution.
 
 use indexmap::IndexMap;
-use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 // === Immediate Value Tests ===
 

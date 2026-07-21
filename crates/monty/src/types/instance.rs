@@ -1,8 +1,9 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
+use monty_types::ResourceTracker;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
-    ResourceTracker,
     args::{ArgValues, KwargsValues},
     builtins::Builtins,
     bytecode::{CallResult, VM},

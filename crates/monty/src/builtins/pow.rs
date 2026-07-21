@@ -2,11 +2,11 @@
 
 use std::num::NonZero;
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,

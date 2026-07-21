@@ -17,8 +17,9 @@
 
 use std::borrow::Cow;
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},

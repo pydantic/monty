@@ -2033,6 +2033,7 @@ dependencies = [
  "criterion",
  "monty",
  "monty-pool",
+ "monty-types",
  "pprof",
  "pyo3",
  "pyo3-build-config",
@@ -2047,6 +2048,7 @@ dependencies = [
  "datatest-stable",
  "monty",
  "monty-fs",
+ "monty-types",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
@@ -2069,6 +2071,7 @@ dependencies = [
  "arbitrary",
  "libfuzzer-sys",
  "monty",
+ "monty-types",
 ]
 
 [[package]]
@@ -2131,6 +2134,7 @@ dependencies = [
  "monty-fs",
  "monty-proto",
  "monty-type-checking",
+ "monty-types",
  "rustyline",
  "tempfile",
 ]

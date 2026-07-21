@@ -8,9 +8,9 @@ pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bi
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
+use monty_types::{MontyObject, ResourceTracker};
 
 use crate::{
-    MontyObject, ResourceTracker,
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},

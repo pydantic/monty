@@ -4,11 +4,11 @@ use std::{
     mem,
 };
 
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 
 use super::{Dict, LazyHeapSet, PyTrait};
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

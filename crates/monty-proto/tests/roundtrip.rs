@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use monty::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyRun, MontyTimeDelta,
-    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
-};
+use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_types::{
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
+    MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ResourceLimits, StackFrame, UnicodeErrorData,
+};
 use num_bigint::BigInt;
 use prost::Message;
 

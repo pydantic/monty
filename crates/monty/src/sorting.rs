@@ -10,8 +10,9 @@
 
 use std::cmp::Ordering;
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
     defer_drop, defer_drop_mut,

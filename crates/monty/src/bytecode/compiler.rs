@@ -11,6 +11,7 @@
 use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
+use monty_types::{MontyException, StackFrame};
 
 use super::{
     RESERVED_MODULE_DUNDERS,
@@ -19,7 +20,6 @@ use super::{
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
-    MontyException, StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,

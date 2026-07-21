@@ -6,12 +6,12 @@ use std::{
 };
 
 use hashbrown::HashTable;
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
 use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,

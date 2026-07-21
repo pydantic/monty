@@ -1,7 +1,8 @@
 //! Implementation of the zip() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,

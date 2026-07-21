@@ -13,9 +13,9 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
+use monty_types::{MontyTimeZone, OsFunctionCall, ResourceError, ResourceTracker};
 
 use crate::{
-    MontyTimeZone, OsFunctionCall, ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,

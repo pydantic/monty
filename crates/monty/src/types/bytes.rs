@@ -1,9 +1,5 @@
 use std::{cell::Cell, ffi::c_int, fmt::Write, mem, ops, str};
 
-pub use monty_types::{bytes_repr, bytes_repr_fmt};
-use smallvec::smallvec;
-
-use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
 /// Python bytes type, wrapping a `Vec<u8>`.
 ///
 /// This type provides Python bytes semantics with operations on ASCII bytes only.
@@ -71,14 +67,17 @@ use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use crate::exception_private::ExcTypeExt;
+use monty_types::{ResourceError, ResourceTracker};
+pub use monty_types::{bytes_repr, bytes_repr_fmt};
+use smallvec::smallvec;
+
+use super::{CmpOrder, LazyHeapSet, PyTrait, Type};
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     codecs::Codec,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},

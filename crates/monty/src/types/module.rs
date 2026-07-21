@@ -2,8 +2,9 @@
 
 use std::mem;
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

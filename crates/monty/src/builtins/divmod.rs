@@ -1,11 +1,11 @@
 //! Implementation of the divmod() builtin function.
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use smallvec::smallvec;
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

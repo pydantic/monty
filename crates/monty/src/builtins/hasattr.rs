@@ -1,7 +1,8 @@
 //! Implementation of the hasattr() builtin function.
 
+use monty_types::{ExcType, ResourceTracker};
+
 use crate::{
-    ExcType, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

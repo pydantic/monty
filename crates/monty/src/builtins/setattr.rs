@@ -1,7 +1,8 @@
 //! Implementation of the setattr() builtin function.
 
+use monty_types::{ExcType, ResourceTracker};
+
 use crate::{
-    ExcType, ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

@@ -7,10 +7,10 @@
 
 use std::mem;
 
+use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

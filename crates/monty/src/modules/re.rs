@@ -33,9 +33,9 @@
 use std::rc::Rc;
 
 use ahash::RandomState;
+use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::{CallResult, VM},

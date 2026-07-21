@@ -1,8 +1,9 @@
 //! Implementation of the type() builtin function.
 
+use monty_types::ResourceTracker;
+
 use super::Builtins;
 use crate::{
-    ResourceTracker,
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop,

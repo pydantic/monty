@@ -6,10 +6,10 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
+use monty_types::{ResourceError, ResourceTracker};
 
 use super::JsonStringCache;
 use crate::{
-    ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs},
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},

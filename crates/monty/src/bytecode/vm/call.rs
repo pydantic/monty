@@ -6,9 +6,10 @@
 
 use std::mem;
 
+use monty_types::{OsFunctionCall, ResourceTracker};
+
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
-    OsFunctionCall, ResourceTracker,
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
     builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},

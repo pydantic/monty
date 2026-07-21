@@ -1,8 +1,9 @@
 //! F-string and value formatting helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
-    ResourceTracker,
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},

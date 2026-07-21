@@ -1,8 +1,9 @@
 //! Implementation of the isinstance() builtin function.
 
+use monty_types::ResourceTracker;
+
 use super::Builtins;
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

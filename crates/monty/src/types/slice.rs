@@ -11,9 +11,10 @@ use std::{
     mem,
 };
 
+use monty_types::ResourceTracker;
+
 use super::LazyHeapSet;
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

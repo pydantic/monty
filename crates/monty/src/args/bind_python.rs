@@ -15,8 +15,9 @@
 //! change both; coverage lives in `test_cases/function__arity_defaults.py`
 //! and `test_cases/args__macro_errors.py`.
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
     defer_drop_mut,

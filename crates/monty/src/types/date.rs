@@ -11,9 +11,9 @@ use std::{
 };
 
 use chrono::{Datelike, NaiveDate, format::StrftimeItems};
+use monty_types::{OsFunctionCall, ResourceError, ResourceTracker};
 
 use crate::{
-    OsFunctionCall, ResourceError, ResourceTracker,
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,

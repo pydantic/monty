@@ -1,9 +1,9 @@
 use std::{borrow::Cow, fmt};
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,

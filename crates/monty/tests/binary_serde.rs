@@ -4,12 +4,13 @@
 //! - Caching parsed code to avoid re-parsing
 //! - Snapshotting execution state for external function calls
 
-use monty::{CompileOptions, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, MontyException, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter, ResourceTracker,
+};
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
-fn resolve_name_lookups<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> Result<RunProgress<T>, monty::MontyException> {
+fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(

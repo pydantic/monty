@@ -17,10 +17,10 @@ use std::{
     str,
 };
 
+use monty_types::ResourceTracker;
 pub use monty_types::utf8_error_reason;
 
 use crate::{
-    ResourceTracker,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     string_builder::StringBuilder,
 };

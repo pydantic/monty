@@ -10,10 +10,10 @@ use std::{
     mem,
 };
 
+use monty_types::ResourceTracker;
 use num_integer::div_ceil;
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

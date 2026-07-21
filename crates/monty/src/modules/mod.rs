@@ -5,10 +5,10 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::{ResourceError, ResourceTracker};
 use strum::FromRepr;
 
 use crate::{
-    ResourceError, ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::RunResult,

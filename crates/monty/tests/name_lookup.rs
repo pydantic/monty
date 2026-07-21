@@ -11,14 +11,15 @@
 //! - Multiple distinct names each get their own lookup
 //! - Builtins bypass the `NameLookup` mechanism entirely
 
-use monty::{CompileOptions, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{MontyRun, RunProgress};
+use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
 /// resolving each by calling `resolver(name)`.
 fn resolve_lookups_with(
     mut progress: RunProgress<NoLimitTracker>,
     resolver: impl Fn(&str) -> NameLookupResult,
-) -> Result<RunProgress<NoLimitTracker>, monty::MontyException> {
+) -> Result<RunProgress<NoLimitTracker>, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let result = resolver(&lookup.name);
         progress = lookup.resume(result, PrintWriter::Stdout)?;
@@ -28,9 +29,7 @@ fn resolve_lookups_with(
 
 /// Helper: resolves all `NameLookup` yields as `Function` objects (the common case
 /// for external function calls).
-fn resolve_as_functions(
-    progress: RunProgress<NoLimitTracker>,
-) -> Result<RunProgress<NoLimitTracker>, monty::MontyException> {
+fn resolve_as_functions(progress: RunProgress<NoLimitTracker>) -> Result<RunProgress<NoLimitTracker>, MontyException> {
     resolve_lookups_with(progress, |name| {
         NameLookupResult::Value(MontyObject::Function {
             name: name.to_string(),

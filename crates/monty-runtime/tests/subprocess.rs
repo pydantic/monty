@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
-use monty::MontyObject;
 use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
+use monty_types::MontyObject;
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {

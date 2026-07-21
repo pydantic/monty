@@ -20,10 +20,10 @@
 
 use monty_types::{
     ExcType, MkdirCallArgs, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ResourceTracker,
 };
 
 use crate::{
-    ResourceTracker,
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
     exception_private::{ExcTypeExt, RunResult},

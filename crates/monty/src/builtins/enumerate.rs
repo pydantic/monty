@@ -1,9 +1,9 @@
 //! Implementation of the enumerate() builtin function.
 
+use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,

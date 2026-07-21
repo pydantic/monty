@@ -1,9 +1,9 @@
 use std::{fmt::Write, mem};
 
+use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,

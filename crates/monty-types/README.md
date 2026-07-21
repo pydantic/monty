@@ -30,10 +30,6 @@ JS bindings — depend on this crate **instead of `monty`**, so their binaries
 never link the interpreter itself. Only the worker side (`monty-runtime`,
 `monty-wasm-runtime`) links `monty`.
 
-The `monty` crate depends on `monty-types` and re-exports everything, so if
-you already depend on `monty` you can use these types under the names you
-know (`monty::MontyObject`, ...).
-
 ```rust
 use monty_types::MontyObject;
 

@@ -9,7 +9,8 @@
 /// that grow unboundedly — a denial-of-service vector. Monty uses `fancy_regex`
 /// which enforces a default 1M-step backtrack limit, raising `re.PatternError`
 /// when exceeded. This is strictly better behavior for a sandbox.
-use monty::{CompileOptions, MontyRun};
+use monty::MontyRun;
+use monty_types::CompileOptions;
 
 /// Helper to run Python code and return the string result.
 fn run(code: &str) -> String {

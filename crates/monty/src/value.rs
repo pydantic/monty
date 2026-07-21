@@ -6,13 +6,13 @@ use std::{
     str::FromStr,
 };
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
 use smallvec::SmallVec;
 
 use crate::{
-    ResourceError, ResourceTracker,
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
@@ -2717,10 +2717,11 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
+    use monty_types::{AssertMessageAnnotations, NoLimitTracker, PrintWriter};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{AssertMessageAnnotations, NoLimitTracker, PrintWriter, heap::HeapReader, intern::InternerBuilder};
+    use crate::{heap::HeapReader, intern::InternerBuilder};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///

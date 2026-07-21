@@ -3,11 +3,10 @@ use std::{
     fmt::{self, Display, Write},
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, ResourceTracker, StackFrame, UnicodeErrorData};
 use smallvec::smallvec;
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,

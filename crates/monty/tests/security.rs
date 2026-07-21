@@ -1,5 +1,6 @@
 use insta::assert_snapshot;
-use monty::{CompileOptions, MontyRun};
+use monty::MontyRun;
+use monty_types::CompileOptions;
 
 #[test]
 fn deeply_nested_parentheses_do_not_stack_overflow() {

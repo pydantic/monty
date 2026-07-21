@@ -14,11 +14,11 @@ mod dump;
 mod load;
 mod string_cache;
 
+use monty_types::{ResourceError, ResourceTracker};
 pub(crate) use string_cache::JsonStringCache;
 
 use super::ModuleFunctions;
 use crate::{
-    ResourceError, ResourceTracker,
     args::ArgValues,
     builtins::Builtins,
     bytecode::VM,

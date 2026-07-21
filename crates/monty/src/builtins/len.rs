@@ -1,7 +1,8 @@
 //! Implementation of the len() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
