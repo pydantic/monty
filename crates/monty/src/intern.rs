@@ -217,6 +217,7 @@ pub enum StaticStrings {
     Obj,
     Object,
     Source,
+    Base,
     // Additional string methods
     Encode,
     Isidentifier,
@@ -576,6 +577,9 @@ pub enum StaticStrings {
     Offset,
     // datetime.now() kwarg
     Tz,
+    // round() kwargs
+    Number,
+    Ndigits,
     // date/datetime methods
     Isoformat,
     Strftime,

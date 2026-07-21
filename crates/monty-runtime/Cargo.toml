@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 monty = { workspace = true }
+monty-fs = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
 monty-type-checking = { workspace = true }
 rustyline = "15"

@@ -120,15 +120,28 @@ fn bind_slow<const N: usize>(
     let n_pos = state.pos.len();
     let n_kw = state.kwargs.len();
 
-    // Family pre-checks. Order matches CPython: `PyArg_UnpackTuple` checks its
-    // positional range first; `at_most_total` reproduces the
-    // `PyArg_ParseTupleAndKeywords` total pre-count; the "at least M
-    // positional" check reproduces `_PyArg_UnpackKeywords` for C methods whose
-    // required positional-only params cannot be filled by keyword.
-    if matches!(spec.family, ErrorFamily::Unpack)
-        && let Some(err) = unpack_arity_error(spec, n_pos)
-    {
-        return Err(err);
+    // Family pre-checks. Order matches CPython: `PyArg_UnpackTuple` callers
+    // reject keywords wholesale (`_PyArg_NoKeywords` / the `METH_FASTCALL`
+    // dispatch) before any arity check, then check the positional range;
+    // `at_most_total` reproduces the `PyArg_ParseTupleAndKeywords` total
+    // pre-count; the "at least M positional" check reproduces
+    // `_PyArg_UnpackKeywords` for C methods whose required positional-only
+    // params cannot be filled by keyword.
+    if matches!(spec.family, ErrorFamily::Unpack) {
+        if n_kw > 0 {
+            let name = spec.kwarg_error_name.unwrap_or(spec.func_name);
+            return Err(ExcType::type_error_no_kwargs(name));
+        }
+        if let Some(err) = unpack_arity_error(spec, n_pos) {
+            return Err(err);
+        }
+    }
+    // `tp_vectorcall` fast paths (`int`, `str`) check positional arity with
+    // `_PyArg_CheckPositional` before reaching the clinic parser, so kwarg-free
+    // overflow gets the un-parenthesised wording; with kwargs present the
+    // `at_most_total` check below fires with the clinic wording instead.
+    if spec.vectorcall && n_kw == 0 && n_pos > spec.n_positional {
+        return Err(ExcType::type_error_at_most(spec.func_name, spec.n_positional, n_pos));
     }
     if spec.at_most_total && n_pos + n_kw > spec.n_positional {
         return Err(total_overflow_error(spec, n_pos + n_kw));
@@ -285,6 +298,11 @@ pub(crate) struct ParamSpec {
     /// function from CPython's observed behaviour — not derivable from the
     /// field shapes (identical signatures differ by parser generation).
     pub at_most_total: bool,
+    /// Kwarg-free positional overflow uses `_PyArg_CheckPositional` wording
+    /// (`{name} expected at most N arguments, got M`) — models `tp_vectorcall`
+    /// fast paths (`int`, `str`) that bypass the clinic parser when no
+    /// keywords are passed. Requires `at_most_total` (enforced by the derive).
+    pub vectorcall: bool,
     /// Reject any kwarg up front with `NotImplementedError` — a Monty TODO
     /// marker for functions whose CPython kwargs aren't plumbed through yet.
     pub kwargs_not_supported_yet: bool,
@@ -358,9 +376,11 @@ pub(crate) enum ErrorFamily {
     /// (`:name` in the format string) — errors say `{name}() …`, and the
     /// unknown-kwarg error uses the named Python wording.
     CNamed,
-    /// `PyArg_UnpackTuple` (`style = unpack`): a fixed positional `min..max`
-    /// range checked before anything else, `{name} expected …` wording with
-    /// no parentheses. When `min == max` CPython collapses to
+    /// `PyArg_UnpackTuple` (`style = unpack`): any keyword argument is
+    /// rejected first with `{name}() takes no keyword arguments` (CPython's
+    /// `_PyArg_NoKeywords` / `METH_FASTCALL` dispatch), then a fixed
+    /// positional `min..max` range is checked, `{name} expected …` wording
+    /// with no parentheses. When `min == max` CPython collapses to
     /// `expected N argument(s)` — [`bind`] does the same.
     Unpack,
 }

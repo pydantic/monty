@@ -25,7 +25,7 @@ fn run_with_open_then_io(
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function_call.name(), "Open");
+    assert_eq!(open_call.function_call.name(), "open");
     let progress = open_call
         .resume(MontyObject::FileHandle(file_handle), PrintWriter::Stdout)
         .unwrap();

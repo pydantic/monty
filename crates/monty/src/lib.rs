@@ -11,11 +11,11 @@ mod codecs;
 mod exception_private;
 mod exception_public;
 mod expressions;
-pub mod fs;
 mod fstring;
 mod function;
 mod hash;
 mod heap_data;
+mod identity;
 mod intern;
 mod io;
 mod modules;
@@ -37,7 +37,8 @@ mod value;
 #[cfg(feature = "ref-count-return")]
 pub use crate::run::RefCountOutput;
 pub use crate::{
-    exception_private::ExcType,
+    codecs::utf8_error_reason,
+    exception_private::{ExcType, unicode_decode_error_msg},
     exception_public::{
         CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
     },

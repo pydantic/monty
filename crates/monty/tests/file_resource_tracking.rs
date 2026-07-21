@@ -38,7 +38,7 @@ fn open_then_read(
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function_call.name(), "Open");
+    assert_eq!(open_call.function_call.name(), "open");
     let progress = open_call
         .resume(MontyObject::FileHandle(handle), PrintWriter::Stdout)
         .unwrap();

@@ -28,7 +28,8 @@ CPython-family table and the `at_most_total` litmus test).
 | Argument Clinic (most modern C builtins/methods) | default — omit `style` |
 | `PyArg_ParseTupleAndKeywords`, anonymous `function` errors | `style = c` |
 | same, with the name embedded (`timezone() missing …`) | `style = c_named` |
-| `PyArg_UnpackTuple` (positional-only, `min..max` arity) | `style = unpack` |
+| `PyArg_UnpackTuple` (positional-only, `min..max` arity, kwargs rejected wholesale with `takes no keyword arguments`) | `style = unpack` |
+| `tp_vectorcall` fast path in front of a clinic parser (`int`, `str`: kwarg-free overflow says `int expected at most 2 arguments, got 3`, with kwargs `int() takes at most 2 arguments (3 given)`) | default style + `at_most_total, vectorcall` |
 
 The style controls wording *and* ordering (e.g. C families report leftover
 kwargs last; clinic/def bind fully before any conversion). When unsure, probe

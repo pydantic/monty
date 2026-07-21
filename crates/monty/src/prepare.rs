@@ -377,11 +377,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///
     /// The recursive [`collect_referenced_names_from_node`] pass below
     /// pre-populates most transitively captured names before the body is
-    /// walked, but its `ClassDef` arm deliberately collects nothing — so for a
-    /// capture chain that flows through a class body (a method capturing an
-    /// enclosing function's local), this bubble-up is **load-bearing**, not a
-    /// safety net: it is the only mechanism that registers the intermediate
-    /// scopes' cells. It classifies each late discovery:
+    /// walked, but its `ClassDef` arm collects only decorators, nothing from the
+    /// class body — so for a capture chain that flows through a class body (a
+    /// method capturing an enclosing function's local), this bubble-up is
+    /// **load-bearing**, not a safety net: it is the only mechanism that
+    /// registers the intermediate scopes' cells. It classifies each late
+    /// discovery:
     ///
     /// - Already a cell or free var here → nothing to do.
     /// - Bound locally (params or body-assigned) → register as a cell var here.
@@ -824,9 +825,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     name,
                     body,
                     members,
+                    decorators,
                     position,
                 } => {
-                    new_nodes.push(self.prepare_class_def(name, body, members, position)?);
+                    new_nodes.push(self.prepare_class_def(name, body, members, decorators, position)?);
                 }
                 Node::Global { names, position } => {
                     // At module level, `global` is a no-op since all variables are already global.
@@ -1677,11 +1679,18 @@ impl<'i, 'g> Prepare<'i, 'g> {
         name: Identifier,
         body: RawFunctionDef,
         members: Vec<Identifier>,
+        decorators: Vec<ExprLoc>,
         position: CodeRange,
     ) -> Result<PreparedNode, ParseError> {
         // The class name binds in the enclosing scope, exactly like a `def`.
         self.names_assigned_in_order.insert(name.name_id);
         let name = self.get_id(name)?;
+
+        // Decorators evaluate in the enclosing scope, not the class body.
+        let decorators = decorators
+            .into_iter()
+            .map(|d| self.prepare_expression(d))
+            .collect::<Result<Vec<_>, ParseError>>()?;
 
         // The class body is a synthetic zero-arg function: no params, no defaults.
         let RawFunctionDef {
@@ -1803,6 +1812,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
             name,
             body: body_def,
             members,
+            decorators,
             position,
         })
     }
@@ -2414,10 +2424,14 @@ fn collect_scope_info_from_node(
             // But we don't recurse into the function body - that's a separate scope
             assigned_names.insert(name.name_id);
         }
-        Node::ClassDef { name, .. } => {
+        Node::ClassDef { name, decorators, .. } => {
             // A class definition binds the class name in this scope, just like a `def`.
             // The class body is a separate scope (handled by the cell-var pass).
             assigned_names.insert(name.name_id);
+            // Decorators evaluate in *this* scope, so a walrus in one binds here.
+            for decorator in decorators {
+                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+            }
         }
         Node::Try(Try {
             body,
@@ -2690,12 +2704,17 @@ fn collect_cell_vars_from_node(
         Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
             collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
         }
-        Node::ClassDef { body, .. } => {
+        Node::ClassDef { body, decorators, .. } => {
             // The class body is a nested scope of *this* scope, like a `def`: any
             // of our locals referenced from the class-var values or (transitively)
             // the method bodies becomes a cell var. `collect_cell_vars_from_function`
             // recurses into the nested method bodies for us.
             collect_cell_vars_from_function(&body.signature, &body.body, our_locals, cell_vars, interner);
+            // A nested scope inside a decorator expression (a lambda in decorator
+            // position, or one passed to a factory) can capture our locals too.
+            for decorator in decorators {
+                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+            }
         }
         // Recurse into control flow structures
         Node::For {
@@ -3225,10 +3244,13 @@ fn collect_referenced_names_from_node(
             // — the bug behind issue #477's multi-hop closures.
             collect_nested_function_references(signature, body, referenced, interner);
         }
-        Node::ClassDef { .. } => {
-            // The class body (method bodies *and* class-var values) is a separate
-            // scope; the class name is a binding, not a reference. Nothing here is a
-            // reference in *our* scope, so there is nothing to collect.
+        Node::ClassDef { decorators, .. } => {
+            // The class body is a separate scope and the name is a binding, so
+            // neither is a reference here — but decorators evaluate in *our*
+            // scope, so their names are ours to collect.
+            for decorator in decorators {
+                collect_referenced_names_from_expr(decorator, referenced, interner);
+            }
         }
         Node::Try(Try {
             body,

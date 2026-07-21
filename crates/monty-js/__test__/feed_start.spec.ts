@@ -50,7 +50,7 @@ test('a snapshot resumes at most once', async () => {
   }
 })
 
-test('os handler is auto-dispatched between snapshots', async () => {
+test('os handler is used by resumeAuto, not auto-dispatched', async () => {
   const session = await pool().checkout()
   try {
     const snap = await session.feedStart("from pathlib import Path\nPath('/data/x').read_text()", {
@@ -59,8 +59,12 @@ test('os handler is auto-dispatched between snapshots', async () => {
         return 'file body'
       },
     })
-    t.true(snap instanceof MontyComplete)
-    t.is((snap as MontyComplete).output, 'file body')
+    // feedStart surfaces every OS call; the handler only backs resumeAuto
+    t.true(snap instanceof FunctionSnapshot)
+    t.true((snap as FunctionSnapshot).isOsFunction)
+    const done = (await (snap as FunctionSnapshot).resumeAuto()) as MontyComplete
+    t.true(done instanceof MontyComplete)
+    t.is(done.output, 'file body')
   } finally {
     await session.close()
   }
@@ -102,7 +106,7 @@ test('dump at a suspension, then loadSnapshot and resume', async () => {
   }
 })
 
-test('load restores an idle session', async () => {
+test('loadSession restores an idle session', async () => {
   let blob: Buffer
   {
     const session = await pool().checkout()
@@ -112,14 +116,14 @@ test('load restores an idle session', async () => {
   }
   const session = await pool().checkout()
   try {
-    await session.load(blob)
+    await session.loadSession(blob)
     t.is(await session.feedRun('kept + 1'), 8)
   } finally {
     await session.close()
   }
 })
 
-test('load and loadSnapshot reject the wrong dump kind', async () => {
+test('loadSession and loadSnapshot reject the wrong dump kind', async () => {
   let idle: Buffer
   let suspended: Buffer
   {
@@ -136,7 +140,7 @@ test('load and loadSnapshot reject the wrong dump kind', async () => {
   {
     const session = await pool().checkout()
     await t.throwsAsync(() => session.loadSnapshot(idle), {
-      message: 'this dump is an idle session — use load() to restore it',
+      message: 'this dump is an idle session — use loadSession() to restore it',
     })
     // the failed load poisons the session — it is not retryable
     await t.throwsAsync(() => session.feedRun('1 + 1'))
@@ -144,7 +148,7 @@ test('load and loadSnapshot reject the wrong dump kind', async () => {
   }
   {
     const session = await pool().checkout()
-    await t.throwsAsync(() => session.load(suspended), {
+    await t.throwsAsync(() => session.loadSession(suspended), {
       message: 'this dump is a suspended snapshot — use loadSnapshot() to resume it',
     })
     await t.throwsAsync(() => session.feedRun('1 + 1'))
@@ -159,14 +163,14 @@ test('load after a feed is rejected', async () => {
     await session.feedRun('x = 1')
     await t.throwsAsync(() => session.loadSnapshot(blob), {
       message:
-        'load / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / load / loadSnapshot',
+        'loadSession / loadSnapshot is only valid on a fresh session, before any feedRun / feedStart / loadSession / loadSnapshot',
     })
   } finally {
     await session.close()
   }
 })
 
-test('mounts are re-supplied to loadSnapshot and validated', async () => {
+test('mounts are re-supplied to loadSnapshot', async () => {
   if (kind === 'browser') {
     const session = await pool().checkout()
     try {
@@ -187,7 +191,7 @@ test('mounts are re-supplied to loadSnapshot and validated', async () => {
 
   const dir = await mkdtemp(join(tmpdir(), 'monty-js-snap-'))
   await writeFile(join(dir, 'hello.txt'), 'hi')
-  const mount = new MountDir('/data', dir, { mode: 'read-only' })
+  const mount = new MountDir({ hostPath: dir, virtualPath: '/data', mode: 'read-only' })
   const code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
 
   let blob: Buffer
@@ -198,20 +202,29 @@ test('mounts are re-supplied to loadSnapshot and validated', async () => {
     await session.close()
   }
 
-  // re-supplied: the mounted read is served and execution completes
+  // re-supplied: the mounted read surfaces, and resumeAuto serves it from the
+  // rebuilt mount table
   {
     const session = await pool().checkout()
     const snap = (await session.loadSnapshot(blob, { mount })) as FunctionSnapshot
-    const done = (await snap.resume(null)) as MontyComplete
+    const read = (await snap.resume(null)) as FunctionSnapshot
+    t.true(read.isOsFunction)
+    const done = (await read.resumeAuto()) as MontyComplete
     t.is(done.output, 'hi')
     await session.close()
   }
 
-  // omitted: validation rejects the load and poisons the session
+  // omitted: nothing validates the re-supply (mounts are never part of the
+  // dump) — the resumed feed's mounted read degrades into a surfaced OS call,
+  // and leaving it unhandled raises PermissionError inside the sandbox
   {
     const session = await pool().checkout()
-    await t.throwsAsync(() => session.loadSnapshot(blob), { instanceOf: MontyRuntimeError })
-    await t.throwsAsync(() => session.feedRun('1 + 1'))
+    const snap = (await session.loadSnapshot(blob)) as FunctionSnapshot
+    const osSnap = (await snap.resume(null)) as FunctionSnapshot
+    t.true(osSnap.isOsFunction)
+    t.is(osSnap.functionName, 'Path.read_text')
+    const error = await t.throwsAsync(() => osSnap.resumeNotHandled(), { instanceOf: MontyRuntimeError })
+    t.is(error.message, "PermissionError: Permission denied: '/data/hello.txt'")
     await session.close()
   }
 })

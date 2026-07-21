@@ -645,9 +645,10 @@ pub enum Node<F> {
     /// executes the class statements top-to-bottom into its own scope, then
     /// assembles the namespace and returns a `Class`. Methods are ordinary
     /// `FunctionDef`s in that body (with `self` as the first parameter); class
-    /// variables are `Assign`s. Inheritance, metaclasses, decorators and
-    /// `classmethod`/`staticmethod`/`property` are rejected at parse time — see
-    /// `limitations/classes.md`.
+    /// variables are `Assign`s. Class decorators are supported (see
+    /// [`decorators`](Self::ClassDef::decorators)); inheritance, metaclasses and
+    /// decorators on a `def` — including `classmethod`/`staticmethod`/`property`
+    /// — are rejected at parse time. See `limitations/classes.md`.
     ClassDef {
         /// The class name identifier (resolved to an enclosing-scope slot at prepare time).
         name: Identifier,
@@ -660,6 +661,9 @@ pub enum Node<F> {
         /// Each is resolved to a class-body-local slot during prepare; the
         /// compiler uses them to assemble the namespace dict.
         members: Vec<Identifier>,
+        /// In source order; evaluated in the enclosing scope and applied
+        /// bottom-up (`cls = deco(cls)`), like CPython.
+        decorators: Vec<ExprLoc>,
         /// Source position of the `class` statement (for error reporting).
         position: CodeRange,
     },

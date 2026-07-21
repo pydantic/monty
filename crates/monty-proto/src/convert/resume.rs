@@ -29,6 +29,14 @@ impl TryFrom<pb::ExtFunctionResult> for ExtFunctionResult {
             pb::ext_function_result::Kind::Error(err) => Ok(Self::Error(MontyException::try_from(err)?)),
             pb::ext_function_result::Kind::Future(call_id) => Ok(Self::Future(call_id)),
             pb::ext_function_result::Kind::NotFound(name) => Ok(Self::NotFound(name)),
+            // NotHandled has no monty equivalent: it resolves against the
+            // suspended OS call, so the child intercepts it before this
+            // conversion (see `Child::handle_resume_call`); anywhere else it
+            // is out of context
+            pb::ext_function_result::Kind::NotHandled(_) => Err(ProtoConvertError::InvalidValue {
+                field: "ExtFunctionResult.kind",
+                reason: "NotHandled is only valid answering a suspended OS call".to_owned(),
+            }),
         }
     }
 }

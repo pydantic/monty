@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::DropGuard,
     resource::ResourceTracker,
-    types::{CmpOrder, MontyIter, PyTrait},
+    types::{CmpOrder, PyTrait},
     value::Value,
 };
 
@@ -87,10 +87,11 @@ fn run_min_max(
 
     if args.is_empty() {
         // Single argument: iterate over it
-        let iter = MontyIter::new(first_arg, vm)?;
-        defer_drop_mut!(iter, vm);
+        let iter = first_arg.into_py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
 
-        let Some(result) = iter.for_next(vm)? else {
+        let Some(result) = iter.py_next(vm)? else {
             if let Some(default) = default_value.take() {
                 return Ok(default);
             }
@@ -110,7 +111,7 @@ fn run_min_max(
                 {
                     let (result_key, vm) = result_key_guard.as_parts_mut();
 
-                    while let Some(item) = iter.for_next(vm)? {
+                    while let Some(item) = iter.py_next(vm)? {
                         defer_drop_mut!(item, vm);
                         let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, key_context, vm)?;
                         defer_drop_mut!(item_key, vm);
@@ -130,7 +131,7 @@ fn run_min_max(
             let mut result_guard = DropGuard::new(result, vm);
             let (result, vm) = result_guard.as_parts_mut();
 
-            while let Some(item) = iter.for_next(vm)? {
+            while let Some(item) = iter.py_next(vm)? {
                 defer_drop_mut!(item, vm);
 
                 if candidate_wins(result, item, is_min, vm)? {

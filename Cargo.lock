@@ -2045,9 +2045,19 @@ dependencies = [
  "chrono",
  "datatest-stable",
  "monty",
+ "monty-fs",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
+ "tempfile",
+]
+
+[[package]]
+name = "monty-fs"
+version = "0.0.19-beta.4"
+dependencies = [
+ "ahash",
+ "monty",
  "tempfile",
 ]
 
@@ -2090,6 +2100,7 @@ name = "monty-pool"
 version = "0.0.19-beta.4"
 dependencies = [
  "monty",
+ "monty-fs",
  "monty-proto",
  "rustls",
  "tempfile",
@@ -2115,6 +2126,7 @@ version = "0.0.19-beta.4"
 dependencies = [
  "clap",
  "monty",
+ "monty-fs",
  "monty-proto",
  "monty-type-checking",
  "rustyline",
@@ -2710,6 +2722,7 @@ version = "0.0.19-beta.4"
 dependencies = [
  "ahash",
  "monty",
+ "monty-fs",
  "monty-pool",
  "monty-proto",
  "num-bigint",

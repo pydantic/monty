@@ -167,10 +167,11 @@ If the paused feed used filesystem `mount`s, re-supply the same ones to
 `load_snapshot(blob, mount=...)` — their host paths are not stored in the dump.
 
 `session.dump()` between feeds serializes an idle session instead; restore it
-with `session.load(blob)` (which returns `None`) and keep feeding. Both `load`
-and `load_snapshot` are valid only on a fresh session, before any feed; using
-the wrong one for a dump's kind raises. `AsyncMonty` sessions expose the same
-`feed_start` / `load` / `load_snapshot`, with awaitable `resume(...)`.
+with `session.load_session(blob)` (which returns `None`) and keep feeding. Both
+`load_session` and `load_snapshot` are valid only on a fresh session, before
+any feed; using the wrong one for a dump's kind raises. `AsyncMonty` sessions
+expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
+`resume(...)`.
 
 ### Resource limits
 
@@ -182,7 +183,7 @@ accumulates across feeds. The worker reports its execution time on every
 protocol turn, and sessions with the limit are additionally killed
 `duration_limit_grace` (1s, not currently configurable from Python) after
 the remaining budget expires, covering hangs the in-sandbox limit cannot
-catch (e.g. a blocking syscall inside a mount).
+catch (its check only runs at interpreter checkpoints).
 
 ```python
 from pydantic_monty import Monty, MontyRuntimeError
@@ -230,5 +231,5 @@ with Monty() as pool:
 ```
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
-details of subprocess execution (worker-local mounts, line-buffered print
+details of subprocess execution (host-side mounts, buffered print
 callbacks, session dumps).

@@ -1,7 +1,10 @@
 //! Public interface for running Monty code.
 use std::{
     num::NonZeroU32,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use ruff_python_stdlib::identifiers::is_identifier;
@@ -278,8 +281,8 @@ impl MontyRun {
 pub(crate) struct Executor {
     /// Module-level global names.
     pub(crate) globals: NameMap,
-    /// Compiled bytecode for the module.
-    pub(crate) module_code: Code,
+    /// Compiled bytecode for the module. Wrapped in `Arc` to avoid needing to deep clone.
+    pub(crate) module_code: Arc<Code>,
     /// Interned strings used for looking up names and filenames during execution.
     pub(crate) interns: Interns,
     /// Source code for error reporting (extracting preview lines for tracebacks).
@@ -341,7 +344,7 @@ impl Executor {
 
         Ok(Self {
             globals: prepared.globals,
-            module_code: compile_result.code,
+            module_code: Arc::new(compile_result.code),
             interns,
             code,
             input_slots: Vec::new(),
@@ -414,7 +417,7 @@ impl Executor {
 
         Ok(Self {
             globals: prepared.globals,
-            module_code: compile_result.code,
+            module_code: Arc::new(compile_result.code),
             interns,
             code,
             input_slots,

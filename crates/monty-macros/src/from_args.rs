@@ -45,6 +45,10 @@ struct Signature {
     /// A per-function empirical fact, not derivable from fields or style —
     /// see the litmus test in `crates/monty-macros/README.md`.
     at_most_total: bool,
+    /// Kwarg-free calls check positional arity with `_PyArg_CheckPositional`
+    /// wording first, modeling `tp_vectorcall` fast paths (`int`, `str`) that
+    /// only fall back to the clinic parser when keywords are present.
+    vectorcall: bool,
     /// Override for the function name in the unknown-kwarg error only.
     /// Used by `json.dumps`, which forwards unmatched kwargs to
     /// `JSONEncoder.__init__` and so reports that name instead.
@@ -159,6 +163,7 @@ impl Signature {
             name: func_name,
             style,
             at_most_total,
+            vectorcall,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -191,6 +196,7 @@ impl Signature {
             varargs_idx,
             varkwargs_idx,
             at_most_total,
+            vectorcall,
             kwarg_error_name,
             bad_arg,
             kwargs_not_supported_yet,
@@ -244,12 +250,16 @@ impl Signature {
             }
         }
 
-        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic) {
-            return err(
-                "`kwarg_error_name` is only meaningful with `style = def` or the default \
-                 `clinic` style — the C families defer unknown-kwarg errors past binding \
-                 and `unpack` callables take no keywords worth renaming",
-            );
+        if self.vectorcall && !(self.at_most_total && self.style == Style::Clinic) {
+            return err("`vectorcall` requires the default `clinic` style plus `at_most_total` \
+                 — it models a `tp_vectorcall` fast path in front of a clinic parser");
+        }
+
+        if self.kwarg_error_name.is_some() && !matches!(self.style, Style::Def | Style::Clinic | Style::Unpack) {
+            return err("`kwarg_error_name` is only meaningful with `style = def`, the default \
+                 `clinic` style, or `style = unpack` (where it names the function in the \
+                 `takes no keyword arguments` error) — the C families defer unknown-kwarg \
+                 errors past binding");
         }
 
         if self.kwargs_not_supported_yet {
@@ -436,6 +446,7 @@ impl Signature {
         let varargs = self.varargs_idx.is_some();
         let varkwargs = self.varkwargs_idx.is_some();
         let at_most_total = self.at_most_total;
+        let vectorcall = self.vectorcall;
         let kwargs_not_supported_yet = self.kwargs_not_supported_yet;
         let kwarg_error_name = if let Some(name) = &self.kwarg_error_name {
             quote! { ::std::option::Option::Some(#name) }
@@ -453,6 +464,7 @@ impl Signature {
                 varargs: #varargs,
                 varkwargs: #varkwargs,
                 at_most_total: #at_most_total,
+                vectorcall: #vectorcall,
                 kwargs_not_supported_yet: #kwargs_not_supported_yet,
                 kwarg_error_name: #kwarg_error_name,
             };
@@ -740,6 +752,7 @@ struct StructAttrs {
     name: String,
     style: Style,
     at_most_total: bool,
+    vectorcall: bool,
     kwarg_error_name: Option<String>,
     bad_arg: Option<BadArgStyle>,
     kwargs_not_supported_yet: bool,
@@ -750,6 +763,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
     let mut name: Option<String> = None;
     let mut style: Option<Style> = None;
     let mut at_most_total = false;
+    let mut vectorcall = false;
     let mut kwarg_error_name: Option<String> = None;
     let mut bad_arg: Option<BadArgStyle> = None;
     let mut kwargs_not_supported_yet = false;
@@ -784,6 +798,9 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             } else if meta.path.is_ident("at_most_total") {
                 at_most_total = true;
                 Ok(())
+            } else if meta.path.is_ident("vectorcall") {
+                vectorcall = true;
+                Ok(())
             } else if meta.path.is_ident("kwarg_error_name") {
                 let value: LitStr = meta.value()?.parse()?;
                 kwarg_error_name = Some(value.value());
@@ -806,7 +823,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
             } else {
                 Err(meta.error(
                     "unknown struct attribute; expected `name = \"...\"`, `style = def|clinic|c|c_named|unpack`, \
-                     `at_most_total`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
+                     `at_most_total`, `vectorcall`, `kwarg_error_name = \"...\"`, `bad_arg`, `bad_arg_named`, \
                      or `kwargs_not_supported_yet`",
                 ))
             }
@@ -822,6 +839,7 @@ fn parse_struct_attrs(attrs: &[syn::Attribute]) -> syn::Result<StructAttrs> {
         name,
         style: style.unwrap_or(Style::Clinic),
         at_most_total,
+        vectorcall,
         kwarg_error_name,
         bad_arg,
         kwargs_not_supported_yet,
@@ -1040,12 +1058,33 @@ mod tests {
     }
 
     #[test]
+    fn vectorcall_requires_clinic_and_at_most_total() {
+        let err = expand_err(&parse_quote! {
+            #[from_args(name = "int", vectorcall)]
+            struct S {
+                #[from_args(pos_only, default)]
+                x: Value,
+            }
+        });
+        assert_snapshot!(err, @"`vectorcall` requires the default `clinic` style plus `at_most_total` — it models a `tp_vectorcall` fast path in front of a clinic parser");
+        expand_ok(&parse_quote! {
+            #[from_args(name = "int", at_most_total, vectorcall)]
+            struct S {
+                #[from_args(pos_only, default)]
+                x: Value,
+                #[from_args(default)]
+                base: Value,
+            }
+        });
+    }
+
+    #[test]
     fn kwarg_error_name_requires_def_or_clinic() {
         let err = expand_err(&parse_quote! {
             #[from_args(name = "f", style = c_named, kwarg_error_name = "g")]
             struct S { a: Value }
         });
-        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def` or the default `clinic` style — the C families defer unknown-kwarg errors past binding and `unpack` callables take no keywords worth renaming");
+        assert_snapshot!(err, @"`kwarg_error_name` is only meaningful with `style = def`, the default `clinic` style, or `style = unpack` (where it names the function in the `takes no keyword arguments` error) — the C families defer unknown-kwarg errors past binding");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
     resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait, allocate_tuple, tuple::TupleVec},
+    types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
 
@@ -32,11 +32,12 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     }
 
     // Create iterators for each iterable
-    let iterators: Vec<MontyIter> = Vec::with_capacity(iterables.len());
+    let iterators: Vec<Value> = Vec::with_capacity(iterables.len());
     defer_drop_mut!(iterators, vm);
     for iterable in iterables.drain(..) {
-        iterators.push(MontyIter::new(iterable, vm)?);
+        iterators.push(iterable.into_py_iter(vm)?);
     }
+    let mut iterators = iterators.iter().map(|iter| iter.read(vm)).collect::<Vec<_>>();
 
     let mut result_guard = DropGuard::new(Vec::new(), vm);
     let (result, vm) = result_guard.as_parts_mut();
@@ -47,7 +48,7 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
         let (tuple_items, vm) = items_guard.as_parts_mut();
 
         for (i, iter) in iterators.iter_mut().enumerate() {
-            if let Some(item) = iter.for_next(vm)? {
+            if let Some(item) = iter.py_next(vm)? {
                 tuple_items.push(item);
             } else {
                 // This iterator is exhausted - stop zipping
@@ -64,7 +65,7 @@ pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
                     // j is the 0-based index; iterators 0..j are all exhausted,
                     // so j gives the count for the error message.
                     for (j, remaining) in iterators.iter_mut().enumerate().skip(1) {
-                        if let Some(extra) = remaining.for_next(vm)? {
+                        if let Some(extra) = remaining.py_next(vm)? {
                             extra.drop_with(vm);
                             return Err(strict_length_error(j + 1, j, "longer"));
                         }

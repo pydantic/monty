@@ -5,7 +5,7 @@ mod pool;
 mod watchdog;
 mod worker;
 
-use std::{error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
+use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
 use monty::MontyException;
 pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
@@ -121,7 +121,7 @@ pub enum PoolError {
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
     /// worker; caller misuse leaves it intact.
-    Protocol(String),
+    Protocol(Cow<'static, str>),
     /// The sandboxed code raised a Python exception. The worker and its
     /// session remain alive and usable.
     Runtime(MontyException),
