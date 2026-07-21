@@ -2,11 +2,17 @@
 //! frames so an exception raised on one side of the process boundary renders
 //! identically on the other.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-use monty::{CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject};
+use monty::{
+    CodeLoc, ExcData, JsonErrorData, MontyException, ResourceLimitData, StackFrame, UnicodeErrorData,
+    UnicodeErrorObject,
+};
 
-use crate::{convert::ProtoConvertError, pb};
+use crate::{
+    convert::ProtoConvertError,
+    pb::{self, resource_limit_data},
+};
 
 impl From<&MontyException> for pb::RaisedException {
     fn from(exc: &MontyException) -> Self {
@@ -41,6 +47,8 @@ impl TryFrom<pb::RaisedException> for MontyException {
                 sanitize_unicode_data(unicode).map_or(ExcData::None, ExcData::Unicode)
             }
             Some(pb::exc_data::Kind::Json(json)) => sanitize_json_data(json).map_or(ExcData::None, ExcData::Json),
+            Some(pb::exc_data::Kind::ResourceLimit(resource_limit)) => resource_limit_data_from_wire(resource_limit)
+                .map_or(ExcData::None, |data| ExcData::ResourceLimit(Box::new(data))),
             None => ExcData::None,
         };
         Ok(Self::with_traceback(exc_type, err.message, traceback).with_data(data))
@@ -60,6 +68,99 @@ fn pb_exc_data(data: &ExcData) -> Option<pb::ExcData> {
         ExcData::Json(json) => Some(pb::ExcData {
             kind: Some(pb::exc_data::Kind::Json(pb::JsonErrorData::from(json.as_ref()))),
         }),
+        ExcData::ResourceLimit(resource_limit) => Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData::from(
+                resource_limit.as_ref(),
+            ))),
+        }),
+    }
+}
+
+impl From<&ResourceLimitData> for pb::ResourceLimitData {
+    fn from(data: &ResourceLimitData) -> Self {
+        let kind = match *data {
+            ResourceLimitData::Allocation { limit, count } => {
+                resource_limit_data::Kind::Allocation(resource_limit_data::Allocation {
+                    limit: limit as u64,
+                    count: count as u64,
+                })
+            }
+            ResourceLimitData::Time { limit, elapsed } => resource_limit_data::Kind::Time(resource_limit_data::Time {
+                limit_secs: limit.as_secs(),
+                limit_subsec_nanos: limit.subsec_nanos(),
+                elapsed_secs: elapsed.as_secs(),
+                elapsed_subsec_nanos: elapsed.subsec_nanos(),
+            }),
+            ResourceLimitData::Memory { limit, used } => {
+                resource_limit_data::Kind::Memory(resource_limit_data::Memory {
+                    limit: limit as u64,
+                    used: used as u64,
+                })
+            }
+            ResourceLimitData::Recursion { limit, depth } => {
+                resource_limit_data::Kind::Recursion(resource_limit_data::Recursion {
+                    limit: limit as u64,
+                    depth: depth as u64,
+                })
+            }
+        };
+        Self { kind: Some(kind) }
+    }
+}
+
+/// Converts a wire `ResourceLimitData`, dropping it (returning `None`) when
+/// the `kind` oneof is unset or the decoded fields don't describe a genuine
+/// hit (see [`is_genuine_hit`]) — the worst a compromised child can do is
+/// fall back to an unclassified exception, same posture as
+/// [`sanitize_unicode_data`]/[`sanitize_json_data`]. Every field here is a
+/// plain integer with no attacker-controlled length, so unlike those two
+/// there is no amplification size cap to enforce.
+fn resource_limit_data_from_wire(data: pb::ResourceLimitData) -> Option<ResourceLimitData> {
+    let usize_field = |v: u64| usize::try_from(v).unwrap_or(usize::MAX);
+    let data = match data.kind? {
+        resource_limit_data::Kind::Allocation(a) => ResourceLimitData::Allocation {
+            limit: usize_field(a.limit),
+            count: usize_field(a.count),
+        },
+        resource_limit_data::Kind::Time(t) => ResourceLimitData::Time {
+            limit: checked_duration(t.limit_secs, t.limit_subsec_nanos)?,
+            elapsed: checked_duration(t.elapsed_secs, t.elapsed_subsec_nanos)?,
+        },
+        resource_limit_data::Kind::Memory(m) => ResourceLimitData::Memory {
+            limit: usize_field(m.limit),
+            used: usize_field(m.used),
+        },
+        resource_limit_data::Kind::Recursion(r) => ResourceLimitData::Recursion {
+            limit: usize_field(r.limit),
+            depth: usize_field(r.depth),
+        },
+    };
+    is_genuine_hit(&data).then_some(data)
+}
+
+/// Builds a `Duration` from wire seconds + sub-second nanoseconds, rejecting
+/// (returning `None`) an out-of-range `subsec_nanos` (`>= 1_000_000_000`)
+/// rather than passing it to `Duration::new`, which panics on the resulting
+/// carry into `secs` when `secs` is already at or near `u64::MAX`. The wire
+/// value is untrusted — a compromised child sending exactly that combination
+/// would otherwise crash the parent process.
+fn checked_duration(secs: u64, subsec_nanos: u32) -> Option<Duration> {
+    (subsec_nanos < 1_000_000_000).then(|| Duration::new(secs, subsec_nanos))
+}
+
+/// Whether `data`'s observed value actually exceeds its limit — true for
+/// every real `ResourceError`-derived construction (`on_allocate`/`on_grow`/
+/// `check_large_result` require `used/count > limit` before erroring,
+/// `check_time` requires `elapsed > limit`, `check_recursion_depth`/
+/// `enter_run_reentry` require `depth > limit`). A wire payload that fails
+/// this — e.g. an empty inner message decoding to `limit: 0, count: 0` — is
+/// not a real limit hit and must not be trusted as one.
+fn is_genuine_hit(data: &ResourceLimitData) -> bool {
+    match *data {
+        ResourceLimitData::Allocation { limit, count } => count > limit,
+        ResourceLimitData::Time { limit, elapsed } => elapsed > limit,
+        ResourceLimitData::Memory { limit, used } => used > limit,
+        ResourceLimitData::Recursion { limit, depth } => depth > limit,
     }
 }
 

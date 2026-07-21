@@ -9,7 +9,7 @@ use std::{
 
 use monty::{
     CompileOptions, ExcType, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, PrintWriter,
-    ResourceLimits, RunProgress,
+    ResourceLimitData, ResourceLimits, RunProgress,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -2404,5 +2404,128 @@ fn finditer_shares_subject_memory() {
     assert_eq!(
         result.expect("finditer over a large subject must stay within the memory limit"),
         MontyObject::Int(4000)
+    );
+}
+
+// === `ExcData::ResourceLimit` classification ===
+// These tests verify that resource-limit hits carry structured
+// `ResourceLimitData` (see `ResourceError::into_exception`), and that
+// sandboxed code raising the same exception types manually does not —
+// callers must be able to tell the two apart without parsing the message.
+
+/// Test that an allocation-limit hit carries `ResourceLimitData::Allocation`.
+#[test]
+fn allocation_limit_carries_resource_limit_data() {
+    let code = r"
+result = []
+for i in range(100, 115):
+    result.append(str(i))
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_allocations(4);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("should exceed allocation limit");
+    match exc.resource_limit_data() {
+        Some(ResourceLimitData::Allocation { limit, count }) => {
+            assert_eq!(*limit, 4);
+            assert_eq!(*count, 5);
+        }
+        other => panic!("expected ResourceLimitData::Allocation, got {other:?}"),
+    }
+}
+
+/// Test that a memory-limit hit carries `ResourceLimitData::Memory`.
+#[test]
+fn memory_limit_carries_resource_limit_data() {
+    let code = r"
+result = []
+for i in range(100):
+    result.append([1, 2, 3, 4, 5])
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(100);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("should exceed memory limit");
+    match exc.resource_limit_data() {
+        Some(ResourceLimitData::Memory { limit, used }) => {
+            assert_eq!(*limit, 100);
+            assert!(*used > 100);
+        }
+        other => panic!("expected ResourceLimitData::Memory, got {other:?}"),
+    }
+}
+
+/// Test that a time-limit hit carries `ResourceLimitData::Time`.
+#[test]
+fn time_limit_carries_resource_limit_data() {
+    let code = r"
+x = 0
+for i in range(100000000):
+    x = x + 1
+x
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("should exceed time limit");
+    match exc.resource_limit_data() {
+        Some(ResourceLimitData::Time { limit, elapsed }) => {
+            assert_eq!(*limit, Duration::from_millis(50));
+            assert!(*elapsed >= *limit);
+        }
+        other => panic!("expected ResourceLimitData::Time, got {other:?}"),
+    }
+}
+
+/// Test that a recursion-depth-limit hit carries `ResourceLimitData::Recursion`.
+#[test]
+fn recursion_limit_carries_resource_limit_data() {
+    let code = r"
+def recurse(n):
+    return recurse(n - 1)
+recurse(50)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_recursion_depth(Some(10));
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("should exceed recursion depth");
+    match exc.resource_limit_data() {
+        Some(ResourceLimitData::Recursion { limit, depth }) => {
+            assert_eq!(*limit, 10);
+            assert!(*depth > 10);
+        }
+        other => panic!("expected ResourceLimitData::Recursion, got {other:?}"),
+    }
+}
+
+/// Regression: sandboxed code raising `MemoryError`/`TimeoutError` itself —
+/// not a real resource-limit hit — must NOT carry `ResourceLimitData`. This
+/// is exactly the ambiguity `ExcData::ResourceLimit` exists to resolve: both
+/// cases produce the same `exc_type()` and a message that can look like the
+/// limit-hit wording, so only the structured payload disambiguates them.
+#[test]
+fn sandboxed_memory_error_does_not_carry_resource_limit_data() {
+    let code = "raise MemoryError('allocation limit exceeded: 4 > 3')";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("should propagate the raised MemoryError");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(
+        exc.resource_limit_data(),
+        None,
+        "manually raised exception must not be classified as a resource-limit hit"
     );
 }

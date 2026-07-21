@@ -278,7 +278,7 @@ pub struct RaisedException {
 /// payload" (`ExcData::None`).
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ExcData {
-    #[prost(oneof = "exc_data::Kind", tags = "1, 2")]
+    #[prost(oneof = "exc_data::Kind", tags = "1, 2, 3")]
     pub kind: ::core::option::Option<exc_data::Kind>,
 }
 /// Nested message and enum types in `ExcData`.
@@ -289,6 +289,8 @@ pub mod exc_data {
         Unicode(super::UnicodeErrorData),
         #[prost(message, tag = "2")]
         Json(super::JsonErrorData),
+        #[prost(message, tag = "3")]
+        ResourceLimit(super::ResourceLimitData),
     }
 }
 /// CPython's UnicodeDecodeError/UnicodeEncodeError constructor fields
@@ -344,6 +346,72 @@ pub struct JsonErrorData {
     pub lineno: u64,
     #[prost(uint64, tag = "5")]
     pub colno: u64,
+}
+/// Identifies which sandbox resource limit was hit and by how much, mirroring
+/// monty's `ResourceLimitData`. Set only when an exception represents a
+/// resource-limit hit rather than the same exception type raised by
+/// sandboxed code — see `ExcData.resource_limit`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceLimitData {
+    #[prost(oneof = "resource_limit_data::Kind", tags = "1, 2, 3, 4")]
+    pub kind: ::core::option::Option<resource_limit_data::Kind>,
+}
+/// Nested message and enum types in `ResourceLimitData`.
+pub mod resource_limit_data {
+    /// Maximum number of allocations exceeded.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Allocation {
+        #[prost(uint64, tag = "1")]
+        pub limit: u64,
+        #[prost(uint64, tag = "2")]
+        pub count: u64,
+    }
+    /// Maximum execution time exceeded. Each duration is split into seconds +
+    /// sub-second nanoseconds (mirroring `std::time::Duration`'s own
+    /// representation) rather than a single nanosecond count, so encoding is
+    /// always exact — no truncation at the low end (unlike
+    /// `ResourceLimits.max_duration_micros`) and no saturation at the high end
+    /// for any representable `Duration`. Either lossiness would let the receive
+    /// side's hit-validity check (`elapsed > limit`, see `is_genuine_hit`)
+    /// reject a genuine hit whose encoded value collapsed to equal its limit.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Time {
+        #[prost(uint64, tag = "1")]
+        pub limit_secs: u64,
+        #[prost(uint32, tag = "2")]
+        pub limit_subsec_nanos: u32,
+        #[prost(uint64, tag = "3")]
+        pub elapsed_secs: u64,
+        #[prost(uint32, tag = "4")]
+        pub elapsed_subsec_nanos: u32,
+    }
+    /// Maximum memory usage exceeded, in bytes.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Memory {
+        #[prost(uint64, tag = "1")]
+        pub limit: u64,
+        #[prost(uint64, tag = "2")]
+        pub used: u64,
+    }
+    /// Maximum recursion depth exceeded.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+    pub struct Recursion {
+        #[prost(uint64, tag = "1")]
+        pub limit: u64,
+        #[prost(uint64, tag = "2")]
+        pub depth: u64,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Kind {
+        #[prost(message, tag = "1")]
+        Allocation(Allocation),
+        #[prost(message, tag = "2")]
+        Time(Time),
+        #[prost(message, tag = "3")]
+        Memory(Memory),
+        #[prost(message, tag = "4")]
+        Recursion(Recursion),
+    }
 }
 /// 1-based line/column source position (columns count characters, not bytes).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]

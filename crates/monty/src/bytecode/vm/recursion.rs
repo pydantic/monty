@@ -133,7 +133,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         } else {
             Err(ResourceError::Recursion {
                 limit: MAX_RUN_REENTRY_DEPTH as usize,
-                depth: MAX_RUN_REENTRY_DEPTH as usize,
+                // +1: this is the depth the rejected re-entry would have
+                // reached, matching `ResourceError::Recursion`'s documented
+                // meaning elsewhere (e.g. `check_recursion_depth`'s
+                // `current_depth + 1`) — not `MAX_RUN_REENTRY_DEPTH` itself.
+                depth: MAX_RUN_REENTRY_DEPTH as usize + 1,
             })
         }
     }

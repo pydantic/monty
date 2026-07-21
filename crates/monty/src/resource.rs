@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    ExcType, MontyException,
+    ExcData, ExcType, MontyException, ResourceLimitData,
     exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException},
 };
 
@@ -186,28 +186,37 @@ impl ResourceError {
     /// - `Memory` → `MemoryError`
     /// - `Time` → `TimeoutError`
     /// - `Recursion` → `RecursionError`
+    ///
+    /// The four limit-hit variants also attach an [`ExcData::ResourceLimit`]
+    /// payload carrying the original typed fields, so embedders can tell a
+    /// limit hit apart from sandboxed code raising the same exception type
+    /// (e.g. `raise MemoryError()`) without parsing the message.
     #[must_use]
     pub(crate) fn into_exception(self, frame: Option<RawStackFrame>) -> ExceptionRaise {
-        let (exc_type, msg) = match self {
+        let (exc_type, msg, data) = match self {
             Self::Allocation { limit, count } => (
                 ExcType::MemoryError,
                 Some(format!("allocation limit exceeded: {count} > {limit}")),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Allocation { limit, count })),
             ),
             Self::Memory { limit, used } => (
                 ExcType::MemoryError,
                 Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Memory { limit, used })),
             ),
             Self::Time { limit, elapsed } => (
                 ExcType::TimeoutError,
                 Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Time { limit, elapsed })),
             ),
-            Self::Recursion { .. } => (
+            Self::Recursion { limit, depth } => (
                 ExcType::RecursionError,
                 Some("maximum recursion depth exceeded".to_string()),
+                ExcData::ResourceLimit(Box::new(ResourceLimitData::Recursion { limit, depth })),
             ),
-            Self::Exception(exc) => (exc.exc_type(), exc.into_message()),
+            Self::Exception(exc) => (exc.exc_type(), exc.into_message(), ExcData::None),
         };
-        let exc = SimpleException::new(exc_type, msg);
+        let exc = SimpleException::new(exc_type, msg).with_data(data);
         match frame {
             Some(f) => exc.with_frame(f),
             None => exc.into(),
@@ -733,5 +742,23 @@ impl ResourceTracker for LimitedTracker {
         }
         self.recursion_limit_override.set(Some(new_limit));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ResourceError::Exception` is not a limit hit — it wraps a
+    /// propagating exception — so `into_exception` must pass its type and
+    /// message through unchanged and attach no `ExcData::ResourceLimit`
+    /// payload, unlike the four true limit-hit variants above it.
+    #[test]
+    fn exception_variant_carries_no_resource_limit_data() {
+        let inner = MontyException::new(ExcType::ValueError, Some("boom".to_owned()));
+        let raised = ResourceError::Exception(inner).into_exception(None);
+        assert_eq!(raised.exc.exc_type(), ExcType::ValueError);
+        assert_eq!(raised.exc.arg().map(String::as_str), Some("boom"));
+        assert_eq!(raised.exc.data(), &ExcData::None);
     }
 }

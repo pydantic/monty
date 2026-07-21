@@ -40,7 +40,8 @@ pub use crate::{
     codecs::utf8_error_reason,
     exception_private::{ExcType, unicode_decode_error_msg},
     exception_public::{
-        CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
+        CodeLoc, ExcData, JsonErrorData, MontyException, ResourceLimitData, StackFrame, UnicodeErrorData,
+        UnicodeErrorObject,
     },
     io::{PrintStream, PrintWriter, PrintWriterCallback},
     object::{

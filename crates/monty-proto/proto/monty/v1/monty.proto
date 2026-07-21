@@ -220,6 +220,7 @@ message ExcData {
   oneof kind {
     UnicodeErrorData unicode = 1;
     JsonErrorData json = 2;
+    ResourceLimitData resource_limit = 3;
   }
 }
 
@@ -257,6 +258,49 @@ message JsonErrorData {
   // 1-based line and column of the error.
   uint64 lineno = 4;
   uint64 colno = 5;
+}
+
+// Identifies which sandbox resource limit was hit and by how much, mirroring
+// monty's `ResourceLimitData`. Set only when an exception represents a
+// resource-limit hit rather than the same exception type raised by
+// sandboxed code — see `ExcData.resource_limit`.
+message ResourceLimitData {
+  oneof kind {
+    Allocation allocation = 1;
+    Time time = 2;
+    Memory memory = 3;
+    Recursion recursion = 4;
+  }
+
+  // Maximum number of allocations exceeded.
+  message Allocation {
+    uint64 limit = 1;
+    uint64 count = 2;
+  }
+  // Maximum execution time exceeded. Each duration is split into seconds +
+  // sub-second nanoseconds (mirroring `std::time::Duration`'s own
+  // representation) rather than a single nanosecond count, so encoding is
+  // always exact — no truncation at the low end (unlike
+  // `ResourceLimits.max_duration_micros`) and no saturation at the high end
+  // for any representable `Duration`. Either lossiness would let the receive
+  // side's hit-validity check (`elapsed > limit`, see `is_genuine_hit`)
+  // reject a genuine hit whose encoded value collapsed to equal its limit.
+  message Time {
+    uint64 limit_secs = 1;
+    uint32 limit_subsec_nanos = 2;
+    uint64 elapsed_secs = 3;
+    uint32 elapsed_subsec_nanos = 4;
+  }
+  // Maximum memory usage exceeded, in bytes.
+  message Memory {
+    uint64 limit = 1;
+    uint64 used = 2;
+  }
+  // Maximum recursion depth exceeded.
+  message Recursion {
+    uint64 limit = 1;
+    uint64 depth = 2;
+  }
 }
 
 // 1-based line/column source position (columns count characters, not bytes).

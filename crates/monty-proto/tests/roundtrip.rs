@@ -4,7 +4,7 @@ use monty::{
     CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
     MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyRun, MontyTimeDelta,
     MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
+    RenameCallArgs, ResourceLimitData, ResourceLimits, StackFrame, UnicodeErrorData,
 };
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
 use num_bigint::BigInt;
@@ -381,6 +381,178 @@ fn json_error_payload_round_trips() {
     ));
     let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
     assert_eq!(back, exc);
+}
+
+/// All four `ResourceLimitData` variants survive the trip through
+/// `monty-pool`'s subprocess wire format — this is the primary execution
+/// path for embedders using `monty-pool`/`pydantic_monty`, so a resource
+/// limit hit in a worker must still classify correctly once it reaches the
+/// parent process.
+#[test]
+fn resource_limit_data_round_trips() {
+    for data in [
+        ResourceLimitData::Allocation { limit: 4, count: 5 },
+        ResourceLimitData::Time {
+            limit: Duration::from_millis(50),
+            elapsed: Duration::from_millis(52),
+        },
+        ResourceLimitData::Memory { limit: 100, used: 128 },
+        ResourceLimitData::Recursion { limit: 10, depth: 11 },
+    ] {
+        let exc = MontyException::new(ExcType::MemoryError, Some("limit exceeded".to_owned()))
+            .with_data(ExcData::ResourceLimit(Box::new(data)));
+        let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+        assert_eq!(back, exc, "{data:?} did not round-trip");
+    }
+}
+
+/// Regression: a genuine time-limit hit whose margin over the limit is
+/// sub-microsecond must still round-trip and pass the receive side's
+/// hit-validity check. Before the wire format used sub-second-nanosecond
+/// precision, both durations truncated to microseconds before that check, so
+/// a hit this close to its limit would decode to an equal `elapsed`/`limit`
+/// and get dropped as implausible — exactly the failure mode a lossy
+/// encoding introduces.
+#[test]
+fn sub_microsecond_time_limit_hit_survives_round_trip() {
+    let data = ResourceLimitData::Time {
+        limit: Duration::from_micros(50),
+        elapsed: Duration::from_micros(50) + Duration::from_nanos(200),
+    };
+    let exc = MontyException::new(ExcType::TimeoutError, Some("time limit exceeded".to_owned()))
+        .with_data(ExcData::ResourceLimit(Box::new(data)));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+    assert!(
+        back.resource_limit_data().is_some(),
+        "sub-microsecond-margin hit must survive as a genuine classification"
+    );
+}
+
+/// Regression: a genuine time-limit hit at a magnitude beyond ~584 years
+/// (`u64::MAX` nanoseconds) must still round-trip. A single-nanosecond-count
+/// wire encoding saturates durations past that point to `u64::MAX`, which
+/// would make an even-more-extreme `elapsed` collapse to equal `limit` and
+/// get dropped as implausible; encoding as seconds + sub-second nanoseconds
+/// has no such ceiling for any representable `Duration`.
+#[test]
+fn extreme_duration_time_limit_hit_survives_round_trip() {
+    let limit = Duration::from_secs(20_000_000_000); // ~634 years > u64::MAX nanoseconds
+    let data = ResourceLimitData::Time {
+        limit,
+        elapsed: limit + Duration::from_nanos(500),
+    };
+    let exc = MontyException::new(ExcType::TimeoutError, Some("time limit exceeded".to_owned()))
+        .with_data(ExcData::ResourceLimit(Box::new(data)));
+    let back = MontyException::try_from(pb::RaisedException::from(&exc)).unwrap();
+    assert_eq!(back, exc);
+    assert!(
+        back.resource_limit_data().is_some(),
+        "extreme-magnitude hit must survive as a genuine classification"
+    );
+}
+
+/// An empty `ResourceLimitData` wire message (a compromised or buggy child
+/// sending no `kind`) must be dropped, not trusted — same posture as
+/// [`bogus_unicode_payloads_are_dropped_not_trusted`]/[`bogus_json_payloads_are_dropped_not_trusted`].
+#[test]
+fn empty_resource_limit_data_is_dropped_not_trusted() {
+    let wire = pb::RaisedException {
+        exc_type: "MemoryError".to_owned(),
+        message: Some("limit exceeded".to_owned()),
+        traceback: vec![],
+        data: Some(pb::ExcData {
+            kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData { kind: None })),
+        }),
+    };
+    let back = MontyException::try_from(wire).unwrap();
+    assert_eq!(back.data(), &ExcData::None);
+}
+
+/// A well-formed but impossible `ResourceLimitData` payload — e.g. an empty
+/// `Allocation { limit: 0, count: 0 }`, which no real limit hit can ever
+/// produce (`count > limit` always holds — see `is_genuine_hit`) — must be
+/// dropped rather than trusted as a genuine classification. Covers all four
+/// variants, each with its observed value at or below its limit.
+#[test]
+fn implausible_resource_limit_data_is_dropped_not_trusted() {
+    let implausible_payloads = [
+        pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 0, count: 0 }),
+        pb::resource_limit_data::Kind::Allocation(pb::resource_limit_data::Allocation { limit: 5, count: 5 }),
+        pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
+            limit_secs: 0,
+            limit_subsec_nanos: 50_000,
+            elapsed_secs: 0,
+            elapsed_subsec_nanos: 40_000,
+        }),
+        // Equal-to-the-nanosecond is exactly the boundary case the exact
+        // wire precision exists to get right: not a hit (must be dropped),
+        // and must not be conflated with a genuine hit that merely lost
+        // precision through a lossy round trip.
+        pb::resource_limit_data::Kind::Time(pb::resource_limit_data::Time {
+            limit_secs: 0,
+            limit_subsec_nanos: 50_000,
+            elapsed_secs: 0,
+            elapsed_subsec_nanos: 50_000,
+        }),
+        pb::resource_limit_data::Kind::Memory(pb::resource_limit_data::Memory { limit: 100, used: 100 }),
+        pb::resource_limit_data::Kind::Recursion(pb::resource_limit_data::Recursion { limit: 10, depth: 10 }),
+    ];
+    for kind in implausible_payloads {
+        let wire = pb::RaisedException {
+            exc_type: "MemoryError".to_owned(),
+            message: Some("limit exceeded".to_owned()),
+            traceback: vec![],
+            data: Some(pb::ExcData {
+                kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
+                    kind: Some(kind),
+                })),
+            }),
+        };
+        let back = MontyException::try_from(wire).unwrap();
+        assert_eq!(back.data(), &ExcData::None);
+    }
+}
+
+/// Regression: `Duration::new` panics if `subsec_nanos >= 1_000_000_000`
+/// forces a carry that overflows `secs`. A compromised child sending
+/// `secs: u64::MAX, subsec_nanos: u32::MAX` must not crash the parent
+/// process — the payload is dropped (like every other malformed field here),
+/// not passed through to `Duration::new` unchecked. `checked_duration` is
+/// called once for `limit` and once for `elapsed`, each independently
+/// capable of rejecting the payload; covers both — an invalid `limit` (where
+/// the `?` short-circuits before `elapsed`'s check ever runs) and an invalid
+/// `elapsed` alongside a valid `limit` (so `elapsed`'s own rejection path is
+/// exercised, not just short-circuited past).
+#[test]
+fn out_of_range_subsec_nanos_is_dropped_not_a_panic() {
+    for time in [
+        pb::resource_limit_data::Time {
+            limit_secs: u64::MAX,
+            limit_subsec_nanos: u32::MAX,
+            elapsed_secs: u64::MAX,
+            elapsed_subsec_nanos: u32::MAX,
+        },
+        pb::resource_limit_data::Time {
+            limit_secs: 0,
+            limit_subsec_nanos: 0,
+            elapsed_secs: u64::MAX,
+            elapsed_subsec_nanos: u32::MAX,
+        },
+    ] {
+        let wire = pb::RaisedException {
+            exc_type: "TimeoutError".to_owned(),
+            message: Some("limit exceeded".to_owned()),
+            traceback: vec![],
+            data: Some(pb::ExcData {
+                kind: Some(pb::exc_data::Kind::ResourceLimit(pb::ResourceLimitData {
+                    kind: Some(pb::resource_limit_data::Kind::Time(time)),
+                })),
+            }),
+        };
+        let back = MontyException::try_from(wire).unwrap();
+        assert_eq!(back.data(), &ExcData::None);
+    }
 }
 
 /// Builds a wire `json.JSONDecodeError` whose payload fields a byzantine
