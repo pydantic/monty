@@ -22,19 +22,21 @@ use crate::{
     resource::ResourceError,
 };
 
-/// A Python value that can be passed to or returned from the interpreter.
+/// An owned Python value exchanged between Monty and its host.
 ///
-/// This is the public-facing type for Python values. It owns all its data and can be
-/// freely cloned, serialized, or stored. Unlike the internal `Value` type, `MontyObject`
-/// does not require a heap for operations.
+/// Construct `MontyObject` values to provide globals, external-function
+/// results, and other inputs to sandboxed code. Execution results and values
+/// passed to host callbacks use the same representation.
 ///
-/// # Input vs Output Variants
+/// Most common Python values have a direct variant, including nested
+/// collections and datetime values. [`Repr`](Self::Repr) and
+/// [`Cycle`](Self::Cycle) can only appear in output because they cannot be
+/// reconstructed as executable Python values. [`Exception`](Self::Exception)
+/// can be used both to raise an exception and to represent one returned by
+/// execution.
 ///
-/// Most variants can be used both as inputs (passed to the interpreter) and outputs
-/// (returned from execution). However:
-/// - `Repr` is output-only: represents values that have no direct `MontyObject` mapping
-/// - `Cycle` is output-only: marks where a cyclic structure referred back to itself
-/// - `Exception` can be used as input (to raise) or output (when code raises)
+/// Collections are owned snapshots: modifying a returned `MontyObject` does
+/// not modify the corresponding value in a running session.
 ///
 /// # Hashability
 ///
