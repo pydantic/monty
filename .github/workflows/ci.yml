@@ -1186,7 +1186,7 @@ jobs:
             echo "Publishing pre-release with 'next' tag"
             TAG_ARG=(--tag next)
           fi
-          for tarball in package-tarballs/monty-{darwin,linux,win32}-*.tgz; do
+          for tarball in ./package-tarballs/monty-{darwin,linux,win32}-*.tgz; do
             npm publish "$tarball" --provenance --access public "${TAG_ARG[@]}"
           done
-          npm publish package-tarballs/monty-main.tgz --provenance --access public "${TAG_ARG[@]}"
+          npm publish ./package-tarballs/monty-main.tgz --provenance --access public "${TAG_ARG[@]}"
