@@ -78,6 +78,31 @@ assert Quoted.__annotations__['d'] == "f'int'"
 assert Quoted.__annotations__['e'] == '"it\'s"'
 
 
+# === Literals are rebuilt canonically, not echoed part-by-part ===
+# CPython's stringizer renders one canonical literal per annotation, so
+# implicitly concatenated parts merge and a raw prefix folds into the value.
+# A `u` prefix survives, though — canonical is not the same as bare.
+class Literals:
+    a: 'foo' 'bar'  # fmt: skip
+    b: f"x" "y"  # fmt: skip
+    c: r'raw\d'
+    d: "a" r"b\n"  # fmt: skip
+    e: u'uni'  # fmt: skip
+    f: """triple"""  # fmt: skip
+    g: f'pre{1}post'
+    h: dict[str, 'A' 'B']  # fmt: skip
+
+
+assert Literals.__annotations__['a'] == "'foobar'"
+assert Literals.__annotations__['b'] == "f'xy'"
+assert Literals.__annotations__['c'] == "'raw\\\\d'"
+assert Literals.__annotations__['d'] == "'ab\\\\n'"
+assert Literals.__annotations__['e'] == "u'uni'"
+assert Literals.__annotations__['f'] == "'triple'"
+assert Literals.__annotations__['g'] == "f'pre{1}post'"
+assert Literals.__annotations__['h'] == "dict[str, 'AB']"
+
+
 # === Empty class: __annotations__ is an empty dict ===
 class E:
     p = 1

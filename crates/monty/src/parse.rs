@@ -7,17 +7,10 @@ use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
     name::Name,
-    str::Quote,
     token::TokenKind,
-    visitor::{
-        Visitor,
-        transformer::{Transformer, walk_f_string},
-        walk_expr,
-    },
+    visitor::{Visitor, walk_expr},
 };
-use ruff_python_codegen::{Generator, Indentation};
 use ruff_python_parser::parse_module;
-use ruff_source_file::LineEnding;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
@@ -30,6 +23,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     source_map::{SourceMap, StackFrameExt},
+    stringize::stringize_annotation,
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
 };
@@ -76,31 +70,6 @@ const SUPPORTED_FUTURES: [&str; 9] = [
 /// `__future__.all_feature_names`, since any name in neither list is reported as
 /// undefined.
 const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
-
-/// Rewrites every string literal and f-string in an expression to single-quoted,
-/// matching how CPython's PEP 563 stringizer renders them (`x: "int"` gives
-/// `"'int'"`, `x: f"int"` gives `"f'int'"`).
-///
-/// Applied to class annotations before unparsing, because neither generator mode
-/// matches CPython alone — see [`Parser::parse_class_annotation`]. Nested
-/// literals are covered too, so `dict[str, "Foo"]` normalises throughout. Only
-/// the quote *style* changes; the generator still escapes as needed, so a
-/// literal containing a single quote keeps its double quotes rather than
-/// becoming invalid — again matching CPython.
-struct SingleQuoteStrings;
-
-impl Transformer for SingleQuoteStrings {
-    fn visit_string_literal(&self, string_literal: &mut ast::StringLiteral) {
-        string_literal.flags = string_literal.flags.with_quote_style(Quote::Single);
-    }
-
-    // F-strings carry their own flags, so they need normalising separately;
-    // walking the elements still reaches any plain literals nested in a spec.
-    fn visit_f_string(&self, f_string: &mut ast::FString) {
-        f_string.flags = f_string.flags.with_quote_style(Quote::Single);
-        walk_f_string(self, f_string);
-    }
-}
 
 /// A parameter in a function signature with optional default value.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1045,21 +1014,11 @@ impl<'a> Parser<'a> {
     /// Builds the `'name': 'annotation'` pair for one annotated class-body name.
     ///
     /// The annotation is stringized rather than evaluated (see
-    /// `limitations/typing.md`), and is produced by *unparsing* the expression
-    /// rather than slicing the source. CPython's PEP 563 stringizer unparses too,
-    /// so this is what makes `x: dict[str,int]` yield `'dict[str, int]'` on both
-    /// — slicing would leak the original spacing, newlines and quote style.
+    /// `limitations/typing.md`); [`stringize_annotation`] owns rendering it back
+    /// to the text CPython would store.
     fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> DictItem {
         let ann_range = annotation.range();
-        // Neither generator mode matches CPython alone: `Mode::AstUnparse`
-        // normalises quotes but parenthesises tuple subscripts (`dict[(str,
-        // int)]`), while `Mode::Default` keeps subscripts but preserves the
-        // source quote style. So use `Default` and normalise the quotes first.
-        SingleQuoteStrings.visit_expr(annotation);
-        // `LineEnding::Lf` is pinned rather than defaulted: the default is
-        // platform-dependent, and Monty must stringize identically everywhere.
-        let unparsed = Generator::new(&Indentation::default(), LineEnding::Lf).expr(annotation);
-        let ann_id = self.interner.intern(&unparsed);
+        let ann_id = self.interner.intern(&stringize_annotation(annotation));
         DictItem::Pair(
             ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
             ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
