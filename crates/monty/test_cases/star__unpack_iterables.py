@@ -47,12 +47,12 @@ assert [*'ab', *range(2)] == ['a', 'b', 0, 1]
 
 
 # === Call-site unpacking ===
-def _add3(a, b, c):
+def add3(a, b, c):
     return a + b + c
 
 
-assert _add3(*range(3)) == 3
-assert _add3(*b'\x01\x02\x03') == 6
+assert add3(*range(3)) == 3
+assert add3(*b'\x01\x02\x03') == 6
 
 # === Sequence unpacking (assignment targets) ===
 x, y, z = range(3)
@@ -71,34 +71,34 @@ assert [*range(0)] == []
 assert [*frozenset()] == []
 
 # === Non-iterables still raise, with each site's own message ===
-_big = 2**70
+big = 2**70
 
 try:
-    [*_big]
+    [*big]
     assert False, 'expected list unpack of an int to raise'
 except TypeError as e:
     assert str(e) == 'Value after * must be an iterable, not int'
 
 try:
-    {*_big}
+    {*big}
     assert False, 'expected set unpack of an int to raise'
 except TypeError as e:
     assert str(e) == "'int' object is not iterable"
 
 try:
-    _p, _q = _big
+    _p, _q = big
     assert False, 'expected sequence unpack of an int to raise'
 except TypeError as e:
     assert str(e) == 'cannot unpack non-iterable int object'
 
 try:
-    (*_big,)
+    (*big,)
     assert False, 'expected tuple unpack of an int to raise'
 except TypeError as e:
     assert str(e) == 'Value after * must be an iterable, not int'
 
 try:
-    _r, *_s = _big
+    _r, *_s = big
     assert False, 'expected starred-target unpack of an int to raise'
 except TypeError as e:
     assert str(e) == 'cannot unpack non-iterable int object'
@@ -106,6 +106,37 @@ except TypeError as e:
 # `f(*non_iterable)` is deliberately not asserted here: Monty reports the
 # list-literal message where CPython names the function, a divergence that
 # predates this change (see limitations/language.md).
+
+# The blocks above pin the exact wording; this pins it across the kinds of value
+# that reach the check. `5`/`None`/`1.5`/`True` are immediates while a big int
+# lives on the heap, and each site used to answer the two from a separate arm
+# with its own copy of the message.
+for bad, name in ((5, 'int'), (big, 'int'), (None, 'NoneType'), (1.5, 'float'), (True, 'bool')):
+    try:
+        [*bad]
+        raise AssertionError('expected list unpack to raise')
+    except TypeError as e:
+        assert str(e) == f'Value after * must be an iterable, not {name}'
+    try:
+        (*bad,)
+        raise AssertionError('expected tuple unpack to raise')
+    except TypeError as e:
+        assert str(e) == f'Value after * must be an iterable, not {name}'
+    try:
+        {*bad}
+        raise AssertionError('expected set unpack to raise')
+    except TypeError as e:
+        assert str(e) == f"'{name}' object is not iterable"
+    try:
+        _p, _q = bad
+        raise AssertionError('expected sequence unpack to raise')
+    except TypeError as e:
+        assert str(e) == f'cannot unpack non-iterable {name} object'
+    try:
+        _r, *_s = bad
+        raise AssertionError('expected starred-target unpack to raise')
+    except TypeError as e:
+        assert str(e) == f'cannot unpack non-iterable {name} object'
 
 # === "too many values" reports a total only for an exact list/tuple/dict ===
 # CPython unpacks those three without the iterator protocol, so it knows the
@@ -149,23 +180,89 @@ for src in ([1], (1,), 'a', range(1), iter([1])):
 # === Heap-allocated values take a different path from interned literals ===
 # A `bytes`/`str` literal is interned and never reaches the heap; a computed one
 # is a heap value resolved through a different arm at every unpacking site.
-_heap_bytes = b'a' + b'b'
-_heap_str = 'a' + 'b'
+heap_bytes = b'a' + b'b'
+heap_str = 'a' + 'b'
 
 
-def _add2(a, b):
+def add2(a, b):
     return a + b
 
 
-assert [*_heap_bytes] == [97, 98]
-assert [*_heap_str] == ['a', 'b']
-assert {*_heap_bytes} == {97, 98}
-assert (*_heap_bytes,) == (97, 98)
-assert _add2(*_heap_bytes) == 195
-_hb1, _hb2 = _heap_bytes
-assert (_hb1, _hb2) == (97, 98)
-_hb3, *_hbrest = _heap_bytes
-assert (_hb3, _hbrest) == (97, [98])
+assert [*heap_bytes] == [97, 98]
+assert [*heap_str] == ['a', 'b']
+assert {*heap_bytes} == {97, 98}
+assert (*heap_bytes,) == (97, 98)
+assert add2(*heap_bytes) == 195
+hb1, hb2 = heap_bytes
+assert (hb1, hb2) == (97, 98)
+hb3, *hbrest = heap_bytes
+assert (hb3, hbrest) == (97, [98])
+
+# === The five types that used to have a fast path, at every site ===
+# list/tuple/set/dict/str were read straight out of their backing storage by
+# each unpacking site; they now go through the iteration protocol like anything
+# else. These pin the items themselves, not just that iteration was accepted —
+# the rest of this file leans on types that never had a fast path to lose.
+lst = [1, 2]
+tup = (1, 2)
+st = {1, 2}
+dct = {1: 'a', 2: 'b'}
+txt = 'ab'
+
+# a set has no defined order, so compare sorted
+assert [*lst] == [1, 2]
+assert [*tup] == [1, 2]
+assert sorted([*st]) == [1, 2]
+assert [*dct] == [1, 2]
+assert [*txt] == ['a', 'b']
+
+assert (*lst,) == (1, 2)
+assert (*tup,) == (1, 2)
+assert tuple(sorted((*st,))) == (1, 2)
+assert (*dct,) == (1, 2)
+assert (*txt,) == ('a', 'b')
+
+assert {*lst} == {1, 2}
+assert {*tup} == {1, 2}
+assert {*st} == {1, 2}
+assert {*dct} == {1, 2}
+assert {*txt} == {'a', 'b'}
+
+assert add2(*lst) == 3
+assert add2(*tup) == 3
+assert add2(*dct) == 3
+assert add2(*txt) == 'ab'
+
+u1, u2 = lst
+assert (u1, u2) == (1, 2)
+u1, u2 = tup
+assert (u1, u2) == (1, 2)
+u1, u2 = dct
+assert (u1, u2) == (1, 2)
+u1, u2 = txt
+assert (u1, u2) == ('a', 'b')
+
+u1, *urest = lst
+assert (u1, urest) == (1, [2])
+u1, *urest = tup
+assert (u1, urest) == (1, [2])
+u1, *urest = dct
+assert (u1, urest) == (1, [2])
+u1, *urest = txt
+assert (u1, urest) == ('a', ['b'])
+
+# Emptiness and single elements go down the same path
+assert [*[]] == []
+assert [*()] == []
+assert [*{}] == []
+assert [*''] == []
+assert [*[1]] == [1]
+
+# Nested containers are yielded by reference, not flattened or copied
+inner = [1]
+assert [*[inner]][0] is inner
+assert [*(inner,)][0] is inner
+assert [*{'k': inner}.values()][0] is inner
 
 # === Every unpacking form agrees with `list()` on what is iterable ===
 # The property that matters: iterability is one answer, not six. Each form is a
@@ -173,7 +270,7 @@ assert (_hb3, _hbrest) == (97, [98])
 # another is exactly the drift this guards against.
 
 
-def _accepts_list(v: object) -> bool:
+def accepts_list(v: object) -> bool:
     try:
         list(v)
         return True
@@ -181,7 +278,7 @@ def _accepts_list(v: object) -> bool:
         return False
 
 
-def _accepts_list_star(v: object) -> bool:
+def accepts_list_star(v: object) -> bool:
     try:
         [*v]
         return True
@@ -189,7 +286,7 @@ def _accepts_list_star(v: object) -> bool:
         return False
 
 
-def _accepts_tuple_star(v: object) -> bool:
+def accepts_tuple_star(v: object) -> bool:
     try:
         (*v,)
         return True
@@ -197,7 +294,7 @@ def _accepts_tuple_star(v: object) -> bool:
         return False
 
 
-def _accepts_set_star(v: object) -> bool:
+def accepts_set_star(v: object) -> bool:
     try:
         {*v}
         return True
@@ -205,15 +302,15 @@ def _accepts_set_star(v: object) -> bool:
         return False
 
 
-def _accepts_call_star(v: object) -> bool:
+def accepts_call_star(v: object) -> bool:
     try:
-        _varargs(*v)
+        varargs(*v)
         return True
     except TypeError:
         return False
 
 
-def _accepts_seq_unpack(v: object) -> bool:
+def accepts_seq_unpack(v: object) -> bool:
     try:
         (_only,) = v
         return True
@@ -224,7 +321,7 @@ def _accepts_seq_unpack(v: object) -> bool:
         return True
 
 
-def _accepts_ex_unpack(v: object) -> bool:
+def accepts_ex_unpack(v: object) -> bool:
     try:
         (_head, *_tail) = v
         return True
@@ -234,13 +331,13 @@ def _accepts_ex_unpack(v: object) -> bool:
         return True
 
 
-def _varargs(*args: object) -> object:
+def varargs(*args: object) -> object:
     return args
 
 
 # Built fresh per probe so a one-shot iterator is not exhausted by an earlier form.
-def _probe_values() -> list[object]:
-    _d = {'a': 1, 'b': 2}
+def probe_values() -> list[object]:
+    d = {'a': 1, 'b': 2}
     seen: list[int] = []
 
     def probe_step() -> int:
@@ -253,9 +350,9 @@ def _probe_values() -> list[object]:
         {1, 2},
         frozenset([1, 2]),
         {1: 'x', 2: 'y'},
-        _d.keys(),
-        _d.values(),
-        _d.items(),
+        d.keys(),
+        d.values(),
+        d.items(),
         'ab',
         b'ab',
         b'a' + b'b',
@@ -275,17 +372,17 @@ def _probe_values() -> list[object]:
     ]
 
 
-_forms = [
-    _accepts_list_star,
-    _accepts_tuple_star,
-    _accepts_set_star,
-    _accepts_call_star,
-    _accepts_seq_unpack,
-    _accepts_ex_unpack,
+forms = [
+    accepts_list_star,
+    accepts_tuple_star,
+    accepts_set_star,
+    accepts_call_star,
+    accepts_seq_unpack,
+    accepts_ex_unpack,
 ]
 
-for _i in range(len(_probe_values())):
-    _expected = _accepts_list(_probe_values()[_i])
-    for _form in _forms:
-        _got = _form(_probe_values()[_i])
-        assert _got == _expected, 'every unpacking form must agree with list() on iterability'
+for i in range(len(probe_values())):
+    expected = accepts_list(probe_values()[i])
+    for form in forms:
+        got = form(probe_values()[i])
+        assert got == expected, 'every unpacking form must agree with list() on iterability'
