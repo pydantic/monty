@@ -808,7 +808,7 @@ jobs:
 
     environment:
       name: release-crates
-      url: https://crates.io/crates/monty
+      url: https://crates.io/crates/monty/${{ steps.check-version.outputs.VERSION }}
 
     # trusted publishing to crates.io via OIDC, no long-lived token required
     permissions:

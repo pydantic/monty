@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "ahash",
  "chrono",
@@ -2024,7 +2024,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2038,7 +2038,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "ahash",
  "chrono",
@@ -2054,7 +2054,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "ahash",
  "monty-types",
@@ -2063,7 +2063,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2073,7 +2073,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "monty-pool",
  "monty-type-checking",
@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "monty-fs",
  "monty-proto",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "monty",
  "monty-type-checking",
@@ -2124,7 +2124,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "clap",
  "monty",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "chrono",
  "monty-macros",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "monty-proto",
  "prost",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.19-beta.4"
+version = "0.0.19-beta.5"
 dependencies = [
  "ahash",
  "monty-fs",
