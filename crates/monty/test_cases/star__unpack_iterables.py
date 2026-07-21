@@ -30,15 +30,15 @@ assert {*d.keys()} == {'a', 'b'}
 # === Iterators, including the two-argument `iter()` form ===
 assert [*iter([1, 2])] == [1, 2]
 
-_calls: list[int] = []
+calls: list[int] = []
 
 
-def _step() -> int:
-    _calls.append(1)
-    return len(_calls)
+def step() -> int:
+    calls.append(1)
+    return len(calls)
 
 
-assert [*iter(_step, 3)] == [1, 2]
+assert [*iter(step, 3)] == [1, 2]
 
 # === Mixed with other elements, and repeated ===
 assert [0, *range(1, 3), 3] == [0, 1, 2, 3]
@@ -106,6 +106,45 @@ except TypeError as e:
 # `f(*non_iterable)` is deliberately not asserted here: Monty reports the
 # list-literal message where CPython names the function, a divergence that
 # predates this change (see limitations/language.md).
+
+# === "too many values" reports a total only for an exact list/tuple/dict ===
+# CPython unpacks those three without the iterator protocol, so it knows the
+# length. Every other type stops at the first surplus item and never learns the
+# total. CPython excludes subclasses of those three as well, which is not
+# asserted here because Monty has no class inheritance yet.
+d3 = {1: 'a', 2: 'b', 3: 'c'}
+
+for src in ([1, 2, 3], (1, 2, 3), d3):
+    try:
+        _a, _b = src
+        raise AssertionError('expected too many values')
+    except ValueError as e:
+        assert str(e) == 'too many values to unpack (expected 2, got 3)'
+
+for src in ('abc', b'abc', {1, 2, 3}, frozenset([1, 2, 3]), d3.keys(), range(3), iter([1, 2, 3])):
+    try:
+        _a, _b = src
+        raise AssertionError('expected too many values')
+    except ValueError as e:
+        assert str(e) == 'too many values to unpack (expected 2)'
+
+# Too *few* always carries the total: the iterable was drained, so the real
+# length is known whatever the source type.
+for src in ([1], (1,), 'a', b'a', {1}, range(1), iter([1])):
+    try:
+        _a, _b = src
+        raise AssertionError('expected not enough values')
+    except ValueError as e:
+        assert str(e) == 'not enough values to unpack (expected 2, got 1)'
+
+# A starred target drains in full, so it always knows the total too.
+for src in ([1], (1,), 'a', range(1), iter([1])):
+    try:
+        _a, _b, *_rest = src
+        raise AssertionError('expected not enough values')
+    except ValueError as e:
+        assert str(e) == 'not enough values to unpack (expected at least 2, got 1)'
+
 
 # === Heap-allocated values take a different path from interned literals ===
 # A `bytes`/`str` literal is interned and never reaches the heap; a computed one
@@ -202,11 +241,11 @@ def _varargs(*args: object) -> object:
 # Built fresh per probe so a one-shot iterator is not exhausted by an earlier form.
 def _probe_values() -> list[object]:
     _d = {'a': 1, 'b': 2}
-    _seen: list[int] = []
+    seen: list[int] = []
 
-    def _probe_step() -> int:
-        _seen.append(1)
-        return len(_seen)
+    def probe_step() -> int:
+        seen.append(1)
+        return len(seen)
 
     return [
         [1, 2],
@@ -223,7 +262,7 @@ def _probe_values() -> list[object]:
         'a' + 'b',
         range(2),
         iter([1, 2]),
-        iter(_probe_step, 3),
+        iter(probe_step, 3),
         sys.version_info,
         1,
         2**70,

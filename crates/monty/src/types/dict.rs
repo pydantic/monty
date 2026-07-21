@@ -820,6 +820,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         true
     }
 
+    /// CPython reports the total in `too many values to unpack` for this type,
+    /// which it unpacks without the iterator protocol (a subclass would not).
+    fn py_unpack_total(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Dict
     }

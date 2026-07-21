@@ -527,6 +527,23 @@ pub(crate) trait PyTrait<'h> {
         false
     }
 
+    /// The total to report in `too many values to unpack (expected N, got M)`.
+    ///
+    /// `None` means "no total", which is what CPython emits for everything it
+    /// unpacks through the iterator protocol: stopping at the first surplus item
+    /// means the length was never learned, and probing for it would over-consume
+    /// a shared iterator. CPython answers with a total only for an *exact*
+    /// `list`, `tuple` or `dict` — a subclass takes the iterator path and so
+    /// gets the shorter message — hence the default here is `None` and only
+    /// those three override it.
+    ///
+    /// Used exclusively to word that one error. Nothing may branch on it to
+    /// decide *how* to iterate; unpacking drives every type through
+    /// [`py_iter`](PyTrait::py_iter) regardless of the answer.
+    fn py_unpack_total(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
     /// Returns a Python iterator for this object (`__iter__`).
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let Some(self_id) = self_id else {
