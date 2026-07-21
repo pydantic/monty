@@ -71,8 +71,10 @@ This is a known temporary divergence; see `class__annotations.py`.
   [language.md](language.md#__future__-imports) for the other features.
 - Consequences: `get_type_hints()` (which would evaluate the strings) is still
   not implemented, and code that reads `__annotations__` expecting type
-  *objects* sees strings. `@dataclass` is unaffected — it treats annotations as
-  strings, matching CPython's own handling of stringized annotations.
+  *objects* sees strings. CPython 3.14's `@dataclass` reads evaluated objects
+  (`annotationlib.Format.FORWARDREF`), but keeps a string path for `ClassVar` /
+  `InitVar` so PEP 563 code still works — which is what makes stringized
+  annotations enough to build on.
 
 If you need real type validation, do it on the *host* side around the
 sandbox boundary.

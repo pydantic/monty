@@ -123,9 +123,9 @@ assert type(c).__annotations__['x'] == 'int'
 
 
 # === What __annotations__ unlocks: a transformer discovering its own fields ===
-# It reads only the keys and their order, never the values, so it is unaffected
-# by stringization — as is CPython's own `@dataclass`, save for `ClassVar`/
-# `InitVar`, which it matches textually.
+# It reads only the keys and their order, never the values, so stringization
+# cannot affect it. CPython's `@dataclass` does inspect values, but falls back
+# to matching `ClassVar`/`InitVar` textually when they are strings.
 def mini_dataclass(cls):
     fields = list(cls.__annotations__)
 
