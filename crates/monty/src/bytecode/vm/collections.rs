@@ -108,9 +108,6 @@ impl<T: ResourceTracker> VM<'_, T> {
         let mut list_ref_guard = DropGuard::new(this.pop(), this);
         let (list_ref, this) = list_ref_guard.as_parts();
 
-        // Every iterable is drained through the iteration protocol, so this file
-        // holds no per-type knowledge; `py_is_iterable` is asked first only
-        // because the message below is this site's own.
         if !iterable.py_is_iterable(this) {
             let type_ = iterable.py_type_name(this);
             return Err(ExcType::type_error_value_after_star(&type_));
@@ -476,10 +473,20 @@ impl<T: ResourceTracker> VM<'_, T> {
             let type_name = value.py_type_name(this);
             return Err(unpack_type_error(&type_name));
         }
-        // Asked before iterating: a `list`/`tuple`/`dict` reports its length in
-        // the "too many" message, and reading it afterwards would be too late
-        // for a source that iteration mutates.
-        let total = value.py_unpack_total(this);
+        // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
+        // they can report a total in the "too many" message. It is deliberately
+        // a local match rather than a `PyTrait` method: the set is a quirk of
+        // one CPython error message, not a property types should declare, and
+        // nothing may branch on it to decide *how* to iterate.
+        let total = match value {
+            Value::Ref(id) => match this.heap.get(*id) {
+                HeapData::List(list) => Some(list.len()),
+                HeapData::Tuple(tuple) => Some(tuple.as_slice().len()),
+                HeapData::Dict(dict) => Some(dict.len()),
+                _ => None,
+            },
+            _ => None,
+        };
         // Pull one past `count` so a too-long iterable is detected without
         // draining it — CPython stops consuming there too, which is why every
         // other type has no total to report.

@@ -1521,15 +1521,6 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_unpack_total(&self, vm: &VM<'_, impl ResourceTracker>) -> Option<usize> {
-        // Interned literals are `str`/`bytes`, which CPython unpacks through the
-        // iterator protocol, so they have no total to report.
-        match self {
-            Self::Ref(id) => vm.heap.read(*id).py_unpack_total(vm),
-            _ => None,
-        }
-    }
-
     fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iter(Some(*id), vm)

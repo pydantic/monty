@@ -602,19 +602,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_unpack_total(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
-        // Only the three types CPython unpacks without the iterator protocol
-        // know their total; everything else inherits the default `None`. Unlike
-        // `py_is_iterable` this is not exhaustive, because a missed type merely
-        // omits `got N` from one error rather than becoming non-iterable.
-        match self {
-            HeapReadOutput::List(list) => list.py_unpack_total(vm),
-            HeapReadOutput::Tuple(tuple) => tuple.py_unpack_total(vm),
-            HeapReadOutput::Dict(dict) => dict.py_unpack_total(vm),
-            _ => None,
-        }
-    }
-
     fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
         // Only types that implement the protocol return true; everything else
         // inherits the default `false`. The `with` statement gates `py_enter`
