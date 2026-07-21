@@ -9,7 +9,11 @@ use ruff_python_ast::{
     name::Name,
     str::Quote,
     token::TokenKind,
-    visitor::{Visitor, transformer::Transformer, walk_expr},
+    visitor::{
+        Visitor,
+        transformer::{Transformer, walk_f_string},
+        walk_expr,
+    },
 };
 use ruff_python_codegen::{Generator, Indentation};
 use ruff_python_parser::parse_module;
@@ -73,19 +77,28 @@ const SUPPORTED_FUTURES: [&str; 9] = [
 /// undefined.
 const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
 
-/// Rewrites every string literal in an expression to single-quoted, matching how
-/// CPython's PEP 563 stringizer renders them (`x: "int"` gives `"'int'"`).
+/// Rewrites every string literal and f-string in an expression to single-quoted,
+/// matching how CPython's PEP 563 stringizer renders them (`x: "int"` gives
+/// `"'int'"`, `x: f"int"` gives `"f'int'"`).
 ///
 /// Applied to class annotations before unparsing, because neither generator mode
 /// matches CPython alone — see [`Parser::parse_class_annotation`]. Nested
 /// literals are covered too, so `dict[str, "Foo"]` normalises throughout. Only
 /// the quote *style* changes; the generator still escapes as needed, so a
-/// literal containing a single quote stays valid.
+/// literal containing a single quote keeps its double quotes rather than
+/// becoming invalid — again matching CPython.
 struct SingleQuoteStrings;
 
 impl Transformer for SingleQuoteStrings {
     fn visit_string_literal(&self, string_literal: &mut ast::StringLiteral) {
         string_literal.flags = string_literal.flags.with_quote_style(Quote::Single);
+    }
+
+    // F-strings carry their own flags, so they need normalising separately;
+    // walking the elements still reaches any plain literals nested in a spec.
+    fn visit_f_string(&self, f_string: &mut ast::FString) {
+        f_string.flags = f_string.flags.with_quote_style(Quote::Single);
+        walk_f_string(self, f_string);
     }
 }
 
@@ -956,20 +969,26 @@ impl<'a> Parser<'a> {
         // Last statement so the values are assembled after all members exist.
         // Always present (empty dict) to match `Cls.__annotations__ == {}`.
         let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
-        // Being last means this would silently clobber an explicit assignment in
-        // the body, losing its entries (CPython merges the two instead). Rejected
-        // rather than dropped quietly; the syntax is reserved for later.
-        if members.iter().any(|m| m.name_id == annotations_target.name_id) {
+        let body_binds_annotations = members.iter().any(|m| m.name_id == annotations_target.name_id);
+        if body_binds_annotations && !annotations.is_empty() {
+            // Being last, the synthetic assignment would silently clobber the
+            // body's own binding and lose these entries. CPython merges instead —
+            // storing into whatever the name holds, which succeeds for a dict and
+            // raises `TypeError` otherwise. Rejected rather than dropped quietly.
             return Err(ParseError::not_implemented(
-                "assigning `__annotations__` in a class body",
+                "assigning `__annotations__` in a class body with annotated names",
                 position,
             ));
         }
-        members.push(annotations_target);
-        body.push(Node::Assign {
-            target: annotations_target,
-            object: ExprLoc::new(position, Expr::Dict(annotations)),
-        });
+        // With nothing to store, the body's own binding stands — synthesizing an
+        // empty dict over it would break class bodies CPython accepts.
+        if !body_binds_annotations {
+            members.push(annotations_target);
+            body.push(Node::Assign {
+                target: annotations_target,
+                object: ExprLoc::new(position, Expr::Dict(annotations)),
+            });
+        }
 
         // Wrap the body statements in a synthetic zero-arg function. The class
         // name's `name_id` is reused for nicer tracebacks; this function is never

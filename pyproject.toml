@@ -95,6 +95,7 @@ known-first-party = ["pydantic_monty"]
     # the other test cases: these tests exist to prove that double-quoted
     # annotations normalize to single quotes exactly as CPython's does.
     "Q000", # double quotes are the subject of the test, not a style slip
+    "F722", # `e: "it's"` is a string literal under test, not a forward reference
 ]
 
 "crates/monty-typeshed/vendor/typeshed/stdlib/**/*.pyi" = [
@@ -119,6 +120,9 @@ exclude = [
     "crates/monty-type-checking/tests/reveal_types.py",
     # duplicate parameter name test intentionally has a syntax error
     "crates/monty/test_cases/function__err_duplicate_param.py",
+    # annotation quote-normalization test: `e: "it's"` is a string literal under
+    # test, which pyright reads as a malformed forward reference
+    "crates/monty/test_cases/class__annotations.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",

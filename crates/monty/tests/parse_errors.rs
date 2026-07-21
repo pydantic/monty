@@ -135,8 +135,23 @@ fn explicit_class_annotations_assignment_returns_not_implemented_error() {
     assert_eq!(err.exc_type(), ExcType::NotImplementedError);
     assert_snapshot!(
         err.message().unwrap(),
-        @"The monty syntax parser does not yet support assigning `__annotations__` in a class body"
+        @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
     );
+}
+
+#[test]
+fn class_binding_annotations_without_annotated_names_compiles() {
+    // With nothing to store, the body's own binding stands rather than being
+    // overwritten by a synthesized empty dict — CPython accepts both of these,
+    // so rejecting them would fail class bodies that are perfectly valid.
+    for body in [
+        "__annotations__ = {'a': 'b'}",
+        "def __annotations__(self):\n        return 1",
+    ] {
+        let code = format!("class C:\n    {body}\n");
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert!(result.is_ok(), "`{body}` should compile");
+    }
 }
 
 #[test]

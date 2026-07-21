@@ -63,11 +63,19 @@ class Quoted:
     a: "int"  # fmt: skip
     b: 'int'
     c: dict[str, "Foo"]  # fmt: skip
+    # f-strings carry their own quote flags, so they normalize separately.
+    d: f"int"  # fmt: skip
+    # A literal containing a single quote keeps its double quotes rather than
+    # becoming invalid — the unparser's escape-minimizing choice wins over the
+    # normalization, on both interpreters.
+    e: "it's"  # fmt: skip
 
 
 assert Quoted.__annotations__['a'] == "'int'"
 assert Quoted.__annotations__['b'] == "'int'"
 assert Quoted.__annotations__['c'] == "dict[str, 'Foo']"
+assert Quoted.__annotations__['d'] == "f'int'"
+assert Quoted.__annotations__['e'] == '"it\'s"'
 
 
 # === Empty class: __annotations__ is an empty dict ===

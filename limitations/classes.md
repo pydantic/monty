@@ -182,8 +182,9 @@ e.g. return a `dict` of the fields.
 - Function and method decorators — `@classmethod`, `@staticmethod`, `@property`,
   and any decorator on a top-level `def` or a method (rejected at parse time).
   Class decorators are supported.
-- **Classes are barely introspectable**: `__dict__`, `__bases__`,
-  `__annotations__` and `dir()` are all unavailable (`cls.__name__` works).
+- **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
+  are all unavailable (`cls.__name__` and `cls.__annotations__` work — the
+  latter with stringized values, see [typing.md](typing.md)).
 - Dunder protocols other than `__init__`, `__repr__`, `__str__`,
   `__enter__`, and `__exit__`: `__new__`, `__call__`, `__iter__`,
   `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,
