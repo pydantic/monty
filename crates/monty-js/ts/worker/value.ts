@@ -469,7 +469,7 @@ function decodeTimeDelta(bytes: Uint8Array): MarkedValue {
   return td
 }
 
-function decodeTimeZone(bytes: Uint8Array): MarkedValue {
+export function decodeTimeZone(bytes: Uint8Array): MarkedValue {
   const tz: MarkedValue = { [TYPE_MARKER]: 'TimeZone', offsetSeconds: 0 }
   const reader = new Reader(bytes)
   while (!reader.done) {

@@ -56,12 +56,6 @@ export interface OsCallTurn {
   args: unknown[]
   kwargs: [unknown, unknown][]
   callId: number
-  /**
-   * Summary of the exception the sandbox raises when declined; the full
-   * exception (traceback included) is retained Rust-side and used by
-   * `resumeNotHandled`.
-   */
-  notHandledError?: { excType: string; message: string; frames: NativeFrame[] }
 }
 
 /** The sandbox read an undefined name — answer with `resumeNameLookup`. */
@@ -102,8 +96,8 @@ export interface ProtocolTurn {
   message: string
 }
 
-/** A `load` restored an idle (between-feeds) session — no suspension to
- *  resume. Only produced by `NativeSession.load`. */
+/** A restore of an idle (between-feeds) dump — no suspension to resume. Only
+ *  produced by `NativeSession.restore`, surfaced by `MontySession.loadSession`. */
 export interface LoadedTurn {
   kind: 'loaded'
 }
@@ -112,6 +106,12 @@ export interface LoadedTurn {
  *  `NativeSession.installDependencies`. */
 export interface OkTurn {
   kind: 'ok'
+}
+
+/** No mount covered the pending OS call, which stays suspended for the caller
+ *  to answer. Only produced by `NativeSession.resumeFromMounts`. */
+export interface NotMountedTurn {
+  kind: 'notMounted'
 }
 
 /** Everything one protocol turn can resolve to. */

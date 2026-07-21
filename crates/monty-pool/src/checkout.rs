@@ -1,8 +1,11 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Duration};
 
-use monty::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
+use monty::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
+};
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
@@ -38,9 +41,12 @@ impl Default for ReplConfig {
     }
 }
 
-/// A host directory mounted into the sandbox for one feed. Mounts are
-/// child-local: the worker process accesses the host path directly, and OS
-/// calls the mounts don't cover surface as [`TurnEvent::OsCall`].
+/// A host directory mounted into the sandbox for one feed. Mounts are handled
+/// entirely on the parent: the checkout services covered filesystem OS calls
+/// from the host path itself (so mounts work even when the worker runs on a
+/// remote machine). Every OS call still surfaces as a [`TurnEvent::OsCall`];
+/// mounts are consulted only when the caller asks, via
+/// [`Checkout::resume_from_mounts`].
 #[derive(Debug, Clone)]
 pub struct MountSpec {
     /// Absolute virtual POSIX path inside the sandbox, e.g. `/mnt/data`.
@@ -51,6 +57,23 @@ pub struct MountSpec {
     pub mode: MountSpecMode,
     /// Cap on total bytes written through this mount.
     pub write_bytes_limit: Option<u64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    pub memory_usage_limit: u64,
+}
+
+impl MountSpec {
+    /// Creates mount configuration with the default 100 MB memory budget and
+    /// no cumulative write limit.
+    #[must_use]
+    pub fn new(virtual_path: String, host_path: PathBuf, mode: MountSpecMode) -> Self {
+        Self {
+            virtual_path,
+            host_path,
+            mode,
+            write_bytes_limit: None,
+            memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
+        }
+    }
 }
 
 /// Access mode for a [`MountSpec`].
@@ -58,7 +81,7 @@ pub struct MountSpec {
 pub enum MountSpecMode {
     ReadOnly,
     ReadWrite,
-    /// Copy-on-write overlay in worker memory; writes are discarded when the
+    /// Copy-on-write overlay in parent memory; writes are discarded when the
     /// feed ends.
     Overlay,
 }
@@ -77,18 +100,17 @@ pub enum TurnEvent {
         call_id: u32,
         method_call: bool,
     },
-    /// The sandbox performed an OS operation no mount handled (e.g.
-    /// `"Path.read_text"`) — answer with [`Checkout::resume`].
+    /// The sandbox performed an OS operation (e.g. `"Path.read_text"`).
+    /// Answer it from this feed's mounts with
+    /// [`Checkout::resume_from_mounts`], or directly with
+    /// [`Checkout::resume`]. A caller with no handler should resume with
+    /// [`ResumeValue::NotHandled`]; the sandbox then raises the call's own
+    /// no-handler default.
     OsCall {
         function_name: String,
         args: Vec<MontyObject>,
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
-        /// The exception the sandbox would raise if nothing handles this
-        /// call; a caller with no handler should resume with
-        /// `ResumeValue::Error(not_handled_error)`. `None` only for calls
-        /// re-announced after [`Checkout::restore`].
-        not_handled_error: Option<MontyException>,
     },
     /// The sandbox read an undefined name — answer with
     /// [`Checkout::resume_name_lookup`].
@@ -115,6 +137,11 @@ pub enum ResumeValue {
     /// No handler exists for the called name — the sandbox raises
     /// `NameError`.
     NotFound,
+    /// No handler accepted this OS call — the sandbox raises the call's own
+    /// no-handler default (`PermissionError` naming the path for filesystem
+    /// calls, `RuntimeError` for the rest). Only valid answering a
+    /// [`TurnEvent::OsCall`].
+    NotHandled,
 }
 
 /// Callback receiving sandbox `print()` output streamed during a turn.
@@ -150,6 +177,11 @@ pub struct Checkout {
     /// only by the worker echoing it). Reset at the start of each `restore` and
     /// taken by `restore` to return; unset for non-restore turns.
     restored_script_name: Option<String>,
+    /// Parent-side mount table for the in-flight feed, built from the
+    /// [`MountSpec`]s passed to [`Checkout::feed`] / [`Checkout::restore`].
+    /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
+    /// feed ends so overlay writes never leak into the next feed.
+    feed_mounts: Option<MountTable>,
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -159,6 +191,11 @@ enum Pending {
     Call {
         call_id: u32,
         function_name: String,
+        /// The typed OS call, retained so [`Checkout::resume_from_mounts`] can
+        /// offer it to this feed's mount table after the caller has seen it.
+        /// `None` for an external function call, which also gates
+        /// [`ResumeValue::NotHandled`] — only an OS call can resolve that way.
+        os_call: Option<Box<OsFunctionCall>>,
     },
     NameLookup,
     Futures,
@@ -176,6 +213,7 @@ impl Checkout {
             reported_execution: Duration::ZERO,
             armed_deadline: None,
             restored_script_name: None,
+            feed_mounts: None,
         };
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
@@ -193,7 +231,7 @@ impl Checkout {
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
-            other => Err(this.protocol_violation(&format!("unexpected reply to Configure: {other:?}"))),
+            other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
     }
 
@@ -201,17 +239,21 @@ impl Checkout {
     /// not-yet-fed) worker, returning the re-announced suspension event when the
     /// dump was taken mid-feed (`None` for an idle, between-feeds dump).
     ///
-    /// This is the low-level restore both `session.load` (idle dumps) and
+    /// This is the low-level restore both `session.load_session` (idle dumps) and
     /// `session.load_snapshot` (suspended dumps) drive: the caller inspects the
     /// returned `Option` to tell which kind of dump it was and reject a
     /// mismatch. Only valid before the worker has been fed (the child rejects a
     /// `Load` once a repl exists).
     ///
-    /// `mounts` re-establish a suspended feed's mounts (which are never part of
-    /// the dump). They must match the mounts the original feed used; pass an
-    /// empty `Vec` for an idle dump. The session's resource budget is taken
-    /// from the dump, so the prior `Configure` limits are dropped here and
-    /// re-adopted from the worker's reply.
+    /// `mounts` re-establish a suspended feed's mounts, which are never part of
+    /// the dump (they are host configuration the parent services itself). Pass
+    /// the same mounts the original feed used, so the resumed feed's covered
+    /// calls can still be answered by [`Checkout::resume_from_mounts`]. A dump
+    /// taken mid-OS-call re-announces the call in full, so the returned event
+    /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
+    /// The session's resource budget is taken from the dump, so the prior
+    /// `Configure` limits are dropped here and re-adopted from the worker's
+    /// reply.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -228,25 +270,26 @@ impl Checkout {
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
+        self.feed_mounts = build_mount_table(mounts)?;
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Load(pb::Load {
-                state,
-                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
-            })),
+            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
         };
         let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
             other @ ControlEvent::Dump(_) => {
-                return Err(self.protocol_violation(&format!("unexpected reply to Load: {other:?}")));
+                return Err(self.protocol_violation(format!("unexpected reply to Load: {other:?}")));
             }
         };
         Ok((event, self.restored_script_name.take()))
     }
 
     /// Executes one snippet against the session. Inputs become sandbox
-    /// globals; mounts apply to this feed only. Returns the first suspension
-    /// (or completion); `print()` output streams to `on_print` throughout.
+    /// globals; mounts apply to this feed only and are serviced by the parent
+    /// (an invalid host path fails here, before any frame is sent, as a
+    /// session-preserving [`PoolError::Runtime`]). Returns the first
+    /// suspension (or completion); `print()` output streams to `on_print`
+    /// throughout.
     ///
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
@@ -261,10 +304,11 @@ impl Checkout {
     ) -> Result<TurnEvent, PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
-                "feed called while a suspension is awaiting an answer".to_owned(),
+                "feed called while a suspension is awaiting an answer".into(),
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
+        self.feed_mounts = build_mount_table(mounts)?;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
                 code: code.to_owned(),
@@ -275,7 +319,6 @@ impl Checkout {
                         value: Some(value.into()),
                     })
                     .collect(),
-                mounts: mounts.into_iter().map(mount_to_proto).collect::<Result<Vec<_>, _>>()?,
                 skip_type_check,
             })),
         };
@@ -284,10 +327,20 @@ impl Checkout {
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
     pub fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
-        let Some(Pending::Call { call_id, function_name }) = &self.pending else {
-            return Err(PoolError::Protocol("no suspended call to resume".to_owned()));
+        let Some(Pending::Call {
+            call_id,
+            function_name,
+            os_call,
+        }) = &self.pending
+        else {
+            return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
-        let (call_id, function_name) = (*call_id, function_name.clone());
+        let (call_id, function_name, is_os_call) = (*call_id, function_name.clone(), os_call.is_some());
+        if matches!(value, ResumeValue::NotHandled) && !is_os_call {
+            return Err(PoolError::Protocol(
+                "NotHandled is only valid answering an OS call".into(),
+            ));
+        }
         if let ResumeValue::Return(obj) = &value {
             ensure_sendable([obj])?;
         }
@@ -296,15 +349,77 @@ impl Checkout {
             ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
             ResumeValue::Future => pb::ext_function_result::Kind::Future(call_id),
             ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
+            ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         };
-        self.pending = None;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
                 call_id,
                 result: Some(pb::ExtFunctionResult { kind: Some(result) }),
             })),
         };
+        // `pending` is deliberately NOT cleared here: an oversize answer is
+        // rejected by `Worker::send` before any bytes reach the child, and
+        // `request_turn` surfaces it with the suspension still answerable.
+        // Every turn-ending reply overwrites `pending` anyway.
         self.expect_turn(&request, on_print)
+    }
+
+    /// Answers a pending [`TurnEvent::OsCall`] from this feed's mounts, when
+    /// they cover it.
+    ///
+    /// `Ok(None)` means no mount covers the call (or the feed has none): the
+    /// suspension is left intact for the caller to answer itself, typically via
+    /// its own `os` handler and then [`Checkout::resume`]. `Ok(Some(event))`
+    /// means a mount serviced the call — including servicing it into an error
+    /// such as `PermissionError` — and the feed ran on to `event`.
+    ///
+    /// This is how mounts are reached now that every OS call surfaces: an
+    /// auto-answering driver tries mounts first and falls back to its handler,
+    /// while a caller driving suspensions by hand can ignore mounts entirely.
+    /// Path containment inside covered calls is enforced by the [`MountTable`].
+    pub fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
+        let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
+            return Err(PoolError::Protocol("no suspended call to resume".into()));
+        };
+        let Some(call) = os_call.take() else {
+            return Err(PoolError::Protocol(
+                "resume_from_mounts is only valid answering an OS call".into(),
+            ));
+        };
+        // The call is *moved* into the table so a covered write's payload
+        // reaches overlay storage without a copy; an uncovered call comes back
+        // unchanged and is put back for the caller to answer.
+        let outcome = match self.feed_mounts.as_mut() {
+            Some(mounts) => mounts.handle_os_call(*call),
+            None => MountCallOutcome::NotHandled(*call),
+        };
+        match outcome {
+            MountCallOutcome::Handled(result) => {
+                let value = match result {
+                    Ok(obj) => ResumeValue::Return(obj),
+                    Err(err) => ResumeValue::Error(err.into_exception()),
+                };
+                match self.resume(value, on_print) {
+                    // The result never reached the child (too large or too deep
+                    // to encode), so the call is still suspended — answer it
+                    // with that error instead, letting the sandbox raise a
+                    // catchable exception rather than stranding the feed. Only
+                    // a rejection before the frame is written leaves `pending`
+                    // set, so this cannot catch a genuine sandbox exception.
+                    Err(PoolError::Runtime(exc)) if self.pending.is_some() => {
+                        self.resume(ResumeValue::Error(exc), on_print).map(Some)
+                    }
+                    other => other.map(Some),
+                }
+            }
+            MountCallOutcome::NotHandled(call) => {
+                let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
+                    unreachable!("checked above");
+                };
+                *os_call = Some(Box::new(call));
+                Ok(None)
+            }
+        }
     }
 
     /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
@@ -315,12 +430,11 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         if !matches!(self.pending, Some(Pending::NameLookup)) {
-            return Err(PoolError::Protocol("no suspended name lookup to resume".to_owned()));
+            return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
         if let Some(obj) = &value {
             ensure_sendable([obj])?;
         }
-        self.pending = None;
         let kind = match value {
             Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
@@ -330,6 +444,7 @@ impl Checkout {
                 kind: Some(kind),
             })),
         };
+        // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
 
@@ -342,7 +457,7 @@ impl Checkout {
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         if !matches!(self.pending, Some(Pending::Futures)) {
-            return Err(PoolError::Protocol("no suspended futures to resume".to_owned()));
+            return Err(PoolError::Protocol("no suspended futures to resume".into()));
         }
         let results = results
             .into_iter()
@@ -353,10 +468,10 @@ impl Checkout {
                 let kind = match value {
                     ResumeValue::Return(obj) => pb::ext_function_result::Kind::ReturnValue(obj.into()),
                     ResumeValue::Error(exc) => pb::ext_function_result::Kind::Error((&exc).into()),
-                    ResumeValue::Future | ResumeValue::NotFound => {
-                        return Err(PoolError::Protocol(format!(
-                            "future {call_id} must resolve to Return or Error"
-                        )));
+                    ResumeValue::Future | ResumeValue::NotFound | ResumeValue::NotHandled => {
+                        return Err(PoolError::Protocol(
+                            format!("future {call_id} must resolve to Return or Error").into(),
+                        ));
                     }
                 };
                 Ok(pb::FutureResult {
@@ -365,10 +480,10 @@ impl Checkout {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.pending = None;
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
         };
+        // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
 
@@ -389,7 +504,7 @@ impl Checkout {
     pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
-                "install_dependencies called while a suspension is awaiting an answer".to_owned(),
+                "install_dependencies called while a suspension is awaiting an answer".into(),
             ));
         }
         // Installing nothing trivially succeeds on any worker — including the
@@ -407,7 +522,7 @@ impl Checkout {
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(()),
-            other => Err(self.protocol_violation(&format!("unexpected reply to InstallDependencies: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
         }
     }
 
@@ -420,7 +535,7 @@ impl Checkout {
         };
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
-            other => Err(self.protocol_violation(&format!("unexpected reply to Dump: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
         }
     }
 
@@ -451,7 +566,7 @@ impl Checkout {
                 }
                 Ok(())
             }
-            other => Err(self.protocol_violation(&format!("unexpected reply to Reset: {other:?}"))),
+            other => Err(self.protocol_violation(format!("unexpected reply to Reset: {other:?}"))),
         }
     }
 
@@ -470,7 +585,7 @@ impl Checkout {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
         match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
-            other => Err(self.protocol_violation(&format!("expected a turn event, got {other:?}"))),
+            other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
         }
     }
 
@@ -525,8 +640,11 @@ impl Checkout {
             // `write_frame` rejects an oversize frame *before* writing any
             // bytes, so the worker never saw the request and is still synced —
             // surface a clean, catchable error instead of discarding a healthy
-            // worker as if it had crashed. Every other send failure is a real
-            // I/O break (dead worker / closed pipe).
+            // worker as if it had crashed. For a `resume*` request this also
+            // leaves `pending` set (nothing overwrites it on this path), so
+            // the suspension stays answerable with a smaller value. Every
+            // other send failure is a real I/O break (dead worker / closed
+            // pipe).
             return Err(match err {
                 FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
                     ExcType::RuntimeError,
@@ -545,7 +663,7 @@ impl Checkout {
                 // validation, which happens during decode) — the worker
                 // misbehaved, it didn't die
                 Err(FrameError::Decode(err)) => {
-                    return Err(self.protocol_violation(&format!("invalid payload from worker: {err}")));
+                    return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
                 Err(_) => return Err(self.poison("waiting for a reply")),
             };
@@ -569,6 +687,7 @@ impl Checkout {
                     self.pending = Some(Pending::Call {
                         call_id: call.call_id,
                         function_name: call.function_name.clone(),
+                        os_call: None,
                     });
                     break self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
@@ -581,19 +700,38 @@ impl Checkout {
                     });
                 }
                 Some(pb::child_event::Kind::OsCall(call)) => {
+                    let call_id = call.call_id;
+                    // Every announcement (fresh or re-announced after
+                    // `restore`) decodes into a typed `OsFunctionCall`; a
+                    // payload the child could never legitimately produce is a
+                    // protocol violation.
+                    let function_call = match call.call {
+                        None => break Err(self.protocol_violation("OsCall event with no call")),
+                        Some(kind) => match OsFunctionCall::try_from(kind) {
+                            Ok(function_call) => function_call,
+                            Err(err) => {
+                                break Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
+                            }
+                        },
+                    };
+                    // Every OS call surfaces, mount-covered or not: the caller
+                    // decides how to answer it, and reaches this feed's mounts
+                    // through `resume_from_mounts`. The typed call is retained
+                    // for that; the caller-facing `(name, args, kwargs)` shape
+                    // is projected from a clone.
+                    let function_name = function_call.name().to_owned();
+                    let (args, kwargs) = function_call.clone().to_args();
                     self.pending = Some(Pending::Call {
-                        call_id: call.call_id,
-                        function_name: call.function_name.clone(),
+                        call_id,
+                        function_name: function_name.clone(),
+                        os_call: Some(Box::new(function_call)),
                     });
-                    break self.convert_turn(|| {
-                        Ok(TurnEvent::OsCall {
-                            function_name: call.function_name,
-                            args: call.args,
-                            kwargs: call.kwargs,
-                            call_id: call.call_id,
-                            not_handled_error: call.not_handled_error.map(MontyException::try_from).transpose()?,
-                        })
-                    });
+                    break Ok(ControlEvent::Turn(TurnEvent::OsCall {
+                        function_name,
+                        args,
+                        kwargs,
+                        call_id,
+                    }));
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
@@ -607,6 +745,9 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::Complete(complete)) => {
                     self.pending = None;
+                    // the feed is over — drop its mounts so overlay writes
+                    // cannot leak into the next feed
+                    self.feed_mounts = None;
                     break self.convert_turn(|| {
                         let value = complete
                             .value
@@ -615,27 +756,33 @@ impl Checkout {
                     });
                 }
                 Some(pb::child_event::Kind::Error(error)) => {
-                    self.pending = None;
+                    // an error reply to `Dump` (e.g. an oversize dump) does not
+                    // end the in-flight feed — the child stays suspended and
+                    // resumable, so keep the pending call and mounts
+                    if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
+                        self.pending = None;
+                        self.feed_mounts = None;
+                    }
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };
                     break match MontyException::try_from(exception) {
                         Ok(exc) => Err(PoolError::Runtime(exc)),
-                        Err(err) => Err(self.protocol_violation(&format!("invalid exception payload: {err}"))),
+                        Err(err) => Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
                     };
                 }
                 Some(pb::child_event::Kind::TypingError(typing)) => {
                     self.pending = None;
+                    self.feed_mounts = None;
                     break Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
                 Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
                     self.discard_worker();
-                    break Err(PoolError::Protocol(format!(
-                        "worker reported fatal error: {}",
-                        fatal.message
-                    )));
+                    break Err(PoolError::Protocol(
+                        format!("worker reported fatal error: {}", fatal.message).into(),
+                    ));
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -671,7 +818,7 @@ impl Checkout {
     ) -> Result<ControlEvent, PoolError> {
         match convert() {
             Ok(event) => Ok(ControlEvent::Turn(event)),
-            Err(err) => Err(self.protocol_violation(&format!("invalid payload from worker: {err}"))),
+            Err(err) => Err(self.protocol_violation(format!("invalid payload from worker: {err}"))),
         }
     }
 
@@ -679,9 +826,9 @@ impl Checkout {
     /// (unexpected event kind, undecodable payload). Unlike [`Self::poison`]
     /// this is not a crash — the worker answered, just wrongly — so it maps
     /// to [`PoolError::Protocol`] rather than `Crashed`/`Timeout`.
-    fn protocol_violation(&mut self, context: &str) -> PoolError {
+    fn protocol_violation(&mut self, context: impl Into<Cow<'static, str>>) -> PoolError {
         self.discard_worker();
-        PoolError::Protocol(context.to_owned())
+        PoolError::Protocol(context.into())
     }
 
     /// Discards the worker after an I/O failure and classifies it as a
@@ -691,6 +838,7 @@ impl Checkout {
             return PoolError::Finished;
         };
         self.pending = None;
+        self.feed_mounts = None;
         let timed_out = worker.was_killed_for_timeout();
         let status = worker.kill_and_reap();
         drop(worker);
@@ -716,6 +864,7 @@ impl Checkout {
             self.pool.release_capacity();
         }
         self.pending = None;
+        self.feed_mounts = None;
     }
 }
 
@@ -768,36 +917,29 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-/// Serializes a [`MountSpec`] onto the wire `Mount` message.
-///
-/// The wire `host_path` is a protobuf `string` (UTF-8 by definition), so a
-/// host path that is not valid UTF-8 cannot cross the boundary. Rather than
-/// silently lossily-transcoding it — which could resolve to a *different*
-/// existing directory in the worker and expose the wrong files — this rejects
-/// such a path up front with a catchable error, leaving the session intact.
-fn mount_to_proto(mount: MountSpec) -> Result<pb::Mount, PoolError> {
-    let mode = match mount.mode {
-        MountSpecMode::ReadOnly => pb::MountMode::ReadOnly,
-        MountSpecMode::ReadWrite => pb::MountMode::ReadWrite,
-        MountSpecMode::Overlay => pb::MountMode::Overlay,
-    };
-    let host_path = mount
-        .host_path
-        .to_str()
-        .ok_or_else(|| {
-            PoolError::Runtime(MontyException::new(
-                ExcType::ValueError,
-                Some(format!(
-                    "mount host path is not valid UTF-8: {:?}",
-                    mount.host_path.display()
-                )),
-            ))
-        })?
-        .to_owned();
-    Ok(pb::Mount {
-        virtual_path: mount.virtual_path,
-        host_path,
-        mode: mode.into(),
-        write_bytes_limit: mount.write_bytes_limit,
-    })
+/// Builds the parent-side [`MountTable`] for one feed from its specs;
+/// `Ok(None)` when `mounts` is empty (every OS call then surfaces to the
+/// caller). An invalid mount (host path missing, not a directory, relative
+/// virtual path, …) fails as a session-preserving [`PoolError::Runtime`] —
+/// callers invoke this before sending any frame, so the worker never sees a
+/// half-configured feed.
+fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
+    if mounts.is_empty() {
+        return Ok(None);
+    }
+    let mut table = MountTable::new();
+    for mount in mounts {
+        let mode = match mount.mode {
+            MountSpecMode::ReadOnly => MountMode::ReadOnly,
+            MountSpecMode::ReadWrite => MountMode::ReadWrite,
+            // Overlay state is created fresh per feed: writes live only as
+            // long as the feed and are discarded with it.
+            MountSpecMode::Overlay => MountMode::OverlayMemory(OverlayState::new()),
+        };
+        let mount = monty_fs::Mount::new(&mount.virtual_path, &mount.host_path, mode, mount.write_bytes_limit)
+            .map_err(|err| PoolError::Runtime(err.into_exception()))?
+            .with_memory_usage_limit(mount.memory_usage_limit);
+        table.push_mount(mount);
+    }
+    Ok(Some(table))
 }

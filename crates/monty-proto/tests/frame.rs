@@ -18,7 +18,6 @@ fn feed() -> pb::ParentRequest {
         kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
             code: "1 + 1".to_owned(),
             inputs: vec![],
-            mounts: vec![],
             skip_type_check: false,
         })),
     }

@@ -23,8 +23,40 @@ Each mount is configured by the host as one of:
   `unlink`, `write_text`, ...) raises `PermissionError`.
 - **`ReadWrite`** — full read/write into the underlying host directory.
 - **`OverlayMemory`** — copy-on-write: reads fall through to the host
-  directory, writes are captured in memory and never touch the host. The
-  changes vanish when the VM is discarded.
+  directory, writes are captured in memory and never touch the host. Via the
+  pool, the changes are discarded when the feed ends — each feed starts with
+  a fresh overlay.
+
+## Only regular files can be read, written, or opened
+
+Reading, writing, appending to, or `open()`ing a path that resolves to an
+existing **non-regular file** (FIFO/named pipe, socket, device node) raises
+`PermissionError`. CPython would block until a peer appears; mount I/O runs on
+the host thread driving the sandbox, so it must never block on
+sandbox-reachable input. Directories raise `IsADirectoryError` as in CPython.
+Existence checks (`exists`, `is_file`, `is_dir`, `is_symlink`) and `stat()`
+still work on special files.
+
+## Mount memory limits
+
+Each mount has a configurable `memory_usage_limit`, defaulting to 100 MB
+(100,000,000 bytes). Retained in-memory overlay entries and transient
+filesystem results share the budget. Host files are read incrementally up to
+the remaining budget without trusting file-size metadata; an operation that
+would exceed it raises
+`MemoryError: mount memory usage limit of 100 MB exceeded`. CPython has no
+equivalent default limit.
+
+Consequences of the shared budget that have no CPython analogue:
+
+- Reading a file back needs transient budget for the result alongside the
+  retained copy, so an overlay file larger than roughly half the budget can be
+  written but not read back.
+- Overlay deletions (`unlink`, `rmdir`, and the tombstones a `rename` leaves
+  behind) record in-memory entries, so they too can raise `MemoryError` when
+  the budget is exhausted.
+- The `monty` CLI's `-m` mounts always use the default limit; there is no CLI
+  flag to change it.
 
 ## Write limits
 

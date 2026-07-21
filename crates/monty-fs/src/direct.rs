@@ -5,16 +5,18 @@
 
 use std::{fs, path::PathBuf};
 
+use monty::{FileMode, MontyObject};
+
 use super::{
     common::{
-        MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs, mkdir_fs,
-        read_bytes_fs, read_text_fs, reject_directory, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs, write_text_fs,
+        MemoryBudget, MountContext, append_bytes_fs, append_text_fs, check_write_limit, commit_write_bytes, iterdir_fs,
+        mkdir_fs, read_bytes_fs, read_text_fs, reject_non_regular, rmdir_fs, stat_fs, unlink_fs, write_bytes_fs,
+        write_text_fs,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
     path_security::{ResolveMode, resolve_path},
 };
-use crate::{MontyObject, types::file::FileMode};
 
 /// Internal result used for existence-style queries where "missing" is not an error.
 enum ResolvedPathState {
@@ -25,47 +27,55 @@ enum ResolvedPathState {
 }
 
 /// Executes a parsed filesystem request directly against the host filesystem.
-pub(super) fn execute(request: FsRequest<'_>, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
+///
+/// This backend never retains payloads (they stream to disk), so the owned
+/// request is simply borrowed from and dropped when the operation finishes.
+pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     match request {
-        FsRequest::Exists { path } => exists(path, ctx),
-        FsRequest::IsFile { path } => is_file(path, ctx),
-        FsRequest::IsDir { path } => is_dir(path, ctx),
-        FsRequest::IsSymlink { path } => is_symlink(path, ctx),
+        FsRequest::Exists { path } => exists(&path, ctx),
+        FsRequest::IsFile { path } => is_file(&path, ctx),
+        FsRequest::IsDir { path } => is_dir(&path, ctx),
+        FsRequest::IsSymlink { path } => is_symlink(&path, ctx),
         FsRequest::ReadText { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, path)
+            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            read_text_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
         }
         FsRequest::ReadBytes { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, path)
+            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            read_bytes_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
         }
-        FsRequest::WriteText { path, data } => write_text(path, data, ctx),
-        FsRequest::WriteBytes { path, data } => write_bytes(path, data, ctx),
-        FsRequest::AppendText { path, data } => append_text(path, data, ctx),
-        FsRequest::AppendBytes { path, data } => append_bytes(path, data, ctx),
+        FsRequest::WriteText { path, data } => write_text(&path, &data, ctx),
+        FsRequest::WriteBytes { path, data } => write_bytes(&path, &data, ctx),
+        FsRequest::AppendText { path, data } => append_text(&path, &data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(&path, &data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
             exist_ok,
-        } => mkdir(path, parents, exist_ok, ctx),
-        FsRequest::Unlink { path } => unlink(path, ctx),
+        } => mkdir(&path, parents, exist_ok, ctx),
+        FsRequest::Unlink { path } => unlink(&path, ctx),
         FsRequest::Rmdir { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            rmdir_fs(&resolved.host_path, path)
+            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            rmdir_fs(&resolved.host_path, &path)
         }
         FsRequest::Iterdir { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            iterdir_fs(&resolved.host_path, path, ctx.mount_host)
+            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            iterdir_fs(
+                &resolved.host_path,
+                &path,
+                ctx.mount_host,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::Stat { path } => {
-            let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            stat_fs(&resolved.host_path, path)
+            let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
+            stat_fs(&resolved.host_path, &path)
         }
-        FsRequest::Rename { src, dst } => rename(src, dst, ctx),
+        FsRequest::Rename { src, dst } => rename(&src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(super::path_security::normalize_virtual_path(path)))
+            Ok(MontyObject::Path(super::path_security::normalize_virtual_path(&path)))
         }
-        FsRequest::Open { path, mode } => open(path, mode, ctx),
+        FsRequest::Open { path, mode } => open(&path, mode, ctx),
     }
 }
 
@@ -80,7 +90,7 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
     match mode {
         FileMode::Read(_) | FileMode::ReadUpdate(_) => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            reject_directory(&resolved.host_path, path)?;
+            reject_non_regular(&resolved.host_path, path)?;
         }
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;

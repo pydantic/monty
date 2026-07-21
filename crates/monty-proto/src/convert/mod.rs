@@ -17,13 +17,12 @@
 
 mod exception;
 mod limits;
-mod mount;
+mod os_call;
 mod resume;
 
 use std::{error, fmt};
 
 use monty::{DictPairs, MontyObject};
-pub use mount::build_mount_table;
 pub use resume::future_results_from_proto;
 
 /// Why a wire value could not be converted into its monty equivalent.
@@ -50,8 +49,6 @@ pub enum ProtoConvertError {
         /// Human-readable explanation.
         reason: String,
     },
-    /// A mount entry was invalid or could not be mounted.
-    InvalidMount(String),
 }
 
 impl fmt::Display for ProtoConvertError {
@@ -63,7 +60,6 @@ impl fmt::Display for ProtoConvertError {
             Self::UnknownBuiltinFunction(name) => write!(f, "unknown builtin function {name:?}"),
             Self::InvalidFileMode(mode) => write!(f, "invalid file mode {mode:?}"),
             Self::InvalidValue { field, reason } => write!(f, "invalid value for {field}: {reason}"),
-            Self::InvalidMount(reason) => write!(f, "invalid mount: {reason}"),
         }
     }
 }

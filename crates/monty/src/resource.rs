@@ -1,9 +1,14 @@
-use std::{
-    cell::Cell,
-    error::Error,
-    fmt,
-    time::{Duration, Instant},
-};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+use std::{cell::Cell, error::Error, fmt, time::Duration};
+
+// `std::time::Instant::now()` panics ("time not implemented on this platform")
+// on `wasm32-unknown-unknown`, so any `max_duration` limit aborts there. Swap in
+// `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
+// target; every other target (native, WASI) keeps std, so the `web-time`
+// dependency is pulled in only where it's needed (see Cargo.toml).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 use crate::{
     ExcType, MontyException,
@@ -17,21 +22,6 @@ use crate::{
 /// where operations like `2 ** 10_000_000` allocate huge amounts of memory before
 /// the allocation check can catch them.
 pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
-
-/// Validates and clamps a native container's preallocation capacity.
-///
-/// The full requested size is checked against the tracker, while the returned
-/// hint is capped so unlimited execution cannot request an unsafe allocation.
-pub(crate) fn safe_preallocation_hint(
-    requested: usize,
-    element_size: usize,
-    tracker: &impl ResourceTracker,
-) -> Result<usize, ResourceError> {
-    const MAX_PREALLOCATION_HINT: usize = 65_536;
-
-    check_estimated_size(requested.saturating_mul(element_size), tracker)?;
-    Ok(requested.min(MAX_PREALLOCATION_HINT))
-}
 
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///

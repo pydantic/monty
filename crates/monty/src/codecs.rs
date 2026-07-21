@@ -84,6 +84,12 @@ impl Codec {
     /// CPython's `codecs.lookup_error` semantics. Only the ASCII codec can
     /// fail: UTF-8 is the native representation, and every Monty string is
     /// encodable as UTF-16/32 (no lone surrogates can exist).
+    ///
+    /// Like [`Codec::decode`], output is bounded by a small constant multiple
+    /// of the (already resource-tracked) input — ≤2x for UTF-16, ≤4x for
+    /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
+    /// ASCII error handlers can amplify further, and they build through the
+    /// tracker.
     pub(crate) fn encode(self, s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
             Self::Utf8 => Ok(s.as_bytes().to_vec()),
@@ -429,8 +435,10 @@ fn decode_utf8(bytes: &[u8], errors: &str) -> RunResult<String> {
 /// data`); otherwise a byte that is a legal multi-byte lead (0xC2–0xF4) was
 /// followed by an invalid continuation, and anything else (stray
 /// continuation bytes, the overlong leads 0xC0/0xC1, 0xF5–0xFF) is an
-/// `invalid start byte`. Also used by the fs layer for text-mode file reads.
-pub(crate) fn utf8_error_reason(first_bad_byte: u8, error_len: Option<usize>) -> &'static str {
+/// `invalid start byte`. Public (re-exported at the crate root) so `monty-fs`
+/// produces identical wording for text-mode file reads.
+#[must_use]
+pub fn utf8_error_reason(first_bad_byte: u8, error_len: Option<usize>) -> &'static str {
     if error_len.is_none() {
         "unexpected end of data"
     } else if (0xC2..=0xF4).contains(&first_bad_byte) {

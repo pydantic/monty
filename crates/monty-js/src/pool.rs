@@ -115,6 +115,8 @@ pub struct NativeMount {
     pub mode: String,
     /// Cap on total bytes written through this mount.
     pub write_bytes_limit: Option<f64>,
+    /// Aggregate budget for retained overlay data and transient results.
+    pub memory_usage_limit: f64,
 }
 
 /// A pool of `monty` worker subprocesses. Wrapped by the TypeScript `Monty`
@@ -182,7 +184,6 @@ impl NativePool {
                 ),
             },
             checkout: Arc::new(Mutex::new(None)),
-            pending_not_handled: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -206,10 +207,6 @@ pub struct NativeSession {
     pool: SharedPool,
     repl_config: ReplConfig,
     checkout: SharedCheckout,
-    /// The exception the sandbox raises when the host declines the pending
-    /// OS call. Kept Rust-side so the full exception (traceback included)
-    /// round-trips instead of being rebuilt from strings.
-    pending_not_handled: Arc<Mutex<Option<MontyException>>>,
 }
 
 #[napi]
@@ -293,18 +290,33 @@ impl NativeSession {
     }
 
     /// Answers an `osCall` suspension by declining it: the sandbox raises the
-    /// call's default exception (full traceback preserved Rust-side).
+    /// call's own no-handler default.
     #[napi]
     pub fn resume_not_handled<'env>(
         &self,
         env: &'env Env,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
-        let exc = lock(&self.pending_not_handled)
-            .take()
-            .unwrap_or_else(|| MontyException::new(ExcType::RuntimeError, Some("OS call is not supported".to_owned())));
-        self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.resume(ResumeValue::Error(exc), on_print)
+        self.run_turn(env, on_print, |checkout, on_print| {
+            checkout.resume(ResumeValue::NotHandled, on_print)
+        })
+    }
+
+    /// Offers an `osCall` suspension to this feed's mounts. Resolves to the
+    /// next turn when a mount serviced the call, or to `{kind: 'notMounted'}`
+    /// when none covered it and the caller must answer it itself.
+    #[napi]
+    pub fn resume_from_mounts<'env>(
+        &self,
+        env: &'env Env,
+        on_print: PrintCallback<'env>,
+    ) -> Result<PromiseRaw<'env, Object<'env>>> {
+        self.run_outcome(env, on_print, |checkout, on_print| {
+            match checkout.resume_from_mounts(on_print) {
+                Ok(Some(event)) => TurnOutcome::Event(event),
+                Ok(None) => TurnOutcome::NotMounted,
+                Err(err) => TurnOutcome::from(StdResult::<TurnEvent, PoolError>::Err(err)),
+            }
         })
     }
 
@@ -395,8 +407,8 @@ impl NativeSession {
 
     /// Restores a dump into this session's freshly configured worker. Resolves
     /// to a turn object: a suspension when the dump was mid-feed, or `loaded`
-    /// for an idle dump. The TypeScript `load` / `loadSnapshot` split inspects
-    /// the kind and enforces "fresh session only".
+    /// for an idle dump. The TypeScript `loadSession` / `loadSnapshot` split
+    /// inspects the kind and enforces "fresh session only".
     #[napi]
     pub fn restore<'env>(
         &self,
@@ -509,7 +521,7 @@ impl NativeSession {
     /// The shared turn machinery behind [`run_turn`](Self::run_turn): locks the
     /// checkout off the event loop, streams prints, and resolves the computed
     /// [`TurnOutcome`] to a JS turn object. `compute` returns the outcome
-    /// directly so the `load` turn (which yields `Option<TurnEvent>`) can map
+    /// directly so the restore turn (which yields `Option<TurnEvent>`) can map
     /// its idle case to [`TurnOutcome::LoadedIdle`].
     fn run_outcome<'env>(
         &self,
@@ -519,7 +531,6 @@ impl NativeSession {
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let tsfn = on_print.build_threadsafe_function().build()?;
         let slot = Arc::clone(&self.checkout);
-        let pending_not_handled = Arc::clone(&self.pending_not_handled);
         env.spawn_future_with_callback(
             async move {
                 spawn_blocking(move || {
@@ -540,11 +551,7 @@ impl NativeSession {
                         };
                         let _ = block_on(tsfn.call_async(FnArgs::from((stream.to_owned(), text.to_owned()))));
                     };
-                    let outcome = compute(checkout, &mut on_print);
-                    if let TurnOutcome::Event(TurnEvent::OsCall { not_handled_error, .. }) = &outcome {
-                        lock(&pending_not_handled).clone_from(not_handled_error);
-                    }
-                    outcome
+                    compute(checkout, &mut on_print)
                 })
                 .await
                 .map_err(task_error)
@@ -571,9 +578,13 @@ enum TurnOutcome {
     },
     /// The worker (or caller) violated the protocol; the session is lost.
     Protocol(String),
-    /// A `load` restored an idle (between-feeds) session — there is no
-    /// suspension to resume. Only produced by [`NativeSession::load`].
+    /// A restore of an idle (between-feeds) dump — there is no suspension to
+    /// resume. Only produced by [`NativeSession::restore`].
     LoadedIdle,
+    /// No mount covered the pending OS call, which is still suspended for the
+    /// caller to answer. Only produced by
+    /// [`NativeSession::resume_from_mounts`].
+    NotMounted,
     /// A non-feed request succeeded with no value or suspension. Produced by
     /// [`NativeSession::install_dependencies`].
     Ok,
@@ -630,16 +641,12 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
             args,
             kwargs,
             call_id,
-            not_handled_error,
         }) => {
             obj.set("kind", "osCall")?;
             obj.set("functionName", function_name)?;
             obj.set("args", values_to_js(env, &args)?)?;
             obj.set("kwargs", pairs_to_js(env, &kwargs)?)?;
             obj.set("callId", call_id)?;
-            if let Some(exc) = not_handled_error {
-                obj.set("notHandledError", exception_to_js(env, &exc)?)?;
-            }
         }
         TurnOutcome::Event(TurnEvent::NameLookup { name }) => {
             obj.set("kind", "nameLookup")?;
@@ -675,6 +682,9 @@ fn turn_to_js(env: &Env, outcome: TurnOutcome) -> Result<Object<'_>> {
         }
         TurnOutcome::LoadedIdle => {
             obj.set("kind", "loaded")?;
+        }
+        TurnOutcome::NotMounted => {
+            obj.set("kind", "notMounted")?;
         }
         TurnOutcome::Ok => {
             obj.set("kind", "ok")?;
@@ -824,21 +834,28 @@ impl TryFrom<NativeMount> for MountSpec {
         };
         let write_bytes_limit = mount
             .write_bytes_limit
-            .map(|limit| {
-                if limit.is_finite() && limit >= 0.0 && limit.fract() == 0.0 {
-                    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    Ok(limit as u64)
-                } else {
-                    Err(invalid("writeBytesLimit must be a non-negative integer"))
-                }
-            })
+            .map(|limit| bytes_limit(limit, "writeBytesLimit"))
             .transpose()?;
+        let memory_usage_limit = bytes_limit(mount.memory_usage_limit, "memoryUsageLimit")?;
         Ok(Self {
             virtual_path: mount.virtual_path,
             host_path: mount.host_path.into(),
             mode,
             write_bytes_limit,
+            memory_usage_limit,
         })
+    }
+}
+
+/// Validates and narrows a JavaScript byte limit. Values at or above `2^64`
+/// are rejected rather than saturated — a saturating cast would silently turn
+/// an out-of-range limit into `u64::MAX`, effectively disabling the budget.
+fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
+    if (0.0..18_446_744_073_709_551_616.0).contains(&limit) && limit.fract() == 0.0 {
+        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Ok(limit as u64)
+    } else {
+        Err(invalid(&format!("{name} must be a non-negative integer below 2**64")))
     }
 }
 

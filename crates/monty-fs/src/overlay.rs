@@ -6,26 +6,32 @@
 
 use std::{
     fs,
-    io::{self, ErrorKind},
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
 use ahash::AHashSet;
+use monty::{FileMode, MontyObject, dir_stat, file_stat};
 
 use super::{
     common::{
-        MountContext, bytes_to_utf8, check_write_limit, commit_write_bytes, current_timestamp, dir_mtime,
-        format_child_path, list_visible_real_dir_entry_names, read_bytes_fs, read_text_fs, stat_fs,
+        LISTING_ENTRY_MEMORY_USAGE, MemoryBudget, MountContext, as_u64, bytes_to_utf8, check_write_limit,
+        commit_write_bytes, current_timestamp, dir_mtime, format_child_path, list_visible_real_dir_entry_names,
+        read_bytes_fs, read_text_fs, stat_fs,
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
-    overlay_state::{OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
+    overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
         ResolveMode, normalize_virtual_path, reject_escaping_symlink, reject_overlong_path, resolve_path,
         strip_mount_prefix,
     },
 };
-use crate::{MontyObject, dir_stat, file_stat, types::file::FileMode};
+
+/// Conservative per-entry charge while capturing a real directory tree for a
+/// rename: result-vec slot, recursion-queue slot, and `OverlayEntry` metadata.
+/// Key strings and host paths are charged separately by length.
+const REAL_DESCENDANT_MEMORY_USAGE: u64 = 512;
 
 /// Resolves a virtual path to the mount-relative overlay key.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
@@ -36,37 +42,52 @@ fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountErro
         .ok_or_else(|| MountError::NoMountPoint(path.to_owned()))
 }
 
+/// Returns budget available for a transient result alongside retained state.
+fn available_memory(state: &OverlayState, ctx: &MountContext<'_>) -> Result<MemoryBudget, MountError> {
+    let available = ctx
+        .memory_usage_limit
+        .checked_sub(state.memory_usage())
+        .ok_or(MountError::MemoryUsageLimitExceeded(ctx.memory_usage_limit))?;
+    Ok(MemoryBudget {
+        available,
+        limit: ctx.memory_usage_limit,
+    })
+}
+
 /// Executes a parsed filesystem request using overlay semantics.
+///
+/// Truncating writes move their payload into overlay storage; appends borrow
+/// it (extending the retained buffer copies regardless).
 pub(super) fn execute(
-    request: FsRequest<'_>,
+    request: FsRequest,
     ctx: &mut MountContext<'_>,
     state: &mut OverlayState,
 ) -> Result<MontyObject, MountError> {
     match request {
-        FsRequest::Exists { path } => exists(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsFile { path } => is_file(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsDir { path } => is_dir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::IsSymlink { path } => is_symlink(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::ReadText { path } => read_text(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::WriteText { path, data } => write_text(state, path, data, ctx),
-        FsRequest::WriteBytes { path, data } => write_bytes(state, path, data, ctx),
-        FsRequest::AppendText { path, data } => append_text(state, path, data, ctx),
-        FsRequest::AppendBytes { path, data } => append_bytes(state, path, data, ctx),
+        FsRequest::Exists { path } => exists(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsFile { path } => is_file(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsDir { path } => is_dir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::IsSymlink { path } => is_symlink(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::ReadText { path } => read_text(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::ReadBytes { path } => read_bytes(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::WriteText { path, data } => write_text(state, &path, data, ctx),
+        FsRequest::WriteBytes { path, data } => write_bytes(state, &path, data, ctx),
+        FsRequest::AppendText { path, data } => append_text(state, &path, &data, ctx),
+        FsRequest::AppendBytes { path, data } => append_bytes(state, &path, &data, ctx),
         FsRequest::Mkdir {
             path,
             parents,
             exist_ok,
-        } => mkdir(state, &relative_path(path, ctx)?, parents, exist_ok, ctx, path),
-        FsRequest::Unlink { path } => unlink(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Rmdir { path } => rmdir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Iterdir { path } => iterdir(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Stat { path } => stat(state, &relative_path(path, ctx)?, ctx, path),
-        FsRequest::Rename { src, dst } => rename(state, src, dst, ctx),
+        } => mkdir(state, &relative_path(&path, ctx)?, parents, exist_ok, ctx, &path),
+        FsRequest::Unlink { path } => unlink(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Rmdir { path } => rmdir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Iterdir { path } => iterdir(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Stat { path } => stat(state, &relative_path(&path, ctx)?, ctx, &path),
+        FsRequest::Rename { src, dst } => rename(state, &src, &dst, ctx),
         FsRequest::Resolve { path } | FsRequest::Absolute { path } => {
-            Ok(MontyObject::Path(normalize_virtual_path(path)))
+            Ok(MontyObject::Path(normalize_virtual_path(&path)))
         }
-        FsRequest::Open { path, mode } => open(state, path, mode, ctx),
+        FsRequest::Open { path, mode } => open(state, &path, mode, ctx),
     }
 }
 
@@ -103,7 +124,7 @@ fn open(
         // `write_text` with empty data gives exactly the truncating
         // create-or-clobber semantics `open(w)` needs.
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
-            write_text(state, path, "", ctx)?;
+            write_text(state, path, String::new(), ctx)?;
         }
         // `open(a)` only needs the file to exist — it must NOT pull the real
         // file's content into the overlay, because that would O(file_size)
@@ -144,7 +165,8 @@ fn ensure_append_target_exists(
                     content: Vec::new(),
                     mtime: current_timestamp(),
                 }),
-            );
+                ctx.memory_usage_limit,
+            )?;
             Ok(())
         }
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
@@ -160,7 +182,8 @@ fn ensure_append_target_exists(
                         content: Vec::new(),
                         mtime: current_timestamp(),
                     }),
-                );
+                    ctx.memory_usage_limit,
+                )?;
                 Ok(())
             }
         },
@@ -246,15 +269,20 @@ fn read_text(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(file)) => Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?)),
-        Some(OverlayEntry::RealFileRef(file_ref)) => read_text_fs(&file_ref.host_path, vpath),
+        Some(OverlayEntry::File(file)) => {
+            available_memory(state, ctx)?.check(as_u64(file.content.len()))?;
+            Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?))
+        }
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            read_text_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+        }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, vpath)
+            read_text_fs(&resolved.host_path, vpath, available_memory(state, ctx)?)
         }
     }
 }
@@ -267,67 +295,81 @@ fn read_bytes(
     vpath: &str,
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(file)) => Ok(MontyObject::Bytes(file.content.clone())),
-        Some(OverlayEntry::RealFileRef(file_ref)) => read_bytes_fs(&file_ref.host_path, vpath),
+        Some(OverlayEntry::File(file)) => {
+            available_memory(state, ctx)?.check(as_u64(file.content.len()))?;
+            Ok(MontyObject::Bytes(file.content.clone()))
+        }
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            read_bytes_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+        }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, vpath)
+            read_bytes_fs(&resolved.host_path, vpath, available_memory(state, ctx)?)
         }
     }
 }
 
 /// Writes text into the overlay after validating quota and parent existence.
+/// Takes the payload by value so the retained content is a move, not a copy.
 fn write_text(
     state: &mut OverlayState,
     vpath: &str,
-    data: &str,
+    data: String,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
+    // The return value is the CPython char count — computed up front since
+    // the bytes move into the overlay below.
+    let char_count = data.chars().count();
+    let byte_len = data.len();
+    check_write_limit(byte_len, ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
+    state.check_file_replacement(&relative, byte_len, ctx.memory_usage_limit)?;
 
     state.insert(
         relative,
         OverlayEntry::File(OverlayFile {
-            content: data.as_bytes().to_vec(),
+            content: data.into_bytes(),
             mtime: current_timestamp(),
         }),
-    );
+        ctx.memory_usage_limit,
+    )?;
 
-    commit_write_bytes(data.len(), ctx);
-    Ok(MontyObject::Int(
-        i64::try_from(data.chars().count()).unwrap_or(i64::MAX),
-    ))
+    commit_write_bytes(byte_len, ctx);
+    Ok(MontyObject::Int(i64::try_from(char_count).unwrap_or(i64::MAX)))
 }
 
 /// Writes bytes into the overlay after validating quota and parent existence.
+/// Takes the payload by value so the retained content is a move, not a copy.
 fn write_bytes(
     state: &mut OverlayState,
     vpath: &str,
-    data: &[u8],
+    data: Vec<u8>,
     ctx: &mut MountContext<'_>,
 ) -> Result<MontyObject, MountError> {
-    check_write_limit(data.len(), ctx)?;
+    let byte_len = data.len();
+    check_write_limit(byte_len, ctx)?;
     let relative = relative_path(vpath, ctx)?;
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
+    state.check_file_replacement(&relative, byte_len, ctx.memory_usage_limit)?;
 
     state.insert(
         relative,
         OverlayEntry::File(OverlayFile {
-            content: data.to_vec(),
+            content: data,
             mtime: current_timestamp(),
         }),
-    );
+        ctx.memory_usage_limit,
+    )?;
 
-    commit_write_bytes(data.len(), ctx);
-    Ok(MontyObject::Int(i64::try_from(data.len()).unwrap_or(i64::MAX)))
+    commit_write_bytes(byte_len, ctx);
+    Ok(MontyObject::Int(i64::try_from(byte_len).unwrap_or(i64::MAX)))
 }
 
 /// Appends text in the overlay without leaving a host file handle open.
@@ -345,12 +387,10 @@ fn append_text(
 
 /// Appends bytes in the overlay, copying through real mounted content if needed.
 ///
-/// If the target already lives in the overlay as an `OverlayEntry::File`,
-/// the new bytes are appended *in place* — `state.get_mut(...)` lets us
-/// `extend_from_slice` directly into the existing `Vec<u8>` instead of
-/// cloning the whole content, re-inserting, and freeing the old buffer.
-/// Without this, repeated `append_bytes(...)` calls on the same file are
-/// O(total_size) per call and O(n²) overall.
+/// Existing overlay files are extended in place ([`OverlayState::append_file`]) —
+/// cloning and re-inserting would make repeated appends to the same file
+/// O(n²) in total content. A real backing file is read only after its final
+/// size is known to fit the mount memory budget.
 fn append_bytes(
     state: &mut OverlayState,
     vpath: &str,
@@ -361,18 +401,20 @@ fn append_bytes(
     ensure_parent_exists(state, &relative, ctx, vpath)?;
     reject_directory_target(state, &relative, ctx, vpath)?;
     let target_is_overlay_file = matches!(state.get(&relative), Some(OverlayEntry::File(_)));
+    let existing_len = existing_file_len(state, &relative, ctx, vpath)?;
     let charged_bytes = if ctx.write_bytes_limit.is_some() && !target_is_overlay_file {
-        existing_file_len(state, &relative, ctx, vpath)?.saturating_add(data.len())
+        existing_len.saturating_add(data.len())
     } else {
         data.len()
     };
     check_write_limit(charged_bytes, ctx)?;
 
-    if let Some(OverlayEntry::File(file)) = state.get_mut(&relative) {
-        file.content.extend_from_slice(data);
-        file.mtime = current_timestamp();
-    } else {
-        let mut content = existing_file_bytes(state, &relative, ctx, vpath)?;
+    if !state.append_file(&relative, data, current_timestamp(), ctx.memory_usage_limit)? {
+        let final_len = existing_len.saturating_add(data.len());
+        state.check_file_replacement(&relative, final_len, ctx.memory_usage_limit)?;
+        let budget = available_memory(state, ctx)?;
+        budget.check(as_u64(final_len))?;
+        let mut content = existing_file_bytes(state, &relative, ctx, vpath, budget.shrink(as_u64(data.len()))?)?;
         content.extend_from_slice(data);
         state.insert(
             relative,
@@ -380,7 +422,8 @@ fn append_bytes(
                 content,
                 mtime: current_timestamp(),
             }),
-        );
+            ctx.memory_usage_limit,
+        )?;
     }
 
     commit_write_bytes(charged_bytes, ctx);
@@ -430,11 +473,15 @@ fn existing_file_bytes(
     relative: &str,
     ctx: &MountContext<'_>,
     vpath: &str,
+    budget: MemoryBudget,
 ) -> Result<Vec<u8>, MountError> {
     match state.get(relative) {
-        Some(OverlayEntry::File(file)) => Ok(file.content.clone()),
+        Some(OverlayEntry::File(file)) => {
+            budget.check(as_u64(file.content.len()))?;
+            Ok(file.content.clone())
+        }
         Some(OverlayEntry::Deleted) => Ok(Vec::new()),
-        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, vpath)? {
+        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, vpath, budget)? {
             MontyObject::Bytes(bytes) => Ok(bytes),
             _ => unreachable!("read_bytes_fs should return bytes"),
         },
@@ -442,7 +489,7 @@ fn existing_file_bytes(
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) => match read_bytes_fs(&host_path, vpath)? {
+            RealPathState::Present(host_path) => match read_bytes_fs(&host_path, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
                 _ => unreachable!("read_bytes_fs should return bytes"),
             },
@@ -544,7 +591,8 @@ fn mkdir(
         OverlayEntry::Directory {
             mtime: current_timestamp(),
         },
-    );
+        ctx.memory_usage_limit,
+    )?;
     Ok(MontyObject::None)
 }
 
@@ -574,7 +622,8 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     OverlayEntry::Directory {
                         mtime: current_timestamp(),
                     },
-                );
+                    ctx.memory_usage_limit,
+                )?;
             }
             None => {
                 let current_vpath = format!("{}/{current}", ctx.mount_virtual);
@@ -598,7 +647,8 @@ fn create_overlay_parents(state: &mut OverlayState, relative: &str, ctx: &MountC
                     OverlayEntry::Directory {
                         mtime: current_timestamp(),
                     },
-                );
+                    ctx.memory_usage_limit,
+                )?;
             }
         }
     }
@@ -615,7 +665,7 @@ fn unlink(
 ) -> Result<MontyObject, MountError> {
     match state.get(relative) {
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
-            state.insert(relative.to_owned(), OverlayEntry::Deleted);
+            state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
             Ok(MontyObject::None)
         }
         Some(OverlayEntry::Directory { .. }) => {
@@ -625,7 +675,7 @@ fn unlink(
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
             if resolved.host_path.is_file() {
-                state.insert(relative.to_owned(), OverlayEntry::Deleted);
+                state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
                 Ok(MontyObject::None)
             } else if resolved.host_path.is_dir() {
                 Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -652,7 +702,7 @@ fn rmdir(
                     vpath,
                 ));
             }
-            state.insert(relative.to_owned(), OverlayEntry::Deleted);
+            state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
             Ok(MontyObject::None)
         }
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => {
@@ -681,7 +731,7 @@ fn rmdir(
                     vpath,
                 ));
             }
-            state.insert(relative.to_owned(), OverlayEntry::Deleted);
+            state.insert(relative.to_owned(), OverlayEntry::Deleted, ctx.memory_usage_limit)?;
             Ok(MontyObject::None)
         }
     }
@@ -764,6 +814,8 @@ fn iterdir(
     let prefix = directory_prefix(relative);
     let mut seen_names: AHashSet<String> = AHashSet::new();
     let mut entries = Vec::new();
+    let budget = available_memory(state, ctx)?;
+    let mut transient_usage = 0_u64;
 
     for (path, entry) in state.prefix_iter(&prefix) {
         let rest = &path[prefix.len()..];
@@ -771,20 +823,46 @@ fn iterdir(
             continue;
         }
 
+        // Names are charged twice: once for the dedup set, once for the clone.
         let child_name = rest.to_owned();
+        transient_usage = transient_usage
+            .saturating_add(as_u64(child_name.len().saturating_mul(2)))
+            .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+        budget.check(transient_usage)?;
         seen_names.insert(child_name.clone());
 
         if !matches!(entry, OverlayEntry::Deleted) {
-            entries.push(MontyObject::Path(format_child_path(vpath, &child_name)));
+            let child_path = format_child_path(vpath, &child_name);
+            transient_usage = transient_usage
+                .saturating_add(as_u64(child_path.len()))
+                .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+            budget.check(transient_usage)?;
+            entries.push(MontyObject::Path(child_path));
         }
     }
 
-    if let Some(host_dir) = host_dir_to_merge
-        && let Ok(names) = list_visible_real_dir_entry_names(&host_dir, ctx.mount_host, vpath)
-    {
-        for name in names {
-            if !seen_names.contains(&name) {
-                entries.push(MontyObject::Path(format_child_path(vpath, &name)));
+    if let Some(host_dir) = host_dir_to_merge {
+        let remaining = budget.shrink(transient_usage)?;
+        let names = match list_visible_real_dir_entry_names(&host_dir, ctx.mount_host, vpath, remaining.halved()) {
+            Ok(names) => names,
+            Err(error @ MountError::MemoryUsageLimitExceeded(_)) => return Err(error),
+            Err(_) => Vec::new(),
+        };
+        if !names.is_empty() {
+            transient_usage = names.iter().fold(transient_usage, |usage, name| {
+                usage
+                    .saturating_add(as_u64(name.len()))
+                    .saturating_add(LISTING_ENTRY_MEMORY_USAGE)
+            });
+            for name in names {
+                if !seen_names.contains(&name) {
+                    let child_path = format_child_path(vpath, &name);
+                    transient_usage = transient_usage
+                        .saturating_add(as_u64(child_path.len()))
+                        .saturating_add(LISTING_ENTRY_MEMORY_USAGE);
+                    budget.check(transient_usage)?;
+                    entries.push(MontyObject::Path(child_path));
+                }
             }
         }
     }
@@ -831,14 +909,27 @@ fn rename(
         reject_rename_onto_nonempty_dir(state, &dst_rel, ctx, dst_vpath)?;
     }
 
-    // Now that validation has passed, remove the source entry from state.
-    let entry = if let Some(entry) = state.remove(&src_rel) {
-        entry
+    // Reject renaming a directory into its own descendant before building the
+    // atomic overlay update plan.
+    if src_is_dir {
+        let src_prefix = format!("{src_rel}/");
+        if dst_rel.starts_with(&src_prefix) {
+            return Err(MountError::io_err(
+                ErrorKind::InvalidInput,
+                "Invalid argument",
+                src_vpath,
+            ));
+        }
+    }
+
+    let source_is_overlay = state.get(&src_rel).is_some();
+    let real_source_entry = if source_is_overlay {
+        None
     } else {
         // Use Lstat so symlinks are detected without following them,
         // matching the direct-mode rename behavior.
         let resolved = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Lstat)?;
-        if resolved.host_path.is_symlink() {
+        let entry = if resolved.host_path.is_symlink() {
             // Block symlinks whose target escapes the mount boundary — allowing
             // them into the overlay as a `RealFileRef` would let subsequent
             // reads bypass boundary checks and leak host files.
@@ -857,57 +948,90 @@ fn rename(
             }
         } else {
             return Err(MountError::not_found(src_vpath));
-        }
+        };
+        Some(entry)
     };
 
-    // Reject renaming a directory into its own descendant.
-    if src_is_dir {
-        let src_prefix = format!("{src_rel}/");
-        if dst_rel.starts_with(&src_prefix) {
-            return Err(MountError::io_err(
-                ErrorKind::InvalidInput,
-                "Invalid argument",
-                src_vpath,
-            ));
-        }
-    }
-
-    let mut descendants: Vec<(String, OverlayEntry)> = Vec::new();
-    let mut tombstone_keys: Vec<String> = Vec::new();
+    let source_entry = state
+        .get(&src_rel)
+        .or(real_source_entry.as_ref())
+        .expect("rename source was resolved above");
+    let mut overlay_moves = Vec::new();
+    let mut real_moves = Vec::new();
 
     if src_is_dir {
         let src_prefix = format!("{src_rel}/");
         let dst_prefix = format!("{dst_rel}/");
+        // Each descendant's plan holds the old key twice (child_keys + handled_keys)
+        // and its new destination key, plus per-entry container overhead.
+        let plan_usage = state.prefix_iter(&src_prefix).fold(0_u64, |usage, (key, _)| {
+            let suffix_len = key.len().saturating_sub(src_prefix.len());
+            usage
+                .saturating_add(as_u64(key.len().saturating_mul(2)))
+                .saturating_add(as_u64(dst_prefix.len().saturating_add(suffix_len)))
+                .saturating_add(ENTRY_MEMORY_USAGE)
+        });
+        let remaining = available_memory(state, ctx)?.shrink(plan_usage)?;
         let child_keys: Vec<String> = state.prefix_iter(&src_prefix).map(|(key, _)| key.to_owned()).collect();
         let handled_keys: AHashSet<String> = child_keys.iter().cloned().collect();
 
         for key in child_keys {
-            let suffix = &key[src_prefix.len()..];
-            if let Some(child) = state.remove(&key) {
-                descendants.push((format!("{dst_prefix}{suffix}"), child));
-                tombstone_keys.push(key);
-            }
+            let new_key = format!("{dst_prefix}{}", &key[src_prefix.len()..]);
+            overlay_moves.push((key, new_key));
         }
 
-        if let Ok(resolved) = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)
-            && let Ok(real_children) = collect_real_descendants(&resolved.host_path, &src_prefix, state, &handled_keys)
-        {
+        if let Ok(resolved) = resolve_path(src_vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing) {
+            let real_children = match collect_real_descendants(
+                &resolved.host_path,
+                &src_prefix,
+                state,
+                &handled_keys,
+                src_vpath,
+                remaining,
+            ) {
+                Ok(children) => children,
+                Err(error @ MountError::MemoryUsageLimitExceeded(_)) => return Err(error),
+                Err(_) => Vec::new(),
+            };
             for (old_rel, child_entry) in real_children {
-                let suffix = old_rel.strip_prefix(&src_prefix).unwrap_or(&old_rel);
-                descendants.push((format!("{dst_prefix}{suffix}"), child_entry));
-                tombstone_keys.push(old_rel);
+                let new_rel = format!("{dst_prefix}{}", old_rel.strip_prefix(&src_prefix).unwrap_or(&old_rel));
+                real_moves.push((old_rel, new_rel, child_entry));
             }
         }
     }
 
-    state.insert(src_rel, OverlayEntry::Deleted);
-    state.insert(dst_rel, entry);
-
-    for key in tombstone_keys {
-        state.insert(key, OverlayEntry::Deleted);
+    let deleted = OverlayEntry::Deleted;
+    let mut replacements = vec![(src_rel.as_str(), &deleted), (dst_rel.as_str(), source_entry)];
+    for (old_rel, new_rel) in &overlay_moves {
+        replacements.push((old_rel, &deleted));
+        replacements.push((new_rel, state.get(old_rel).expect("overlay descendant still exists")));
     }
-    for (key, child) in descendants {
-        state.insert(key, child);
+    for (old_rel, new_rel, entry) in &real_moves {
+        replacements.push((old_rel, &deleted));
+        replacements.push((new_rel, entry));
+    }
+    state.check_replacements(replacements, ctx.memory_usage_limit)?;
+
+    let entry = if source_is_overlay {
+        state.remove(&src_rel).expect("overlay rename source still exists")
+    } else {
+        real_source_entry.expect("real rename source was captured")
+    };
+    let descendants: Vec<(String, String, OverlayEntry)> = overlay_moves
+        .into_iter()
+        .map(|(old_rel, new_rel)| {
+            let entry = state.remove(&old_rel).expect("overlay rename descendant still exists");
+            (old_rel, new_rel, entry)
+        })
+        .chain(real_moves)
+        .collect();
+
+    state.insert_unchecked(src_rel, OverlayEntry::Deleted);
+    state.insert_unchecked(dst_rel, entry);
+
+    for (old_rel, new_rel, child) in descendants {
+        state.insert_unchecked(old_rel, OverlayEntry::Deleted);
+        state.insert_unchecked(new_rel, child);
     }
 
     Ok(MontyObject::None)
@@ -993,18 +1117,25 @@ fn reject_rename_onto_nonempty_dir(
 }
 
 /// Recursively collects real descendants that should follow an overlay rename.
+///
+/// Each captured entry is charged for its key, its host path, and
+/// [`REAL_DESCENDANT_MEMORY_USAGE`] of container overhead against `budget`.
 fn collect_real_descendants(
     host_dir: &Path,
     prefix: &str,
     state: &OverlayState,
     already_handled: &AHashSet<String>,
-) -> io::Result<Vec<(String, OverlayEntry)>> {
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<Vec<(String, OverlayEntry)>, MountError> {
     let mut result = Vec::new();
     let mut dirs = vec![(host_dir.to_path_buf(), prefix.to_owned())];
+    let mut memory_usage = as_u64(host_dir.as_os_str().len().saturating_add(prefix.len()));
 
     while let Some((dir, rel_prefix)) = dirs.pop() {
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
+        let entries = fs::read_dir(&dir).map_err(|error| MountError::Io(error, vpath.to_owned()))?;
+        for entry in entries {
+            let entry = entry.map_err(|error| MountError::Io(error, vpath.to_owned()))?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let rel_key = format!("{rel_prefix}{name}");
@@ -1013,7 +1144,9 @@ fn collect_real_descendants(
                 continue;
             }
 
-            let file_type = entry.file_type()?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| MountError::Io(error, vpath.to_owned()))?;
             // Defense-in-depth: explicitly skip symlinks so that a symlink
             // pointing outside the mount boundary cannot be captured as an
             // OverlayFileRef during a directory rename. On Unix,
@@ -1024,16 +1157,29 @@ fn collect_real_descendants(
             }
             if file_type.is_file() {
                 if let Some(file_ref) = OverlayFileRef::from_host_path(&entry.path()) {
+                    memory_usage = memory_usage
+                        .saturating_add(as_u64(rel_key.len()))
+                        .saturating_add(as_u64(file_ref.host_path.as_os_str().len()))
+                        .saturating_add(REAL_DESCENDANT_MEMORY_USAGE);
+                    budget.check(memory_usage)?;
                     result.push((rel_key, OverlayEntry::RealFileRef(file_ref)));
                 }
             } else if file_type.is_dir() {
+                // Directory keys are charged twice: the result entry and the
+                // recursion-queue prefix.
+                let entry_path = entry.path();
+                memory_usage = memory_usage
+                    .saturating_add(as_u64(rel_key.len().saturating_mul(2)))
+                    .saturating_add(as_u64(entry_path.as_os_str().len()))
+                    .saturating_add(REAL_DESCENDANT_MEMORY_USAGE);
+                budget.check(memory_usage)?;
                 result.push((
                     rel_key.clone(),
                     OverlayEntry::Directory {
-                        mtime: dir_mtime(&entry.path()),
+                        mtime: dir_mtime(&entry_path),
                     },
                 ));
-                dirs.push((entry.path(), format!("{rel_key}/")));
+                dirs.push((entry_path, format!("{rel_key}/")));
             }
         }
     }

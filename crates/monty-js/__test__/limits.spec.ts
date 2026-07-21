@@ -94,7 +94,7 @@ len(result)
     error.message,
     kind === 'browser'
       ? 'MemoryError: memory limit exceeded: 180 bytes > 100 bytes'
-      : 'MemoryError: memory limit exceeded: 220 bytes > 100 bytes',
+      : 'MemoryError: memory limit exceeded: 120 bytes > 100 bytes',
   )
 })
 

@@ -17,6 +17,7 @@ name = "monty_pool"
 
 [dependencies]
 monty = { workspace = true }
+monty-fs = { workspace = true }
 monty-proto = { workspace = true }
 # Blocking WebSocket client for the remote (Websocket) transport. The pool is
 # blocking/threaded, so a synchronous client fits; rustls gives `wss://` support

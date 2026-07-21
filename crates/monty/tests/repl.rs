@@ -776,7 +776,7 @@ fn call_function_that_calls_undefined_name_fails() {
     let err = s
         .call_function("call_missing", vec![], PrintWriter::Stdout)
         .unwrap_err();
-    assert_snapshot!(err, @"NotImplementedError: MontyRepl::call_function: external functions are not yet supported in this context");
+    assert_snapshot!(err, @"NotImplementedError: MontyRepl::call_function: external function 'unknown_func' is not yet supported in this context");
 }
 
 #[test]

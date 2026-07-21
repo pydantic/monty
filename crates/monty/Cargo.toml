@@ -43,6 +43,13 @@ itertools = "0.14.0"
 jiter = { version = "0.15.0", features = ["num-bigint"] }
 monty-macros = { workspace = true }
 
+# `std::time::Instant` panics on `wasm32-unknown-unknown`, so the resource
+# tracker uses `web_time::Instant` (a `performance.now()`-backed drop-in) there
+# to keep `max_duration` working when `monty` is embedded directly in a browser
+# wasm module. Only that target needs it; every other target uses std directly.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+web-time = "1.1"
+
 [features]
 # ref-count-return changes behavior to return information on reference counts to check they're correct
 # should be used for testing only

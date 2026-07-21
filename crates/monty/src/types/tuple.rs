@@ -25,7 +25,7 @@ use std::{
 
 use smallvec::SmallVec;
 
-use super::{CmpOrder, MontyIter, PyTrait};
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -126,7 +126,7 @@ impl Tuple {
                 Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap)?)
             }
         }

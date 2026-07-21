@@ -46,13 +46,6 @@ fn class_inheritance_returns_not_implemented_error() {
 }
 
 #[test]
-fn class_decorators_return_not_implemented_error() {
-    let err = get_parse_err("@deco\nclass Foo: pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class decorators");
-}
-
-#[test]
 fn function_decorators_return_not_implemented_error() {
     // A top-level `def` decorator is rejected rather than silently ignored:
     // silently dropping a decorator would change behaviour without warning.

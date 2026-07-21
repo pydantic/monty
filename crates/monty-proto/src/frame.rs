@@ -35,8 +35,8 @@ pub const MAX_FRAME_LEN: u32 = 256 * 1024 * 1024;
 ///
 /// The budget bounds bytes *resident* at once. The decoder materializes every
 /// payload straight into its final type — containers via `ObjectList`/
-/// `PairList`/`NamedTupleBody`/`DataclassBody`, and function/OS-call args &
-/// kwargs via `WireFunctionCall`/`WireOsCall` — so no path builds an
+/// `PairList`/`NamedTupleBody`/`DataclassBody`, and function-call args &
+/// kwargs via `WireFunctionCall` — so no path builds an
 /// intermediate `Vec<WireObject>`/`Vec<Pair>` and then converts it; only a
 /// single per-element value is transient at any moment. The host *peak* is
 /// therefore ~1× the budget plus the ≤256 MiB frame buffer (~1.25 GiB); the 4×
@@ -79,6 +79,18 @@ impl From<io::Error> for FrameError {
     fn from(e: io::Error) -> Self {
         Self::Io(e)
     }
+}
+
+/// The encoded frame length of `msg` when it exceeds [`MAX_FRAME_LEN`]
+/// (saturating at [`u32::MAX`]), or `None` when it fits.
+///
+/// [`write_frame`] rejects an oversize frame anyway, but only once the caller
+/// is committed to sending. Peers that must not mutate their own state until
+/// the frame is known sendable — a parent about to mark a suspension answered,
+/// a child about to enter one — check it with this first.
+pub fn exceeds_max_frame_len(msg: &impl Message) -> Option<u32> {
+    let len = u32::try_from(msg.encoded_len()).unwrap_or(u32::MAX);
+    (len > MAX_FRAME_LEN).then_some(len)
 }
 
 /// Encodes `msg` and writes it to `writer` as one length-prefixed frame, then

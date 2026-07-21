@@ -3,7 +3,7 @@ use std::{borrow::Cow, fmt};
 use num_bigint::BigInt;
 
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
@@ -12,8 +12,14 @@ use crate::{
     resource::ResourceTracker,
     types::{
         AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, instance::class_name,
-        long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
+        TimeZone, Tuple,
+        bytes::{bytes_fromhex, bytes_repr},
+        date, datetime,
+        dict::dict_fromkeys,
+        instance::class_name,
+        long_int::INT_MAX_STR_DIGITS,
+        str::StringRepr,
+        timedelta,
     },
     value::Value,
 };
@@ -100,6 +106,10 @@ pub enum Type {
     BuiltinFunction,
     Cell,
     Iterator,
+    #[strum(serialize = "list_iterator")]
+    ListIterator,
+    #[strum(serialize = "callable_iterator")]
+    CallableIterator,
     /// Coroutine type for async functions and external futures.
     Coroutine,
     Module,
@@ -390,25 +400,7 @@ impl Type {
             Self::Path => Path::init(vm, args),
 
             // Primitive types - inline implementation
-            Self::Int => {
-                let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("int", vm.heap)? else {
-                    return Ok(Value::Int(0));
-                };
-                defer_drop!(v, vm);
-                match v {
-                    Value::Int(i) => Ok(Value::Int(*i)),
-                    Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
-                    Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), vm.heap),
-                    Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                        HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
-                        HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
-                        _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
-                    },
-                    _ => Err(ExcType::type_error_int_conversion(&v.py_type_name(vm))),
-                }
-            }
+            Self::Int => int_init(vm, args),
             Self::Float => {
                 let interns = vm.interns;
                 let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
@@ -502,64 +494,233 @@ fn value_error_could_not_convert_string_to_float(value: &str) -> RunError {
     .into()
 }
 
-/// Parses a Python `int()` string argument into an `Int` or `LongInt`.
-///
-/// Handles whitespace stripping and removing `_` separators. Returns `Value::Int` if the value
-/// fits in i64, otherwise allocates a `LongInt` on the heap. Returns `ValueError` on failure.
-fn parse_int_from_str(value: &str, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
-    let invalid = || ExcType::value_error_invalid_literal_for_int(StringRepr(value));
-    // Try parsing as i64 first (fast path)
-    if let Ok(int) = value.parse::<i64>() {
-        return Ok(Value::Int(int));
-    }
-    let trimmed = value.trim();
+/// Argument shape for `int(x=..., /, base=...)`. `x` is positional-only with
+/// no kwarg id, so `int(x=1)` reports an unknown keyword exactly like CPython;
+/// `vectorcall` + `at_most_total` model `long_vectorcall`'s dual arity wording.
+#[derive(FromArgs)]
+#[from_args(name = "int", at_most_total, vectorcall)]
+struct IntArgs {
+    #[from_args(pos_only, default)]
+    x: Option<Value>,
+    #[from_args(default)]
+    base: Option<Value>,
+}
 
-    if let Ok(int) = trimmed.parse::<i64>() {
-        return Ok(Value::Int(int));
-    }
-
-    // Validate underscore placement before stripping.
-    // CPython rejects: leading _, trailing _, consecutive __, _ right after sign.
-    if !is_valid_int_underscores(trimmed) {
-        return Err(invalid());
-    }
-
-    // Strip underscores after validation
-    let normalized = trimmed.replace('_', "");
-    if let Ok(int) = normalized.parse::<i64>() {
-        Ok(Value::Int(int))
-    } else if normalized.len() > INT_MAX_STR_DIGITS {
-        // Only do detailed validation when the string is long enough to possibly
-        // exceed the digit limit — avoids the O(n) scan on short strings.
-        let digit_count = normalized.bytes().filter(u8::is_ascii_digit).count();
-        let has_sign = normalized.starts_with(['+', '-']);
-
-        if digit_count + usize::from(has_sign) != normalized.len() || digit_count == 0 {
-            // Non-digit chars present → "invalid literal" takes precedence
-            Err(invalid())
-        } else if digit_count > INT_MAX_STR_DIGITS {
-            Err(ExcType::value_error_int_str_too_large(digit_count))
-        } else {
-            // Sign pushed length over limit but digit count is within it — parse is safe
-            let bi = normalized.parse::<BigInt>().map_err(|_| invalid())?;
-            Ok(LongInt::new(bi).into_value(heap)?)
+/// Implements the `int()` constructor: numeric coercion, and str/bytes
+/// parsing with an optional base (auto-detected when `base=0`).
+fn int_init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let IntArgs { x, base } = IntArgs::from_args(args, vm)?;
+    let Some(x) = x else {
+        // `int()` → 0; `int(base=N)` complains about the missing value even
+        // before validating the base, matching `long_new_impl`'s ordering.
+        return match base {
+            None => Ok(Value::Int(0)),
+            Some(base) => {
+                base.drop_with(vm);
+                Err(ExcType::type_error_int_missing_string_argument())
+            }
+        };
+    };
+    defer_drop!(x, vm);
+    match base {
+        None => int_convert(x, vm),
+        Some(base) => {
+            let base = int_base(base, vm)?;
+            let interns = vm.interns;
+            match x {
+                Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), base, vm.heap),
+                Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), base, vm.heap),
+                Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+                    HeapData::Str(s) => parse_int_from_str(s.as_str(), base, vm.heap),
+                    HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), base, vm.heap),
+                    _ => Err(ExcType::type_error_int_non_string_with_base()),
+                },
+                _ => Err(ExcType::type_error_int_non_string_with_base()),
+            }
         }
-    } else if let Ok(bi) = normalized.parse::<BigInt>() {
-        Ok(LongInt::new(bi).into_value(heap)?)
-    } else {
-        Err(invalid())
     }
 }
 
-/// Validates underscore placement in an integer literal string.
-///
-/// Returns `false` for: leading `_`, trailing `_`, consecutive `__`,
-/// or `_` immediately after a sign character. Matches CPython's rules.
-fn is_valid_int_underscores(s: &str) -> bool {
-    if !s.contains('_') {
-        return true;
+/// `int(x)` with no base: numeric coercion plus base-10 str/bytes parsing.
+fn int_convert(x: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+    let interns = vm.interns;
+    match x {
+        Value::Int(i) => Ok(Value::Int(*i)),
+        Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
+        Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
+        Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), 10, vm.heap),
+        Value::InternBytes(bytes_id) => parse_int_from_bytes(interns.get_bytes(*bytes_id), 10, vm.heap),
+        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
+            HeapData::Str(s) => parse_int_from_str(s.as_str(), 10, vm.heap),
+            HeapData::Bytes(b) => parse_int_from_bytes(b.as_slice(), 10, vm.heap),
+            HeapData::LongInt(_) => Ok(x.clone_with_heap(vm.heap)),
+            _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
+        },
+        _ => Err(ExcType::type_error_int_conversion(&x.py_type_name(vm))),
     }
-    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-    // No leading or trailing underscores, no consecutive underscores
-    !digits.starts_with('_') && !digits.ends_with('_') && !digits.contains("__")
+}
+
+/// Resolves the `base` argument to `0` or `2..=36`, consuming the value.
+///
+/// Mirrors CPython: the base goes through `PyNumber_AsSsize_t(obase, NULL)`,
+/// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
+/// lands in the range error, not `OverflowError`; non-integers raise
+/// `TypeError` before the range is checked.
+fn int_base(base: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u32> {
+    let n = match &base {
+        Value::Bool(b) => i64::from(*b),
+        Value::Int(i) => *i,
+        // Clamped by PyNumber_AsSsize_t: any i64-overflowing int is out of range.
+        _ if is_long_int(&base, vm) => i64::MAX,
+        _ => {
+            let err = ExcType::type_error_not_integer(&base.py_type_name(vm));
+            base.drop_with(vm);
+            return Err(err);
+        }
+    };
+    base.drop_with(vm);
+    match u32::try_from(n) {
+        Ok(0) => Ok(0),
+        Ok(b @ 2..=36) => Ok(b),
+        _ => Err(ExcType::value_error_int_base_range()),
+    }
+}
+
+/// Parses a Python `int()` string argument into an `Int` or `LongInt`.
+///
+/// `base` is `0` (auto-detect from a `0x`/`0o`/`0b` prefix) or `2..=36`.
+/// Returns `Value::Int` if the value fits in i64, otherwise allocates a
+/// `LongInt` on the heap. Returns `ValueError` on failure.
+fn parse_int_from_str(value: &str, base: u32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    // Fast path: plain base-10 literals parse directly (no whitespace,
+    // underscores or prefix handling needed).
+    if base == 10
+        && let Ok(int) = value.parse::<i64>()
+    {
+        return Ok(Value::Int(int));
+    }
+    let trimmed = value.trim();
+    // Preserve the allocation-free path for whitespace-padded i64 values
+    // without retrying unchanged inputs that already failed above.
+    if base == 10
+        && trimmed.len() != value.len()
+        && let Ok(int) = trimmed.parse::<i64>()
+    {
+        Ok(Value::Int(int))
+    } else {
+        let invalid = || ExcType::value_error_invalid_literal_for_int(base, StringRepr(value));
+        parse_int_digits(trimmed, base, &invalid, heap)
+    }
+}
+
+/// Parses a Python `int()` bytes argument using ASCII whitespace rules.
+///
+/// Unlike `str`, bytes must not treat UTF-8 encodings of Unicode whitespace as
+/// separators. Failures repr the input as a bytes literal, matching CPython.
+fn parse_int_from_bytes(bytes: &[u8], base: u32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    let invalid = || ExcType::value_error_invalid_literal_for_int(base, bytes_repr(bytes));
+    match str::from_utf8(bytes.trim_ascii()) {
+        Ok(s) => parse_int_digits(s, base, &invalid, heap),
+        Err(_) => Err(invalid()),
+    }
+}
+
+/// Tracks what the previous character was while scanning an int literal, to
+/// enforce CPython's underscore rules: `_` allowed only between digits or
+/// directly after a base prefix, never leading, trailing, or doubled.
+enum IntScanState {
+    Start,
+    Prefix,
+    Digit,
+    Underscore,
+}
+
+/// Parses a whitespace-trimmed str/bytes int literal: sign, base prefix,
+/// underscore placement, digit limits, and BigInt promotion.
+fn parse_int_digits(
+    value: &str,
+    base: u32,
+    invalid: &impl Fn() -> RunError,
+    heap: &Heap<impl ResourceTracker>,
+) -> RunResult<Value> {
+    let (negative, body) = match value.strip_prefix(['+', '-']) {
+        Some(rest) => (value.starts_with('-'), rest),
+        None => (false, value),
+    };
+
+    // Resolve the effective base and strip any `0x`/`0o`/`0b` prefix. For
+    // `base=0` a leading zero *without* a prefix is only legal if every digit
+    // is zero (CPython rejects `010` as an ambiguous octal-looking literal).
+    let bytes = body.as_bytes();
+    let mut digits = body;
+    let mut effective_base = if base == 0 { 10 } else { base };
+    let mut error_if_nonzero = false;
+    if bytes.first() == Some(&b'0') {
+        let prefix_base = match bytes.get(1) {
+            Some(b'x' | b'X') => Some(16),
+            Some(b'o' | b'O') => Some(8),
+            Some(b'b' | b'B') => Some(2),
+            Some(_) if base == 0 => {
+                error_if_nonzero = true;
+                None
+            }
+            _ => None,
+        };
+        if let Some(prefix_base) = prefix_base
+            && (base == 0 || base == prefix_base)
+        {
+            effective_base = prefix_base;
+            digits = &body[2..];
+        }
+    }
+    let had_prefix = digits.len() != body.len();
+
+    // Validate digits and underscore placement, collecting the cleaned digits
+    // (no underscores) behind the sign. Untracked `String`, but bounded by the
+    // input which is itself an already-tracked string.
+    let mut cleaned = String::with_capacity(usize::from(negative) + digits.len());
+    if negative {
+        cleaned.push('-');
+    }
+    let mut state = if had_prefix {
+        IntScanState::Prefix
+    } else {
+        IntScanState::Start
+    };
+    for c in digits.chars() {
+        if c == '_' {
+            if !matches!(state, IntScanState::Digit | IntScanState::Prefix) {
+                return Err(invalid());
+            }
+            state = IntScanState::Underscore;
+        } else if c.is_digit(effective_base) {
+            cleaned.push(c);
+            state = IntScanState::Digit;
+        } else {
+            return Err(invalid());
+        }
+    }
+    // Must end on a digit: rejects empty input, a bare prefix/sign, and
+    // trailing underscores in one check.
+    if !matches!(state, IntScanState::Digit) {
+        return Err(invalid());
+    }
+    if error_if_nonzero && cleaned.bytes().any(|b| !matches!(b, b'0' | b'-')) {
+        return Err(invalid());
+    }
+
+    if let Ok(int) = i64::from_str_radix(&cleaned, effective_base) {
+        return Ok(Value::Int(int));
+    }
+    // CPython's int↔str digit limit applies only to bases that are not a
+    // power of two (where conversion cost is linear, not quadratic).
+    let digit_count = cleaned.len() - usize::from(negative);
+    if !effective_base.is_power_of_two() && digit_count > INT_MAX_STR_DIGITS {
+        return Err(ExcType::value_error_int_str_too_large(digit_count));
+    }
+    match BigInt::parse_bytes(cleaned.as_bytes(), effective_base) {
+        Some(bi) => Ok(LongInt::new(bi).into_value(heap)?),
+        // Unreachable in practice: every char was validated as a digit above.
+        None => Err(invalid()),
+    }
 }

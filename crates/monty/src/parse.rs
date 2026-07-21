@@ -6,10 +6,11 @@ use ruff_python_ast::{
     self as ast, BoolOp, CmpOp, ConversionFlag as RuffConversionFlag, ElifElseClause, Expr as AstExpr,
     InterpolatedStringElement, Keyword, Number, Operator as AstOperator, ParameterWithDefault, Stmt, UnaryOp,
     name::Name,
+    token::TokenKind,
     visitor::{Visitor, walk_expr},
 };
 use ruff_python_parser::parse_module;
-use ruff_text_size::{Ranged, TextRange};
+use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
     StackFrame,
@@ -153,6 +154,18 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
     parse_with_interner(code, filename, InternerBuilder::new(code))
 }
 
+/// Builds a [`CodeRange`] from an interned filename and a ruff range.
+///
+/// Free rather than a `Parser` method so a syntax error raised before the parser
+/// exists can be located the same way [`Parser::convert_range`] does.
+fn code_range(filename: StringId, range: TextRange) -> CodeRange {
+    CodeRange {
+        filename,
+        start_byte: range.start().into(),
+        end_byte: range.end().into(),
+    }
+}
+
 /// Parses code using a caller-provided interner seed.
 ///
 /// This enables incremental compilation flows (e.g. REPL) where existing
@@ -160,13 +173,22 @@ pub(crate) fn parse(code: &str, filename: &str) -> Result<ParseResult, ParseErro
 pub(crate) fn parse_with_interner(
     code: &str,
     filename: &str,
-    interner: InternerBuilder,
+    mut interner: InternerBuilder,
 ) -> Result<ParseResult, ParseError> {
-    let mut parser = Parser::new(code, filename, interner);
+    // Interned up front so a syntax error can be located without a `Parser`,
+    // leaving the parser to be built once, fully populated, after parsing.
+    let filename_id = interner.intern(filename);
     let parsed =
-        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), parser.convert_range(e.range())))?;
-    let module = parsed.into_syntax();
-    let nodes = parser.parse_statements(module.body)?;
+        parse_module(code).map_err(|e| ParseError::syntax(e.error.to_string(), code_range(filename_id, e.range())))?;
+    // Harvested before `into_syntax` drops the token stream.
+    let class_keyword_offsets = parsed
+        .tokens()
+        .iter()
+        .filter(|token| token.kind() == TokenKind::Class)
+        .map(Ranged::start)
+        .collect();
+    let mut parser = Parser::new(code, filename_id, interner, class_keyword_offsets);
+    let nodes = parser.parse_statements(parsed.into_syntax().body)?;
     Ok(ParseResult {
         nodes,
         interner: parser.interner,
@@ -187,16 +209,30 @@ pub struct Parser<'a> {
     /// Starts at MAX_NESTING_DEPTH and decrements on each nested level.
     /// When it reaches zero, we return a "Source is too deeply nested" syntax error.
     depth_remaining: u16,
+    /// Ascending source offsets of every `class` keyword, taken from the lexer.
+    ///
+    /// Ruff's AST is abstract — a `StmtClassDef` *is* a class statement, so it
+    /// never records where `class` sat, and its range starts at the first
+    /// decorator. CPython locates a statement at its keyword, so a decorated
+    /// class's traceback frame needs the concrete position. Read only by
+    /// [`Parser::class_keyword_range`]; `def`/`async def` will want the same
+    /// treatment if function decorators are supported.
+    class_keyword_offsets: Vec<TextSize>,
 }
 
 impl<'a> Parser<'a> {
-    fn new(code: &'a str, filename: &'a str, mut interner: InternerBuilder) -> Self {
-        let filename_id = interner.intern(filename);
+    fn new(
+        code: &'a str,
+        filename_id: StringId,
+        interner: InternerBuilder,
+        class_keyword_offsets: Vec<TextSize>,
+    ) -> Self {
         Self {
             code,
             filename_id,
             interner,
             depth_remaining: MAX_NESTING_DEPTH,
+            class_keyword_offsets,
         }
     }
 
@@ -679,16 +715,19 @@ impl<'a> Parser<'a> {
     /// expressions (`name = <expr>` / `name: T = <expr>`). Every member name is
     /// recorded in `members`, in source order, for namespace assembly.
     ///
-    /// `pass` and `...` are ignored; a leading docstring becomes a synthesized
-    /// `__doc__` member (defaulting to `None`). Inheritance/metaclass syntax
-    /// (`class Foo(Bar):`), class/method decorators, and anything else in the
-    /// body (arbitrary control flow, complex targets) are rejected with a
-    /// not-implemented error, reserving the syntax for later.
+    /// `pass` and `...` are ignored; a leading docstring becomes a `__doc__`
+    /// member. Class decorators are supported (enclosing scope, applied
+    /// bottom-up); inheritance, function/method decorators, and anything else in
+    /// the body are rejected as not-implemented, reserving the syntax for later.
     fn parse_class_def(&mut self, class: ast::StmtClassDef) -> Result<ParseNode, ParseError> {
-        let position = self.convert_range(class.range);
-        if !class.decorator_list.is_empty() {
-            return Err(ParseError::not_implemented("class decorators", position));
-        }
+        let position = self.class_keyword_range(&class);
+        // Parsed as ordinary expressions; the compiler emits the apply calls
+        // after building the class.
+        let decorators = class
+            .decorator_list
+            .into_iter()
+            .map(|d| self.parse_expression(d.expression))
+            .collect::<Result<Vec<_>, ParseError>>()?;
         // `class.arguments` carries base classes and metaclass keywords.
         if class
             .arguments
@@ -823,8 +862,41 @@ impl<'a> Parser<'a> {
             name,
             body,
             members,
+            decorators,
             position,
         })
+    }
+
+    /// The range of a `class` statement from the `class` keyword, excluding
+    /// decorators: ruff's `StmtClassDef::range` starts at the first decorator
+    /// where CPython starts at the keyword, which would otherwise show decorator
+    /// lines in a class-body traceback frame.
+    ///
+    /// The keyword is located from the lexer's tokens rather than by searching the
+    /// source text, so a `class` inside a comment or a decorator's string argument
+    /// cannot be mistaken for it. Offsets are ascending, so this class's keyword is
+    /// simply the first one at or after its final decorator.
+    fn class_keyword_range(&self, class: &ast::StmtClassDef) -> CodeRange {
+        let start = match class.decorator_list.last() {
+            // Undecorated: ruff's range already starts at the keyword.
+            None => class.range.start().into(),
+            Some(last_decorator) => {
+                let after_decorators = last_decorator.range.end();
+                let index = self.class_keyword_offsets.partition_point(|&o| o < after_decorators);
+                // Bounded by the name so a malformed lookup cannot borrow a later
+                // class's keyword; the fallback is unreachable (a decorated class
+                // always has a keyword in this window) but avoids a panic path.
+                self.class_keyword_offsets
+                    .get(index)
+                    .filter(|&&offset| offset < class.name.range.start())
+                    .map_or_else(|| class.range.start().into(), |&offset| offset.into())
+            }
+        };
+        CodeRange {
+            filename: self.filename_id,
+            start_byte: start,
+            end_byte: class.range.end().into(),
+        }
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope
@@ -1925,11 +1997,7 @@ impl<'a> Parser<'a> {
     }
 
     fn convert_range(&self, range: TextRange) -> CodeRange {
-        CodeRange {
-            filename: self.filename_id,
-            start_byte: range.start().into(),
-            end_byte: range.end().into(),
-        }
+        code_range(self.filename_id, range)
     }
 
     /// Decrements the depth remaining for nested parentheses.

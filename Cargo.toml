@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/monty",
+    "crates/monty-fs",
     "crates/monty-runtime",
     "crates/monty-proto",
     "crates/monty-pool",
@@ -48,6 +49,7 @@ lto = false
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
 monty = { path = "crates/monty", version = "0.0.19-beta.4" }
+monty-fs = { path = "crates/monty-fs", version = "0.0.19-beta.4" }
 monty-macros = { path = "crates/monty-macros", version = "0.0.19-beta.4" }
 monty-proto = { path = "crates/monty-proto", version = "0.0.19-beta.4" }
 monty-pool = { path = "crates/monty-pool", version = "0.0.19-beta.4" }

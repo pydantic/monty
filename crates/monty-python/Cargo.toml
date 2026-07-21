@@ -24,6 +24,7 @@ ahash = { workspace = true }
 monty-pool = { workspace = true }
 monty-proto = { workspace = true, features = ["python"] }
 monty = { workspace = true }
+monty-fs = { workspace = true }
 pyo3 = { workspace = true, features = ["indexmap", "generate-import-lib", "num-bigint"] }
 num-bigint = { workspace = true }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
