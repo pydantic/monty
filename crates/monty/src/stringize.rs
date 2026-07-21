@@ -1,16 +1,11 @@
 //! Rendering a ruff AST expression back to source text, the way CPython's
 //! PEP 563 stringizer does.
 //!
-//! The inverse of [`parse`](crate::parse): that module turns source into Monty's
-//! IR, this one turns a fragment of the AST back into the string a Python program
-//! would observe. Annotations are the only caller today — they are stored
-//! stringized rather than evaluated (see `limitations/typing.md`) — but the
-//! contract is "produce exactly what CPython's stringizer would", so any future
-//! stringization (function or module `__annotations__`) belongs here too.
-//!
-//! Unparsing rather than slicing the source is what makes `x: dict[str,int]`
-//! yield `'dict[str, int]'` on both interpreters; a slice would leak the original
-//! spacing, line breaks and quote style into the value.
+//! The inverse of [`parse`](crate::parse). Class annotations are the only caller
+//! today (they are stored stringized, not evaluated — see
+//! `limitations/typing.md`), but the contract is "match CPython's stringizer", so
+//! any future stringization belongs here. Unparsing rather than slicing the
+//! source is what makes `x: dict[str,int]` yield `'dict[str, int]'` on both.
 
 use ruff_python_ast::{
     self as ast, AtomicNodeIndex, Expr as AstExpr,
@@ -23,30 +18,19 @@ use ruff_source_file::LineEnding;
 
 /// Renders `annotation` to the text CPython's PEP 563 stringizer would produce.
 ///
-/// Takes `&mut` because canonicalising the literals rewrites them in place; the
-/// expression is not otherwise used after stringization.
-///
-/// ```ignore
-/// stringize_annotation(&mut expr)  // `dict[str,"Foo"]` -> `dict[str, 'Foo']`
-/// ```
+/// Takes `&mut` because canonicalising the literals rewrites them in place.
 pub(crate) fn stringize_annotation(annotation: &mut AstExpr) -> String {
-    // Neither generator mode matches CPython alone: `Mode::AstUnparse` normalises
-    // quotes but parenthesises tuple subscripts (`dict[(str, int)]`), while
-    // `Mode::Default` keeps subscripts but echoes the source literals. So use
-    // `Default` and canonicalise the literals first.
+    // Neither generator mode matches CPython alone: `AstUnparse` normalises quotes
+    // but parenthesises tuple subscripts (`dict[(str, int)]`), `Default` keeps
+    // subscripts but echoes the source literals. So canonicalise, then `Default`.
     CanonicalStringLiterals.visit_expr(annotation);
-    // `LineEnding::Lf` is pinned rather than defaulted: the default is
-    // platform-dependent, and Monty must stringize identically everywhere.
+    // `Lf` is pinned because the default is platform-dependent, and Monty must
+    // stringize identically everywhere.
     Generator::new(&Indentation::default(), LineEnding::Lf).expr(annotation)
 }
 
-/// Rewrites the string literals in an expression into the single canonical form
-/// CPython's stringizer produces, so unparsing matches it.
-///
-/// The generator echoes each literal roughly as written — every implicitly
-/// concatenated part separately, prefixes and triple quotes intact — where
-/// CPython rebuilds *one* literal from the value. Descends the whole expression,
-/// so `dict[str, "Foo"]` is normalised at any depth.
+/// Rewrites string literals into the single canonical form CPython produces,
+/// since the generator otherwise echoes them roughly as written.
 ///
 /// | annotation     | without this   | with it (= CPython) |
 /// | -------------- | -------------- | ------------------- |
@@ -57,11 +41,8 @@ pub(crate) fn stringize_annotation(annotation: &mut AstExpr) -> String {
 struct CanonicalStringLiterals;
 
 impl Transformer for CanonicalStringLiterals {
-    // Rebuilding is unconditional rather than reserved for the spellings that
-    // happen to diverge: the value is the truth and the spelling is noise, so
-    // there is no "unaffected" case to preserve. One path, not a rule plus
-    // exceptions — which is also why the whole rewrite lives here rather than
-    // being split with `visit_string_literal`.
+    // Rebuilding is unconditional: the value is the truth and the spelling noise,
+    // so there is no unaffected case to preserve.
     fn visit_expr(&self, expr: &mut AstExpr) {
         match expr {
             AstExpr::StringLiteral(s) => rebuild_string_literal(s),
@@ -72,8 +53,7 @@ impl Transformer for CanonicalStringLiterals {
     }
 
     // F-strings cannot be rebuilt from a value — the interpolations are live
-    // expressions — so only the flags are canonicalised. Walking the elements
-    // still reaches any literal nested in a format spec.
+    // expressions — so only the flags are canonicalised.
     fn visit_f_string(&self, f_string: &mut ast::FString) {
         f_string.flags = f_string
             .flags
@@ -83,18 +63,13 @@ impl Transformer for CanonicalStringLiterals {
     }
 }
 
-/// The flags CPython's stringizer effectively renders a `str` literal with:
-/// single-quoted and not triple-quoted, with a raw prefix folded into the value
-/// (`r"raw\d"` becomes `'raw\\d'`) since the generator re-escapes what the raw
-/// prefix used to cover.
+/// The flags CPython effectively renders a `str` literal with: single-quoted, not
+/// triple-quoted, raw prefix folded into the value (the generator re-escapes what
+/// it covered). Quote style is a request — the generator still switches to double
+/// quotes when the value contains a single one, as CPython does.
 ///
-/// A `u` prefix is *kept*, so canonical is not the same as bare. That asymmetry
-/// is not a quirk to encode but a direct consequence of CPython's AST: `u` is the
-/// only prefix it retains (as `Constant.kind`, which its unparser re-emits),
-/// because raw-ness was already consumed by the parser and is not representable.
-///
-/// The quote style is a request, not a guarantee — the generator still switches
-/// to double quotes when the value contains a single one, matching CPython.
+/// `u` is kept because it is the only prefix CPython's AST retains (as
+/// `Constant.kind`); raw-ness is consumed by its parser and cannot come back.
 fn canonical_string_flags(flags: ast::StringLiteralFlags) -> ast::StringLiteralFlags {
     let prefix = match flags.prefix() {
         StringLiteralPrefix::Unicode => StringLiteralPrefix::Unicode,
@@ -106,19 +81,17 @@ fn canonical_string_flags(flags: ast::StringLiteralFlags) -> ast::StringLiteralF
         .with_triple_quotes(TripleQuotes::No)
 }
 
-/// Replaces a `str` literal with the single canonical literal for its value,
-/// which is what collapses `"foo" "bar"` into `'foobar'`.
+/// Replaces a `str` literal with the canonical literal for its value, collapsing
+/// `"foo" "bar"` into `'foobar'`.
 ///
-/// This is CPython's model rather than a translation of it. There, a literal
-/// reaches the unparser as a `Constant` holding a `str`, because the parser has
-/// already folded concatenation and processed the prefix — so it can simply
-/// write `repr(value)`. Ruff keeps the spelling (a formatter needs it), so the
-/// discard CPython's parser performed happens here instead.
+/// CPython needs no equivalent: its parser already folded concatenation and
+/// consumed the prefix, so its unparser just writes `repr(value)`. Ruff keeps the
+/// spelling — a formatter needs it — so the discard happens here.
 fn rebuild_string_literal(expr: &mut ast::ExprStringLiteral) {
     let canonical = ast::StringLiteral {
         range: expr.range,
         node_index: AtomicNodeIndex::default(),
-        // `to_str` is the concatenation of every part, and the identity for one.
+        // `to_str` concatenates every part, and is the identity for one.
         value: expr.value.to_str().into(),
         flags: canonical_string_flags(expr.value.first_literal_flags()),
     };
@@ -127,10 +100,9 @@ fn rebuild_string_literal(expr: &mut ast::ExprStringLiteral) {
 
 /// Collapses `f"x" "y"` into the single f-string `f'xy'`.
 ///
-/// Unlike the `str` case the parts are not all the same kind — a concatenation
-/// mixes plain literals with f-strings — so the merge splices their *elements*
-/// into one element list rather than joining a string. A plain part contributes
-/// one literal element; an f-string part contributes all of its own.
+/// Splices element lists rather than joining a string, because the parts are not
+/// all the same kind: a plain part contributes one literal element, an f-string
+/// part contributes all of its own.
 fn merge_f_string_parts(expr: &mut ast::ExprFString) {
     let mut elements: Vec<ast::InterpolatedStringElement> = Vec::new();
     // The first f-string part's flags stand for the whole.
@@ -152,8 +124,7 @@ fn merge_f_string_parts(expr: &mut ast::ExprFString) {
             }
         }
     }
-    // `is_implicit_concatenated` guarantees at least one f-string part, since a
-    // concatenation with none would not have parsed as an f-string.
+    // Unreachable: a concatenation with no f-string part would not parse as one.
     let Some(flags) = flags else { return };
     expr.value = ast::FStringValue::single(ast::FString {
         range: expr.range,

@@ -42,11 +42,9 @@ pub const MAX_NESTING_DEPTH: u16 = 30;
 /// `from __future__ import ...` features whose semantics Monty already provides,
 /// so importing them is a no-op rather than an error.
 ///
-/// All but the last became mandatory in Python 3.7 or earlier, so they are inert
-/// in CPython too — the imports survive only in code that once supported older
-/// versions. `annotations` is different in kind: it is still meaningful in
-/// CPython, and is a no-op here only because Monty stringizes annotations
-/// unconditionally (see `limitations/typing.md`), which is what it asks for.
+/// All but the last are inert in CPython too, having become mandatory by 3.7.
+/// `annotations` is still meaningful there, and a no-op here only because Monty
+/// stringizes unconditionally (see `limitations/typing.md`) — what it asks for.
 const SUPPORTED_FUTURES: [&str; 9] = [
     "nested_scopes",
     "generators",
@@ -59,16 +57,11 @@ const SUPPORTED_FUTURES: [&str; 9] = [
     "annotations",
 ];
 
-/// `from __future__ import ...` features Monty does not implement, which are
-/// rejected rather than silently ignored — importing one asks for behaviour the
-/// sandbox will not deliver.
-///
-/// `barry_as_FLUFL` (PEP 401) makes `<>` the inequality operator and turns `!=`
-/// into a `SyntaxError`. Monty parses neither differently.
-///
-/// Together with [`SUPPORTED_FUTURES`] this must cover CPython's
-/// `__future__.all_feature_names`, since any name in neither list is reported as
-/// undefined.
+/// `from __future__ import ...` features Monty does not implement, rejected
+/// rather than silently ignored. `barry_as_FLUFL` (PEP 401) makes `<>` the
+/// inequality operator and `!=` a `SyntaxError`; Monty parses neither
+/// differently. With [`SUPPORTED_FUTURES`] this must cover CPython's
+/// `all_feature_names` — a name in neither is reported as undefined.
 const UNSUPPORTED_FUTURES: [&str; 1] = ["barry_as_FLUFL"];
 
 /// A parameter in a function signature with optional default value.
@@ -607,14 +600,11 @@ impl<'a> Parser<'a> {
                 ..
             }) => {
                 let position = self.convert_range(range);
-                // Compiler directives, not real imports, so they bind nothing and
-                // lower to a no-op — real-world modules then import cleanly. A
-                // feature Monty does not implement is rejected rather than
-                // ignored, so the import never quietly fails to do what it says.
-                //
-                // `level == 0` matters: `from .__future__ import x` is an ordinary
-                // relative import of a module that happens to share the name, and
-                // must fall through to the `ImportError` below.
+                // Compiler directives, not real imports: they bind nothing and lower
+                // to a no-op, so real-world modules import cleanly. Anything Monty
+                // does not implement is rejected rather than quietly failing to do
+                // what it says. `level == 0` keeps `from .__future__ import x` an
+                // ordinary relative import, falling through to the `ImportError`.
                 if level == 0 && module.as_ref().is_some_and(|m| m.as_str() == "__future__") {
                     return match names
                         .iter()
@@ -940,10 +930,9 @@ impl<'a> Parser<'a> {
         let annotations_target = Identifier::new(self.interner.intern("__annotations__"), position);
         let body_binds_annotations = members.iter().any(|m| m.name_id == annotations_target.name_id);
         if body_binds_annotations && !annotations.is_empty() {
-            // Being last, the synthetic assignment would silently clobber the
-            // body's own binding and lose these entries. CPython merges instead —
-            // storing into whatever the name holds, which succeeds for a dict and
-            // raises `TypeError` otherwise. Rejected rather than dropped quietly.
+            // Being last, the synthetic assignment would clobber the body's own
+            // binding and lose these entries. CPython stores into whatever the name
+            // holds instead — merging into a dict, `TypeError` otherwise.
             return Err(ParseError::not_implemented(
                 "assigning `__annotations__` in a class body with annotated names",
                 position,

@@ -1,13 +1,10 @@
-# Monty stores class annotations in stringized form, unconditionally. Using
-# `from __future__ import annotations` makes CPython do the same, so these
-# asserts hold on both interpreters. Without the import, CPython 3.14 would
-# store the evaluated objects instead (PEP 649) — a documented divergence.
+# Monty stringizes class annotations unconditionally; the `__future__` import
+# makes CPython do the same, so these asserts hold on both. Without it CPython
+# 3.14 stores evaluated objects (PEP 649).
 #
-# Stringization is a known temporary divergence (see limitations/typing.md).
-# If Monty ever matches PEP 649, this file changes as follows: the `__future__`
-# import at the top goes away, and every assert comparing a value to a string
-# (`== 'int'`, `== 'list[int]'`, ...) becomes an identity check against the type
-# object. The asserts on annotation *keys* and their order stay as they are.
+# Stringization is a known temporary divergence (see limitations/typing.md). If
+# Monty ever matches PEP 649, the import goes away and every `== 'int'`-style
+# assert becomes an identity check; the key/order asserts stay.
 from __future__ import annotations
 
 
@@ -42,8 +39,7 @@ assert Container.__annotations__['mapping'] == 'dict[str, int]'
 
 
 # === Annotations are normalized, not captured as raw source text ===
-# Both interpreters stringize by unparsing the expression, so the original
-# spacing and line breaks are discarded rather than embedded in the value.
+# Both unparse the expression, so spacing and line breaks are discarded.
 class Spacing:
     a: list [ int ]  # fmt: skip
     b: dict[str,int]  # fmt: skip
@@ -65,9 +61,7 @@ class Quoted:
     c: dict[str, "Foo"]  # fmt: skip
     # f-strings carry their own quote flags, so they normalize separately.
     d: f"int"  # fmt: skip
-    # A literal containing a single quote keeps its double quotes rather than
-    # becoming invalid — the unparser's escape-minimizing choice wins over the
-    # normalization, on both interpreters.
+    # A single quote inside keeps the double quotes: escape-minimizing wins.
     e: "it's"  # fmt: skip
 
 
@@ -79,9 +73,8 @@ assert Quoted.__annotations__['e'] == '"it\'s"'
 
 
 # === Literals are rebuilt canonically, not echoed part-by-part ===
-# CPython's stringizer renders one canonical literal per annotation, so
-# implicitly concatenated parts merge and a raw prefix folds into the value.
-# A `u` prefix survives, though — canonical is not the same as bare.
+# Concatenated parts merge and a raw prefix folds into the value. A `u` prefix
+# survives, though — canonical is not the same as bare.
 class Literals:
     a: 'foo' 'bar'  # fmt: skip
     b: f"x" "y"  # fmt: skip
@@ -115,14 +108,10 @@ c = C()
 assert type(c).__annotations__['x'] == 'int'
 
 
-# === What __annotations__ unlocks: field discovery driven by the annotations ===
-# A class transformer written in sandboxed Python that discovers its own fields
-# — the pattern `@dataclass` automates.
-#
-# Note it reads only `list(cls.__annotations__)` — the keys and their order.
-# The annotation *values* are never inspected, so this transformer is unaffected
-# by whether they are strings or type objects. CPython's own `@dataclass` is the
-# same, save for recognising `ClassVar`/`InitVar`, which it matches textually.
+# === What __annotations__ unlocks: a transformer discovering its own fields ===
+# It reads only the keys and their order, never the values, so it is unaffected
+# by stringization — as is CPython's own `@dataclass`, save for `ClassVar`/
+# `InitVar`, which it matches textually.
 def mini_dataclass(cls):
     fields = list(cls.__annotations__)
 
