@@ -564,6 +564,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(value) => value.py_is_iterable(vm),
             Self::List(value) => value.py_is_iterable(vm),
             Self::ListIterator(value) => value.py_is_iterable(vm),
+            Self::CallableIterator(value) => value.py_is_iterable(vm),
             Self::Tuple(value) => value.py_is_iterable(vm),
             Self::NamedTuple(value) => value.py_is_iterable(vm),
             Self::Dict(value) => value.py_is_iterable(vm),

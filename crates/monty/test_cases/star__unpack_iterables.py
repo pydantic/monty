@@ -27,6 +27,19 @@ assert {*range(3)} == {0, 1, 2}
 assert {*b'ab'} == {97, 98}
 assert {*d.keys()} == {'a', 'b'}
 
+# === Iterators, including the two-argument `iter()` form ===
+assert [*iter([1, 2])] == [1, 2]
+
+_calls: list[int] = []
+
+
+def _step() -> int:
+    _calls.append(1)
+    return len(_calls)
+
+
+assert [*iter(_step, 3)] == [1, 2]
+
 # === Mixed with other elements, and repeated ===
 assert [0, *range(1, 3), 3] == [0, 1, 2, 3]
 assert [*range(2), *range(2)] == [0, 1, 0, 1]
@@ -189,6 +202,12 @@ def _varargs(*args: object) -> object:
 # Built fresh per probe so a one-shot iterator is not exhausted by an earlier form.
 def _probe_values() -> list[object]:
     _d = {'a': 1, 'b': 2}
+    _seen: list[int] = []
+
+    def _probe_step() -> int:
+        _seen.append(1)
+        return len(_seen)
+
     return [
         [1, 2],
         (1, 2),
@@ -204,6 +223,7 @@ def _probe_values() -> list[object]:
         'a' + 'b',
         range(2),
         iter([1, 2]),
+        iter(_probe_step, 3),
         sys.version_info,
         1,
         2**70,

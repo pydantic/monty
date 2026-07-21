@@ -68,6 +68,10 @@ impl HeapItem for CallableIterator {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, CallableIterator> {
+    fn py_is_iterable(&self, _: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
         Type::CallableIterator
     }
