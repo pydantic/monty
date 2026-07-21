@@ -193,6 +193,31 @@ result
     );
 }
 
+/// Compact structural identities remain immediate Python integers.
+#[test]
+fn compact_id_does_not_allocate() {
+    let run = MontyRun::new("id(42)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::new().max_allocations(0);
+    let result = run
+        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+
+    assert!(matches!(result, MontyObject::Int(_)));
+}
+
+/// Identity integers wider than `i64` allocate a tracked `LongInt`.
+#[test]
+fn wide_id_respects_allocation_limit() {
+    let run = MontyRun::new("id(1.5)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::new().max_allocations(0);
+    let exc = run
+        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(exc.message(), Some("allocation limit exceeded: 1 > 0"));
+}
+
 #[test]
 fn allocation_limit_not_exceeded() {
     // Single-digit strings are interned (no allocation), so this uses minimal heap

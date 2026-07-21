@@ -173,8 +173,12 @@ operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
 
 Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
 kept in memory and discarded at the end of the feed). Mount I/O is serviced
-on the host side of the pool, so mounts work even for remote workers. OS
-calls mounts don't cover can be handled with the `os` callback:
+on the host side of the pool, so mounts work even for remote workers.
+
+`feedRun` answers every OS call automatically: mounts get first refusal, then
+the `os` callback. `feedStart` answers none — a mounted read surfaces as a
+`FunctionSnapshot` with `isOsFunction` set, and `resumeAuto()` is what consults
+the mounts and `os`. OS calls mounts don't cover reach the `os` callback:
 
 ```ts
 import { NOT_HANDLED } from '@pydantic/monty'

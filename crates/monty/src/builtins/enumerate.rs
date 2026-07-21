@@ -5,11 +5,11 @@ use smallvec::smallvec;
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData},
     resource::ResourceTracker,
-    types::{List, MontyIter, allocate_tuple},
+    types::{List, allocate_tuple},
     value::Value,
 };
 
@@ -20,10 +20,11 @@ use crate::{
 pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterable, start) = extract_enumerate_args(args, vm)?;
     // Guard `start` before building the iterator: a non-iterable `iterable`
-    // errors out of `MontyIter::new`, and a heap-backed start must not leak.
+    // errors out of `py_iter`, and a heap-backed start must not leak.
     defer_drop!(start, vm);
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     // Get start index (default 0)
     let mut index: i64 = match start {
@@ -44,7 +45,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues)
     let mut result_guard = DropGuard::new(result, vm);
     let (result, vm) = result_guard.as_parts_mut();
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         // Create tuple (index, item)
         let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap)?;
         result.push(tuple_val);

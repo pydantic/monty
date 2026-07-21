@@ -50,7 +50,7 @@ test('a snapshot resumes at most once', async () => {
   }
 })
 
-test('os handler is auto-dispatched between snapshots', async () => {
+test('os handler is used by resumeAuto, not auto-dispatched', async () => {
   const session = await pool().checkout()
   try {
     const snap = await session.feedStart("from pathlib import Path\nPath('/data/x').read_text()", {
@@ -59,8 +59,12 @@ test('os handler is auto-dispatched between snapshots', async () => {
         return 'file body'
       },
     })
-    t.true(snap instanceof MontyComplete)
-    t.is((snap as MontyComplete).output, 'file body')
+    // feedStart surfaces every OS call; the handler only backs resumeAuto
+    t.true(snap instanceof FunctionSnapshot)
+    t.true((snap as FunctionSnapshot).isOsFunction)
+    const done = (await (snap as FunctionSnapshot).resumeAuto()) as MontyComplete
+    t.true(done instanceof MontyComplete)
+    t.is(done.output, 'file body')
   } finally {
     await session.close()
   }
@@ -198,11 +202,14 @@ test('mounts are re-supplied to loadSnapshot', async () => {
     await session.close()
   }
 
-  // re-supplied: the mounted read is served and execution completes
+  // re-supplied: the mounted read surfaces, and resumeAuto serves it from the
+  // rebuilt mount table
   {
     const session = await pool().checkout()
     const snap = (await session.loadSnapshot(blob, { mount })) as FunctionSnapshot
-    const done = (await snap.resume(null)) as MontyComplete
+    const read = (await snap.resume(null)) as FunctionSnapshot
+    t.true(read.isOsFunction)
+    const done = (await read.resumeAuto()) as MontyComplete
     t.is(done.output, 'hi')
     await session.close()
   }

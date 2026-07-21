@@ -226,6 +226,7 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::Bytes,
             MontyType::List,
             MontyType::ListIterator,
+            MontyType::CallableIterator,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -438,6 +439,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),
         MontyType::ListIterator => get_list_iterator_type(py).map(|b| b.clone().unbind()),
+        MontyType::CallableIterator => get_callable_iterator_type(py).map(|b| b.clone().unbind()),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),
@@ -465,6 +467,21 @@ fn get_list_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
     TYPE.get_or_try_init(py, || Ok(PyList::empty(py).try_iter()?.get_type().into_any().unbind()))
         .map(|ty| ty.bind(py))
+}
+
+/// Returns CPython's private `callable_iterator` type, which — like
+/// `list_iterator` — is not reachable as a `builtins` attribute, so it is taken
+/// from the type of a throwaway two-argument `iter()`.
+fn get_callable_iterator_type(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
+    static TYPE: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
+    TYPE.get_or_try_init(py, || {
+        // `iter(callable, sentinel)` never calls `callable` until advanced, so a
+        // trivial lambda that is never invoked is enough.
+        let callable = import_builtins(py)?.getattr(py, "id")?;
+        let iterator = import_builtins(py)?.getattr(py, "iter")?.call1(py, (callable, 0))?;
+        Ok(iterator.bind(py).get_type().into_any().unbind())
+    })
+    .map(|ty| ty.bind(py))
 }
 
 /// Converts a native Python `datetime.timedelta` to Monty's carrier representation.

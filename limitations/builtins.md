@@ -7,7 +7,7 @@ a host Python.
 ## Implemented builtin functions
 
 `abs`, `all`, `any`, `bin`, `chr`, `divmod`, `enumerate`, `filter`,
-`getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `len`, `map`,
+`getattr`, `hasattr`, `hash`, `hex`, `id`, `isinstance`, `iter`, `len`, `map`,
 `max`, `min`, `next`, `oct`, `open`, `ord`, `pow`, `print`, `repr`,
 `reversed`, `round`, `setattr`, `sorted`, `sum`, `type`, `zip`.
 
@@ -28,7 +28,7 @@ These raise `NameError`:
 - **Decorators / descriptors**: `classmethod`, `staticmethod`, `property`,
   `super`. (`@property` on functions is not recognized; use a method.)
 - **Construction / coercion**: `bytearray`, `complex`, `memoryview`,
-  `object`, `iter`, `format`, `ascii`.
+  `object`, `format`, `ascii`.
 - **Other**: `callable`, `delattr`, `issubclass`, `aiter`, `anext`.
 
 `super()` is the biggest practical omission — combined with the lack of
@@ -61,6 +61,7 @@ mechanism beyond dataclass field inheritance.
   `list`, ...), a built-in exception class, a sandbox-defined class (see
   [classes.md](classes.md)), or a tuple of those. Passing a host-supplied
   dataclass / namedtuple as the second argument raises `TypeError`.
+- **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — three-argument form requires all integers and
   rejects negative exponents with `ValueError`. Exponents greater than
   `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).

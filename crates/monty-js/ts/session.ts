@@ -27,6 +27,7 @@ import type {
   NativeFutureResult,
   NativeTurn,
   OkTurn,
+  NotMountedTurn,
   OsCallTurn,
   ResolveFuturesTurn,
 } from './native.js'
@@ -94,9 +95,8 @@ export interface FeedStartOptions {
   printCallback?: PrintCallback
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
-  /** Handler for OS calls not covered by mounts; auto-dispatched between
-   *  snapshots (and used by `resumeAuto()`). Omit to surface OS calls as
-   *  snapshots instead. */
+  /** Handler for OS calls not covered by mounts. Consulted only by
+   *  `resumeAuto()` — `feedStart` always surfaces OS calls as snapshots. */
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
@@ -116,7 +116,7 @@ export interface LoadSnapshotOptions {
    * the previous process; resolve it manually with `resume([...])`.
    */
   externalLookup?: Record<string, unknown>
-  /** Handler for OS calls, auto-dispatched as in `feedStart`. */
+  /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
 }
 
@@ -218,11 +218,12 @@ export class MontySession {
    * while (!(snap instanceof MontyComplete)) snap = await snap.resumeAuto()
    * ```
    *
-   * Unlike `feedRun`, `externalLookup` is *not* consulted during this initial
-   * drive — external calls and name lookups are still surfaced as snapshots; it
-   * is only captured for later `resumeAuto()` calls. An `os` handler still
-   * auto-dispatches uncovered OS calls until the next non-OS event. Use
-   * `snapshot.dump()` to checkpoint the worker and `loadSnapshot` to restore it.
+   * Unlike `feedRun`, nothing is answered during this drive: external calls,
+   * name lookups and OS calls are all surfaced as snapshots, so even a
+   * mount-covered file read comes back as one. `externalLookup` / `os` are
+   * captured for later `resumeAuto()` calls, which also consult the feed's
+   * mounts. Use `snapshot.dump()` to checkpoint the worker and `loadSnapshot`
+   * to restore it.
    */
   async feedStart(code: string, options: FeedStartOptions = {}): Promise<Snapshot> {
     this.ensureUsable()
@@ -513,8 +514,15 @@ class TurnAnswerer {
     return this.native.resumeReturn(returned, onPrint)
   }
 
-  /** Dispatches an OS call to the `os` callback (or its default error). */
+  /**
+   * Answers an OS call: the feed's mounts get first refusal, then the `os`
+   * callback, then the sandbox's own no-handler default.
+   */
   async answerOsCall(call: OsCallTurn, onPrint: PrintCallback): Promise<object> {
+    const mounted = (await this.native.resumeFromMounts(onPrint)) as NativeTurn | NotMountedTurn
+    if (mounted.kind !== 'notMounted') {
+      return mounted
+    }
     if (this.os === undefined) {
       return await this.native.resumeNotHandled(onPrint)
     }
@@ -622,11 +630,10 @@ class PrintTarget {
 }
 
 /**
- * Drives a `feedStart` / `loadSnapshot` chain: runs each protocol turn,
- * auto-dispatches OS calls through the `os` handler (until a non-OS event),
- * and turns the result into the next [`Snapshot`]. One driver is shared across
- * a snapshot and every snapshot its `resume` produces, so they all answer the
- * same worker with the same print sink.
+ * Drives a `feedStart` / `loadSnapshot` chain: runs each protocol turn and
+ * turns the result into the next [`Snapshot`], answering nothing itself.
+ * One driver is shared across a snapshot and every snapshot its `resume`
+ * produces, so they all answer the same worker with the same print sink.
  */
 class SnapshotDriver {
   /** Exposed so the session's first turn can stream prints through it. */
@@ -641,7 +648,7 @@ class SnapshotDriver {
     this.onPrint = printTarget.write.bind(printTarget)
   }
 
-  /** Resolves a turn (after auto-dispatching OS calls) to the next snapshot. */
+  /** Resolves a turn to the next snapshot, answering nothing automatically. */
   async advance(turn: NativeTurn): Promise<Snapshot> {
     for (;;) {
       switch (turn.kind) {
@@ -659,13 +666,9 @@ class SnapshotDriver {
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
         case 'osCall':
-          // With no os handler an OS call surfaces as a snapshot; otherwise it
-          // is auto-dispatched through the same path `resumeAuto` uses.
-          if (this.answerer.os === undefined) {
-            return new FunctionSnapshot(this, turn, true)
-          }
-          turn = (await this.answerer.answerOsCall(turn, this.onPrint)) as NativeTurn
-          continue
+          // Every OS call surfaces; mounts and the `os` callback are consulted
+          // only by `resumeAuto`.
+          return new FunctionSnapshot(this, turn, true)
         case 'functionCall':
           return new FunctionSnapshot(this, turn, false)
         case 'nameLookup':

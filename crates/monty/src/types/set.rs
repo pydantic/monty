@@ -3,7 +3,7 @@ use std::{cell::Cell, fmt::Write, mem};
 use hashbrown::HashTable;
 use smallvec::SmallVec;
 
-use super::{MontyIter, PyTrait};
+use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -256,7 +256,7 @@ impl SetStorage {
 
     /// Returns the value at the given index, if valid.
     ///
-    /// Used by MontyIter for index-based iteration.
+    /// Used by Python iterator objects for index-based iteration.
     pub(crate) fn value_at(&self, index: usize) -> Option<&Value> {
         self.entries.get(index).map(|e| &e.value)
     }
@@ -323,7 +323,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 /// **Mutation policy.** The initial length is captured at construction. If
 /// the set's size changes between [`next`](Self::next) calls, the next step
 /// returns `RuntimeError: Set changed size during iteration` (matching
-/// CPython and [`MontyIter`]'s set behavior).
+/// CPython and Monty's set-iterator behavior).
 pub(crate) struct SetIter<'a, 'h> {
     storage: &'a HeapRead<'h, SetStorage>,
     index: usize,
@@ -682,29 +682,17 @@ impl Set {
         Ok(Value::Ref(heap_id))
     }
 
-    /// Creates a set from a MontyIter, adding elements one by one.
-    ///
-    /// Unlike list/tuple which can just collect into a Vec, sets need to add
-    /// each element individually to handle duplicates and compute hashes.
-    fn from_iterator(iter: MontyIter, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        defer_drop_mut!(iter, vm);
-        // `preallocation_hint` validates the requested capacity against the
-        // resource tracker and clamps it so an attacker-controlled iterable
-        // length cannot drive an unbounded native pre-allocation.
-        let mut set = Self::with_capacity(iter.preallocation_hint(mem::size_of::<SetEntry>(), vm)?);
-        while let Some(item) = iter.for_next(vm)? {
+    /// Creates a set from an iterable value, adding and hashing items incrementally.
+    fn from_iterable(iterable: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+        let iterator = iterable.into_py_iter(vm)?;
+        defer_drop!(iterator, vm);
+        let mut iterator = iterator.read(vm);
+        let hint = iterator.iter_size_hint(vm);
+        let capacity = checked_preallocation_hint(hint, mem::size_of::<SetEntry>(), vm.heap.tracker())?;
+        let mut set = Self::with_capacity(capacity);
+        while let Some(item) = iterator.py_next(vm)? {
             set.add(item, vm)?;
         }
-        Ok(set)
-    }
-
-    /// Creates a set from an iterable value.
-    ///
-    /// This is a convenience method used by helper methods that need to convert
-    /// arbitrary iterables to sets. It uses `MontyIter` internally.
-    fn from_iterable(iterable: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
-        let iter = MontyIter::new(iterable, vm)?;
-        let set = Self::from_iterator(iter, vm)?;
         Ok(set)
     }
 }

@@ -706,10 +706,4 @@ fn os_call_conversion_rejects_invalid_payloads() {
         OsFunctionCall::try_from(missing_default),
         Err(ProtoConvertError::MissingField("Getenv.default"))
     ));
-    // A consumed re-announcement carries no call — receivers must match it
-    // before converting.
-    assert!(matches!(
-        OsFunctionCall::try_from(pb::os_call::Call::Consumed(pb::Unit {})),
-        Err(ProtoConvertError::InvalidValue { .. })
-    ));
 }

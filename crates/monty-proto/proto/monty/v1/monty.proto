@@ -299,7 +299,8 @@ message ResourceLimits {
 // ============================================================================
 
 // Outcome of an external function / OS call, decided by the parent. Mirrors
-// monty's `ExtFunctionResult`.
+// monty's `ExtFunctionResult`, plus `not_handled` (which only the child can
+// resolve, against its suspended call).
 message ExtFunctionResult {
   oneof kind {
     // The call returned this value.
@@ -311,6 +312,11 @@ message ExtFunctionResult {
     uint32 future = 3;
     // No handler exists for this name — the child raises NameError.
     string not_found = 4;
+    // No handler accepted this OS call — the child raises the call's own
+    // no-handler default (PermissionError naming the path for filesystem
+    // calls, RuntimeError for the rest). Only valid answering an `OsCall`
+    // suspension; the child computes it from its retained call payload.
+    Unit not_handled = 5;
   }
 }
 
@@ -504,9 +510,10 @@ message FunctionCall {
 // file_handle); a mismatched result becomes a Python-level error inside the
 // sandbox.
 //
-// A parent with no handler should answer `ResumeCall` with the call's
-// not-handled error: PermissionError naming the path for filesystem calls,
-// RuntimeError for the rest — see monty's `OsFunctionCall::on_no_handler`.
+// A parent with no handler should answer `ResumeCall` with
+// `ExtFunctionResult.not_handled`: the child raises the call's own default
+// (PermissionError naming the path for filesystem calls, RuntimeError for
+// the rest — monty's `OsFunctionCall::on_no_handler`).
 message OsCall {
   uint32 call_id = 1;
 
@@ -540,11 +547,6 @@ message OsCall {
     Unit date_today = 23;   // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
-
-    // Re-announced after `Load`: the argument payload was consumed when the
-    // call was first announced, before the dump was taken. The parent must
-    // answer from its own records (or with a not-handled error).
-    Unit consumed = 25;
   }
 
   message TextWrite {

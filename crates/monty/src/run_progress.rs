@@ -258,14 +258,19 @@ impl<T: ResourceTracker> OsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
-    /// Takes the [`OsFunctionCall`] out by value, leaving an
-    /// [`OsFunctionCall::Used`] placeholder so the host can dispatch the
-    /// call without cloning large `WriteText` / `WriteBytes` payloads.
-    /// `self` is still safe to call [`Self::resume`] on; the placeholder
-    /// must not be inspected.
-    #[must_use]
-    pub fn take_function_call(&mut self) -> OsFunctionCall {
-        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    /// Dispatches the call to `handler` and resumes execution with its result.
+    ///
+    /// `handler` receives the [`OsFunctionCall`] by value, so large
+    /// `WriteText` / `WriteBytes` payloads move into the host without
+    /// cloning. Prefer this over reading [`Self::function_call`] and calling
+    /// [`Self::resume`] separately when the handler consumes the call.
+    pub fn resume_with(
+        self,
+        print: PrintWriter<'_>,
+        handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+    ) -> Result<RunProgress<T>, MontyException> {
+        let result = handler(self.function_call);
+        self.snapshot.run(result, print)
     }
 
     /// Returns a reference to the resource tracker.

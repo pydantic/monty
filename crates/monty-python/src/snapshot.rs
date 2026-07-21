@@ -15,14 +15,14 @@
 //! owned, freely-copyable state: only one suspension is live per session, each
 //! snapshot resumes at most once, and `resume` advances that worker forward.
 //!
-//! When a caller supplies an `os=` handler, OS calls the mounts don't cover are
-//! auto-dispatched through it (reusing the `feed_run` path) until the next
-//! non-OS event, matching the old behaviour. Mounts are fixed for the whole
-//! feed (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
-//! suspended feed with `load_snapshot` re-establishes those mounts — the
-//! caller re-supplies them (they are never part of the dump) and the pool
-//! services the restored feed's mount-covered file access on the parent side
-//! exactly as before the dump.
+//! Every suspension surfaces, OS calls included — `feed_start` never answers
+//! one for you, so a mounted file read comes back as a `FunctionSnapshot` with
+//! `is_os_function` set. The captured `external_lookup=` / `os=` and the feed's
+//! mounts are consulted only by `resume_auto`, which offers an OS call to the
+//! mounts first and falls back to `os=`. Mounts are fixed for the whole feed
+//! (passed to `feed_start`), so `resume` takes no `mount=`. Restoring a
+//! suspended feed with `load_snapshot` re-establishes those mounts — the caller
+//! re-supplies them, as they are never part of the dump.
 
 use std::{
     convert::Infallible,
@@ -66,8 +66,8 @@ use crate::{
 /// `feed_start` / `load_snapshot` and a session-persistent pool of pending
 /// coroutine externals: these back [`resume_auto`](PyFunctionSnapshot::resume_auto),
 /// which answers each suspension automatically instead of surfacing it to the
-/// caller. Plain `resume(...)` ignores `external_lookup` and takes its own
-/// per-call `os=`, so these fields only matter to `resume_auto`.
+/// caller. Plain `resume(...)` takes an explicit answer, so these fields only
+/// matter to `resume_auto`.
 pub(crate) struct DriveContext {
     checkout: SharedCheckout,
     dc_registry: DcRegistry,
@@ -76,10 +76,8 @@ pub(crate) struct DriveContext {
     /// `external_lookup=` captured at `feed_start` / `load_snapshot`; consulted
     /// only by `resume_auto` (plain `resume` never looks names up here).
     external_lookup: Option<Py<PyDict>>,
-    /// `os=` captured at `feed_start` / `load_snapshot`; used by `resume_auto`
-    /// and by the initial feed drive's OS auto-dispatch. Plain
-    /// `resume(*, os=None)` keeps its per-call argument and never falls back to
-    /// this.
+    /// `os=` captured at `feed_start` / `load_snapshot`; consulted only by
+    /// `resume_auto`, and only for OS calls this feed's mounts don't cover.
     os: Option<Py<PyAny>>,
     /// Pending coroutine externals spawned by async `resume_auto`, keyed by
     /// `call_id`. `Arc` so every `clone_ref`'d snapshot of one session shares a
@@ -120,11 +118,6 @@ impl DriveContext {
             pending_futures: Arc::clone(&self.pending_futures),
         }
     }
-
-    /// Clones the captured `os=` handle for a per-drive `os` argument.
-    fn clone_os(&self, py: Python<'_>) -> Option<Py<PyAny>> {
-        self.os.as_ref().map(|o| o.clone_ref(py))
-    }
 }
 
 // =============================================================================
@@ -132,9 +125,9 @@ impl DriveContext {
 // =============================================================================
 
 /// Runs the first feed turn synchronously and returns the resulting snapshot
-/// (or [`MontyComplete`]). `external_lookup` is stored on the [`DriveContext`]
-/// for later `resume_auto` calls; the initial drive still surfaces external
-/// calls as snapshots (only OS calls auto-dispatch through `os=`).
+/// (or [`MontyComplete`]). `external_lookup` / `os` are stored on the
+/// [`DriveContext`] for later `resume_auto` calls; every suspension the feed
+/// reaches — OS calls included — surfaces as a snapshot.
 pub(crate) fn feed_start_sync(
     py: Python<'_>,
     args: FeedArgs,
@@ -152,10 +145,7 @@ pub(crate) fn feed_start_sync(
         dc_registry,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
-    let os_for_drive = ctx.clone_os(py);
-    drive_sync(py, ctx, os_for_drive, move |c, p| {
-        c.feed(&code, inputs, mounts, skip_type_check, p)
-    })
+    drive_sync(py, ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p))
 }
 
 /// Async counterpart of [`feed_start_sync`]: the returned coroutine runs the
@@ -178,97 +168,47 @@ pub(crate) fn feed_start_async(
         dc_registry,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
-    let os_for_drive = ctx.clone_os(py);
     future_into_py(py, async move {
-        drive_async(ctx, os_for_drive, move |c, p| {
-            c.feed(&code, inputs, mounts, skip_type_check, p)
-        })
-        .await
+        drive_async(ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p)).await
     })
 }
 
 // =============================================================================
-// Drive loops: run one turn, auto-dispatch OS calls, then build the snapshot
+// Drive loops: run one turn, then build the snapshot for whatever it reached
 // =============================================================================
 
-/// Runs `initial` (a feed or resume turn) and any OS auto-dispatch turns it
-/// produces — with the GIL released for each worker round-trip — until a
-/// caller-visible event is reached, then builds the matching Python object.
+/// Runs `initial` (a feed or resume turn) with the GIL released, then builds
+/// the Python object for whatever event it reaches.
 ///
-/// Takes `os` by value (rather than by reference) so the pyclass `resume`
-/// methods, which receive it by value from pyo3, can hand it straight through
-/// without a `needless_pass_by_value` lint at every call site.
-#[expect(clippy::needless_pass_by_value)]
+/// Every suspension — OS calls included — surfaces to the caller. Nothing is
+/// answered automatically here; `resume_auto` is where mounts and the captured
+/// `os=` come in.
 fn drive_sync(
     py: Python<'_>,
     ctx: DriveContext,
-    os: Option<Py<PyAny>>,
     initial: impl FnOnce(&mut Checkout, OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send,
 ) -> PyResult<Py<PyAny>> {
     let (result, print_err) = py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, initial));
-    let mut event = finalize_turn(py, result, print_err)?;
-    loop {
-        match event {
-            TurnEvent::OsCall {
-                function_name,
-                args,
-                kwargs,
-                not_handled_error,
-                ..
-            } if os.is_some() => {
-                let result = dispatch_os_parts(
-                    py,
-                    &function_name,
-                    &args,
-                    &kwargs,
-                    not_handled_error.as_ref(),
-                    os.as_ref(),
-                    &ctx.dc_registry,
-                );
-                let resume = ext_result_to_resume(result);
-                let (result, print_err) =
-                    py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, move |c, p| c.resume(resume, p)));
-                event = finalize_turn(py, result, print_err)?;
-            }
-            other => break build_snapshot(py, ctx, other, false),
-        }
-    }
+    let event = finalize_turn(py, result, print_err)?;
+    build_snapshot(py, ctx, event, false)
 }
 
-/// Async counterpart of [`drive_sync`]: worker turns run via `spawn_blocking`
-/// and OS auto-dispatch re-attaches the GIL for the callback.
+/// Async counterpart of [`drive_sync`]: the worker turn runs via
+/// `spawn_blocking`.
 async fn drive_async(
     ctx: DriveContext,
-    os: Option<Py<PyAny>>,
     initial: impl FnOnce(&mut Checkout, OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send + 'static,
 ) -> PyResult<Py<PyAny>> {
-    let mut event = run_turn_async(&ctx.checkout, &ctx.print_target, initial).await?;
-    loop {
-        match event {
-            TurnEvent::OsCall {
-                function_name,
-                args,
-                kwargs,
-                not_handled_error,
-                ..
-            } if os.is_some() => {
-                let resume = Python::attach(|py| {
-                    let result = dispatch_os_parts(
-                        py,
-                        &function_name,
-                        &args,
-                        &kwargs,
-                        not_handled_error.as_ref(),
-                        os.as_ref(),
-                        &ctx.dc_registry,
-                    );
-                    ext_result_to_resume(result)
-                });
-                event = run_turn_async(&ctx.checkout, &ctx.print_target, move |c, p| c.resume(resume, p)).await?;
-            }
-            other => return Python::attach(|py| build_snapshot(py, ctx, other, true)),
-        }
-    }
+    let event = run_turn_async(&ctx.checkout, &ctx.print_target, initial).await?;
+    Python::attach(|py| build_snapshot(py, ctx, event, true))
+}
+
+/// Answers a suspended OS call from the feed's mounts, returning the next
+/// event when one covered it and `None` when the caller must answer it itself.
+fn try_mounts_sync(py: Python<'_>, ctx: &DriveContext) -> PyResult<Option<TurnEvent>> {
+    let (result, print_err) =
+        py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, Checkout::resume_from_mounts));
+    finalize_turn(py, result, print_err)
 }
 
 /// Builds the Python object for a caller-visible turn event: a snapshot for a
@@ -303,7 +243,6 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: false,
                 is_method_call: method_call,
-                not_handled_error: None,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -312,7 +251,6 @@ pub(crate) fn build_snapshot(
             args,
             kwargs,
             call_id,
-            not_handled_error,
         } => {
             let call = FunctionCallData {
                 function_name,
@@ -321,7 +259,6 @@ pub(crate) fn build_snapshot(
                 call_id,
                 is_os_function: true,
                 is_method_call: false,
-                not_handled_error,
             };
             function_snapshot_py(py, ctx, call, is_async)
         }
@@ -544,9 +481,6 @@ struct FunctionCallData {
     call_id: u32,
     is_os_function: bool,
     is_method_call: bool,
-    /// The exception the sandbox would raise with no handler — present only for
-    /// OS calls, and consumed by `resume_not_handled`.
-    not_handled_error: Option<MontyException>,
 }
 
 struct FunctionSnapshot {
@@ -559,18 +493,16 @@ impl FunctionSnapshot {
         parse_external_result(py, result, &self.snapshot.ctx.dc_registry)
     }
 
+    /// `ResumeValue::NotHandled` for an OS-call snapshot: the sandbox raises
+    /// the call's own no-handler default.
     fn not_handled_value(&self) -> PyResult<ResumeValue> {
-        if !self.call.is_os_function {
-            return Err(PyRuntimeError::new_err(
+        if self.call.is_os_function {
+            Ok(ResumeValue::NotHandled)
+        } else {
+            Err(PyRuntimeError::new_err(
                 "resume_not_handled() is only valid for OS function snapshots",
-            ));
+            ))
         }
-        let exc = self
-            .call
-            .not_handled_error
-            .clone()
-            .ok_or_else(|| PyRuntimeError::new_err("OS snapshot has no default unhandled error"))?;
-        Ok(ResumeValue::Error(exc))
     }
 }
 
@@ -617,39 +549,39 @@ impl PyFunctionSnapshot {
     }
 
     /// Resumes execution with an `ExternalResult` (return value, exception, or
-    /// future). Resumes once; OS calls produced by the continuation are
-    /// auto-dispatched through `os=` until the next non-OS event.
-    #[pyo3(signature = (result, *, os=None))]
-    fn resume(&self, py: Python<'_>, result: &Bound<'_, PyDict>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    /// future), returning the next snapshot or [`MontyComplete`]. Resumes once.
+    fn resume(&self, py: Python<'_>, result: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, result)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, move |c, p| c.resume(value, p))
     }
 
     /// Resumes an OS-call snapshot with monty's default unhandled-OS behaviour.
-    #[pyo3(signature = (*, os=None))]
-    fn resume_not_handled(&self, py: Python<'_>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    fn resume_not_handled(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let value = self.0.not_handled_value()?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, move |c, p| c.resume(value, p))
     }
 
-    /// Answers this call automatically from the `external_lookup=` / `os=`
-    /// captured at `feed_start` / `load_snapshot`, then drives to the next
-    /// snapshot (or [`MontyComplete`]). A function name absent from
-    /// `external_lookup` resolves to `NotFound`, so the sandbox raises
-    /// `NameError` — matching `feed_run`. A coroutine external raises
-    /// `RuntimeError` (async externals need `AsyncMonty`). Consumes the snapshot.
+    /// Answers this call automatically, then drives to the next snapshot (or
+    /// [`MontyComplete`]). An OS call is offered to the feed's mounts first and
+    /// falls back to the `os=` captured at `feed_start` / `load_snapshot`; an
+    /// external call is resolved through `external_lookup=`, and a name absent
+    /// from it resolves to `NotFound` so the sandbox raises `NameError` —
+    /// matching `feed_run`. A coroutine external raises `RuntimeError` (async
+    /// externals need `AsyncMonty`). Consumes the snapshot.
     fn resume_auto(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ctx = self.0.snapshot.claim(py)?;
         let call = &self.0.call;
-        let result = if call.is_os_function {
+        let value = if call.is_os_function {
+            if let Some(event) = try_mounts_sync(py, &ctx)? {
+                return build_snapshot(py, ctx, event, false);
+            }
             dispatch_os_parts(
                 py,
                 &call.function_name,
                 &call.args,
                 &call.kwargs,
-                call.not_handled_error.as_ref(),
                 ctx.os.as_ref(),
                 &ctx.dc_registry,
             )
@@ -662,7 +594,7 @@ impl PyFunctionSnapshot {
                 ctx.external_lookup.as_ref(),
                 &ctx.dc_registry,
             ) {
-                CallResult::Sync(result) => result,
+                CallResult::Sync(result) => ext_result_to_resume(result),
                 CallResult::Coroutine(coro) => {
                     // Close the un-awaited coroutine so it doesn't leak a
                     // "coroutine was never awaited" ResourceWarning: a sync
@@ -673,9 +605,7 @@ impl PyFunctionSnapshot {
                 }
             }
         };
-        let value = ext_result_to_resume(result);
-        let os = ctx.clone_os(py);
-        drive_sync(py, ctx, os, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, move |c, p| c.resume(value, p))
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -732,28 +662,21 @@ impl PyAsyncFunctionSnapshot {
         kwargs_to_py(py, &self.0.call.kwargs, &self.0.snapshot.ctx.dc_registry)
     }
 
-    #[pyo3(signature = (result, *, os=None))]
-    fn resume<'py>(
-        &self,
-        py: Python<'py>,
-        result: &Bound<'_, PyDict>,
-        os: Option<Py<PyAny>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.resume_value(py, result)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(
             py,
-            async move { drive_async(ctx, os, move |c, p| c.resume(value, p)).await },
+            async move { drive_async(ctx, move |c, p| c.resume(value, p)).await },
         )
     }
 
-    #[pyo3(signature = (*, os=None))]
-    fn resume_not_handled<'py>(&self, py: Python<'py>, os: Option<Py<PyAny>>) -> PyResult<Bound<'py, PyAny>> {
+    fn resume_not_handled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.not_handled_value()?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(
             py,
-            async move { drive_async(ctx, os, move |c, p| c.resume(value, p)).await },
+            async move { drive_async(ctx, move |c, p| c.resume(value, p)).await },
         )
     }
 
@@ -769,18 +692,20 @@ impl PyAsyncFunctionSnapshot {
             // Dispatch inside the future: a coroutine's `into_future` needs the
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
-                let result = Python::attach(|py| {
-                    dispatch_os_parts(
-                        py,
-                        &call.function_name,
-                        &call.args,
-                        &call.kwargs,
-                        call.not_handled_error.as_ref(),
-                        ctx.os.as_ref(),
-                        &ctx.dc_registry,
-                    )
-                });
-                Ok(ext_result_to_resume(result))
+                // mounts get first refusal, then the captured `os=`
+                match run_turn_async(&ctx.checkout, &ctx.print_target, Checkout::resume_from_mounts).await? {
+                    Some(event) => return Python::attach(|py| build_snapshot(py, ctx, event, true)),
+                    None => Ok(Python::attach(|py| {
+                        dispatch_os_parts(
+                            py,
+                            &call.function_name,
+                            &call.args,
+                            &call.kwargs,
+                            ctx.os.as_ref(),
+                            &ctx.dc_registry,
+                        )
+                    })),
+                }
             } else {
                 match dispatch_function_call(
                     &call.function_name,
@@ -805,8 +730,7 @@ impl PyAsyncFunctionSnapshot {
                     return Err(err);
                 }
             };
-            let os = Python::attach(|py| ctx.clone_os(py));
-            drive_async(ctx, os, move |c, p| c.resume(value, p)).await
+            drive_async(ctx, move |c, p| c.resume(value, p)).await
         })
     }
 
@@ -884,11 +808,11 @@ impl PyNameLookupSnapshot {
         &self.0.name
     }
 
-    #[pyo3(signature = (*, value=MaybeValue::Unset, os=None))]
-    fn resume(&self, py: Python<'_>, value: MaybeValue<'_>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    #[pyo3(signature = (*, value=MaybeValue::Unset))]
+    fn resume(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, os, move |c, p| c.resume_name_lookup(value, p))
+        drive_sync(py, ctx, move |c, p| c.resume_name_lookup(value, p))
     }
 
     /// Answers this name lookup automatically from the captured
@@ -904,8 +828,7 @@ impl PyNameLookupSnapshot {
                 return Err(err);
             }
         };
-        let os = ctx.clone_os(py);
-        drive_sync(py, ctx, os, move |c, p| c.resume_name_lookup(value, p))
+        drive_sync(py, ctx, move |c, p| c.resume_name_lookup(value, p))
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -933,17 +856,12 @@ impl PyAsyncNameLookupSnapshot {
         &self.0.name
     }
 
-    #[pyo3(signature = (*, value=MaybeValue::Unset, os=None))]
-    fn resume<'py>(
-        &self,
-        py: Python<'py>,
-        value: MaybeValue<'_>,
-        os: Option<Py<PyAny>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, value=MaybeValue::Unset))]
+    fn resume<'py>(&self, py: Python<'py>, value: MaybeValue<'_>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
-            drive_async(ctx, os, move |c, p| c.resume_name_lookup(value, p)).await
+            drive_async(ctx, move |c, p| c.resume_name_lookup(value, p)).await
         })
     }
 
@@ -959,8 +877,7 @@ impl PyAsyncNameLookupSnapshot {
                     return Err(err);
                 }
             };
-            let os = Python::attach(|py| ctx.clone_os(py));
-            drive_async(ctx, os, move |c, p| c.resume_name_lookup(value, p)).await
+            drive_async(ctx, move |c, p| c.resume_name_lookup(value, p)).await
         })
     }
 
@@ -1026,11 +943,10 @@ impl PyFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
-    #[pyo3(signature = (results, *, os=None))]
-    fn resume(&self, py: Python<'_>, results: &Bound<'_, PyDict>, os: Option<Py<PyAny>>) -> PyResult<Py<PyAny>> {
+    fn resume(&self, py: Python<'_>, results: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, os, move |c, p| c.resume_futures(resolved, p))
+        drive_sync(py, ctx, move |c, p| c.resume_futures(resolved, p))
     }
 
     /// Sync sessions have no event loop to drive coroutine externals, so this
@@ -1066,17 +982,11 @@ impl PyAsyncFutureSnapshot {
         self.0.pending_call_ids.clone()
     }
 
-    #[pyo3(signature = (results, *, os=None))]
-    fn resume<'py>(
-        &self,
-        py: Python<'py>,
-        results: &Bound<'_, PyDict>,
-        os: Option<Py<PyAny>>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    fn resume<'py>(&self, py: Python<'py>, results: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
-            drive_async(ctx, os, move |c, p| c.resume_futures(resolved, p)).await
+            drive_async(ctx, move |c, p| c.resume_futures(resolved, p)).await
         })
     }
 
@@ -1105,8 +1015,7 @@ impl PyAsyncFutureSnapshot {
                     return Err(err);
                 }
             };
-            let os = Python::attach(|py| ctx.clone_os(py));
-            drive_async(ctx, os, move |c, p| c.resume_futures(results, p)).await
+            drive_async(ctx, move |c, p| c.resume_futures(results, p)).await
         })
     }
 

@@ -492,10 +492,10 @@ class MontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
-            os: Fallback handler for OS calls not covered by a mount, invoked as
-                `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
-                auto-dispatches uncovered OS calls until the next non-OS event;
-                omit it to surface OS calls as snapshots instead.
+            os: Fallback handler for OS calls not covered by a mount, invoked
+                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
+                Consulted only by `resume_auto()` — `feed_start` always surfaces
+                OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -541,13 +541,10 @@ class MontySession:
         if the dump is actually an idle session.
 
         `external_lookup` / `os` are captured for `resume_auto()`, exactly as on
-        `feed_start`. Two caveats apply to a *restored* snapshot: a restored
+        `feed_start`. One caveat applies to a *restored* snapshot: a restored
         `FutureSnapshot`'s pending coroutines are gone (they lived in the
         previous process), so `resume_auto()` on it raises — resolve it manually
-        with `resume({call_id: ...})`; and a re-announced OS-call snapshot
-        carries only its `not_handled_error`, not the original `args`/`kwargs`
-        (those were consumed before the dump), so prefer a manual `resume` /
-        `resume_not_handled` there.
+        with `resume({call_id: ...})`.
         """
 
     def dump(self) -> bytes:
@@ -803,11 +800,10 @@ class AsyncMontySession:
                 (there is no `mount=` on `resume`). `'overlay'` writes live in
                 the pool's per-feed mount table and are discarded when the feed
                 ends.
-            os: Fallback handler for OS calls not covered by a mount, invoked as
-                `(function_name, args, kwargs)`, or an `AbstractOS` instance. It
-                auto-dispatches uncovered OS calls until the next non-OS event;
-                omit it to surface OS calls as snapshots instead. Also captured
-                for `resume_auto()`.
+            os: Fallback handler for OS calls not covered by a mount, invoked
+                as `(function_name, args, kwargs)`, or an `AbstractOS` instance.
+                Consulted only by `resume_auto()` — `feed_start` always surfaces
+                OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
         """
@@ -897,30 +893,27 @@ class FunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
-    def resume(
-        self,
-        result: ExternalResult,
-        *,
-        os: OsHandler | None = None,
-    ) -> SyncSnapshot:
+    def resume(self, result: ExternalResult) -> SyncSnapshot:
         """Resume with the call's result; resumes at most once.
 
-        Mounts are fixed when the feed starts, so there is no `mount=` here. An
-        `os=` handler auto-dispatches OS calls produced by the continuation
-        until the next non-OS event.
+        Answers only this call: the result is passed straight through, and
+        neither the feed's mounts nor the captured `os=` are consulted. Use
+        `resume_auto()` for those.
         """
 
-    def resume_not_handled(self, *, os: OsHandler | None = None) -> SyncSnapshot:
+    def resume_not_handled(self) -> SyncSnapshot:
         """Resume an OS-call snapshot with monty's default unhandled behaviour."""
 
     def resume_auto(self) -> SyncSnapshot:
-        """Answer this call automatically from the `external_lookup=` / `os=`
-        captured at `feed_start` / `load_snapshot`, then return the next snapshot
-        (or `MontyComplete`). Resumes at most once.
+        """Answer this call automatically, then return the next snapshot (or
+        `MontyComplete`). Resumes at most once.
 
-        A function name absent from `external_lookup` makes the sandbox raise
-        `NameError` (as in `feed_run`). A coroutine external raises `RuntimeError`
-        — use `AsyncMonty` for async externals."""
+        An OS call is offered to the feed's mounts first, falling back to the
+        `os=` captured at `feed_start` / `load_snapshot` and then to monty's
+        unhandled default. An external call is resolved through
+        `external_lookup=`; a name absent from it makes the sandbox raise
+        `NameError` (as in `feed_run`). A coroutine external raises
+        `RuntimeError` — use `AsyncMonty` for async externals."""
 
     def dump(self) -> bytes:
         """Serialize the suspended worker; restore via `MontySession.load_snapshot`."""
@@ -935,12 +928,7 @@ class NameLookupSnapshot:
     def script_name(self) -> str: ...
     @property
     def variable_name(self) -> str: ...
-    def resume(
-        self,
-        *,
-        value: Any = ...,
-        os: OsHandler | None = None,
-    ) -> SyncSnapshot:
+    def resume(self, *, value: Any = ...) -> SyncSnapshot:
         """Resume by binding the name to `value` (any value, including `None`), or
         omit `value` to leave the name undefined and raise `NameError`."""
 
@@ -962,12 +950,7 @@ class FutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
-    def resume(
-        self,
-        results: dict[int, ExternalSettledResult],
-        *,
-        os: OsHandler | None = None,
-    ) -> SyncSnapshot:
+    def resume(self, results: dict[int, ExternalSettledResult]) -> SyncSnapshot:
         """Resume with settled results for one or more pending futures (by
         `call_id`); a future cannot resolve to another `future`."""
 
@@ -999,13 +982,8 @@ class AsyncFunctionSnapshot:
     def args(self) -> tuple[Any, ...]: ...
     @property
     def kwargs(self) -> dict[str, Any]: ...
-    async def resume(
-        self,
-        result: ExternalResult,
-        *,
-        os: OsHandler | None = None,
-    ) -> AsyncSnapshot: ...
-    async def resume_not_handled(self, *, os: OsHandler | None = None) -> AsyncSnapshot: ...
+    async def resume(self, result: ExternalResult) -> AsyncSnapshot: ...
+    async def resume_not_handled(self) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `FunctionSnapshot.resume_auto`. A coroutine external
         is spawned and answered with a pending future, so other sandbox tasks
@@ -1022,12 +1000,7 @@ class AsyncNameLookupSnapshot:
     def script_name(self) -> str: ...
     @property
     def variable_name(self) -> str: ...
-    async def resume(
-        self,
-        *,
-        value: Any = ...,
-        os: OsHandler | None = None,
-    ) -> AsyncSnapshot: ...
+    async def resume(self, *, value: Any = ...) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Async sibling of `NameLookupSnapshot.resume_auto`."""
 
@@ -1042,12 +1015,7 @@ class AsyncFutureSnapshot:
     def script_name(self) -> str: ...
     @property
     def pending_call_ids(self) -> list[int]: ...
-    async def resume(
-        self,
-        results: dict[int, ExternalSettledResult],
-        *,
-        os: OsHandler | None = None,
-    ) -> AsyncSnapshot: ...
+    async def resume(self, results: dict[int, ExternalSettledResult]) -> AsyncSnapshot: ...
     async def resume_auto(self) -> AsyncSnapshot:
         """Wait for one or more coroutine externals spawned by earlier
         `resume_auto` calls to settle, deliver them, and return the next

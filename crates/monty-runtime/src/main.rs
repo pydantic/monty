@@ -524,9 +524,8 @@ fn execute_repl_with_mounts<T: ResourceTracker>(
     loop {
         match progress {
             ReplProgress::Complete { repl, value } => return Ok((repl, value)),
-            ReplProgress::OsCall(mut call) => {
-                let result = handle_os_call(call.take_function_call(), mount_table);
-                match call.resume(result, PrintWriter::Stdout) {
+            ReplProgress::OsCall(call) => {
+                match call.resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table)) {
                     Ok(p) => progress = p,
                     Err(err) => return Err((err.repl, format!("{}", err.error))),
                 }
@@ -589,10 +588,9 @@ fn run_until_complete(
                     .resume(result, PrintWriter::Stdout)
                     .map_err(|err| format!("{err}"))?;
             }
-            RunProgress::OsCall(mut call) => {
-                let result = handle_os_call(call.take_function_call(), mount_table);
+            RunProgress::OsCall(call) => {
                 progress = call
-                    .resume(result, PrintWriter::Stdout)
+                    .resume_with(PrintWriter::Stdout, |fc| handle_os_call(fc, mount_table))
                     .map_err(|err| format!("{err}"))?;
             }
         }
