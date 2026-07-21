@@ -57,29 +57,29 @@ pub(crate) fn stringize_annotation(annotation: &mut AstExpr) -> String {
 struct CanonicalStringLiterals;
 
 impl Transformer for CanonicalStringLiterals {
-    fn visit_string_literal(&self, string_literal: &mut ast::StringLiteral) {
-        string_literal.flags = canonical_string_flags(string_literal.flags);
+    // Rebuilding is unconditional rather than reserved for the spellings that
+    // happen to diverge: the value is the truth and the spelling is noise, so
+    // there is no "unaffected" case to preserve. One path, not a rule plus
+    // exceptions — which is also why the whole rewrite lives here rather than
+    // being split with `visit_string_literal`.
+    fn visit_expr(&self, expr: &mut AstExpr) {
+        match expr {
+            AstExpr::StringLiteral(s) => rebuild_string_literal(s),
+            AstExpr::FString(f) if f.value.is_implicit_concatenated() => merge_f_string_parts(f),
+            _ => {}
+        }
+        walk_expr(self, expr);
     }
 
-    // F-strings carry their own flags, so they need canonicalising separately;
-    // walking the elements still reaches any literals nested in a format spec.
+    // F-strings cannot be rebuilt from a value — the interpolations are live
+    // expressions — so only the flags are canonicalised. Walking the elements
+    // still reaches any literal nested in a format spec.
     fn visit_f_string(&self, f_string: &mut ast::FString) {
         f_string.flags = f_string
             .flags
             .with_quote_style(Quote::Single)
             .with_triple_quotes(TripleQuotes::No);
         walk_f_string(self, f_string);
-    }
-
-    // Concatenation is a property of the *expression*, not of any one part, so
-    // the merge happens here and the visits above then canonicalise the result.
-    fn visit_expr(&self, expr: &mut AstExpr) {
-        match expr {
-            AstExpr::StringLiteral(s) if s.value.is_implicit_concatenated() => merge_string_parts(s),
-            AstExpr::FString(f) if f.value.is_implicit_concatenated() => merge_f_string_parts(f),
-            _ => {}
-        }
-        walk_expr(self, expr);
     }
 }
 
@@ -88,10 +88,13 @@ impl Transformer for CanonicalStringLiterals {
 /// (`r"raw\d"` becomes `'raw\\d'`) since the generator re-escapes what the raw
 /// prefix used to cover.
 ///
-/// A `u` prefix is *kept*: CPython renders `u"x"` as `u'x'`, so canonical is not
-/// the same as bare. The quote style is a request, not a guarantee — the
-/// generator still switches to double quotes when the value contains a single
-/// one, which is what CPython does too.
+/// A `u` prefix is *kept*, so canonical is not the same as bare. That asymmetry
+/// is not a quirk to encode but a direct consequence of CPython's AST: `u` is the
+/// only prefix it retains (as `Constant.kind`, which its unparser re-emits),
+/// because raw-ness was already consumed by the parser and is not representable.
+///
+/// The quote style is a request, not a guarantee — the generator still switches
+/// to double quotes when the value contains a single one, matching CPython.
 fn canonical_string_flags(flags: ast::StringLiteralFlags) -> ast::StringLiteralFlags {
     let prefix = match flags.prefix() {
         StringLiteralPrefix::Unicode => StringLiteralPrefix::Unicode,
@@ -103,19 +106,23 @@ fn canonical_string_flags(flags: ast::StringLiteralFlags) -> ast::StringLiteralF
         .with_triple_quotes(TripleQuotes::No)
 }
 
-/// Collapses `"foo" "bar"` into the single literal `'foobar'`.
+/// Replaces a `str` literal with the single canonical literal for its value,
+/// which is what collapses `"foo" "bar"` into `'foobar'`.
 ///
-/// The parts' own flags are discarded in favour of the first part's, matching
-/// CPython: the concatenated *value* is what survives, and `visit_string_literal`
-/// canonicalises the flags immediately afterwards.
-fn merge_string_parts(expr: &mut ast::ExprStringLiteral) {
-    let merged = ast::StringLiteral {
+/// This is CPython's model rather than a translation of it. There, a literal
+/// reaches the unparser as a `Constant` holding a `str`, because the parser has
+/// already folded concatenation and processed the prefix — so it can simply
+/// write `repr(value)`. Ruff keeps the spelling (a formatter needs it), so the
+/// discard CPython's parser performed happens here instead.
+fn rebuild_string_literal(expr: &mut ast::ExprStringLiteral) {
+    let canonical = ast::StringLiteral {
         range: expr.range,
         node_index: AtomicNodeIndex::default(),
+        // `to_str` is the concatenation of every part, and the identity for one.
         value: expr.value.to_str().into(),
-        flags: expr.value.first_literal_flags(),
+        flags: canonical_string_flags(expr.value.first_literal_flags()),
     };
-    expr.value = ast::StringLiteralValue::single(merged);
+    expr.value = ast::StringLiteralValue::single(canonical);
 }
 
 /// Collapses `f"x" "y"` into the single f-string `f'xy'`.
@@ -126,7 +133,7 @@ fn merge_string_parts(expr: &mut ast::ExprStringLiteral) {
 /// one literal element; an f-string part contributes all of its own.
 fn merge_f_string_parts(expr: &mut ast::ExprFString) {
     let mut elements: Vec<ast::InterpolatedStringElement> = Vec::new();
-    // The first f-string part's flags stand for the whole, as above.
+    // The first f-string part's flags stand for the whole.
     let mut flags = None;
     for part in &expr.value {
         match part {
