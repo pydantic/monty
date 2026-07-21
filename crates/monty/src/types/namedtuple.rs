@@ -25,7 +25,7 @@ use std::{
 /// named access improves usability and readability.
 use monty_types::ResourceTracker;
 
-use super::PyTrait;
+use super::{PyTrait, tuple::TupleIterator};
 use crate::{
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
@@ -278,6 +278,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::NamedTuple
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        TupleIterator::from_named_tuple(self_id.expect("heap values have an id"), vm)
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {

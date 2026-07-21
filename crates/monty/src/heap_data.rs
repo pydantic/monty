@@ -18,9 +18,10 @@ use crate::{
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
-        Set, Slice, Str, Tuple, Type,
+        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
+        DictKeysView, DictValueIterator, DictValuesView, FrozenSet, Instance, LazyHeapSet, List, LongInt, Module,
+        NamedTuple, OpenFile, Path, PyTrait, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
+        StringIterator, Tuple, TupleIterator, Type,
         callable_iterator::CallableIterator,
         date, datetime,
         list::ListIterator,
@@ -88,13 +89,24 @@ pub(crate) enum HeapData {
     Instance(Instance),
     /// A method bound to an instance, produced by `obj.method` without calling it.
     BoundMethod(BoundMethod),
-    /// An iterator for for-loop iteration and the `iter()` type constructor.
-    ///
-    /// Created by the `GetIter` opcode or `iter()` builtin, advanced by `ForIter`.
-    /// Stores iteration state for lists, tuples, strings, ranges, dicts, and sets.
-    Iter(MontyIter),
-    /// `list_iterator` object
+    /// `list_iterator` object.
     ListIterator(ListIterator),
+    /// `tuple_iterator` object.
+    TupleIterator(TupleIterator),
+    /// `str_ascii_iterator` or `str_iterator` object.
+    StringIterator(StringIterator),
+    /// `bytes_iterator` object.
+    BytesIterator(BytesIterator),
+    /// `range_iterator` object.
+    RangeIterator(RangeIterator),
+    /// `dict_keyiterator` object.
+    DictKeyIterator(DictKeyIterator),
+    /// `dict_itemiterator` object.
+    DictItemIterator(DictItemIterator),
+    /// `dict_valueiterator` object.
+    DictValueIterator(DictValueIterator),
+    /// `set_iterator` object.
+    SetIterator(SetIterator),
     /// `callable_iterator` object, from `iter(callable, sentinel)`
     CallableIterator(CallableIterator),
     /// An arbitrary precision integer (LongInt).
@@ -191,7 +203,15 @@ impl HeapData {
                 | Self::Class(_)
                 | Self::Instance(_)
                 | Self::BoundMethod(_)
-                | Self::Iter(_)
+                | Self::ListIterator(_)
+                | Self::TupleIterator(_)
+                | Self::StringIterator(_)
+                | Self::BytesIterator(_)
+                | Self::DictKeyIterator(_)
+                | Self::DictItemIterator(_)
+                | Self::DictValueIterator(_)
+                | Self::SetIterator(_)
+                | Self::CallableIterator(_)
                 | Self::Module(_)
                 | Self::Coroutine(_)
                 | Self::GatherFuture(_)
@@ -244,7 +264,6 @@ impl HeapData {
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
-            Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
@@ -257,6 +276,14 @@ impl HeapData {
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
             Self::ListIterator(_) => Type::ListIterator,
+            Self::TupleIterator(_) => Type::TupleIterator,
+            Self::StringIterator(iter) => iter.py_type(),
+            Self::BytesIterator(_) => Type::BytesIterator,
+            Self::RangeIterator(_) => Type::RangeIterator,
+            Self::DictKeyIterator(_) => Type::DictKeyIterator,
+            Self::DictItemIterator(_) => Type::DictItemIterator,
+            Self::DictValueIterator(_) => Type::DictValueIterator,
+            Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
         }
     }
@@ -284,7 +311,6 @@ impl HeapData {
             Self::Class(class) => class.py_estimate_size(),
             Self::Instance(instance) => instance.py_estimate_size(),
             Self::BoundMethod(bm) => bm.py_estimate_size(),
-            Self::Iter(iter) => iter.py_estimate_size(),
             Self::LongInt(li) => li.py_estimate_size(),
             Self::Module(m) => m.py_estimate_size(),
             Self::Coroutine(coro) => coro.py_estimate_size(),
@@ -300,6 +326,14 @@ impl HeapData {
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
             Self::ListIterator(d) => d.py_estimate_size(),
+            Self::TupleIterator(d) => d.py_estimate_size(),
+            Self::StringIterator(d) => d.py_estimate_size(),
+            Self::BytesIterator(d) => d.py_estimate_size(),
+            Self::RangeIterator(d) => d.py_estimate_size(),
+            Self::DictKeyIterator(d) => d.py_estimate_size(),
+            Self::DictItemIterator(d) => d.py_estimate_size(),
+            Self::DictValueIterator(d) => d.py_estimate_size(),
+            Self::SetIterator(d) => d.py_estimate_size(),
             Self::CallableIterator(d) => d.py_estimate_size(),
         }
     }
@@ -485,6 +519,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(b) => b.py_bool(vm),
             Self::List(l) => l.py_bool(vm),
             Self::ListIterator(l) => l.py_bool(vm),
+            Self::TupleIterator(iter) => iter.py_bool(vm),
+            Self::StringIterator(iter) => iter.py_bool(vm),
+            Self::BytesIterator(iter) => iter.py_bool(vm),
+            Self::RangeIterator(iter) => iter.py_bool(vm),
+            Self::DictKeyIterator(iter) => iter.py_bool(vm),
+            Self::DictItemIterator(iter) => iter.py_bool(vm),
+            Self::DictValueIterator(iter) => iter.py_bool(vm),
+            Self::SetIterator(iter) => iter.py_bool(vm),
             Self::CallableIterator(c) => c.py_bool(vm),
             Self::Tuple(t) => t.py_bool(vm),
             Self::NamedTuple(nt) => nt.py_bool(vm),
@@ -502,7 +544,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Dataclass(dc) => dc.py_bool(vm),
             // Classes, instances and bound methods are always truthy.
             Self::Class(_) | Self::Instance(_) | Self::BoundMethod(_) => true,
-            Self::Iter(_) => true,
             Self::LongInt(li) => !li.get(vm.heap).is_zero(),
             Self::Module(_) => true,
             Self::Coroutine(_) => true,
@@ -564,6 +605,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(value) => value.py_is_iterable(vm),
             Self::List(value) => value.py_is_iterable(vm),
             Self::ListIterator(value) => value.py_is_iterable(vm),
+            Self::TupleIterator(value) => value.py_is_iterable(vm),
+            Self::StringIterator(value) => value.py_is_iterable(vm),
+            Self::BytesIterator(value) => value.py_is_iterable(vm),
+            Self::RangeIterator(value) => value.py_is_iterable(vm),
+            Self::DictKeyIterator(value) => value.py_is_iterable(vm),
+            Self::DictItemIterator(value) => value.py_is_iterable(vm),
+            Self::DictValueIterator(value) => value.py_is_iterable(vm),
+            Self::SetIterator(value) => value.py_is_iterable(vm),
             Self::CallableIterator(value) => value.py_is_iterable(vm),
             Self::Tuple(value) => value.py_is_iterable(vm),
             Self::NamedTuple(value) => value.py_is_iterable(vm),
@@ -579,7 +628,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(value) => value.py_is_iterable(vm),
             Self::Instance(value) => value.py_is_iterable(vm),
             Self::BoundMethod(value) => value.py_is_iterable(vm),
-            Self::Iter(value) => value.py_is_iterable(vm),
             Self::Path(value) => value.py_is_iterable(vm),
             Self::OpenFile(value) => value.py_is_iterable(vm),
             Self::ReMatch(value) => value.py_is_iterable(vm),
@@ -651,6 +699,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(b) => b.py_type(vm),
             Self::List(l) => l.py_type(vm),
             Self::ListIterator(li) => li.py_type(vm),
+            Self::TupleIterator(iter) => iter.py_type(vm),
+            Self::StringIterator(iter) => iter.py_type(vm),
+            Self::BytesIterator(iter) => iter.py_type(vm),
+            Self::RangeIterator(iter) => iter.py_type(vm),
+            Self::DictKeyIterator(iter) => iter.py_type(vm),
+            Self::DictItemIterator(iter) => iter.py_type(vm),
+            Self::DictValueIterator(iter) => iter.py_type(vm),
+            Self::SetIterator(iter) => iter.py_type(vm),
             Self::CallableIterator(ci) => ci.py_type(vm),
             Self::Tuple(t) => t.py_type(vm),
             Self::NamedTuple(nt) => nt.py_type(vm),
@@ -669,7 +725,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(class) => class.py_type(vm),
             Self::Instance(instance) => instance.py_type(vm),
             Self::BoundMethod(bm) => bm.py_type(vm),
-            Self::Iter(_) => Type::Iterator,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
@@ -730,6 +785,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             }),
             HeapReadOutput::List(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::ListIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::TupleIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::StringIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::BytesIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::RangeIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictKeyIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictItemIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictValueIterator(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::SetIterator(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::CallableIterator(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Tuple(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm),
@@ -754,7 +817,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // heap read in `Value::py_eq_impl`), so they never define `==` themselves.
             HeapReadOutput::Cell(_)
             | HeapReadOutput::Exception(_)
-            | HeapReadOutput::Iter(_)
             | HeapReadOutput::Module(_)
             | HeapReadOutput::Coroutine(_)
             | HeapReadOutput::GatherFuture(_)
@@ -827,6 +889,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(b) => b.py_repr_fmt(f, vm, heap_ids),
             Self::List(l) => l.py_repr_fmt(f, vm, heap_ids),
             Self::ListIterator(li) => li.py_repr_fmt(f, vm, heap_ids),
+            Self::TupleIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::StringIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::BytesIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::RangeIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::DictKeyIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::DictItemIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::DictValueIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
+            Self::SetIterator(iter) => iter.py_repr_fmt(f, vm, heap_ids),
             Self::CallableIterator(ci) => ci.py_repr_fmt(f, vm, heap_ids),
             Self::Tuple(t) => t.py_repr_fmt(f, vm, heap_ids),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, vm, heap_ids),
@@ -852,7 +922,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(class) => class.py_repr_fmt(f, vm, heap_ids),
             Self::Instance(instance) => instance.py_repr_fmt(f, vm, heap_ids),
             Self::BoundMethod(bm) => bm.py_repr_fmt(f, vm, heap_ids),
-            Self::Iter(_) => Ok(write!(f, "<iterator>")?),
             Self::LongInt(li) => {
                 let li = li.get(vm.heap);
                 li.check_str_digits_limit()?;
@@ -1084,6 +1153,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(value) => value.py_iter(self_id, vm),
             Self::List(value) => value.py_iter(self_id, vm),
             Self::ListIterator(value) => value.py_iter(self_id, vm),
+            Self::TupleIterator(value) => value.py_iter(self_id, vm),
+            Self::StringIterator(value) => value.py_iter(self_id, vm),
+            Self::BytesIterator(value) => value.py_iter(self_id, vm),
+            Self::RangeIterator(value) => value.py_iter(self_id, vm),
+            Self::DictKeyIterator(value) => value.py_iter(self_id, vm),
+            Self::DictItemIterator(value) => value.py_iter(self_id, vm),
+            Self::DictValueIterator(value) => value.py_iter(self_id, vm),
+            Self::SetIterator(value) => value.py_iter(self_id, vm),
             Self::CallableIterator(value) => value.py_iter(self_id, vm),
             Self::Tuple(value) => value.py_iter(self_id, vm),
             Self::NamedTuple(value) => value.py_iter(self_id, vm),
@@ -1099,7 +1176,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(value) => value.py_iter(self_id, vm),
             Self::Instance(value) => value.py_iter(self_id, vm),
             Self::BoundMethod(value) => value.py_iter(self_id, vm),
-            Self::Iter(value) => value.py_iter(self_id, vm),
             Self::Path(value) => value.py_iter(self_id, vm),
             Self::OpenFile(value) => value.py_iter(self_id, vm),
             Self::ReMatch(value) => value.py_iter(self_id, vm),
@@ -1117,13 +1193,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => {
-                let self_id = self_id.expect("heap values have an id");
-                vm.heap.inc_ref(self_id);
-                let iter = MontyIter::new(Value::Ref(self_id), vm)?;
-                let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
-                Ok(Value::Ref(iter_id))
-            }
+            | Self::ExternalFuture(_) => Err(ExcType::type_error_not_iterable(
+                &self.py_type(vm).name(vm.heap, vm.interns),
+            )),
         }
     }
 
@@ -1133,6 +1205,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(value) => value.py_next(vm),
             Self::List(value) => value.py_next(vm),
             Self::ListIterator(value) => value.py_next(vm),
+            Self::TupleIterator(value) => value.py_next(vm),
+            Self::StringIterator(value) => value.py_next(vm),
+            Self::BytesIterator(value) => value.py_next(vm),
+            Self::RangeIterator(value) => value.py_next(vm),
+            Self::DictKeyIterator(value) => value.py_next(vm),
+            Self::DictItemIterator(value) => value.py_next(vm),
+            Self::DictValueIterator(value) => value.py_next(vm),
+            Self::SetIterator(value) => value.py_next(vm),
             Self::CallableIterator(value) => value.py_next(vm),
             Self::Tuple(value) => value.py_next(vm),
             Self::NamedTuple(value) => value.py_next(vm),
@@ -1148,7 +1228,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(value) => value.py_next(vm),
             Self::Instance(value) => value.py_next(vm),
             Self::BoundMethod(value) => value.py_next(vm),
-            Self::Iter(value) => value.py_next(vm),
             Self::Path(value) => value.py_next(vm),
             Self::OpenFile(value) => value.py_next(vm),
             Self::ReMatch(value) => value.py_next(vm),

@@ -44,10 +44,7 @@ try:
     reversed(iter([1, 2]))
     assert False, 'expected TypeError for reversed(iterator)'
 except TypeError as e:
-    # Only the tail is asserted here: Monty names every iterator `iterator`
-    # while CPython says `list_iterator` (a documented divergence), and this
-    # file is dual-run against both engines.
-    assert str(e).endswith('object is not reversible'), 'reversed(iterator) message'
+    assert str(e) == "'list_iterator' object is not reversible"
 try:
     reversed({1, 2})
     assert False, 'expected TypeError for reversed(set)'

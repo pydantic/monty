@@ -14,13 +14,13 @@ use ahash::AHashSet;
 /// dispatch on `HeapData` without boxing overhead.
 use monty_types::{OsFunctionCall, ResourceError, ResourceTracker};
 
-use super::{MontyIter, Type, allocate_string};
+use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, HeapData, HeapId},
+    heap::{DropWithContext, HeapId},
     intern::StringId,
     value::{EitherStr, Value},
 };
@@ -527,16 +527,10 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// Returns a Python iterator for this object (`__iter__`).
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        let Some(self_id) = self_id else {
-            return Err(ExcType::type_error_not_iterable(
-                &self.py_type(vm).name(vm.heap, vm.interns),
-            ));
-        };
-        vm.heap.inc_ref(self_id);
-        let iter = MontyIter::new(Value::Ref(self_id), vm)?;
-        let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
-        Ok(Value::Ref(iter_id))
+    fn py_iter(&self, _self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        Err(ExcType::type_error_not_iterable(
+            &self.py_type(vm).name(vm.heap, vm.interns),
+        ))
     }
 
     /// Advances this object using Python's iterator protocol (`__next__`).

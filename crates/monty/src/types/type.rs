@@ -11,8 +11,7 @@ use crate::{
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
     types::{
-        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple,
+        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone, Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
         dict::dict_fromkeys,
@@ -108,6 +107,24 @@ pub enum Type {
     Iterator,
     #[strum(serialize = "list_iterator")]
     ListIterator,
+    #[strum(serialize = "tuple_iterator")]
+    TupleIterator,
+    #[strum(serialize = "str_ascii_iterator")]
+    StrAsciiIterator,
+    #[strum(serialize = "str_iterator")]
+    StrIterator,
+    #[strum(serialize = "bytes_iterator")]
+    BytesIterator,
+    #[strum(serialize = "range_iterator")]
+    RangeIterator,
+    #[strum(serialize = "dict_keyiterator")]
+    DictKeyIterator,
+    #[strum(serialize = "dict_itemiterator")]
+    DictItemIterator,
+    #[strum(serialize = "dict_valueiterator")]
+    DictValueIterator,
+    #[strum(serialize = "set_iterator")]
+    SetIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
     /// Coroutine type for async functions and external futures.
@@ -253,6 +270,25 @@ impl Type {
         }
     }
 
+    /// Returns whether this is one of Python's concrete iterator types.
+    #[must_use]
+    pub(crate) const fn is_iterator(self) -> bool {
+        matches!(
+            self,
+            Self::ListIterator
+                | Self::TupleIterator
+                | Self::StrAsciiIterator
+                | Self::StrIterator
+                | Self::BytesIterator
+                | Self::RangeIterator
+                | Self::DictKeyIterator
+                | Self::DictItemIterator
+                | Self::DictValueIterator
+                | Self::SetIterator
+                | Self::CallableIterator
+        )
+    }
+
     /// Checks if a value of type `self` is an instance of `other`.
     ///
     /// This handles Python's subtype relationships:
@@ -373,7 +409,7 @@ impl Type {
             Self::DateTime => datetime::init(vm, args),
             Self::TimeDelta => timedelta::init(vm, args),
             Self::TimeZone => TimeZone::init(vm, args),
-            Self::Iterator => MontyIter::init(vm, args),
+            Self::Iterator => super::iter::init(vm, args),
             Self::Path => Path::init(vm, args),
 
             // Primitive types - inline implementation

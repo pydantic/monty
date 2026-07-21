@@ -556,10 +556,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
         let list_id = self_id.expect("heap values have an id");
-        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator {
-            list: list_id,
-            index: 0,
-        }))?;
+        let iterator = vm.heap.allocate(HeapData::ListIterator(ListIterator::new(list_id)))?;
         vm.heap.inc_ref(list_id);
         Ok(Value::Ref(iterator))
     }
@@ -943,6 +940,11 @@ pub(crate) struct ListIterator {
 }
 
 impl ListIterator {
+    /// Creates an iterator which takes ownership of one reference to `list`.
+    pub(crate) fn new(list: HeapId) -> Self {
+        Self { list, index: 0 }
+    }
+
     /// Returns the list kept alive by this iterator.
     pub(crate) fn list_id(&self) -> HeapId {
         self.list

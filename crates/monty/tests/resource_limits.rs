@@ -104,6 +104,35 @@ len(result)
     );
 }
 
+/// Test that GC traces sources retained by tuple and dictionary iterators.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_concrete_iterator_cycles() {
+    let code = r"
+for i in range(100001):
+    container = []
+    source = (container,)
+    iterator = iter(source)
+    container.append(iterator)
+
+    mapping = {}
+    iterator = iter(mapping)
+    mapping['iterator'] = iterator
+
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    assert!(
+        output.heap_count < 40,
+        "GC should collect concrete iterator cycles: {} heap objects (expected < 40)",
+        output.heap_count
+    );
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next
@@ -309,7 +338,7 @@ result
 /// must be rejected *during* collection, near the configured memory limit —
 /// not after the entire native buffer has been built.
 ///
-/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
+/// Iterator collection builds the result in a native `Vec` that is invisible
 /// to the resource tracker until the finished object reaches the heap. Before
 /// the incremental check, `range(10**9)` would allocate ~16 GiB of native
 /// buffer before any limit check, OOM-killing or aborting the host (an
@@ -1353,7 +1382,7 @@ fn tuple_mult_within_limit() {
 // within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
 // ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
 // per-instruction timeout check. The fix adds `heap.check_time()` calls inside
-// `MontyIter::for_next()` and other non-iterator loops.
+// Python iterator advancement and other non-iterator loops.
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
@@ -1387,7 +1416,7 @@ fn timeout_in_sum_builtin() {
 
 /// Test that `list(range(huge))` respects the time limit.
 ///
-/// The `list()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `list()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
@@ -1442,7 +1471,7 @@ fn timeout_in_any_builtin() {
 
 /// Test that `tuple(range(huge))` respects the time limit.
 ///
-/// The `tuple()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `tuple()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_tuple_constructor() {
     assert_timeout_in_builtin("tuple(range(10**18))", "tuple(range(10**18))");

@@ -106,15 +106,3 @@ mechanism beyond dataclass field inheritance.
     `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
     class) is not preserved as a type — it degrades to a callable, appearing inside
     the sandbox as a `function` rather than a `type`.
-
-- **Iterator delegation** — consuming an existing iterator (`for x in it`,
-  `list(it)`) wraps it in a delegating iterator that shares its position, where
-  CPython iterates it directly. Not observable from Python: `iter(it)` returns
-  `it` unchanged, so no chain deeper than 1 can be built. Two `RuntimeError`s
-  guard malformed snapshot data, which can craft what Python cannot —
-  `iterator delegation nested too deeply` past 1000 links, and
-  `iterator delegates to a non-iterator` for a link pointing elsewhere. CPython
-  has neither.
-- **`reversed(x)`** — the `TypeError` for a non-reversible argument names Monty's
-  single `iterator` type rather than CPython's specific one, e.g.
-  `'iterator' object is not reversible` where CPython says `'list_iterator'`.

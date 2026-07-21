@@ -491,7 +491,18 @@ impl MontyObjectExt for MontyObject {
                     }
                     // Iterators are internal objects — represent as a fixed type
                     // string rather than recursing.
-                    HeapReadOutput::Iter(_) => Self::Repr("<iterator>".to_owned()),
+                    HeapReadOutput::ListIterator(_) => Self::Repr("<list_iterator object>".to_owned()),
+                    HeapReadOutput::TupleIterator(_) => Self::Repr("<tuple_iterator object>".to_owned()),
+                    HeapReadOutput::StringIterator(iter) => {
+                        Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                    }
+                    HeapReadOutput::BytesIterator(_) => Self::Repr("<bytes_iterator object>".to_owned()),
+                    HeapReadOutput::RangeIterator(_) => Self::Repr("<range_iterator object>".to_owned()),
+                    HeapReadOutput::DictKeyIterator(_) => Self::Repr("<dict_keyiterator object>".to_owned()),
+                    HeapReadOutput::DictItemIterator(_) => Self::Repr("<dict_itemiterator object>".to_owned()),
+                    HeapReadOutput::DictValueIterator(_) => Self::Repr("<dict_valueiterator object>".to_owned()),
+                    HeapReadOutput::SetIterator(_) => Self::Repr("<set_iterator object>".to_owned()),
+                    HeapReadOutput::CallableIterator(_) => Self::Repr("<callable_iterator object>".to_owned()),
                     HeapReadOutput::LongInt(li) => Self::BigInt(li.get(vm.heap).inner().clone()),
                     HeapReadOutput::Module(m) => {
                         Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
@@ -584,6 +595,15 @@ impl MontyTypeExt for MontyType {
             Self::Bytes => Some(Type::Bytes),
             Self::List => Some(Type::List),
             Self::ListIterator => Some(Type::ListIterator),
+            Self::TupleIterator => Some(Type::TupleIterator),
+            Self::StrAsciiIterator => Some(Type::StrAsciiIterator),
+            Self::StrIterator => Some(Type::StrIterator),
+            Self::BytesIterator => Some(Type::BytesIterator),
+            Self::RangeIterator => Some(Type::RangeIterator),
+            Self::DictKeyIterator => Some(Type::DictKeyIterator),
+            Self::DictItemIterator => Some(Type::DictItemIterator),
+            Self::DictValueIterator => Some(Type::DictValueIterator),
+            Self::SetIterator => Some(Type::SetIterator),
             Self::CallableIterator => Some(Type::CallableIterator),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
@@ -639,6 +659,15 @@ impl MontyTypeExt for MontyType {
             Type::Bytes => Self::Bytes,
             Type::List => Self::List,
             Type::ListIterator => Self::ListIterator,
+            Type::TupleIterator => Self::TupleIterator,
+            Type::StrAsciiIterator => Self::StrAsciiIterator,
+            Type::StrIterator => Self::StrIterator,
+            Type::BytesIterator => Self::BytesIterator,
+            Type::RangeIterator => Self::RangeIterator,
+            Type::DictKeyIterator => Self::DictKeyIterator,
+            Type::DictItemIterator => Self::DictItemIterator,
+            Type::DictValueIterator => Self::DictValueIterator,
+            Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,

@@ -294,6 +294,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Type::Tuple
     }
 
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        TupleIterator::from_tuple(self_id.expect("heap values have an id"), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
     }
@@ -564,4 +568,113 @@ fn tuple_count<'h>(
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
+}
+
+/// Iterator over tuple and named-tuple storage.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TupleIterator {
+    source: TupleIteratorSource,
+    index: usize,
+}
+
+/// Identifies tuple-like storage retained by a tuple iterator.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum TupleIteratorSource {
+    Tuple(HeapId),
+    NamedTuple(HeapId),
+}
+
+impl TupleIterator {
+    /// Allocates an iterator retaining a tuple.
+    pub(crate) fn from_tuple(id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        Self::allocate(TupleIteratorSource::Tuple(id), vm)
+    }
+
+    /// Allocates an iterator retaining a named tuple.
+    pub(crate) fn from_named_tuple(id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        Self::allocate(TupleIteratorSource::NamedTuple(id), vm)
+    }
+
+    /// Returns the number of tuple items not yet yielded.
+    pub(crate) fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
+        let len = match self.source {
+            TupleIteratorSource::Tuple(id) => match heap.get(id) {
+                HeapData::Tuple(tuple) => tuple.as_slice().len(),
+                _ => unreachable!("tuple iterator must retain a tuple"),
+            },
+            TupleIteratorSource::NamedTuple(id) => match heap.get(id) {
+                HeapData::NamedTuple(tuple) => tuple.len(),
+                _ => unreachable!("tuple iterator must retain a named tuple"),
+            },
+        };
+        len.saturating_sub(self.index)
+    }
+
+    /// Returns the retained source id for GC tracing.
+    pub(crate) fn source_id(&self) -> HeapId {
+        match self.source {
+            TupleIteratorSource::Tuple(id) | TupleIteratorSource::NamedTuple(id) => id,
+        }
+    }
+
+    /// Allocates an iterator and retains its source.
+    fn allocate(source: TupleIteratorSource, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        let source_id = match source {
+            TupleIteratorSource::Tuple(id) | TupleIteratorSource::NamedTuple(id) => id,
+        };
+        let id = vm.heap.allocate(HeapData::TupleIterator(Self { source, index: 0 }))?;
+        vm.heap.inc_ref(source_id);
+        Ok(Value::Ref(id))
+    }
+}
+
+impl HeapItem for TupleIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.source_id());
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, TupleIterator> {
+    fn py_is_iterable(&self, _: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::TupleIterator
+    }
+
+    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let (source_id, index) = {
+            let iter = self.get(vm.heap);
+            (iter.source_id(), iter.index)
+        };
+        let item = match vm.heap.get(source_id) {
+            HeapData::Tuple(tuple) => tuple.as_slice().get(index),
+            HeapData::NamedTuple(tuple) => tuple.as_vec().get(index),
+            _ => unreachable!("tuple iterator must retain tuple-like storage"),
+        }
+        .map(|value| value.clone_with_heap(vm.heap));
+        if item.is_some() {
+            self.get_mut(vm.heap).index += 1;
+        }
+        Ok(item)
+    }
 }

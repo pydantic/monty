@@ -80,7 +80,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::{HashValue, hash_python_bytes},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
-    intern::{StaticStrings, StringId},
+    intern::{BytesId, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
@@ -268,6 +268,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Bytes
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        BytesIterator::from_heap(self_id.expect("heap values have an id"), vm)
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
@@ -2250,4 +2254,116 @@ fn hex_char_to_value(c: char) -> Option<u8> {
 fn allocate_bytes(bytes: Vec<u8>, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
     let heap_id = heap.allocate(HeapData::Bytes(Bytes::new(bytes)))?;
     Ok(Value::Ref(heap_id))
+}
+
+/// Source representation retained by a bytes iterator.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum BytesIteratorSource {
+    Intern(BytesId),
+    Heap(HeapId),
+}
+
+/// Iterator yielding integer elements from bytes storage.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct BytesIterator {
+    source: BytesIteratorSource,
+    index: usize,
+}
+
+impl BytesIterator {
+    /// Allocates an iterator over interned bytes.
+    pub(crate) fn from_intern(id: BytesId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        Self::allocate(BytesIteratorSource::Intern(id), vm)
+    }
+
+    /// Allocates an iterator retaining heap bytes.
+    fn from_heap(id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        Self::allocate(BytesIteratorSource::Heap(id), vm)
+    }
+
+    /// Returns a retained heap source, if the bytes are not interned.
+    pub(crate) fn source_id(&self) -> Option<HeapId> {
+        match self.source {
+            BytesIteratorSource::Intern(_) => None,
+            BytesIteratorSource::Heap(id) => Some(id),
+        }
+    }
+
+    /// Returns the number of bytes not yet yielded.
+    pub(crate) fn size_hint(&self, vm: &VM<'_, impl ResourceTracker>) -> usize {
+        self.as_slice(vm).len().saturating_sub(self.index)
+    }
+
+    /// Borrows the source bytes.
+    fn as_slice<'a>(&self, vm: &'a VM<'_, impl ResourceTracker>) -> &'a [u8] {
+        match self.source {
+            BytesIteratorSource::Intern(id) => vm.interns.get_bytes(id),
+            BytesIteratorSource::Heap(id) => match vm.heap.get(id) {
+                HeapData::Bytes(bytes) => bytes.as_slice(),
+                _ => unreachable!("bytes iterator must retain bytes"),
+            },
+        }
+    }
+
+    /// Allocates an iterator and retains a heap source when present.
+    fn allocate(source: BytesIteratorSource, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        let source_id = match source {
+            BytesIteratorSource::Heap(id) => Some(id),
+            BytesIteratorSource::Intern(_) => None,
+        };
+        let id = vm.heap.allocate(HeapData::BytesIterator(Self { source, index: 0 }))?;
+        if let Some(source_id) = source_id {
+            vm.heap.inc_ref(source_id);
+        }
+        Ok(Value::Ref(id))
+    }
+}
+
+impl HeapItem for BytesIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(id) = self.source_id() {
+            stack.push(id);
+        }
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
+    fn py_is_iterable(&self, _: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::BytesIterator
+    }
+
+    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let byte = {
+            let iter = self.get(vm.heap);
+            iter.as_slice(vm).get(iter.index).copied()
+        };
+        if let Some(byte) = byte {
+            self.get_mut(vm.heap).index += 1;
+            Ok(Some(Value::Int(i64::from(byte))))
+        } else {
+            Ok(None)
+        }
+    }
 }

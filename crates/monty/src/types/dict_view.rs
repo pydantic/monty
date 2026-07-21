@@ -10,7 +10,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint},
+    types::{
+        Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
+        dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
+        iter::checked_preallocation_hint,
+    },
     value::{EitherStr, Value},
 };
 
@@ -133,6 +137,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
 
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictKeys
+    }
+
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictKeyIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
@@ -301,6 +310,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Type::DictItems
     }
 
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictItemIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
@@ -406,6 +420,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
 
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictValues
+    }
+
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictValueIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
