@@ -4,84 +4,6 @@ use monty_types::{CodeLoc, StackFrame};
 
 use crate::{exception_private::RawStackFrame, intern::Interns, parse::CodeRange};
 
-/// Crate-internal builders for [`StackFrame`] (which lives in `monty-types`):
-/// they resolve interned names and raw byte offsets via [`Interns`] /
-/// [`SourceMap`], which only exist interpreter-side.
-pub(crate) trait StackFrameExt {
-    /// Builds a runtime `StackFrame` from an internal `RawStackFrame`.
-    ///
-    /// Resolves the raw filename/frame-name `StringId`s via `interns` and
-    /// expands the position's byte offsets to line/column and a preview
-    /// line via `source_map`.
-    fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let filename = interns.get_str(f.position.filename).to_string();
-        let (start, end, preview_line) = source_map.resolve_range(f.position);
-        StackFrame {
-            filename,
-            start,
-            end,
-            frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
-            preview_line,
-            hide_caret: f.hide_caret,
-            hide_frame_name: false,
-        }
-    }
-
-    /// Builds a `StackFrame` for a `SyntaxError`.
-    ///
-    /// Sets `hide_frame_name: true` because CPython's SyntaxError format
-    /// omits the trailing `, in <module>` part.
-    fn from_position_syntax_error(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        StackFrame {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: false,
-            hide_frame_name: true,
-        }
-    }
-
-    /// Builds a generic `StackFrame` from a `CodeRange` and filename.
-    ///
-    /// Used for runtime-style errors raised outside the VM's frame tracking
-    /// (e.g. parse-phase `NotImplementedError`) where caret markers and the
-    /// `, in <module>` suffix are both shown.
-    fn from_position(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        StackFrame {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: false,
-            hide_frame_name: false,
-        }
-    }
-
-    /// Builds a `StackFrame` with caret markers suppressed.
-    ///
-    /// Used for errors like `ImportError` and `ModuleNotFoundError`, where
-    /// CPython shows the source preview line but no `~~~` carets beneath it.
-    fn from_position_no_caret(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
-        let (start, end, preview_line) = source_map.resolve_range(position);
-        StackFrame {
-            filename: filename.to_string(),
-            start,
-            end,
-            frame_name: None,
-            preview_line,
-            hide_caret: true,
-            hide_frame_name: false,
-        }
-    }
-}
-
-impl StackFrameExt for StackFrame {}
-
 /// Lazy resolver from raw byte offsets (stored on every [`CodeRange`]) back to
 /// human-readable line/column/preview-line information.
 ///
@@ -248,3 +170,81 @@ impl<'s> SourceMap<'s> {
         line.strip_suffix('\r').unwrap_or(line)
     }
 }
+
+/// Crate-internal builders for [`StackFrame`] (which lives in `monty-types`):
+/// they resolve interned names and raw byte offsets via [`Interns`] /
+/// [`SourceMap`], which only exist interpreter-side.
+pub(crate) trait StackFrameExt {
+    /// Builds a runtime `StackFrame` from an internal `RawStackFrame`.
+    ///
+    /// Resolves the raw filename/frame-name `StringId`s via `interns` and
+    /// expands the position's byte offsets to line/column and a preview
+    /// line via `source_map`.
+    fn from_raw(f: &RawStackFrame, interns: &Interns, source_map: &mut SourceMap<'_>) -> StackFrame {
+        let filename = interns.get_str(f.position.filename).to_string();
+        let (start, end, preview_line) = source_map.resolve_range(f.position);
+        StackFrame {
+            filename,
+            start,
+            end,
+            frame_name: f.frame_name.map(|id| interns.get_str(id).to_string()),
+            preview_line,
+            hide_caret: f.hide_caret,
+            hide_frame_name: false,
+        }
+    }
+
+    /// Builds a `StackFrame` for a `SyntaxError`.
+    ///
+    /// Sets `hide_frame_name: true` because CPython's SyntaxError format
+    /// omits the trailing `, in <module>` part.
+    fn from_position_syntax_error(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
+        let (start, end, preview_line) = source_map.resolve_range(position);
+        StackFrame {
+            filename: filename.to_string(),
+            start,
+            end,
+            frame_name: None,
+            preview_line,
+            hide_caret: false,
+            hide_frame_name: true,
+        }
+    }
+
+    /// Builds a generic `StackFrame` from a `CodeRange` and filename.
+    ///
+    /// Used for runtime-style errors raised outside the VM's frame tracking
+    /// (e.g. parse-phase `NotImplementedError`) where caret markers and the
+    /// `, in <module>` suffix are both shown.
+    fn from_position(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
+        let (start, end, preview_line) = source_map.resolve_range(position);
+        StackFrame {
+            filename: filename.to_string(),
+            start,
+            end,
+            frame_name: None,
+            preview_line,
+            hide_caret: false,
+            hide_frame_name: false,
+        }
+    }
+
+    /// Builds a `StackFrame` with caret markers suppressed.
+    ///
+    /// Used for errors like `ImportError` and `ModuleNotFoundError`, where
+    /// CPython shows the source preview line but no `~~~` carets beneath it.
+    fn from_position_no_caret(position: CodeRange, filename: &str, source_map: &mut SourceMap<'_>) -> StackFrame {
+        let (start, end, preview_line) = source_map.resolve_range(position);
+        StackFrame {
+            filename: filename.to_string(),
+            start,
+            end,
+            frame_name: None,
+            preview_line,
+            hide_caret: true,
+            hide_frame_name: false,
+        }
+    }
+}
+
+impl StackFrameExt for StackFrame {}

@@ -22,159 +22,7 @@ use crate::{
     format::{FormatFloat, StringRepr, bytes_repr, format_offset_timedelta_repr, string_repr_fmt},
     resource::ResourceError,
 };
-/// A Python `datetime.date` value with year, month, and day components.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct MontyDate {
-    /// Gregorian year in range 1..=9999.
-    pub year: i32,
-    /// Month component in range 1..=12.
-    pub month: u8,
-    /// Day component valid for the given month/year.
-    pub day: u8,
-}
 
-/// A Python `datetime.datetime` value with date, time, and optional timezone components.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MontyDateTime {
-    /// Gregorian year in range 1..=9999.
-    pub year: i32,
-    /// Month component in range 1..=12.
-    pub month: u8,
-    /// Day component valid for the given month/year.
-    pub day: u8,
-    /// Hour in range 0..=23.
-    pub hour: u8,
-    /// Minute in range 0..=59.
-    pub minute: u8,
-    /// Second in range 0..=59.
-    pub second: u8,
-    /// Microsecond in range 0..=999_999.
-    pub microsecond: u32,
-    /// Fixed offset seconds for aware datetimes, or `None` for naive values.
-    pub offset_seconds: Option<i32>,
-    /// Optional explicit timezone name for aware datetimes.
-    ///
-    /// Must be `None` when `offset_seconds` is `None`.
-    pub timezone_name: Option<String>,
-}
-
-/// A Python `datetime.timedelta` value representing a duration.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct MontyTimeDelta {
-    /// Day component.
-    pub days: i32,
-    /// Seconds component in normalized range 0..86400.
-    pub seconds: i32,
-    /// Microseconds component in normalized range 0..1_000_000.
-    pub microseconds: i32,
-}
-
-/// A Python `datetime.timezone` fixed-offset timezone.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct MontyTimeZone {
-    /// Fixed UTC offset in seconds.
-    pub offset_seconds: i32,
-    /// Optional display name.
-    pub name: Option<String>,
-}
-
-impl PartialEq for MontyDateTime {
-    fn eq(&self, other: &Self) -> bool {
-        let self_aware = self.offset_seconds.is_some();
-        let other_aware = other.offset_seconds.is_some();
-        if self_aware != other_aware {
-            return false;
-        }
-
-        if self_aware {
-            return monty_datetime_utc_micros(self)
-                .zip(monty_datetime_utc_micros(other))
-                .is_some_and(|(lhs, rhs)| lhs == rhs)
-                || monty_datetime_raw_eq(self, other);
-        }
-
-        monty_datetime_local_micros(self)
-            .zip(monty_datetime_local_micros(other))
-            .is_some_and(|(lhs, rhs)| lhs == rhs)
-            || monty_datetime_raw_eq(self, other)
-    }
-}
-
-impl Eq for MontyDateTime {}
-
-impl Hash for MontyDateTime {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        if self.offset_seconds.is_some()
-            && let Some(utc_micros) = monty_datetime_utc_micros(self)
-        {
-            utc_micros.hash(state);
-            return;
-        }
-        if let Some(local_micros) = monty_datetime_local_micros(self) {
-            local_micros.hash(state);
-            return;
-        }
-
-        // Invalid carrier values should still hash deterministically instead of panicking.
-        self.year.hash(state);
-        self.month.hash(state);
-        self.day.hash(state);
-        self.hour.hash(state);
-        self.minute.hash(state);
-        self.second.hash(state);
-        self.microsecond.hash(state);
-        self.offset_seconds.hash(state);
-        self.timezone_name.hash(state);
-    }
-}
-
-impl PartialEq for MontyTimeZone {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset_seconds == other.offset_seconds
-    }
-}
-
-impl Eq for MontyTimeZone {}
-
-impl Hash for MontyTimeZone {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.offset_seconds.hash(state);
-    }
-}
-
-fn monty_datetime_local_micros(datetime: &MontyDateTime) -> Option<i64> {
-    monty_datetime_naive(datetime).map(|naive| naive.and_utc().timestamp_micros())
-}
-
-fn monty_datetime_raw_eq(a: &MontyDateTime, b: &MontyDateTime) -> bool {
-    a.year == b.year
-        && a.month == b.month
-        && a.day == b.day
-        && a.hour == b.hour
-        && a.minute == b.minute
-        && a.second == b.second
-        && a.microsecond == b.microsecond
-        && a.offset_seconds == b.offset_seconds
-        && a.timezone_name == b.timezone_name
-}
-
-fn monty_datetime_utc_micros(datetime: &MontyDateTime) -> Option<i64> {
-    let offset_seconds = datetime.offset_seconds?;
-    let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
-    let utc = monty_datetime_naive(datetime)?.checked_sub_signed(offset_delta)?;
-    Some(utc.and_utc().timestamp_micros())
-}
-
-fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
-    let date = NaiveDate::from_ymd_opt(datetime.year, u32::from(datetime.month), u32::from(datetime.day))?;
-    let time = NaiveTime::from_hms_micro_opt(
-        u32::from(datetime.hour),
-        u32::from(datetime.minute),
-        u32::from(datetime.second),
-        datetime.microsecond,
-    )?;
-    Some(date.and_time(time))
-}
 /// A Python value that can be passed to or returned from the interpreter.
 ///
 /// This is the public-facing type for Python values. It owns all its data and can be
@@ -313,141 +161,7 @@ pub enum MontyObject {
     /// This is output-only and cannot be used as an input to the interpreter.
     Cycle(usize, String),
 }
-/// The Python type of a value at the host boundary — the public mirror of the
-/// internal runtime `Type` enum.
-///
-/// Where the runtime `Type::Instance` carries a transient heap id, the public
-/// [`MontyType::Instance`] carries the *resolved class name* as an owned
-/// `String`, so a `MontyType` is always self-contained: it can be serialized,
-/// sent over the subprocess wire protocol, and displayed without heap access.
-///
-/// `Instance` is output-only: a class binding cannot be reconstructed from a
-/// name, so passing `MontyType::Instance` as an *input* is rejected with an
-/// [`InvalidInputError`] (see [`MontyObject`] input conversion).
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    strum::EnumIter,
-    strum::EnumString,
-    strum::IntoStaticStr,
-)]
-#[strum(serialize_all = "lowercase")]
-pub enum MontyType {
-    Ellipsis,
-    Type,
-    #[strum(serialize = "NoneType")]
-    NoneType,
-    Bool,
-    Int,
-    Float,
-    Range,
-    Slice,
-    Date,
-    #[strum(serialize = "datetime.datetime")]
-    DateTime,
-    TimeDelta,
-    TimeZone,
-    Str,
-    Bytes,
-    List,
-    #[strum(serialize = "list_iterator")]
-    ListIterator,
-    #[strum(serialize = "callable_iterator")]
-    CallableIterator,
-    Tuple,
-    NamedTuple,
-    Dict,
-    #[strum(serialize = "dict_keys")]
-    DictKeys,
-    #[strum(serialize = "dict_items")]
-    DictItems,
-    #[strum(serialize = "dict_values")]
-    DictValues,
-    Set,
-    FrozenSet,
-    Dataclass,
-    /// An instance of a sandbox-defined class (`class Foo: ...`), carrying the
-    /// resolved class name (e.g. `"Foo"`). Output-only — rejected as an input.
-    ///
-    /// `#[strum(disabled)]`: excluded from `EnumIter` (no meaningful default
-    /// name; the name round-trip tests iterate the nameable variants only).
-    #[strum(disabled)]
-    Instance(String),
-    /// Exception types render/parse via `ExcType`'s own strum name
-    /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
-    /// `#[strum(disabled)]`: [`name`](Self::name) and
-    /// [`from_type_name`](Self::from_type_name) peel `Exception` off
-    /// explicitly.
-    #[strum(disabled)]
-    Exception(ExcType),
-    Function,
-    #[strum(serialize = "builtin_function_or_method")]
-    BuiltinFunction,
-    Cell,
-    Iterator,
-    Coroutine,
-    Module,
-    #[strum(serialize = "_io.TextIOWrapper")]
-    TextIOWrapper,
-    #[strum(serialize = "_io.BufferedReader")]
-    BufferedReader,
-    #[strum(serialize = "_io.BufferedWriter")]
-    BufferedWriter,
-    #[strum(serialize = "_io.BufferedRandom")]
-    BufferedRandom,
-    #[strum(serialize = "typing._SpecialForm")]
-    SpecialForm,
-    #[strum(serialize = "PosixPath")]
-    Path,
-    Property,
-    #[strum(serialize = "re.Pattern")]
-    RePattern,
-    #[strum(serialize = "re.Match")]
-    ReMatch,
-}
 
-impl fmt::Display for MontyType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-impl MontyType {
-    /// The Python-visible name of this type (`"int"`, `"datetime.datetime"`,
-    /// `"ValueError"`, or the class name for [`Instance`](Self::Instance)).
-    #[must_use]
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Instance(name) => name,
-            Self::Exception(exc_type) => (*exc_type).into(),
-            // Every remaining variant is named by strum's `IntoStaticStr`
-            // (`Exception`/`Instance` are peeled off above).
-            other => other.into(),
-        }
-    }
-
-    /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
-    /// back to the `MontyType` — the wire-protocol decode path for builtin
-    /// type names. Never yields [`Instance`](Self::Instance) (`"object"` and
-    /// class names return `None`); the wire carries instance types in a
-    /// dedicated field instead.
-    ///
-    /// `EnumString` parses via the same strum `serialize` attributes that
-    /// `IntoStaticStr` renders with, so the two stay in lockstep by
-    /// construction. Exception types display as their exception name
-    /// ("ValueError", "json.JSONDecodeError", ...) — fall back to the
-    /// `ExcType` parser.
-    #[must_use]
-    pub fn from_type_name(name: &str) -> Option<Self> {
-        name.parse::<Self>()
-            .ok()
-            .or_else(|| name.parse::<ExcType>().ok().map(Self::Exception))
-    }
-}
 impl fmt::Display for MontyObject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -459,6 +173,7 @@ impl fmt::Display for MontyObject {
         }
     }
 }
+
 impl MontyObject {
     /// Creates a new `MontyObject` from something that can be converted into a `DictPairs`.
     pub fn dict(dict: impl Into<DictPairs>) -> Self {
@@ -513,8 +228,7 @@ impl MontyObject {
         };
         BASE + payload
     }
-}
-impl MontyObject {
+
     /// Returns the Python `repr()` string for this value.
     ///
     /// # Panics
@@ -971,6 +685,262 @@ impl AsRef<Self> for MontyObject {
     }
 }
 
+/// The Python type of a value at the host boundary — the public mirror of the
+/// internal runtime `Type` enum.
+///
+/// Where the runtime `Type::Instance` carries a transient heap id, the public
+/// [`MontyType::Instance`] carries the *resolved class name* as an owned
+/// `String`, so a `MontyType` is always self-contained: it can be serialized,
+/// sent over the subprocess wire protocol, and displayed without heap access.
+///
+/// `Instance` is output-only: a class binding cannot be reconstructed from a
+/// name, so passing `MontyType::Instance` as an *input* is rejected with an
+/// [`InvalidInputError`] (see [`MontyObject`] input conversion).
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumIter,
+    strum::EnumString,
+    strum::IntoStaticStr,
+)]
+#[strum(serialize_all = "lowercase")]
+pub enum MontyType {
+    Ellipsis,
+    Type,
+    #[strum(serialize = "NoneType")]
+    NoneType,
+    Bool,
+    Int,
+    Float,
+    Range,
+    Slice,
+    Date,
+    #[strum(serialize = "datetime.datetime")]
+    DateTime,
+    TimeDelta,
+    TimeZone,
+    Str,
+    Bytes,
+    List,
+    #[strum(serialize = "list_iterator")]
+    ListIterator,
+    #[strum(serialize = "callable_iterator")]
+    CallableIterator,
+    Tuple,
+    NamedTuple,
+    Dict,
+    #[strum(serialize = "dict_keys")]
+    DictKeys,
+    #[strum(serialize = "dict_items")]
+    DictItems,
+    #[strum(serialize = "dict_values")]
+    DictValues,
+    Set,
+    FrozenSet,
+    Dataclass,
+    /// An instance of a sandbox-defined class (`class Foo: ...`), carrying the
+    /// resolved class name (e.g. `"Foo"`). Output-only — rejected as an input.
+    ///
+    /// `#[strum(disabled)]`: excluded from `EnumIter` (no meaningful default
+    /// name; the name round-trip tests iterate the nameable variants only).
+    #[strum(disabled)]
+    Instance(String),
+    /// Exception types render/parse via `ExcType`'s own strum name
+    /// (`"ValueError"`, `"json.JSONDecodeError"`, ...), so this variant is
+    /// `#[strum(disabled)]`: [`name`](Self::name) and
+    /// [`from_type_name`](Self::from_type_name) peel `Exception` off
+    /// explicitly.
+    #[strum(disabled)]
+    Exception(ExcType),
+    Function,
+    #[strum(serialize = "builtin_function_or_method")]
+    BuiltinFunction,
+    Cell,
+    Iterator,
+    Coroutine,
+    Module,
+    #[strum(serialize = "_io.TextIOWrapper")]
+    TextIOWrapper,
+    #[strum(serialize = "_io.BufferedReader")]
+    BufferedReader,
+    #[strum(serialize = "_io.BufferedWriter")]
+    BufferedWriter,
+    #[strum(serialize = "_io.BufferedRandom")]
+    BufferedRandom,
+    #[strum(serialize = "typing._SpecialForm")]
+    SpecialForm,
+    #[strum(serialize = "PosixPath")]
+    Path,
+    Property,
+    #[strum(serialize = "re.Pattern")]
+    RePattern,
+    #[strum(serialize = "re.Match")]
+    ReMatch,
+}
+
+impl fmt::Display for MontyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl MontyType {
+    /// The Python-visible name of this type (`"int"`, `"datetime.datetime"`,
+    /// `"ValueError"`, or the class name for [`Instance`](Self::Instance)).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Instance(name) => name,
+            Self::Exception(exc_type) => (*exc_type).into(),
+            // Every remaining variant is named by strum's `IntoStaticStr`
+            // (`Exception`/`Instance` are peeled off above).
+            other => other.into(),
+        }
+    }
+
+    /// Parses a name produced by [`Display`](fmt::Display)/[`name`](Self::name)
+    /// back to the `MontyType` — the wire-protocol decode path for builtin
+    /// type names. Never yields [`Instance`](Self::Instance) (`"object"` and
+    /// class names return `None`); the wire carries instance types in a
+    /// dedicated field instead.
+    ///
+    /// `EnumString` parses via the same strum `serialize` attributes that
+    /// `IntoStaticStr` renders with, so the two stay in lockstep by
+    /// construction. Exception types display as their exception name
+    /// ("ValueError", "json.JSONDecodeError", ...) — fall back to the
+    /// `ExcType` parser.
+    #[must_use]
+    pub fn from_type_name(name: &str) -> Option<Self> {
+        name.parse::<Self>()
+            .ok()
+            .or_else(|| name.parse::<ExcType>().ok().map(Self::Exception))
+    }
+}
+
+/// A Python `datetime.date` value with year, month, and day components.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct MontyDate {
+    /// Gregorian year in range 1..=9999.
+    pub year: i32,
+    /// Month component in range 1..=12.
+    pub month: u8,
+    /// Day component valid for the given month/year.
+    pub day: u8,
+}
+
+/// A Python `datetime.datetime` value with date, time, and optional timezone components.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MontyDateTime {
+    /// Gregorian year in range 1..=9999.
+    pub year: i32,
+    /// Month component in range 1..=12.
+    pub month: u8,
+    /// Day component valid for the given month/year.
+    pub day: u8,
+    /// Hour in range 0..=23.
+    pub hour: u8,
+    /// Minute in range 0..=59.
+    pub minute: u8,
+    /// Second in range 0..=59.
+    pub second: u8,
+    /// Microsecond in range 0..=999_999.
+    pub microsecond: u32,
+    /// Fixed offset seconds for aware datetimes, or `None` for naive values.
+    pub offset_seconds: Option<i32>,
+    /// Optional explicit timezone name for aware datetimes.
+    ///
+    /// Must be `None` when `offset_seconds` is `None`.
+    pub timezone_name: Option<String>,
+}
+
+/// A Python `datetime.timedelta` value representing a duration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct MontyTimeDelta {
+    /// Day component.
+    pub days: i32,
+    /// Seconds component in normalized range 0..86400.
+    pub seconds: i32,
+    /// Microseconds component in normalized range 0..1_000_000.
+    pub microseconds: i32,
+}
+
+/// A Python `datetime.timezone` fixed-offset timezone.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MontyTimeZone {
+    /// Fixed UTC offset in seconds.
+    pub offset_seconds: i32,
+    /// Optional display name.
+    pub name: Option<String>,
+}
+
+impl PartialEq for MontyDateTime {
+    fn eq(&self, other: &Self) -> bool {
+        let self_aware = self.offset_seconds.is_some();
+        let other_aware = other.offset_seconds.is_some();
+        if self_aware != other_aware {
+            return false;
+        }
+
+        if self_aware {
+            return monty_datetime_utc_micros(self)
+                .zip(monty_datetime_utc_micros(other))
+                .is_some_and(|(lhs, rhs)| lhs == rhs)
+                || monty_datetime_raw_eq(self, other);
+        }
+
+        monty_datetime_local_micros(self)
+            .zip(monty_datetime_local_micros(other))
+            .is_some_and(|(lhs, rhs)| lhs == rhs)
+            || monty_datetime_raw_eq(self, other)
+    }
+}
+
+impl Eq for MontyDateTime {}
+
+impl Hash for MontyDateTime {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        if self.offset_seconds.is_some()
+            && let Some(utc_micros) = monty_datetime_utc_micros(self)
+        {
+            utc_micros.hash(state);
+            return;
+        }
+        if let Some(local_micros) = monty_datetime_local_micros(self) {
+            local_micros.hash(state);
+            return;
+        }
+
+        // Invalid carrier values should still hash deterministically instead of panicking.
+        self.year.hash(state);
+        self.month.hash(state);
+        self.day.hash(state);
+        self.hour.hash(state);
+        self.minute.hash(state);
+        self.second.hash(state);
+        self.microsecond.hash(state);
+        self.offset_seconds.hash(state);
+        self.timezone_name.hash(state);
+    }
+}
+
+impl PartialEq for MontyTimeZone {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset_seconds == other.offset_seconds
+    }
+}
+
+impl Eq for MontyTimeZone {}
+
+impl Hash for MontyTimeZone {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.offset_seconds.hash(state);
+    }
+}
+
 /// Error returned when a `MontyObject` cannot be converted to the requested Rust type.
 ///
 /// This error is returned by the `TryFrom` implementations when attempting to extract
@@ -1193,4 +1163,38 @@ impl fmt::Display for MontyFileHandle {
             StringRepr(self.mode.as_str())
         )
     }
+}
+
+fn monty_datetime_local_micros(datetime: &MontyDateTime) -> Option<i64> {
+    monty_datetime_naive(datetime).map(|naive| naive.and_utc().timestamp_micros())
+}
+
+fn monty_datetime_raw_eq(a: &MontyDateTime, b: &MontyDateTime) -> bool {
+    a.year == b.year
+        && a.month == b.month
+        && a.day == b.day
+        && a.hour == b.hour
+        && a.minute == b.minute
+        && a.second == b.second
+        && a.microsecond == b.microsecond
+        && a.offset_seconds == b.offset_seconds
+        && a.timezone_name == b.timezone_name
+}
+
+fn monty_datetime_utc_micros(datetime: &MontyDateTime) -> Option<i64> {
+    let offset_seconds = datetime.offset_seconds?;
+    let offset_delta = ChronoTimeDelta::try_seconds(i64::from(offset_seconds))?;
+    let utc = monty_datetime_naive(datetime)?.checked_sub_signed(offset_delta)?;
+    Some(utc.and_utc().timestamp_micros())
+}
+
+fn monty_datetime_naive(datetime: &MontyDateTime) -> Option<NaiveDateTime> {
+    let date = NaiveDate::from_ymd_opt(datetime.year, u32::from(datetime.month), u32::from(datetime.day))?;
+    let time = NaiveTime::from_hms_micro_opt(
+        u32::from(datetime.hour),
+        u32::from(datetime.minute),
+        u32::from(datetime.second),
+        datetime.microsecond,
+    )?;
+    Some(date.and_time(time))
 }

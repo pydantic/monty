@@ -30,139 +30,6 @@ use crate::{
     value::{EitherStr, Value},
 };
 
-/// Crate-internal bridge between [`MontyType`] and the runtime [`Type`].
-///
-/// `MontyType` lives in `monty-types` (it is pure data), but mapping it to and
-/// from the runtime `Type` needs heap/intern access, so the conversions stay
-/// here as a `pub(crate)` extension trait.
-pub(crate) trait MontyTypeExt: Sized {
-    fn to_internal(&self) -> Option<Type>;
-
-    fn from_internal_static(ty: Type) -> Self;
-
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self;
-}
-
-impl MontyTypeExt for MontyType {
-    /// The internal runtime [`Type`] this variant mirrors, or `None` for
-    /// [`Instance`](Self::Instance) — a class binding cannot be reconstructed
-    /// from a name, which is exactly why `Instance` inputs are rejected.
-    ///
-    /// Keep in lockstep with [`from_internal_static`](Self::from_internal_static);
-    /// both matches are exhaustive so the compiler enforces totality.
-    fn to_internal(&self) -> Option<Type> {
-        match self {
-            Self::Ellipsis => Some(Type::Ellipsis),
-            Self::Type => Some(Type::Type),
-            Self::NoneType => Some(Type::NoneType),
-            Self::Bool => Some(Type::Bool),
-            Self::Int => Some(Type::Int),
-            Self::Float => Some(Type::Float),
-            Self::Range => Some(Type::Range),
-            Self::Slice => Some(Type::Slice),
-            Self::Date => Some(Type::Date),
-            Self::DateTime => Some(Type::DateTime),
-            Self::TimeDelta => Some(Type::TimeDelta),
-            Self::TimeZone => Some(Type::TimeZone),
-            Self::Str => Some(Type::Str),
-            Self::Bytes => Some(Type::Bytes),
-            Self::List => Some(Type::List),
-            Self::ListIterator => Some(Type::ListIterator),
-            Self::CallableIterator => Some(Type::CallableIterator),
-            Self::Tuple => Some(Type::Tuple),
-            Self::NamedTuple => Some(Type::NamedTuple),
-            Self::Dict => Some(Type::Dict),
-            Self::DictKeys => Some(Type::DictKeys),
-            Self::DictItems => Some(Type::DictItems),
-            Self::DictValues => Some(Type::DictValues),
-            Self::Set => Some(Type::Set),
-            Self::FrozenSet => Some(Type::FrozenSet),
-            Self::Dataclass => Some(Type::Dataclass),
-            Self::Instance(_) => None,
-            Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
-            Self::Function => Some(Type::Function),
-            Self::BuiltinFunction => Some(Type::BuiltinFunction),
-            Self::Cell => Some(Type::Cell),
-            Self::Iterator => Some(Type::Iterator),
-            Self::Coroutine => Some(Type::Coroutine),
-            Self::Module => Some(Type::Module),
-            Self::TextIOWrapper => Some(Type::TextIOWrapper),
-            Self::BufferedReader => Some(Type::BufferedReader),
-            Self::BufferedWriter => Some(Type::BufferedWriter),
-            Self::BufferedRandom => Some(Type::BufferedRandom),
-            Self::SpecialForm => Some(Type::SpecialForm),
-            Self::Path => Some(Type::Path),
-            Self::Property => Some(Type::Property),
-            Self::RePattern => Some(Type::RePattern),
-            Self::ReMatch => Some(Type::ReMatch),
-        }
-    }
-
-    /// Mirrors a runtime [`Type`] whose class identity is NOT needed. Use
-    /// [`from_internal`](Self::from_internal) when a heap is available.
-    ///
-    /// # Panics
-    /// On `Instance`, whose class name cannot be resolved without a heap; it
-    /// is unreachable on every current call path (`Builtins::Type` and
-    /// `from_type_name` never hold/produce it).
-    fn from_internal_static(ty: Type) -> Self {
-        match ty {
-            Type::Ellipsis => Self::Ellipsis,
-            Type::Type => Self::Type,
-            Type::NoneType => Self::NoneType,
-            Type::Bool => Self::Bool,
-            Type::Int => Self::Int,
-            Type::Float => Self::Float,
-            Type::Range => Self::Range,
-            Type::Slice => Self::Slice,
-            Type::Date => Self::Date,
-            Type::DateTime => Self::DateTime,
-            Type::TimeDelta => Self::TimeDelta,
-            Type::TimeZone => Self::TimeZone,
-            Type::Str => Self::Str,
-            Type::Bytes => Self::Bytes,
-            Type::List => Self::List,
-            Type::ListIterator => Self::ListIterator,
-            Type::CallableIterator => Self::CallableIterator,
-            Type::Tuple => Self::Tuple,
-            Type::NamedTuple => Self::NamedTuple,
-            Type::Dict => Self::Dict,
-            Type::DictKeys => Self::DictKeys,
-            Type::DictItems => Self::DictItems,
-            Type::DictValues => Self::DictValues,
-            Type::Set => Self::Set,
-            Type::FrozenSet => Self::FrozenSet,
-            Type::Dataclass => Self::Dataclass,
-            Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
-            Type::Exception(exc_type) => Self::Exception(exc_type),
-            Type::Function => Self::Function,
-            Type::BuiltinFunction => Self::BuiltinFunction,
-            Type::Cell => Self::Cell,
-            Type::Iterator => Self::Iterator,
-            Type::Coroutine => Self::Coroutine,
-            Type::Module => Self::Module,
-            Type::TextIOWrapper => Self::TextIOWrapper,
-            Type::BufferedReader => Self::BufferedReader,
-            Type::BufferedWriter => Self::BufferedWriter,
-            Type::BufferedRandom => Self::BufferedRandom,
-            Type::SpecialForm => Self::SpecialForm,
-            Type::Path => Self::Path,
-            Type::Property => Self::Property,
-            Type::RePattern => Self::RePattern,
-            Type::ReMatch => Self::ReMatch,
-        }
-    }
-
-    /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
-    /// name via the heap.
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
-        match ty {
-            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
-            other => Self::from_internal_static(other),
-        }
-    }
-}
-
 /// Crate-internal conversions between [`MontyObject`] and the VM's `Value`.
 ///
 /// `MontyObject` lives in `monty-types`; building one from a heap `Value` (and
@@ -675,6 +542,139 @@ impl MontyObjectExt for MontyObject {
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),
+        }
+    }
+}
+
+/// Crate-internal bridge between [`MontyType`] and the runtime [`Type`].
+///
+/// `MontyType` lives in `monty-types` (it is pure data), but mapping it to and
+/// from the runtime `Type` needs heap/intern access, so the conversions stay
+/// here as a `pub(crate)` extension trait.
+pub(crate) trait MontyTypeExt: Sized {
+    fn to_internal(&self) -> Option<Type>;
+
+    fn from_internal_static(ty: Type) -> Self;
+
+    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self;
+}
+
+impl MontyTypeExt for MontyType {
+    /// The internal runtime [`Type`] this variant mirrors, or `None` for
+    /// [`Instance`](Self::Instance) — a class binding cannot be reconstructed
+    /// from a name, which is exactly why `Instance` inputs are rejected.
+    ///
+    /// Keep in lockstep with [`from_internal_static`](Self::from_internal_static);
+    /// both matches are exhaustive so the compiler enforces totality.
+    fn to_internal(&self) -> Option<Type> {
+        match self {
+            Self::Ellipsis => Some(Type::Ellipsis),
+            Self::Type => Some(Type::Type),
+            Self::NoneType => Some(Type::NoneType),
+            Self::Bool => Some(Type::Bool),
+            Self::Int => Some(Type::Int),
+            Self::Float => Some(Type::Float),
+            Self::Range => Some(Type::Range),
+            Self::Slice => Some(Type::Slice),
+            Self::Date => Some(Type::Date),
+            Self::DateTime => Some(Type::DateTime),
+            Self::TimeDelta => Some(Type::TimeDelta),
+            Self::TimeZone => Some(Type::TimeZone),
+            Self::Str => Some(Type::Str),
+            Self::Bytes => Some(Type::Bytes),
+            Self::List => Some(Type::List),
+            Self::ListIterator => Some(Type::ListIterator),
+            Self::CallableIterator => Some(Type::CallableIterator),
+            Self::Tuple => Some(Type::Tuple),
+            Self::NamedTuple => Some(Type::NamedTuple),
+            Self::Dict => Some(Type::Dict),
+            Self::DictKeys => Some(Type::DictKeys),
+            Self::DictItems => Some(Type::DictItems),
+            Self::DictValues => Some(Type::DictValues),
+            Self::Set => Some(Type::Set),
+            Self::FrozenSet => Some(Type::FrozenSet),
+            Self::Dataclass => Some(Type::Dataclass),
+            Self::Instance(_) => None,
+            Self::Exception(exc_type) => Some(Type::Exception(*exc_type)),
+            Self::Function => Some(Type::Function),
+            Self::BuiltinFunction => Some(Type::BuiltinFunction),
+            Self::Cell => Some(Type::Cell),
+            Self::Iterator => Some(Type::Iterator),
+            Self::Coroutine => Some(Type::Coroutine),
+            Self::Module => Some(Type::Module),
+            Self::TextIOWrapper => Some(Type::TextIOWrapper),
+            Self::BufferedReader => Some(Type::BufferedReader),
+            Self::BufferedWriter => Some(Type::BufferedWriter),
+            Self::BufferedRandom => Some(Type::BufferedRandom),
+            Self::SpecialForm => Some(Type::SpecialForm),
+            Self::Path => Some(Type::Path),
+            Self::Property => Some(Type::Property),
+            Self::RePattern => Some(Type::RePattern),
+            Self::ReMatch => Some(Type::ReMatch),
+        }
+    }
+
+    /// Mirrors a runtime [`Type`] whose class identity is NOT needed. Use
+    /// [`from_internal`](Self::from_internal) when a heap is available.
+    ///
+    /// # Panics
+    /// On `Instance`, whose class name cannot be resolved without a heap; it
+    /// is unreachable on every current call path (`Builtins::Type` and
+    /// `from_type_name` never hold/produce it).
+    fn from_internal_static(ty: Type) -> Self {
+        match ty {
+            Type::Ellipsis => Self::Ellipsis,
+            Type::Type => Self::Type,
+            Type::NoneType => Self::NoneType,
+            Type::Bool => Self::Bool,
+            Type::Int => Self::Int,
+            Type::Float => Self::Float,
+            Type::Range => Self::Range,
+            Type::Slice => Self::Slice,
+            Type::Date => Self::Date,
+            Type::DateTime => Self::DateTime,
+            Type::TimeDelta => Self::TimeDelta,
+            Type::TimeZone => Self::TimeZone,
+            Type::Str => Self::Str,
+            Type::Bytes => Self::Bytes,
+            Type::List => Self::List,
+            Type::ListIterator => Self::ListIterator,
+            Type::CallableIterator => Self::CallableIterator,
+            Type::Tuple => Self::Tuple,
+            Type::NamedTuple => Self::NamedTuple,
+            Type::Dict => Self::Dict,
+            Type::DictKeys => Self::DictKeys,
+            Type::DictItems => Self::DictItems,
+            Type::DictValues => Self::DictValues,
+            Type::Set => Self::Set,
+            Type::FrozenSet => Self::FrozenSet,
+            Type::Dataclass => Self::Dataclass,
+            Type::Instance(_) => unreachable!("Type::Instance requires heap access — use MontyType::from_internal"),
+            Type::Exception(exc_type) => Self::Exception(exc_type),
+            Type::Function => Self::Function,
+            Type::BuiltinFunction => Self::BuiltinFunction,
+            Type::Cell => Self::Cell,
+            Type::Iterator => Self::Iterator,
+            Type::Coroutine => Self::Coroutine,
+            Type::Module => Self::Module,
+            Type::TextIOWrapper => Self::TextIOWrapper,
+            Type::BufferedReader => Self::BufferedReader,
+            Type::BufferedWriter => Self::BufferedWriter,
+            Type::BufferedRandom => Self::BufferedRandom,
+            Type::SpecialForm => Self::SpecialForm,
+            Type::Path => Self::Path,
+            Type::Property => Self::Property,
+            Type::RePattern => Self::RePattern,
+            Type::ReMatch => Self::ReMatch,
+        }
+    }
+
+    /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
+    /// name via the heap.
+    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
+        match ty {
+            Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
+            other => Self::from_internal_static(other),
         }
     }
 }
