@@ -48,10 +48,16 @@ export interface MontyException {
   message: string
 }
 
-/** Marker object representing a sandbox file handle (used by `os` handlers). */
+/**
+ * Marker object representing a sandbox file handle used by `os` handlers.
+ * `position` defaults to zero and, when supplied, must be a non-negative safe integer.
+ */
 export interface MontyFileHandle {
   __monty_type__: 'FileHandle'
+  /** Virtual POSIX sandbox path, never a host path. */
   path: string
+  /** Python `open()` mode, canonicalized when the handle crosses the boundary. */
   mode: string
-  position: number
+  /** Initial character or byte position; defaults to zero. */
+  position?: number
 }

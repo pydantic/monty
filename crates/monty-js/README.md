@@ -188,6 +188,30 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
+Callback-backed virtual files return a `MontyFileHandle` marker from the
+open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
+to zero:
+
+```ts
+import { NOT_HANDLED, type MontyFileHandle } from '@pydantic/monty'
+
+const files = new Map([['/data/message.txt', 'hello from the host']])
+await session.feedRun("open('/data/message.txt').read()", {
+  os: (name, args) => {
+    const path = args[0] as string
+    if (name === 'open') {
+      return { __monty_type__: 'FileHandle', path, mode: args[1] as string } satisfies MontyFileHandle
+    }
+    if (name === 'Path.read_text') return files.get(path) ?? NOT_HANDLED
+    return NOT_HANDLED
+  },
+})
+```
+
+Returning the handle resolves only `open()` itself. Reads and writes are
+separate OS callbacks whose first argument is the handle's virtual path; the
+host never receives or exposes a live file descriptor.
+
 ## Resource Limits
 
 Enforced inside the worker, configured per session:
@@ -279,19 +303,20 @@ workspace `target/` build (development).
 
 ## Value Conversion
 
-| Python            | JavaScript                                              |
-| ----------------- | ------------------------------------------------------- |
-| `None`            | `null`                                                  |
-| `bool`            | `boolean`                                               |
-| `int`             | `number` (±2^53) or `BigInt`                            |
-| `float`           | `number`                                                |
-| `str`             | `string`                                                |
-| `bytes`           | `Buffer`                                                |
-| `list`            | `Array`                                                 |
-| `tuple`           | `Array` with non-enumerable `__tuple__: true`           |
-| `dict`            | `Map` (preserves key types and order)                   |
-| `set`/`frozenset` | `Set`                                                   |
-| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
-| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
+| Python            | JavaScript                                               |
+| ----------------- | -------------------------------------------------------- |
+| `None`            | `null`                                                   |
+| `bool`            | `boolean`                                                |
+| `int`             | `number` (±2^53) or `BigInt`                             |
+| `float`           | `number`                                                 |
+| `str`             | `string`                                                 |
+| `bytes`           | `Buffer`                                                 |
+| `list`            | `Array`                                                  |
+| `tuple`           | `Array` with non-enumerable `__tuple__: true`            |
+| `dict`            | `Map` (preserves key types and order)                    |
+| `set`/`frozenset` | `Set`                                                    |
+| datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)   |
+| file handles      | marker objects (`{ __monty_type__: 'FileHandle', ... }`) |
+| dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`)  |
 
 Plain objects are accepted as dict inputs (string keys).

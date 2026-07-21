@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { MontyRuntimeError, MountDir } from '@pydantic/monty/node'
+import { MontyRuntimeError, MountDir, type MontyFileHandle } from '@pydantic/monty/node'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -122,6 +122,105 @@ test('MountDir write_bytes_limit', (ctx) => {
     t.is(md2.writeBytesLimit, null)
   } finally {
     cleanup()
+  }
+})
+
+// =============================================================================
+// Callback-backed file handles
+// =============================================================================
+
+test('os callback file handles support text and binary reads', async () => {
+  const calls: [string, unknown[]][] = []
+  const osCallback = (name: string, args: unknown[]) => {
+    calls.push([name, args])
+    const path = args[0] as string
+    if (name === 'open') {
+      return { __monty_type__: 'FileHandle', path, mode: args[1] as string } satisfies MontyFileHandle
+    } else if (name === 'Path.read_text') {
+      return 'hello'
+    } else if (name === 'Path.read_bytes') {
+      return Uint8Array.from([0, 1, 2])
+    }
+    throw new Error(`unexpected OS call: ${name}`)
+  }
+
+  t.is(await run("open('/data/message.txt').read()", { os: osCallback }), 'hello')
+  const binary = (await run("open('/data/data.bin', 'rb').read()", { os: osCallback })) as Uint8Array
+  t.deepEqual([...binary], [0, 1, 2])
+  t.deepEqual(calls, [
+    ['open', ['/data/message.txt', 'r']],
+    ['Path.read_text', ['/data/message.txt']],
+    ['open', ['/data/data.bin', 'rb']],
+    ['Path.read_bytes', ['/data/data.bin']],
+  ])
+})
+
+test('file handles round-trip with canonical modes and positions', async () => {
+  await using session = await pool().checkout()
+  const returned = (await session.feedRun("open('/data/message.txt')", {
+    os: (_name, args) => ({
+      __monty_type__: 'FileHandle',
+      path: args[0] as string,
+      mode: 'tr',
+      position: 42,
+    }),
+  })) as MontyFileHandle
+  t.deepEqual(returned, {
+    __monty_type__: 'FileHandle',
+    path: '/data/message.txt',
+    mode: 'r',
+    position: 42,
+  })
+
+  const returnedAgain = await session.feedRun("open('/data/message.txt')", { os: () => returned })
+  t.deepEqual(returnedAgain, returned)
+
+  const defaultPosition = await session.feedRun("open('/data/default.txt')", {
+    os: (_name, args) => ({ __monty_type__: 'FileHandle', path: args[0] as string, mode: 'r' }),
+  })
+  t.deepEqual(defaultPosition, {
+    __monty_type__: 'FileHandle',
+    path: '/data/default.txt',
+    mode: 'r',
+    position: 0,
+  })
+})
+
+test('malformed file handles are rejected precisely', async () => {
+  const cases: [unknown, string][] = [
+    [{ __monty_type__: 'FileHandle', mode: 'r' }, 'MontyFileHandle path must be a string'],
+    [{ __monty_type__: 'FileHandle', path: 1, mode: 'r' }, 'MontyFileHandle path must be a string'],
+    [{ __monty_type__: 'FileHandle', path: '/x' }, 'MontyFileHandle mode must be a string'],
+    [{ __monty_type__: 'FileHandle', path: '/x', mode: 1 }, 'MontyFileHandle mode must be a string'],
+    [{ __monty_type__: 'FileHandle', path: '/x', mode: 'q' }, "invalid mode: 'q'"],
+    [
+      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: -1 },
+      'MontyFileHandle position must be a non-negative safe integer',
+    ],
+    [
+      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: 1.5 },
+      'MontyFileHandle position must be a non-negative safe integer',
+    ],
+    [
+      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: Number.POSITIVE_INFINITY },
+      'MontyFileHandle position must be a non-negative safe integer',
+    ],
+    [
+      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: Number.MAX_SAFE_INTEGER + 1 },
+      'MontyFileHandle position must be a non-negative safe integer',
+    ],
+    [
+      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: '0' },
+      'MontyFileHandle position must be a non-negative safe integer',
+    ],
+    [{ __monty_type__: 'Unknown' }, 'Unknown Monty marker type: Unknown'],
+  ]
+
+  for (const [handle, expected] of cases) {
+    const result = await run("\ntry:\n    open('/x')\nexcept TypeError as exc:\n    result = str(exc)\nresult\n", {
+      os: () => handle,
+    })
+    t.is(result, expected)
   }
 })
 
