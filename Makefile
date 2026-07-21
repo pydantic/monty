@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev to avoid building the python package, use make dev-py for that
-	uv sync --all-packages --only-dev
+	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-dev --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
