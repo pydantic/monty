@@ -118,7 +118,7 @@ pub enum Opcode {
     StoreCell,
     /// Delete local variable. Operand: u8 slot.
     DeleteLocal,
-    /// Load global in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// Load global in call context: pushes an external function for undefined names
     /// instead of yielding `NameLookup`. Operands: u16 slot, u16 name_id.
     ///
     /// Used when compiling function calls like `foo()` where `foo` is a global.

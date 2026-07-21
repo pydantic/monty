@@ -1398,7 +1398,7 @@ impl<'a> Compiler<'a> {
     /// Compiles loading a variable in call context (e.g., `foo()` loads `foo`).
     ///
     /// For `Global` scope, emits a callable-aware load opcode that pushes
-    /// `ExtFunction(name_id)` for undefined names instead of yielding
+    /// an external function for undefined names instead of yielding
     /// `NameLookup`. This allows execution to reach `CallFunction`, which naturally
     /// yields `FunctionCall` — giving the host a chance to handle external function calls.
     ///

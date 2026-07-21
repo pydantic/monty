@@ -5,8 +5,10 @@ use std::{
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
+use ahash::AHashMap;
 use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 
@@ -19,9 +21,10 @@ use crate::{
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, callable_iterator::CallableIterator, date, datetime, list::ListIterator, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, ExtFunction,
+        FrozenSet, Instance, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern,
+        Set, Slice, Str, TimeZone, Tuple, callable_iterator::CallableIterator, date, datetime, list::ListIterator,
+        timedelta, timezone,
     },
     value::Value,
 };
@@ -215,7 +218,7 @@ pub enum HeapReadOutput<'a> {
     FrozenSet(HeapRead<'a, FrozenSet>),
     Closure(HeapRead<'a, Closure>),
     FunctionDefaults(HeapRead<'a, FunctionDefaults>),
-    ExtFunction(HeapRead<'a, String>),
+    ExtFunction(HeapRead<'a, ExtFunction>),
     Cell(HeapRead<'a, CellValue>),
     Range(HeapRead<'a, Range>),
     Slice(HeapRead<'a, Slice>),
@@ -776,6 +779,11 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
+    /// Live external functions indexed by name without owning a heap reference.
+    ///
+    /// Entries are removed before their heap slots are freed, preventing stale IDs
+    /// from aliasing later allocations that reuse the same slot.
+    ext_function_cache: AHashMap<Arc<str>, HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -804,14 +812,25 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
+        let mut entries = fields.entries;
+        let mut ext_function_cache = AHashMap::new();
+        for index in 0..entries.len() {
+            let id = HeapId::from_index(index);
+            if let Some(mut entry) = entries.entry(id)
+                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
+            {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+        }
         Ok(Self {
-            entries: fields.entries,
+            entries,
             tracker: fields.tracker,
             purple_count: fields.purple_count,
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
+            ext_function_cache,
         })
     }
 }
@@ -844,6 +863,7 @@ impl<T: ResourceTracker> Heap<T> {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
+            ext_function_cache: AHashMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -969,6 +989,24 @@ impl<T: ResourceTracker> Heap<T> {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
+    /// Returns the external function for `name`, reusing a live object when possible.
+    ///
+    /// The cache holds no reference count of its own. Its entry is removed when the
+    /// last owning reference is dropped, before the heap slot can be reused.
+    pub fn get_ext_function(&mut self, name: &str) -> Result<Value, ResourceError> {
+        if let Some(id) = self.ext_function_cache.get(name).copied() {
+            self.inc_ref(id);
+            Ok(Value::Ref(id))
+        } else {
+            let function = ExtFunction::new(name);
+            let cache_key = function.cache_key();
+            let id = self.allocate(HeapData::ExtFunction(function))?;
+            let previous = self.ext_function_cache.insert(cache_key, id);
+            debug_assert!(previous.is_none());
+            Ok(Value::Ref(id))
+        }
+    }
+
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
     ///
     /// The returned `Value::Ref` has its refcount incremented so the caller can drop
@@ -1052,6 +1090,16 @@ impl<T: ResourceTracker> Heap<T> {
                     if heap_entry.color.get() == CcColor::Purple {
                         reader.heap.purple_count -= 1;
                     }
+                    // Remove weak-cache entries before the slot becomes available for reuse.
+                    let ext_function_name = match ptr.data(reader) {
+                        HeapData::ExtFunction(function) => Some(function.cache_key()),
+                        _ => None,
+                    };
+                    if let Some(name) = ext_function_name {
+                        let removed = reader.heap.ext_function_cache.remove(name.as_ref());
+                        debug_assert_eq!(removed, Some(current_id));
+                    }
+
                     // It is not possible to free from `HeapPtr` because it is created through
                     // a &self borrow on `StableHeap`. At least this repeated lookup is already
                     // on the slow path.

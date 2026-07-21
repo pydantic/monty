@@ -19,8 +19,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         match op {
             CmpOperator::Eq => lhs.py_eq(rhs, self),
             CmpOperator::NotEq => Ok(!lhs.py_eq(rhs, self)?),
-            CmpOperator::Is => Ok(lhs.is(rhs, self)),
-            CmpOperator::IsNot => Ok(!lhs.is(rhs, self)),
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
             CmpOperator::In => rhs.py_contains(lhs, self),
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),

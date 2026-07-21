@@ -11,5 +11,5 @@ pub fn builtin_id(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
     let value = args.get_one_arg("id", vm.heap)?;
     defer_drop!(value, vm);
 
-    Ok(value.id(vm).into_value(vm.heap)?)
+    Ok(value.id().into_value(vm.heap)?)
 }

@@ -14,20 +14,20 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
-    hash::{HashValue, hash_python_str, identity_hash},
+    hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
-        Set, Slice, Str, Tuple, Type,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, ExtFunction,
+        FrozenSet, Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range,
+        ReMatch, RePattern, Set, Slice, Str, Tuple, Type,
         callable_iterator::CallableIterator,
         date, datetime,
         list::ListIterator,
         str::{allocate_string, concat_allocate_str},
         timedelta, timezone,
     },
-    value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
+    value::{EitherStr, Value, eq_bigint, eq_bytes, eq_str},
 };
 
 /// HeapData captures every runtime value that must live in the arena.
@@ -145,13 +145,8 @@ pub(crate) enum HeapData {
     /// Contains the matched text, capture groups, positions, and input string.
     /// Leaf type: no heap references, not GC-tracked.
     ReMatch(ReMatch),
-    /// Reference to an external function whose name was not found in the intern table.
-    ///
-    /// Created when the host resolves a `NameLookup` to a callable whose name does not
-    /// match any interned string (e.g., the host returns a function with a different
-    /// `__name__` than the variable it was assigned to). When called, the VM yields
-    /// `FrameExit::ExternalCall` with an `EitherStr::Heap` containing this name.
-    ExtFunction(String),
+    /// Reference to an external function supplied by the host or synthesized for a call.
+    ExtFunction(ExtFunction),
     /// A `datetime.date` value stored with `chrono::NaiveDate`.
     Date(date::Date),
     /// A `datetime.datetime` value stored with chrono primitives.
@@ -294,7 +289,7 @@ impl HeapData {
             Self::OpenFile(file) => file.py_estimate_size(),
             Self::ReMatch(m) => m.py_estimate_size(),
             Self::RePattern(p) => p.py_estimate_size(),
-            Self::ExtFunction(s) => mem::size_of::<String>() + s.len(),
+            Self::ExtFunction(function) => function.py_estimate_size(),
             Self::Date(d) => d.py_estimate_size(),
             Self::DateTime(d) => d.py_estimate_size(),
             Self::TimeDelta(d) => d.py_estimate_size(),
@@ -712,7 +707,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Str(a) => Ok(eq_str(a.get(vm.heap).as_str(), other, vm)),
             HeapReadOutput::Bytes(a) => Ok(eq_bytes(a.get(vm.heap).as_slice(), other, vm)),
             HeapReadOutput::LongInt(a) => Ok(eq_bigint(a.get(vm.heap).inner(), other, vm)),
-            HeapReadOutput::ExtFunction(a) => Ok(eq_ext_function(a.get(vm.heap).as_str(), other, vm)),
             // `Closure`/`FunctionDefaults` have no per-type `py_eq_impl`; their
             // value-equality (by `func_id`, and captured cells for closures) is
             // inlined here.
@@ -763,7 +757,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // `Value::py_eq_impl` resolves before reaching here.
             | HeapReadOutput::Class(_)
             | HeapReadOutput::Instance(_)
-            | HeapReadOutput::BoundMethod(_) => Ok(None),
+            | HeapReadOutput::BoundMethod(_)
+            | HeapReadOutput::ExtFunction(_) => Ok(None),
         }
     }
 
@@ -809,7 +804,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // LongInt's hash matches `Value::InternLongInt`'s, since they are
             // both Python `int` values and must hash equally when equal.
             Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
-            Self::ExtFunction(name) => Ok(Some(hash_python_str(name.get(vm.heap)))),
+            Self::ExtFunction(_) => Ok(Some(identity_hash(self_id))),
             // Unhashable: List, Dict, Set, the dict views, Iter, Module,
             // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
             _ => Ok(None),
@@ -873,7 +868,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
-            Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
+            Self::ExtFunction(function) => Ok(write!(f, "<function '{}' external>", function.get(vm.heap).as_str())?),
             Self::OpenFile(file) => file.py_repr_fmt(f, vm, heap_ids),
             Self::Date(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
