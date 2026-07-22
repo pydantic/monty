@@ -35,8 +35,11 @@ jobs:
         with:
           python-version: '3.14'
 
+      # Pinned so a rust-cache hit can't silently keep serving an old binary
+      # (older versions lack `--profile` and build without the workspace's
+      # LTO settings, skewing benchmark numbers).
       - name: Install cargo-codspeed
-        run: cargo install cargo-codspeed
+        run: cargo install cargo-codspeed --version 5.0.1 --locked
 
       # The `pool` bench's workers run the `monty` CLI. Build it in RELEASE so
       # the workers are optimized (a debug interpreter would make the pool
@@ -49,9 +52,12 @@ jobs:
         run: cargo build -p monty-runtime --release
 
       # No `--bench` filter: build and run every monty-bench target (`main` +
-      # `pool`). CodSpeed runs all benches built into the package.
+      # `pool`). CodSpeed runs all benches built into the package. The
+      # `codspeed` profile (root Cargo.toml) is release codegen — fat LTO,
+      # one codegen unit — with symbols kept for CodSpeed's flamegraphs, so
+      # measurements reflect the optimization level users actually run.
       - name: Build benchmarks
-        run: cargo codspeed build -p monty-bench
+        run: cargo codspeed build -p monty-bench --profile codspeed
 
       - name: Run benchmarks
         uses: CodSpeedHQ/action@d872884a306dd4853acf0f584f4b706cf0cc72a2 # v4.13.0

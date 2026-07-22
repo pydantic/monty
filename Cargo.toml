@@ -43,6 +43,14 @@ debug = true
 strip = false
 lto = false
 
+# CodSpeed benchmark builds: production codegen (fat LTO, single codegen unit
+# inherited from release) but with symbols kept so CodSpeed can build
+# flamegraphs — release's `strip = true` would discard them.
+[profile.codspeed]
+inherits = "release"
+debug = true
+strip = false
+
 [workspace.dependencies]
 # Internal crates. The `path` is used for local/workspace builds; the `version`
 # is required so the crates can be published to crates.io (`cargo publish`
