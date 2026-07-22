@@ -34,7 +34,7 @@ dependencies = [
     # ships the `monty` binary spawned as worker subprocesses; released in
     # lockstep with this package, so the pin is exact and kept in sync with the
     # workspace version by build.rs — don't edit it by hand
-    "pydantic-monty-runtime==0.0.19b.5",
+    "pydantic-monty-runtime==0.0.19b.6",
 ]
 dynamic = ["license", "version"]
 
