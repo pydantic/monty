@@ -298,6 +298,8 @@ pub enum Expr {
     ListComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Set comprehension: `{elt for target in iter if cond...}`
     ///
@@ -306,6 +308,8 @@ pub enum Expr {
     SetComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Dict comprehension: `{key: value for target in iter if cond...}`
     ///
@@ -316,6 +320,8 @@ pub enum Expr {
         key: Box<ExprLoc>,
         value: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Raw lambda expression from the parser, before preparation.
     ///
@@ -428,8 +434,6 @@ pub struct Comprehension {
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
     pub ifs: Vec<ExprLoc>,
-    /// Target slots requiring stable cells because a nested callable captures them.
-    pub captured_slots: Vec<u16>,
 }
 
 impl Expr {

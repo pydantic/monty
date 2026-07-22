@@ -1,6 +1,7 @@
 use std::mem;
 
-use ahash::{AHashMap, AHashSet};
+use ahash::{AHashMap, AHashSet, RandomState};
+use indexmap::IndexMap;
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Signature},
@@ -180,7 +181,7 @@ struct Prepare<'i, 'g> {
     /// same-named enclosing binding. Walrus and other assignment-position
     /// stores must bypass this stack (see [`Prepare::get_id_for_store_target`])
     /// so PEP 572 binding semantics are preserved.
-    comp_name_scopes: Vec<AHashMap<StringId, CompBinding>>,
+    comp_name_scopes: Vec<CompNameScope>,
     /// True when this preparer is for a **class body** (see `prepare_class_def`).
     ///
     /// Class scope is skipped for method free-var resolution in CPython: a
@@ -204,6 +205,9 @@ struct Prepare<'i, 'g> {
     bound_class_members: AHashSet<StringId>,
 }
 
+/// Insertion-ordered bindings for one active comprehension's lexical scope.
+type CompNameScope = IndexMap<StringId, CompBinding, RandomState>;
+
 /// Preparation metadata for a target in an active comprehension scope.
 #[derive(Clone, Copy)]
 struct CompBinding {
@@ -211,6 +215,18 @@ struct CompBinding {
     slot: u16,
     /// Whether a nested callable captured this target.
     captured: bool,
+}
+
+/// Prepared parts shared by list, set, and dict comprehensions.
+struct PreparedComprehension {
+    /// Prepared generator clauses in source order.
+    generators: Vec<Comprehension>,
+    /// Prepared list/set element, absent for dict comprehensions.
+    elt: Option<ExprLoc>,
+    /// Prepared dict key and value, absent for list/set comprehensions.
+    key_value: Option<(ExprLoc, ExprLoc)>,
+    /// Captured lexical target slots in allocation order.
+    captured_slots: Vec<u16>,
 }
 
 /// Scope-specific state for [`Prepare`].
@@ -1129,27 +1145,32 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 body: Box::new(self.prepare_expression(*body)?),
                 orelse: Box::new(self.prepare_expression(*orelse)?),
             },
-            Expr::ListComp { elt, generators } => {
-                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+            Expr::ListComp { elt, generators, .. } => {
+                let prepared = self.prepare_comprehension(generators, Some(*elt), None)?;
                 Expr::ListComp {
-                    elt: Box::new(elt.expect("list comp must have elt")),
-                    generators,
+                    elt: Box::new(prepared.elt.expect("list comp must have elt")),
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
-            Expr::SetComp { elt, generators } => {
-                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+            Expr::SetComp { elt, generators, .. } => {
+                let prepared = self.prepare_comprehension(generators, Some(*elt), None)?;
                 Expr::SetComp {
-                    elt: Box::new(elt.expect("set comp must have elt")),
-                    generators,
+                    elt: Box::new(prepared.elt.expect("set comp must have elt")),
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
-            Expr::DictComp { key, value, generators } => {
-                let (generators, _, key_value) = self.prepare_comprehension(generators, None, Some((*key, *value)))?;
-                let (key, value) = key_value.expect("dict comp must have key/value");
+            Expr::DictComp {
+                key, value, generators, ..
+            } => {
+                let prepared = self.prepare_comprehension(generators, None, Some((*key, *value)))?;
+                let (key, value) = prepared.key_value.expect("dict comp must have key/value");
                 Expr::DictComp {
                     key: Box::new(key),
                     value: Box::new(value),
-                    generators,
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
             Expr::LambdaRaw {
@@ -1258,13 +1279,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///
     /// For list/set comprehensions, pass `elt` as Some and `key_value` as None.
     /// For dict comprehensions, pass `elt` as None and `key_value` as Some((key, value)).
-    #[expect(clippy::type_complexity)]
     fn prepare_comprehension(
         &mut self,
         generators: Vec<Comprehension>,
         elt: Option<ExprLoc>,
         key_value: Option<(ExprLoc, ExprLoc)>,
-    ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
+    ) -> Result<PreparedComprehension, ParseError> {
         // Per PEP 572, walrus operators inside comprehensions bind in the ENCLOSING scope.
         // Pre-register walrus targets so they exist in the enclosing namespace BEFORE the
         // comp-name scope is pushed — that way `get_id_for_store_target` resolves them
@@ -1298,7 +1318,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // remember the scratch depth so we can release this comp's slots on exit
         // (sibling comps reuse the slots; high-water mark records peak nesting).
         let saved_var_depth = self.comp_var_depth;
-        self.comp_name_scopes.push(AHashMap::new());
+        self.comp_name_scopes.push(CompNameScope::default());
 
         // PEP 709 / CPython: the FIRST generator's iter is evaluated in the
         // *enclosing* scope, before any comp shadowing — that is why
@@ -1339,7 +1359,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
             target: first_target,
             iter: first_iter,
             ifs: first_ifs,
-            captured_slots: Vec::new(),
         });
         for (generator, prepared_target) in remaining_gens.into_iter().zip(remaining_targets) {
             let iter = self.prepare_expression(generator.iter)?;
@@ -1352,7 +1371,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 target: prepared_target,
                 iter,
                 ifs,
-                captured_slots: Vec::new(),
             });
         }
 
@@ -1367,20 +1385,20 @@ impl<'i, 'g> Prepare<'i, 'g> {
             None => None,
         };
 
-        // Record captured targets so compilation allocates one stable cell per lexical name.
+        // The scope preserves lexical allocation order while keeping each name unique.
         let comp_scope = self.comp_name_scopes.pop().expect("comprehension scope was pushed");
-        let mut captured_slots = AHashSet::new();
-        for generator in &mut prepared_generators {
-            collect_captured_comp_target_slots(
-                &generator.target,
-                &comp_scope,
-                &mut captured_slots,
-                &mut generator.captured_slots,
-            );
-        }
+        let captured_slots = comp_scope
+            .into_values()
+            .filter_map(|binding| binding.captured.then_some(binding.slot))
+            .collect();
         self.comp_var_depth = saved_var_depth;
 
-        Ok((prepared_generators, prepared_elt, prepared_key_value))
+        Ok(PreparedComprehension {
+            generators: prepared_generators,
+            elt: prepared_elt,
+            key_value: prepared_key_value,
+            captured_slots,
+        })
     }
 
     /// Prepares an `AssignTarget` used by chained assignments.
@@ -2183,32 +2201,6 @@ impl<'i, 'g> Prepare<'i, 'g> {
     }
 }
 
-/// Collects target slots which nested callables capture from a comprehension.
-fn collect_captured_comp_target_slots(
-    target: &UnpackTarget,
-    scope: &AHashMap<StringId, CompBinding>,
-    seen: &mut AHashSet<u16>,
-    slots: &mut Vec<u16>,
-) {
-    match target {
-        UnpackTarget::Name(ident) | UnpackTarget::Starred(ident) => {
-            let slot = ident.namespace_id().as_u16();
-            if scope
-                .get(&ident.name_id)
-                .is_some_and(|binding| binding.captured && binding.slot == slot)
-                && seen.insert(slot)
-            {
-                slots.push(slot);
-            }
-        }
-        UnpackTarget::Tuple { targets, .. } => {
-            for target in targets {
-                collect_captured_comp_target_slots(target, scope, seen, slots);
-            }
-        }
-    }
-}
-
 /// The closure-slot vectors produced when a freshly-prepared child scope
 /// (function, lambda, or class body) is finalized against its parent.
 ///
@@ -2618,7 +2610,7 @@ fn collect_assigned_names_from_expr(
             collect_assigned_names_from_expr(orelse, assigned_names, interner);
         }
         // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_assigned_names_from_expr(elt, assigned_names, interner);
             for generator in generators {
                 collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
@@ -2627,7 +2619,9 @@ fn collect_assigned_names_from_expr(
                 }
             }
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_assigned_names_from_expr(key, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
             for generator in generators {
@@ -3084,7 +3078,7 @@ fn collect_cell_vars_from_expr(
             collect_cell_vars_from_expr(body, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(orelse, our_locals, cell_vars, interner);
         }
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_cell_vars_from_expr(elt, our_locals, cell_vars, interner);
             for generator in generators {
                 collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
@@ -3093,7 +3087,9 @@ fn collect_cell_vars_from_expr(
                 }
             }
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
             for generator in generators {
@@ -3443,10 +3439,12 @@ fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<
             collect_referenced_names_from_expr(body, referenced, interner);
             collect_referenced_names_from_expr(orelse, referenced, interner);
         }
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
         }
         Expr::LambdaRaw { signature, body, .. } => {

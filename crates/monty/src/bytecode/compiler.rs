@@ -1257,16 +1257,29 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::BuildFString, part_count)?;
             }
 
-            Expr::ListComp { elt, generators } => {
-                self.compile_list_comp(elt, generators)?;
+            Expr::ListComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_list_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::SetComp { elt, generators } => {
-                self.compile_set_comp(elt, generators)?;
+            Expr::SetComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_set_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::DictComp { key, value, generators } => {
-                self.compile_dict_comp(key, value, generators)?;
+            Expr::DictComp {
+                key,
+                value,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_dict_comp(key, value, generators, captured_slots)?;
             }
 
             Expr::Lambda { func_def } => {
@@ -2737,7 +2750,12 @@ impl<'a> Compiler<'a> {
     /// by `FOR_ITER` (plus unpacked sub-values). Captured targets are copied
     /// into stable cells allocated outside the loops. Per-iteration `POP`s
     /// clean the raw values before jumping back to the loop head.
-    fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    fn compile_list_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2747,7 +2765,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("list comp: BuildList kept us live, stack_depth must be Some");
-        let captured_slots = self.enter_captured_comp_cells(generators, elt.position)?;
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2757,13 +2775,18 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
-        self.exit_captured_comp_cells(&captured_slots)?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
 
     /// Compiles a set comprehension: `{elt for target in iter if cond...}`
-    fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    fn compile_set_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2773,7 +2796,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("set comp: BuildSet kept us live, stack_depth must be Some");
-        let captured_slots = self.enter_captured_comp_cells(generators, elt.position)?;
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2783,7 +2806,7 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::SetAdd, depth)
         })?;
-        self.exit_captured_comp_cells(&captured_slots)?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
@@ -2794,6 +2817,7 @@ impl<'a> Compiler<'a> {
         key: &ExprLoc,
         value: &ExprLoc,
         generators: &[Comprehension],
+        captured_slots: &[u16],
     ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
@@ -2804,7 +2828,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
-        let captured_slots = self.enter_captured_comp_cells(generators, key.position)?;
+        self.enter_captured_comp_cells(captured_slots, key.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(key)?;
@@ -2817,22 +2841,14 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 2, key.position)?;
             compiler.code.emit_u8(Opcode::DictSetItem, depth)
         })?;
-        self.exit_captured_comp_cells(&captured_slots)?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
 
     /// Allocates stable cells for comprehension targets captured by nested callables.
-    fn enter_captured_comp_cells(
-        &mut self,
-        generators: &[Comprehension],
-        position: CodeRange,
-    ) -> Result<Vec<u16>, CompileError> {
-        let slots: Vec<_> = generators
-            .iter()
-            .flat_map(|generator| generator.captured_slots.iter().copied())
-            .collect();
-        for &slot in &slots {
+    fn enter_captured_comp_cells(&mut self, captured_slots: &[u16], position: CodeRange) -> Result<(), CompileError> {
+        for &slot in captured_slots {
             self.code.emit(Opcode::BuildCell)?;
             let offset = self
                 .code
@@ -2847,12 +2863,12 @@ impl<'a> Compiler<'a> {
             }
             self.comp_slots[slot_index] = Some(CompSlot::UnboundCell(offset));
         }
-        Ok(slots)
+        Ok(())
     }
 
     /// Removes a comprehension's stable cell references while preserving its result.
-    fn exit_captured_comp_cells(&mut self, slots: &[u16]) -> Result<(), CompileError> {
-        for &slot in slots.iter().rev() {
+    fn exit_captured_comp_cells(&mut self, captured_slots: &[u16]) -> Result<(), CompileError> {
+        for &slot in captured_slots.iter().rev() {
             self.code.emit(Opcode::Pop)?;
             self.comp_slots[usize::from(slot)] = None;
         }

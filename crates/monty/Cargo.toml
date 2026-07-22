@@ -24,6 +24,7 @@ ruff_python_stdlib = { workspace = true }
 ruff_python_ast = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { workspace = true }
+indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
