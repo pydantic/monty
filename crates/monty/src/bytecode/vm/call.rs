@@ -870,7 +870,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // stack (pushed per-comp), not in any frame-level region, so they
         // don't enter this accounting.
         let size = namespace_size * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the

@@ -65,16 +65,6 @@ impl Error for ResourceError {}
 /// reference cycles. [`gc_interval`](Self::gc_interval) controls *frequency*,
 /// not whether GC runs at all.
 pub trait ResourceTracker: fmt::Debug {
-    /// Called before each heap allocation.
-    ///
-    /// Returns `Ok(())` if the allocation should proceed, or `Err(ResourceError)`
-    /// if a limit would be exceeded.
-    ///
-    /// # Arguments
-    /// * `get_size` - Lazily computes the approximate allocation size in bytes;
-    ///   implementations that ignore size (e.g. `NoLimitTracker`) never pay for it
-    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
-
     /// Called when memory is freed (during dec_ref or garbage collection).
     ///
     /// # Arguments
@@ -113,15 +103,18 @@ pub trait ResourceTracker: fmt::Debug {
     /// Returns `Ok(())` to allow the operation, or `Err(ResourceError)` to reject.
     fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError>;
 
-    /// Called when an existing heap object grows in place (e.g., `list.append`, `dict[k] = v`).
+    /// Called before tracked memory grows: a new heap allocation, in-place
+    /// container growth (`list.append`, `dict[k] = v`), or a `StringBuilder`
+    /// reservation.
     ///
-    /// Updates tracked memory and checks limits for growth of an already-allocated
-    /// object. The growth is automatically balanced on free because `on_free` reads
-    /// `py_estimate_size()` which includes all grown elements.
+    /// Returns `Ok(())` if the growth should proceed, or `Err(ResourceError)`
+    /// if a limit would be exceeded. Balanced by [`on_free`](Self::on_free):
+    /// entry release reads `py_estimate_size()`, which includes in-place growth.
     ///
     /// # Arguments
-    /// * `additional_bytes` - Approximate additional memory consumed by the growth
-    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError>;
+    /// * `get_additional` - Lazily computes the approximate growth in bytes;
+    ///   implementations that ignore size (e.g. `NoLimitTracker`) never pay for it
+    fn on_grow(&self, get_additional: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
     /// Returns the configured garbage collection interval, in GC-tracked
     /// allocations.
@@ -183,11 +176,6 @@ pub struct NoLimitTracker;
 
 impl ResourceTracker for NoLimitTracker {
     #[inline]
-    fn on_allocate(&self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        Ok(())
-    }
-
-    #[inline]
     fn on_free(&self, _: impl FnOnce() -> usize) {}
 
     #[inline]
@@ -196,7 +184,7 @@ impl ResourceTracker for NoLimitTracker {
     }
 
     #[inline]
-    fn on_grow(&self, _: usize) -> Result<(), ResourceError> {
+    fn on_grow(&self, _: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         Ok(())
     }
 
@@ -412,19 +400,15 @@ impl LimitedTracker {
 }
 
 impl ResourceTracker for LimitedTracker {
-    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        self.on_grow(get_size())
-    }
-
     fn on_free(&self, get_size: impl FnOnce() -> usize) {
         let current = self.current_memory.get();
         self.current_memory.set(current.saturating_sub(get_size()));
     }
 
-    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
+    fn on_grow(&self, get_additional: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         // Saturating: `usize::MAX` (no limit) can then never be exceeded, and on
         // 32-bit targets a wrapping add must not slip past a real limit.
-        let new_memory = self.current_memory.get().saturating_add(additional_bytes);
+        let new_memory = self.current_memory.get().saturating_add(get_additional());
         if new_memory > self.max_memory {
             Err(ResourceError::Memory {
                 limit: self.max_memory,

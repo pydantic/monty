@@ -895,7 +895,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// growth would exceed configured memory limits.
     #[inline]
     pub fn track_growth(&self, additional_bytes: usize) -> Result<(), ResourceError> {
-        self.tracker.on_grow(additional_bytes)
+        self.tracker.on_grow(|| additional_bytes)
     }
 
     /// Mirror of [`track_growth`](Self::track_growth) for in-place shrinks.
@@ -936,7 +936,7 @@ impl<T: ResourceTracker> Heap<T> {
     /// (strings, bytes, …) cannot participate in cycles and don't count
     /// against the GC interval.
     pub fn allocate(&self, data: HeapData) -> Result<HeapId, ResourceError> {
-        self.tracker.on_allocate(|| data.py_estimate_size())?;
+        self.tracker.on_grow(|| data.py_estimate_size())?;
         if data.is_gc_tracked() {
             self.allocations_since_gc
                 .set(self.allocations_since_gc.get().wrapping_add(1));

@@ -27,10 +27,6 @@ impl SharedTracker {
 }
 
 impl ResourceTracker for SharedTracker {
-    fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        self.0.on_allocate(get_size)
-    }
-
     fn on_free(&self, get_size: impl FnOnce() -> usize) {
         self.0.on_free(get_size);
     }
@@ -47,8 +43,8 @@ impl ResourceTracker for SharedTracker {
         self.0.check_large_result(estimated_bytes)
     }
 
-    fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
-        self.0.on_grow(additional_bytes)
+    fn on_grow(&self, get_additional: impl FnOnce() -> usize) -> Result<(), ResourceError> {
+        self.0.on_grow(get_additional)
     }
 
     fn gc_interval(&self) -> Option<usize> {

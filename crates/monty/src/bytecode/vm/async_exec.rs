@@ -307,7 +307,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // `cleanup_frame_state`. Comprehension variables live on the operand
         // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         // Extend the stack with the coroutine's pre-bound locals.
         let stack_base = self.stack.len();
@@ -689,7 +689,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // `cleanup_frame_state`. Comprehension variables live on the operand
         // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);

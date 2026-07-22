@@ -25,7 +25,7 @@
 //! cumulatively. Reservations are released on drop (cleanup on `?` /
 //! early-return paths) or in [`finish`](StringBuilder::finish), which folds
 //! the handoff to [`allocate_string`](crate::types::str::allocate_string)
-//! into a single method so the final size is re-added via `on_allocate`
+//! into a single method so the final size is re-added via `on_grow`
 //! without double-counting and without exposing the brief release window to
 //! callers.
 //!
@@ -108,7 +108,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
     /// width). One up-front `on_grow` call covers every subsequent push that
     /// stays within `capacity`.
     pub fn with_capacity(capacity: usize, tracker: &'t T) -> Result<Self, ResourceError> {
-        tracker.on_grow(capacity)?;
+        tracker.on_grow(|| capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),
             tracker,
@@ -138,7 +138,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
     /// Consumes the builder and allocates the resulting string in `heap`.
     ///
     /// Releases the tracker reservation, then hands off to
-    /// [`allocate_string`] which re-adds the final size via `on_allocate`
+    /// [`allocate_string`] which re-adds the final size via `on_grow`
     /// (or interns the result for empty / single-ASCII strings). If a prior
     /// [`fmt::Write`] call captured a tracker error, that error is returned
     /// here rather than the (now-stale) inner string.
@@ -176,7 +176,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
             // `O(log n)` tracker calls rather than `O(n)`.
             let new_reserved = self.reserved.saturating_mul(2).max(needed);
             let additional = new_reserved - self.reserved;
-            self.tracker.on_grow(additional)?;
+            self.tracker.on_grow(|| additional)?;
             self.reserved = new_reserved;
         }
         Ok(())
