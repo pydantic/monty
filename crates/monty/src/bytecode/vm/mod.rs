@@ -629,6 +629,16 @@ pub struct VMSnapshot {
 // Virtual Machine
 // ============================================================================
 
+/// Instructions executed between periodic time-limit / GC checks in
+/// [`VM::run`]'s dispatch loop.
+///
+/// Per-instruction checks cost two tracker loads+branches per dispatch (~7%
+/// on tight loops); a register countdown makes the common case one decrement.
+/// 64 instructions execute in well under a microsecond, so the added
+/// detection latency is negligible against millisecond-scale time limits and
+/// the allocation-count-gated GC trigger.
+const PERIODIC_CHECK_INTERVAL: u32 = 63;
+
 /// The bytecode virtual machine.
 ///
 /// Executes compiled bytecode using a stack-based execution model.
@@ -945,7 +955,10 @@ impl<'h> VM<'h> {
     pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
         self.heap.tracker().on_execution_start();
         let result = self.run();
-        self.heap.tracker().on_execution_stop();
+        // An over-budget turn must fail even if it produced a result (see
+        // `on_execution_stop`); leaking the result's refcounts is fine — no
+        // guarantees survive a `ResourceError`, the context gets discarded.
+        self.heap.tracker().on_execution_stop()?;
         result
     }
 
@@ -968,15 +981,28 @@ impl<'h> VM<'h> {
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
 
-        loop {
-            // Check time limit and trigger GC if needed at each instruction.
-            // With no limits configured these reduce to a single branch each.
-            self.heap.check_time()?;
+        // Starts at 0 so a (re-)entered loop runs its first periodic check
+        // immediately — e.g. re-detecting an already-exceeded time limit on
+        // resume rather than up to PERIODIC_CHECK_INTERVAL instructions later.
+        let mut periodic_countdown: u32 = 0;
 
-            if self.heap.should_gc() {
-                // Sync IP before GC for safety
-                self.current_frame_mut().ip = cached_frame.ip;
-                self.run_gc();
+        loop {
+            // Time-limit and GC-trigger checks, rate-limited so the dispatch
+            // hot path pays one register decrement per instruction instead of
+            // two tracker loads+branches. Native loops that can run long
+            // within a single instruction (str/bytes search, sorting, repr)
+            // carry their own check_time calls, so latency here is bounded.
+            if let Some(new_countdown) = periodic_countdown.checked_sub(1) {
+                periodic_countdown = new_countdown;
+            } else {
+                periodic_countdown = PERIODIC_CHECK_INTERVAL;
+                self.heap.check_time()?;
+
+                if self.heap.should_gc() {
+                    // Sync IP before GC for safety
+                    self.current_frame_mut().ip = cached_frame.ip;
+                    self.run_gc();
+                }
             }
 
             // Track instruction IP for exception table lookup
