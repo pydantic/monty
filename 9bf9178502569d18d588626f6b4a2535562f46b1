@@ -1,0 +1,28 @@
+conversations/2026-04-16-monty-exploration-playground.md
+  62b7c84e520aa276 1-271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0",
+  "base_commit_sha": "9bf9178502569d18d588626f6b4a2535562f46b1",
+  "prompts": {
+    "62b7c84e520aa276": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d96d0-df1c-7c82-9676-dfd8c7f9d21b",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Alex Hall",
+      "messages": [],
+      "total_additions": 271,
+      "total_deletions": 38,
+      "accepted_lines": 271,
+      "overriden_lines": 0
+    }
+  },
+  "humans": {
+    "h_bc896295f46a8b": {
+      "author": "Alex Hall"
+    }
+  }
+}
