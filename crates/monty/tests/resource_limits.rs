@@ -195,16 +195,15 @@ fn wide_id_respects_memory_limit() {
     );
 }
 
-/// A postcard round-trip must re-derive the tracker's enforced memory limit
-/// from `limits` — the resolved value is deliberately not serialized, so
-/// snapshot bytes cannot carry a limit diverging from the configured one.
+/// A serialization round-trip must preserve the tracker's enforced memory
+/// limit and usage, so restored sessions keep their budget.
 #[test]
 fn limited_tracker_roundtrip_preserves_memory_limit() {
     let tracker = LimitedTracker::new(ResourceLimits::new().max_memory(1000));
     tracker.on_grow(|| 600).unwrap();
 
-    let bytes = postcard::to_allocvec(&tracker).unwrap();
-    let restored: LimitedTracker = postcard::from_bytes(&bytes).unwrap();
+    let json = serde_json::to_string(&tracker).unwrap();
+    let restored: LimitedTracker = serde_json::from_str(&json).unwrap();
 
     assert_eq!(restored.current_memory(), 600);
     let err = restored.on_grow(|| 500).unwrap_err();
