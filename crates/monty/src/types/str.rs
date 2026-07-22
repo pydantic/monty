@@ -546,10 +546,18 @@ fn call_str_method_impl<'h>(
 ///
 /// # Errors
 /// Returns `TypeError` if the argument is not iterable or if any element is not a string.
-fn str_join<'h>(separator: &HeapRead<'h, str>, iterable: Value, vm: &mut VM<'h>) -> RunResult<Value> {
-    let Ok(iter) = iterable.into_py_iter(vm) else {
+fn str_join<'h>(
+    separator: &HeapRead<'h, str>,
+    iterable: Value,
+    vm: &mut VM<'h>,
+) -> RunResult<Value> {
+    // Checked up front: a user `__iter__` can raise anything, and rewriting that
+    // as "can only join an iterable" would hide it, resource errors included.
+    if !iterable.py_is_iterable(vm) {
+        iterable.drop_with(vm);
         return Err(ExcType::type_error_join_not_iterable());
-    };
+    }
+    let iter = iterable.into_py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
 
@@ -2146,7 +2154,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         Ok(Value::Ref(self_id))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let next = self.get(vm.heap).as_str(vm).chars().next();
         if let Some(character) = next {
             let value = allocate_char(character, vm.heap)?;

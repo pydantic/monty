@@ -8,7 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
-    types::{List, PyTrait, iter::checked_preallocation_hint},
+    types::{List, iter::checked_preallocation_hint},
     value::Value,
 };
 

@@ -25,7 +25,7 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{instance_getattr, instance_repr, instance_str},
+        instance::{instance_contains, instance_getattr, instance_repr, instance_str},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
@@ -94,7 +94,10 @@ pub(crate) enum ValueRead<'h, 'v> {
     Immediate(&'v Value),
     /// Heap values retain both their owner and the typed heap read handle.
     Heap {
-        _owner: &'v Value,
+        /// The `Value::Ref` this view was taken from. Keeps the entry alive for
+        /// the view's lifetime, and supplies the `HeapId` that `py_next` needs
+        /// to drive a user-defined `__next__`.
+        owner: &'v Value,
         value: HeapReadOutput<'h>,
     },
 }
@@ -108,7 +111,7 @@ impl<'h> ValueRead<'h, '_> {
         vm.heap.check_time()?;
         match self {
             Self::Immediate(value) => Err(ExcType::type_error_not_iterator(&value.py_type_name(vm))),
-            Self::Heap { value, .. } => value.py_next(vm),
+            Self::Heap { owner, value } => value.py_next(owner.ref_id(), vm),
         }
     }
 
@@ -1214,6 +1217,15 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_is_iterator(&self, vm: &VM<'_>) -> bool {
+        // No immediate value is an iterator; interned `str`/`bytes` are iterable
+        // but, as in CPython, are not their own iterators.
+        match self {
+            Self::Ref(id) => vm.heap.read(*id).py_is_iterator(vm),
+            _ => false,
+        }
+    }
+
     fn py_is_iterable(&self, vm: &VM<'_>) -> bool {
         match self {
             // Interned string and bytes literals iterate without ever reaching
@@ -1236,9 +1248,9 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_next(vm)
+            vm.heap.read(*id).py_next(Some(*id), vm)
         } else {
             Err(ExcType::type_error_not_iterator(&self.py_type_name(vm)))
         }
@@ -1376,6 +1388,14 @@ impl Value {
         <Self as PyTrait<'_>>::py_iter(self, None, vm)
     }
 
+    /// Advances this value as an iterator, mirroring the inherent [`Value::py_iter`].
+    ///
+    /// The trait method's `self_id` is redundant for a `Value`, which already
+    /// carries its own `HeapId`, so callers use this and let the impl resolve it.
+    pub(crate) fn py_next(&mut self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        <Self as PyTrait<'_>>::py_next(self, None, vm)
+    }
+
     /// Converts an owned value into its Python iterator and releases the original reference.
     ///
     /// This is the ownership-preserving entry point for Rust consumers of the
@@ -1390,7 +1410,7 @@ impl Value {
     pub(crate) fn read<'h, 'v>(&'v self, vm: &VM<'h>) -> ValueRead<'h, 'v> {
         match self {
             Self::Ref(id) => ValueRead::Heap {
-                _owner: self,
+                owner: self,
                 value: vm.heap.read(*id),
             },
             _ => ValueRead::Immediate(self),
@@ -1476,6 +1496,9 @@ impl Value {
     /// - Dict: key lookup
     /// - Set/FrozenSet: element lookup
     /// - Str: substring search
+    /// - Instance: the class's `__contains__`, else iteration
+    ///
+    /// Anything else iterable is consumed until the item is found.
     pub fn py_contains(&self, item: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         match self {
             Self::Ref(heap_id) => {
@@ -1577,40 +1600,45 @@ impl Value {
                         };
                         Ok(range.contains(n))
                     }
-                    // An iterator is consumed until the item is found, as
-                    // CPython's `in` does for any iterable without `__contains__`.
-                    value if value.py_type(vm).is_iterator() => {
-                        let iter = self.py_iter(vm)?;
-                        defer_drop!(iter, vm);
-                        let mut iter = iter.read(vm);
-                        loop {
-                            let Some(el) = iter.py_next(vm)? else {
-                                break Ok(false);
-                            };
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
-                                break Ok(true);
-                            }
-                        }
-                    }
-                    _ => {
-                        let type_name = self.py_type_name(vm);
-                        Err(ExcType::type_error(format!(
-                            "argument of type '{type_name}' is not a container or iterable"
-                        )))
-                    }
+                    // `__contains__` first, iteration only as a fallback —
+                    // CPython's `sq_contains` precedes `tp_iter`.
+                    HeapReadOutput::Instance(_) => match instance_contains(*heap_id, item, vm)? {
+                        Some(found) => Ok(found),
+                        None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
+                        None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
+                    },
+                    // Any iterator is consumed until the item is found. Asking
+                    // `is_iterator()` covers the dedicated iterator types rather
+                    // than naming each one here.
+                    value if value.py_type(vm).is_iterator() => self.contains_by_iteration(item, vm),
+                    _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
                 }
             }
             Self::InternString(string_id) => {
                 let container_str = vm.interns.get_str(*string_id);
                 str_contains(container_str, item, vm.heap, vm.interns)
             }
-            _ => {
-                let type_name = self.py_type_name(vm);
-                Err(ExcType::type_error(format!(
-                    "argument of type '{type_name}' is not a container or iterable"
-                )))
+            _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
+        }
+    }
+
+    /// Consumes `self` as an iterable, reporting whether `item` compares equal
+    /// to any element — the `in` fallback for anything without `__contains__`.
+    ///
+    /// Only called for values already known to be iterable, so it does not
+    /// re-check. An endless iterable runs until a resource limit fires.
+    fn contains_by_iteration(&self, item: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        let iter = self.py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
+        loop {
+            let Some(el) = iter.py_next(vm)? else {
+                break Ok(false);
+            };
+            let eq = item.py_eq(&el, vm);
+            el.drop_with(vm);
+            if eq? {
+                break Ok(true);
             }
         }
     }

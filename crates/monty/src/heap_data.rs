@@ -704,6 +704,16 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
+    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+        match self {
+            // A user-defined class is an iterator only if it defines `__next__`.
+            Self::Instance(inst) => inst.py_is_iterator(vm),
+            // Every built-in iterator is identified by its type, so there is no
+            // list to keep in step with new iterator types here.
+            other => other.py_type(vm).is_iterator(),
+        }
+    }
+
     fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
         heap_read_output_py_trait_forward!(self, |value| value.py_is_iterable(vm), else false)
     }
@@ -971,43 +981,43 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         match self {
-            Self::Str(value) => value.py_next(vm),
-            Self::Bytes(value) => value.py_next(vm),
-            Self::List(value) => value.py_next(vm),
-            Self::ListIterator(value) => value.py_next(vm),
-            Self::TupleIterator(value) => value.py_next(vm),
-            Self::StringIterator(value) => value.py_next(vm),
-            Self::BytesIterator(value) => value.py_next(vm),
-            Self::RangeIterator(value) => value.py_next(vm),
-            Self::DictKeyIterator(value) => value.py_next(vm),
-            Self::DictItemIterator(value) => value.py_next(vm),
-            Self::DictValueIterator(value) => value.py_next(vm),
-            Self::SetIterator(value) => value.py_next(vm),
-            Self::CallableIterator(value) => value.py_next(vm),
-            Self::Tuple(value) => value.py_next(vm),
-            Self::NamedTuple(value) => value.py_next(vm),
-            Self::Dict(value) => value.py_next(vm),
-            Self::DictKeysView(value) => value.py_next(vm),
-            Self::DictItemsView(value) => value.py_next(vm),
-            Self::DictValuesView(value) => value.py_next(vm),
-            Self::Set(value) => value.py_next(vm),
-            Self::FrozenSet(value) => value.py_next(vm),
-            Self::Range(value) => value.py_next(vm),
-            Self::Slice(value) => value.py_next(vm),
-            Self::Dataclass(value) => value.py_next(vm),
-            Self::Class(value) => value.py_next(vm),
-            Self::Instance(value) => value.py_next(vm),
-            Self::BoundMethod(value) => value.py_next(vm),
-            Self::Path(value) => value.py_next(vm),
-            Self::OpenFile(value) => value.py_next(vm),
-            Self::ReMatch(value) => value.py_next(vm),
-            Self::RePattern(value) => value.py_next(vm),
-            Self::Date(value) => value.py_next(vm),
-            Self::DateTime(value) => value.py_next(vm),
-            Self::TimeDelta(value) => value.py_next(vm),
-            Self::TimeZone(value) => value.py_next(vm),
+            Self::Str(value) => value.py_next(self_id, vm),
+            Self::Bytes(value) => value.py_next(self_id, vm),
+            Self::List(value) => value.py_next(self_id, vm),
+            Self::ListIterator(value) => value.py_next(self_id, vm),
+            Self::TupleIterator(value) => value.py_next(self_id, vm),
+            Self::StringIterator(value) => value.py_next(self_id, vm),
+            Self::BytesIterator(value) => value.py_next(self_id, vm),
+            Self::RangeIterator(value) => value.py_next(self_id, vm),
+            Self::DictKeyIterator(value) => value.py_next(self_id, vm),
+            Self::DictItemIterator(value) => value.py_next(self_id, vm),
+            Self::DictValueIterator(value) => value.py_next(self_id, vm),
+            Self::SetIterator(value) => value.py_next(self_id, vm),
+            Self::CallableIterator(value) => value.py_next(self_id, vm),
+            Self::Tuple(value) => value.py_next(self_id, vm),
+            Self::NamedTuple(value) => value.py_next(self_id, vm),
+            Self::Dict(value) => value.py_next(self_id, vm),
+            Self::DictKeysView(value) => value.py_next(self_id, vm),
+            Self::DictItemsView(value) => value.py_next(self_id, vm),
+            Self::DictValuesView(value) => value.py_next(self_id, vm),
+            Self::Set(value) => value.py_next(self_id, vm),
+            Self::FrozenSet(value) => value.py_next(self_id, vm),
+            Self::Range(value) => value.py_next(self_id, vm),
+            Self::Slice(value) => value.py_next(self_id, vm),
+            Self::Dataclass(value) => value.py_next(self_id, vm),
+            Self::Class(value) => value.py_next(self_id, vm),
+            Self::Instance(value) => value.py_next(self_id, vm),
+            Self::BoundMethod(value) => value.py_next(self_id, vm),
+            Self::Path(value) => value.py_next(self_id, vm),
+            Self::OpenFile(value) => value.py_next(self_id, vm),
+            Self::ReMatch(value) => value.py_next(self_id, vm),
+            Self::RePattern(value) => value.py_next(self_id, vm),
+            Self::Date(value) => value.py_next(self_id, vm),
+            Self::DateTime(value) => value.py_next(self_id, vm),
+            Self::TimeDelta(value) => value.py_next(self_id, vm),
+            Self::TimeZone(value) => value.py_next(self_id, vm),
             other => Err(ExcType::type_error_not_iterator(
                 &other.py_type(vm).name(vm.heap, vm.interns),
             )),

@@ -1442,7 +1442,7 @@ impl<'h> VM<'h> {
                     };
                     let mut iter = self.heap.read(heap_id);
 
-                    match iter.py_next(self) {
+                    match iter.py_next(Some(heap_id), self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Drop the HeapRead before dec_ref to release the reader count

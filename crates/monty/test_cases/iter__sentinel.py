@@ -85,3 +85,20 @@ for x in ci2:
     collected.append(x)
 assert collected == [5, 6]
 assert next(ci2, 'STOPPED') == 'STOPPED'
+
+# === StopIteration from the callable ends iteration, as in CPython ===
+stop_calls = [0]
+
+
+def stops():
+    stop_calls[0] += 1
+    if stop_calls[0] >= 3:
+        raise StopIteration
+    return stop_calls[0]
+
+
+assert list(iter(stops, 99)) == [1, 2]
+stop_calls[0] = 0
+stop_it = iter(stops, 99)
+assert (next(stop_it), next(stop_it)) == (1, 2)
+assert next(stop_it, 'done') == 'done'

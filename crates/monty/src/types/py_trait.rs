@@ -586,6 +586,17 @@ pub(crate) trait PyTrait<'h> {
         false
     }
 
+    /// Whether `next()` can drive this object, the counterpart to
+    /// [`py_is_iterable`](PyTrait::py_is_iterable)'s "can `iter()` be called".
+    ///
+    /// Mirrors CPython's `PyIter_Check`, used by `PyObject_GetIter` to reject an
+    /// `__iter__` returning a non-iterator — the one caller here, in
+    /// `Instance::py_iter`. A type overriding `py_next` MUST return `true`, or
+    /// a user `__iter__` returning it is wrongly rejected.
+    fn py_is_iterator(&self, _vm: &VM<'h>) -> bool {
+        false
+    }
+
     /// Returns a Python iterator for this object (`__iter__`).
     fn py_iter(&self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         Err(ExcType::type_error_not_iterable(
@@ -594,7 +605,11 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// Advances this object using Python's iterator protocol (`__next__`).
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    ///
+    /// `self_id` mirrors [`py_iter`](PyTrait::py_iter): a user-defined instance
+    /// needs its own id to bind `self` when calling `__next__`. Built-in
+    /// iterators hold their state inline and ignore it.
+    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Err(ExcType::type_error_not_iterator(
             &self.py_type(vm).name(vm.heap, vm.interns),
         ))
