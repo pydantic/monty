@@ -71,7 +71,8 @@ pub trait ResourceTracker: fmt::Debug {
     /// if a limit would be exceeded.
     ///
     /// # Arguments
-    /// * `size` - Approximate size in bytes of the allocation
+    /// * `get_size` - Lazily computes the approximate allocation size in bytes;
+    ///   implementations that ignore size (e.g. `NoLimitTracker`) never pay for it
     fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError>;
 
     /// Called when memory is freed (during dec_ref or garbage collection).
@@ -314,6 +315,9 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct LimitedTracker {
     limits: ResourceLimits,
+    /// `limits.max_memory` resolved at construction (`usize::MAX` = unlimited),
+    /// so the per-allocation hot path is one compare with no `Option` branch.
+    max_memory: usize,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Serialized so time budgets survive dump/load. The serde
     /// default helps self-describing formats; postcard snapshots are
@@ -356,6 +360,7 @@ impl LimitedTracker {
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
+            max_memory: limits.max_memory.unwrap_or(usize::MAX),
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
@@ -408,22 +413,7 @@ impl LimitedTracker {
 
 impl ResourceTracker for LimitedTracker {
     fn on_allocate(&self, get_size: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        let size = get_size();
-        // Check memory limit
-        let current_mem = self.current_memory.get();
-        if let Some(max) = self.limits.max_memory {
-            let new_memory = current_mem + size;
-            if new_memory > max {
-                return Err(ResourceError::Memory {
-                    limit: max,
-                    used: new_memory,
-                });
-            }
-        }
-
-        self.current_memory.set(current_mem + size);
-
-        Ok(())
+        self.on_grow(get_size())
     }
 
     fn on_free(&self, get_size: impl FnOnce() -> usize) {
@@ -432,20 +422,19 @@ impl ResourceTracker for LimitedTracker {
     }
 
     fn on_grow(&self, additional_bytes: usize) -> Result<(), ResourceError> {
-        let current_mem = self.current_memory.get();
-        let new_memory = current_mem.saturating_add(additional_bytes);
-        if let Some(max) = self.limits.max_memory
-            && new_memory > max
-        {
-            return Err(ResourceError::Memory {
-                limit: max,
+        // Saturating: `usize::MAX` (no limit) can then never be exceeded, and on
+        // 32-bit targets a wrapping add must not slip past a real limit.
+        let new_memory = self.current_memory.get().saturating_add(additional_bytes);
+        if new_memory > self.max_memory {
+            Err(ResourceError::Memory {
+                limit: self.max_memory,
                 used: new_memory,
-            });
+            })
+        } else {
+            // Always update, so `current_memory()` stays accurate even unlimited.
+            self.current_memory.set(new_memory);
+            Ok(())
         }
-        // Always update current_memory, matching on_allocate's behavior,
-        // so current_memory() remains accurate even without a memory limit.
-        self.current_memory.set(new_memory);
-        Ok(())
     }
 
     fn check_time(&self) -> Result<(), ResourceError> {
