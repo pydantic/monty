@@ -17,6 +17,7 @@ use crate::{
     asyncio::CallId,
     bytecode::{VM, VMSnapshot},
     defer_drop,
+    dump_format::{DumpKind, dump, load},
     exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapReader},
     heap_data::HeapData,
@@ -393,12 +394,13 @@ impl<T: ResourceTracker + serde::Serialize> MontyRepl<T> {
     /// Serializes the REPL session state to bytes.
     ///
     /// This includes heap + globals + global slot mapping, allowing snapshot/restore
-    /// of interactive state between process runs.
+    /// of interactive state between process runs. The header identifies the format
+    /// version and dump kind so incompatible data is rejected.
     ///
     /// # Errors
     /// Returns an error if serialization fails.
     pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
+        dump(self, DumpKind::MontyRepl)
     }
 }
 
@@ -406,9 +408,10 @@ impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
     /// Restores a REPL session from bytes produced by `MontyRepl::dump`.
     ///
     /// # Errors
-    /// Returns an error if deserialization fails.
+    /// Returns an error for an incompatible dump version or kind, or if
+    /// deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        load(bytes, DumpKind::MontyRepl)
     }
 }
 
@@ -534,12 +537,12 @@ impl<T: ResourceTracker> ReplProgress<T> {
 }
 
 impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
-    /// Serializes the REPL execution progress to a binary format.
+    /// Serializes the REPL execution progress to a versioned binary format.
     ///
     /// # Errors
     /// Returns an error if serialization fails.
     pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
+        dump(self, DumpKind::ReplProgress)
     }
 }
 
@@ -547,9 +550,10 @@ impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
     /// Deserializes REPL execution progress from a binary format.
     ///
     /// # Errors
-    /// Returns an error if deserialization fails.
+    /// Returns an error for an incompatible dump version or kind, or if
+    /// deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        load(bytes, DumpKind::ReplProgress)
     }
 }
 

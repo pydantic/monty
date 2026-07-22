@@ -8,6 +8,7 @@ mod asyncio;
 mod builtins;
 mod bytecode;
 mod codecs;
+mod dump_format;
 mod exception_private;
 mod expressions;
 mod fstring;

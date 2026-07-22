@@ -16,7 +16,9 @@ use std::{slice::from_ref, str::FromStr};
 
 use ahash::AHashMap;
 use num_bigint::BigInt;
-use strum::{EnumCount, EnumString, FromRepr, IntoStaticStr};
+#[cfg(test)]
+use strum::IntoEnumIterator;
+use strum::{EnumCount, EnumIter, EnumString, FromRepr, IntoStaticStr};
 
 use crate::{
     function::Function,
@@ -105,6 +107,7 @@ pub(crate) static ASCII_STRS: [&str; 128] = const {
     Copy,
     FromRepr,
     EnumCount,
+    EnumIter,
     EnumString,
     IntoStaticStr,
     PartialEq,
@@ -760,6 +763,40 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+}
+
+/// Computes an FNV-1a hash over static-string identities and serialization.
+#[cfg(test)]
+pub(crate) fn static_strings_fingerprint() -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    fn update(hash: &mut u64, bytes: &[u8]) {
+        for byte in u32::try_from(bytes.len())
+            .expect("fingerprint field length fits u32")
+            .to_le_bytes()
+        {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+    }
+
+    let mut hash = OFFSET_BASIS;
+    for value in StaticStrings::iter() {
+        update(&mut hash, &(value as u16).to_le_bytes());
+        update(&mut hash, format!("{value:?}").as_bytes());
+        let string: &'static str = value.into();
+        update(&mut hash, string.as_bytes());
+        update(
+            &mut hash,
+            &postcard::to_allocvec(&value).expect("StaticStrings serialization cannot fail"),
+        );
+    }
+    hash
 }
 
 impl StaticStrings {

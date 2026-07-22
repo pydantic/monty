@@ -1,3 +1,6 @@
+#[cfg(test)]
+use strum::IntoEnumIterator;
+
 use crate::{
     args::{ArgExprs, Signature},
     builtins::Builtins,
@@ -835,28 +838,40 @@ pub enum Operator {
 ///
 /// The strum `serialize` attribute on each variant is the source-level symbol,
 /// and drives both `Display` and [`as_str`](Self::as_str).
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize, strum::Display, strum::IntoStaticStr)]
+#[repr(u8)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumIter,
+    strum::FromRepr,
+    strum::IntoStaticStr,
+)]
 pub enum CmpOperator {
     #[strum(serialize = "==")]
-    Eq,
+    Eq = 0,
     #[strum(serialize = "!=")]
-    NotEq,
+    NotEq = 1,
     #[strum(serialize = "<")]
-    Lt,
+    Lt = 2,
     #[strum(serialize = "<=")]
-    LtE,
+    LtE = 3,
     #[strum(serialize = ">")]
-    Gt,
+    Gt = 4,
     #[strum(serialize = ">=")]
-    GtE,
+    GtE = 5,
     #[strum(serialize = "is")]
-    Is,
+    Is = 6,
     #[strum(serialize = "is not")]
-    IsNot,
+    IsNot = 7,
     #[strum(serialize = "in")]
-    In,
+    In = 8,
     #[strum(serialize = "not in")]
-    NotIn,
+    NotIn = 9,
 }
 
 impl CmpOperator {
@@ -869,40 +884,43 @@ impl CmpOperator {
     }
 
     /// Stable u8 encoding used in the low nibble of the `Assert` /
-    /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`). Part
-    /// of the serialized `Code` format, so existing values must never change —
-    /// hence a hand-written encoding rather than a derived `FromRepr` that
-    /// would follow declaration order.
+    /// `AssertFailed` flags operand (see `bytecode::op::assert_flags`).
     pub const fn as_operand(self) -> u8 {
-        match self {
-            Self::Eq => 0,
-            Self::NotEq => 1,
-            Self::Lt => 2,
-            Self::LtE => 3,
-            Self::Gt => 4,
-            Self::GtE => 5,
-            Self::Is => 6,
-            Self::IsNot => 7,
-            Self::In => 8,
-            Self::NotIn => 9,
+        self as u8
+    }
+}
+
+/// Computes an FNV-1a hash over comparison-operator identities and serialization.
+#[cfg(test)]
+pub(crate) fn comparison_operators_fingerprint() -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+
+    fn update(hash: &mut u64, bytes: &[u8]) {
+        for byte in u32::try_from(bytes.len())
+            .expect("fingerprint field length fits u32")
+            .to_le_bytes()
+        {
+            *hash ^= u64::from(byte);
+            *hash = hash.wrapping_mul(PRIME);
+        }
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(PRIME);
         }
     }
 
-    /// Decodes [`as_operand`](Self::as_operand)'s encoding, `None` for bytes
-    /// outside the encoded range.
-    pub const fn from_operand(byte: u8) -> Option<Self> {
-        match byte {
-            0 => Some(Self::Eq),
-            1 => Some(Self::NotEq),
-            2 => Some(Self::Lt),
-            3 => Some(Self::LtE),
-            4 => Some(Self::Gt),
-            5 => Some(Self::GtE),
-            6 => Some(Self::Is),
-            7 => Some(Self::IsNot),
-            8 => Some(Self::In),
-            9 => Some(Self::NotIn),
-            _ => None,
-        }
+    let mut operators = CmpOperator::iter().collect::<Vec<_>>();
+    operators.sort_unstable_by_key(|operator| *operator as u8);
+    let mut hash = OFFSET_BASIS;
+    for operator in operators {
+        update(&mut hash, &[operator as u8]);
+        update(&mut hash, format!("{operator:?}").as_bytes());
+        update(&mut hash, operator.as_str().as_bytes());
+        update(
+            &mut hash,
+            &postcard::to_allocvec(&operator).expect("CmpOperator serialization cannot fail"),
+        );
     }
+    hash
 }

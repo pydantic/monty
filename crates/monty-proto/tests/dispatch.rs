@@ -187,7 +187,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
 
     // Assemble the dump envelope the way `Dump` does: [version u16 LE]
     // [tag u8 = 1 (suspended)][script_name str][type_check u8 = 0][payload].
-    let mut state = 5u16.to_le_bytes().to_vec();
+    let mut state = 6u16.to_le_bytes().to_vec();
     state.push(1);
     let script_name = b"main.py";
     state.extend_from_slice(&u32::try_from(script_name.len()).unwrap().to_le_bytes());

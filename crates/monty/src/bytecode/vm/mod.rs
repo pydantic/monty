@@ -986,7 +986,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             let opcode = {
                 let byte = cached_frame.code.bytecode()[cached_frame.ip];
                 cached_frame.ip += 1;
-                Opcode::try_from(byte).expect("invalid opcode in bytecode")
+                Opcode::from_repr(byte).expect("invalid opcode in bytecode")
             };
 
             match opcode {
@@ -1140,11 +1140,6 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::CompareIsNot => try_catch_sync!(self, cached_frame, self.compare_is_not()),
                 Opcode::CompareIn => try_catch_sync!(self, cached_frame, self.compare_in()),
                 Opcode::CompareNotIn => try_catch_sync!(self, cached_frame, self.compare_not_in()),
-                Opcode::CompareModEq => {
-                    let const_idx = cached_frame.fetch_u16();
-                    let k = cached_frame.code.constants().get(const_idx);
-                    try_catch_sync!(self, cached_frame, self.compare_mod_eq(k));
-                }
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();

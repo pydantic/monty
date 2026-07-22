@@ -10,6 +10,7 @@ use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
     bytecode::{Code, Compiler, FrameExit, VM},
+    dump_format::{DumpKind, dump, load},
     exception_private::{ExcTypeExt, RunResult},
     heap::{DropWithContext, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
@@ -122,12 +123,13 @@ impl MontyRun {
     /// Serializes the runner to a binary format.
     ///
     /// The serialized data can be stored and later restored with `load()`.
+    /// Dumps include a format version and kind so incompatible data is rejected.
     /// This allows caching parsed code to avoid re-parsing on subsequent runs.
     ///
     /// # Errors
     /// Returns an error if serialization fails.
     pub fn dump(&self) -> Result<Vec<u8>, postcard::Error> {
-        postcard::to_allocvec(self)
+        dump(self, DumpKind::MontyRun)
     }
 
     /// Deserializes a runner from binary format.
@@ -136,9 +138,10 @@ impl MontyRun {
     /// * `bytes` - The serialized runner data from `dump()`
     ///
     /// # Errors
-    /// Returns an error if deserialization fails.
+    /// Returns an error for an incompatible dump version or kind, or if
+    /// deserialization fails.
     pub fn load(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        postcard::from_bytes(bytes)
+        load(bytes, DumpKind::MontyRun)
     }
 
     /// Starts execution with the given inputs and resource tracker, consuming self.
