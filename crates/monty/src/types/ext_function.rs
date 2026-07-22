@@ -27,11 +27,13 @@ impl ExtFunction {
 
     /// Clones the function name for an external call suspension.
     pub(crate) fn clone_name(&self) -> EitherStr {
-        EitherStr::Heap(self.0.to_string())
+        self.0.to_string().into()
     }
 
-    /// Estimates the function and its shared name allocation.
+    /// Estimates the function, shared name, and its weak-cache entry.
     pub(crate) fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + 2 * mem::size_of::<usize>() + self.0.len()
+        // Includes the Arc control block plus a conservative allowance for the
+        // cache's Arc key, HeapId, and amortized BTreeMap node bookkeeping.
+        mem::size_of::<Self>() + 9 * mem::size_of::<usize>() + self.0.len()
     }
 }

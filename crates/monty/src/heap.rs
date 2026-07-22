@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, UnsafeCell},
+    collections::BTreeMap,
     fmt,
     marker::PhantomData,
     mem::ManuallyDrop,
@@ -8,7 +9,6 @@ use std::{
     sync::Arc,
 };
 
-use ahash::AHashMap;
 use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 
@@ -779,11 +779,10 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
-    /// Live external functions indexed by name without owning a heap reference.
+    /// Live external functions indexed by name without owning heap references.
     ///
-    /// Entries are removed before their heap slots are freed, preventing stale IDs
-    /// from aliasing later allocations that reuse the same slot.
-    ext_function_cache: AHashMap<Arc<str>, HeapId>,
+    /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
+    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -813,7 +812,7 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
         }
         let fields = HeapFields::<T>::deserialize(deserializer)?;
         let mut entries = fields.entries;
-        let mut ext_function_cache = AHashMap::new();
+        let mut ext_function_cache = BTreeMap::new();
         for index in 0..entries.len() {
             let id = HeapId::from_index(index);
             if let Some(mut entry) = entries.entry(id)
@@ -863,7 +862,7 @@ impl<T: ResourceTracker> Heap<T> {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
-            ext_function_cache: AHashMap::new(),
+            ext_function_cache: BTreeMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1095,9 +1094,12 @@ impl<T: ResourceTracker> Heap<T> {
                         HeapData::ExtFunction(function) => Some(function.cache_key()),
                         _ => None,
                     };
-                    if let Some(name) = ext_function_name {
-                        let removed = reader.heap.ext_function_cache.remove(name.as_ref());
-                        debug_assert_eq!(removed, Some(current_id));
+                    // Clear the cache (only if it points to this exact function, it's possible for
+                    // snapshot deserialization to create duplicate functions with the same name)
+                    if let Some(name) = ext_function_name
+                        && reader.heap.ext_function_cache.get(name.as_ref()) == Some(&current_id)
+                    {
+                        reader.heap.ext_function_cache.remove(name.as_ref());
                     }
 
                     // It is not possible to free from `HeapPtr` because it is created through
