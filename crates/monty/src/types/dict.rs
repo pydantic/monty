@@ -6,18 +6,18 @@ use std::{
 };
 
 use hashbrown::HashTable;
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
-use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, MontyIter, PyTrait, allocate_tuple};
+use super::{DictItemsView, DictKeysView, DictValuesView, LazyHeapSet, PyTrait, allocate_tuple};
 use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -556,28 +556,30 @@ impl<'h> HeapRead<'h, Dict> {
 
     /// Merges key-value pairs from an iterable of 2-item pairs.
     fn merge_from_iterable_pairs(&mut self, iterable: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
-        let iter = MontyIter::new(iterable, vm)?;
-        defer_drop_mut!(iter, vm);
+        let iter = iterable.into_py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
 
-        while let Some(item) = iter.for_next(vm)? {
-            let pair_iter = MontyIter::new(item, vm)?;
-            defer_drop_mut!(pair_iter, vm);
+        while let Some(item) = iter.py_next(vm)? {
+            let pair_iter = item.into_py_iter(vm)?;
+            defer_drop!(pair_iter, vm);
+            let mut pair_iter = pair_iter.read(vm);
 
-            let Some(key) = pair_iter.for_next(vm)? else {
+            let Some(key) = pair_iter.py_next(vm)? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 0; 2 is required",
                 ));
             };
             let mut key_guard = DropGuard::new(key, vm);
 
-            let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
+            let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 1; 2 is required",
                 ));
             };
             let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-            if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+            if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
                 extra.drop_with(value_guard.ctx());
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length > 2; 2 is required",
@@ -667,7 +669,7 @@ impl IntoIterator for Dict {
 /// Borrows a [`HeapRead`] for its lifetime, so the heap entry is pinned by
 /// the reader count for the duration of iteration.
 ///
-/// **Two yield modes.** Pick the variant that matches the caller's natural
+/// **Yield modes.** Pick the variant that matches the caller's natural
 /// pattern to avoid redundant `clone_with_heap` / `drop_with` work:
 ///
 /// - [`next`](Self::next) returns `Option<(&Value, &Value)>`. The iterator
@@ -675,13 +677,15 @@ impl IntoIterator for Dict {
 ///   empty sentinel) and drops the previous pair at the start of each call,
 ///   so "use and discard" call sites do **not** need a per-item
 ///   `defer_drop!`.
+/// - [`next_value`](Self::next_value) returns only a borrowed value, avoiding
+///   key refcount churn for value-only operations.
 /// - [`next_owned`](Self::next_owned) returns `Option<(Value, Value)>` and
 ///   clones straight into the return value, leaving the internal slot
 ///   `Undefined`. Prefer this when feeding pairs into a sink that takes
 ///   ownership (e.g. [`HeapRead::set`], `Set::add`) — going through `next`
 ///   forces a second `clone_with_heap` per element.
 ///
-/// Mixing the two modes is supported: every step drops whatever the slot
+/// Mixing the yield modes is supported: every step drops whatever the slot
 /// held before doing its work.
 ///
 /// **Recursion guard.** Acquires a [`RecursionToken`] at construction and
@@ -694,7 +698,7 @@ impl IntoIterator for Dict {
 /// **Mutation policy.** The initial length is captured at construction. If
 /// the dict's size changes between steps, the next step returns
 /// `RuntimeError: dictionary changed size during iteration` (matching
-/// CPython and [`MontyIter`]'s dict behavior). Same-size updates (replacing
+/// CPython and Monty's dict-iterator behavior). Same-size updates (replacing
 /// a value at an existing key) are allowed and observable.
 pub(crate) struct DictIter<'a, 'h> {
     dict: &'a HeapRead<'h, Dict>,
@@ -741,6 +745,20 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some((&self.current_key, &self.current_value)))
     }
 
+    /// Advances the iterator and returns a borrow of the next value.
+    ///
+    /// Prefer this for value-only operations so dictionary keys are not cloned.
+    /// The returned reference is valid until the next call that advances the
+    /// iterator, or until the iterator is dropped.
+    pub(crate) fn next_value<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
+        let Some(entry_index) = self.advance(vm)? else {
+            return Ok(None);
+        };
+        let entry = &self.dict.get(vm.heap).entries[entry_index];
+        self.current_value = entry.value.clone_with_heap(vm.heap);
+        Ok(Some(&self.current_value))
+    }
+
     /// Advances the iterator and returns the next `(key, value)` pair as
     /// owned values, transferring ownership to the caller.
     ///
@@ -761,7 +779,7 @@ impl<'a, 'h> DictIter<'a, 'h> {
         Ok(Some(pair))
     }
 
-    /// Shared step for [`next`](Self::next) / [`next_owned`](Self::next_owned).
+    /// Shared step for the iterator's borrowed and owned yield modes.
     ///
     /// Releases the previously-yielded slot (no-op when each slot is
     /// `Undefined`), runs the per-step time check and the dict mutation
@@ -798,6 +816,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Dict
     }
@@ -1113,29 +1135,31 @@ fn dict_merge_from_iterable_pairs(
     iterable: Value,
     vm: &mut VM<'_, impl ResourceTracker>,
 ) -> RunResult<()> {
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = MontyIter::new(item, vm)?;
-        defer_drop_mut!(pair_iter, vm);
+        let pair_iter = item.into_py_iter(vm)?;
+        defer_drop!(pair_iter, vm);
+        let mut pair_iter = pair_iter.read(vm);
 
-        let Some(key) = pair_iter.for_next(vm)? else {
+        let Some(key) = pair_iter.py_next(vm)? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 0; 2 is required",
             ));
         };
         let mut key_guard = DropGuard::new(key, vm);
 
-        let Some(value) = pair_iter.for_next(key_guard.ctx())? else {
+        let Some(value) = pair_iter.py_next(key_guard.ctx())? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 1; 2 is required",
             ));
         };
         let mut value_guard = DropGuard::new(value, key_guard.ctx());
 
-        if let Some(extra) = pair_iter.for_next(value_guard.ctx())? {
+        if let Some(extra) = pair_iter.py_next(value_guard.ctx())? {
             extra.drop_with(value_guard.ctx());
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length > 2; 2 is required",
@@ -1274,8 +1298,9 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let dict = Dict::new();
     let mut dict_guard = DropGuard::new(dict, vm);
@@ -1283,7 +1308,7 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
     {
         let (dict, vm) = dict_guard.as_parts_mut();
 
-        while let Some(key) = iter.for_next(vm)? {
+        while let Some(key) = iter.py_next(vm)? {
             let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
             old_value.drop_with(vm);
         }

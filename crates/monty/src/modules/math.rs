@@ -24,6 +24,7 @@
 
 use std::f64::consts;
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use smallvec::smallvec;
 
@@ -31,11 +32,10 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::{LongInt, Module, allocate_tuple},
     value::Value,
 };

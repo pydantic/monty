@@ -3,7 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty::{ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 
 /// Helper to compute a hash for a value.
 fn hash_of(obj: &MontyObject) -> u64 {
@@ -187,7 +187,7 @@ fn type_name() {
             name: "Foo".to_string(),
             type_id: 0,
             field_names: vec![],
-            attrs: monty::DictPairs::from(vec![]),
+            attrs: DictPairs::from(vec![]),
             frozen: false,
         }
         .type_name(),
@@ -311,7 +311,7 @@ fn is_truthy_dataclass() {
             name: "Foo".to_string(),
             type_id: 0,
             field_names: vec![],
-            attrs: monty::DictPairs::from(vec![]),
+            attrs: DictPairs::from(vec![]),
             frozen: false,
         }
         .is_truthy()

@@ -8,18 +8,15 @@
 
 use std::mem;
 
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ExcType, MontyException,
     asyncio::CallId,
     bytecode::{FrameExit, VM, VMSnapshot},
-    exception_private::{RunError, RunResult},
+    exception_private::{ExcTypeExt, RunError, RunResult},
     heap::{Heap, HeapReader},
-    io::PrintWriter,
-    object::MontyObject,
-    os::OsFunctionCall,
-    resource::ResourceTracker,
+    object_bridge::MontyObjectExt,
     run::Executor,
 };
 
@@ -258,14 +255,19 @@ impl<T: ResourceTracker> OsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
-    /// Takes the [`OsFunctionCall`] out by value, leaving an
-    /// [`OsFunctionCall::Used`] placeholder so the host can dispatch the
-    /// call without cloning large `WriteText` / `WriteBytes` payloads.
-    /// `self` is still safe to call [`Self::resume`] on; the placeholder
-    /// must not be inspected.
-    #[must_use]
-    pub fn take_function_call(&mut self) -> OsFunctionCall {
-        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    /// Dispatches the call to `handler` and resumes execution with its result.
+    ///
+    /// `handler` receives the [`OsFunctionCall`] by value, so large
+    /// `WriteText` / `WriteBytes` payloads move into the host without
+    /// cloning. Prefer this over reading [`Self::function_call`] and calling
+    /// [`Self::resume`] separately when the handler consumes the call.
+    pub fn resume_with(
+        self,
+        print: PrintWriter<'_>,
+        handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+    ) -> Result<RunProgress<T>, MontyException> {
+        let result = handler(self.function_call);
+        self.snapshot.run(result, print)
     }
 
     /// Returns a reference to the resource tracker.
@@ -595,60 +597,20 @@ impl<T: ResourceTracker> Snapshot<T> {
     }
 }
 
-/// Result of a name lookup from the host.
-///
-/// When the VM encounters an unresolved name, the host provides one of these:
-/// - `Value(obj)`: The name resolves to this value (cached in the namespace for future access).
-/// - `Undefined`: The name is truly undefined, causing `NameError`.
-#[derive(Debug)]
-pub enum NameLookupResult {
-    /// The name resolves to this value.
-    Value(MontyObject),
-    /// The name is undefined — VM will raise `NameError`.
-    Undefined,
-}
+pub use monty_types::{ExtFunctionResult, NameLookupResult};
 
-impl From<MontyObject> for NameLookupResult {
-    fn from(value: MontyObject) -> Self {
-        Self::Value(value)
-    }
-}
-
-/// Return value or exception from an external function.
-#[derive(Debug)]
-pub enum ExtFunctionResult {
-    /// Continues execution with the return value from the external function.
-    Return(MontyObject),
-    /// Continues execution with the exception raised by the external function.
-    Error(MontyException),
-    /// Pending future — the external function is a coroutine.
-    ///
-    /// The `u32` is the `call_id` from the `FunctionCall` that created this
-    /// snapshot. It is used to track the pending future so it can be resolved
-    /// later via `ResolveFutures::resume()`.
-    Future(u32),
-    /// The function was not found, should result in a `NameError` exception.
-    NotFound(String),
-}
-
-impl ExtFunctionResult {
-    pub(crate) fn not_found_exc(function_name: &str) -> RunError {
+/// Crate-internal extension for [`ExtFunctionResult`] (which lives in
+/// `monty-types`): builds the interpreter-side `RunError` for a missing
+/// external function.
+pub(crate) trait ExtFunctionResultExt {
+    /// The `NameError` raised when the host reports the function isn't defined.
+    fn not_found_exc(function_name: &str) -> RunError {
         let msg = format!("name '{function_name}' is not defined");
         MontyException::new(ExcType::NameError, Some(msg)).into()
     }
 }
 
-impl From<MontyObject> for ExtFunctionResult {
-    fn from(value: MontyObject) -> Self {
-        Self::Return(value)
-    }
-}
-
-impl From<MontyException> for ExtFunctionResult {
-    fn from(exception: MontyException) -> Self {
-        Self::Error(exception)
-    }
-}
+impl ExtFunctionResultExt for ExtFunctionResult {}
 
 // ---------------------------------------------------------------------------
 // handle_vm_result

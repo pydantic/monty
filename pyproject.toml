@@ -38,6 +38,9 @@ extend-exclude = [
     # These files test specific quote styles in error messages and must not be reformatted
     "crates/monty/test_cases/type__float_repr_newline.py",
     "crates/monty/test_cases/type__float_repr_both_quotes.py",
+    # Irregular spacing in the `class` header is the point of the test — locating
+    # the `class` keyword must not depend on it being exactly one space
+    "crates/monty/test_cases/decorator__class_body_traceback.py",
 ]
 
 [tool.uv]
@@ -147,6 +150,8 @@ reportPossiblyUnboundVariable = false
 reportUnboundVariable = false
 # attribute error tests intentionally access/assign non-existent attributes
 reportAttributeAccessIssue = false
+# class decorator tests deliberately use untyped decorators (incl. bare lambdas)
+reportUntypedClassDecorator = false
 # unused variables, classes and imports are fine in test cases
 reportUnusedVariable = false
 reportUnusedClass = false

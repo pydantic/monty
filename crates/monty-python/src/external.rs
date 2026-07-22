@@ -7,8 +7,8 @@
 //! one place. Dataclass method calls (`dispatch_method_call*`) are a separate
 //! concern: they consult the dataclass instance, not `external_lookup`.
 
-use ::monty::{ExtFunctionResult, MontyObject};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty, py_to_monty_value};
+use monty_types::{ExtFunctionResult, MontyObject};
 use pyo3::{
     exceptions::{PyAttributeError, PyRuntimeError},
     prelude::*,

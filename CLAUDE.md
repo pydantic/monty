@@ -17,6 +17,30 @@ Project goals:
 - **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
 
+## `monty-types` — shared boundary types
+
+The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
+its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
+`CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
+which depends on no other monty crate except the `monty-macros` derives. `monty`
+depends on `monty-types` but does not blanket re-export it — only a few types
+are re-exported inline where they appear in `monty`'s public API (e.g.
+`run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
+Code needing `MontyObject`, `MontyException`, `OsFunctionCall`, etc. must
+depend on `monty-types` directly.
+
+Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker`
+feature, `monty-python`, `monty-js`) MUST depend on `monty-types`, NOT `monty` —
+this keeps the interpreter out of their binaries. Only the worker side
+(`monty-runtime`, `monty-wasm-runtime`, `monty-proto` with `worker`) links the
+interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
+type, that type belongs in `monty-types`.
+
+Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyTypeExt`, `StackFrameExt`,
+`FileModeExt`, `BuiltinsFunctionsExt`, `ExtFunctionResultExt`) — import the trait
+to call e.g. `ExcType::type_error(...)` or `MontyObject::new(value, vm)`.
+
 ## Cross-Platform Requirements
 
 Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
@@ -27,9 +51,11 @@ Key rules:
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
-- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
-  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
+- Tests in `crates/*/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
+  `crates/monty-fs/tests/fs_security.rs`)
+- CI runs `cargo test -p monty --features memory-model-checks` and `cargo test -p monty-fs`
+  on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -54,10 +80,15 @@ Possible security risks to consider:
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
 
-## Filesystem Mounts (`crates/monty/src/fs/`)
+## Filesystem Mounts (`crates/monty-fs/`)
 
 The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
 with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+Mounts are HOST-side code: the `monty` interpreter crate performs no filesystem
+I/O and does not depend on `monty-fs`. Sandboxed code suspends with an
+`OsFunctionCall`, which a host holding a `MountTable` (the pool parent, the CLI,
+bindings) services via `MountTable::handle_os_call`.
 
 **CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
 obtain any information about any file or directory outside the specific directory
@@ -70,8 +101,9 @@ that is mounted. This is enforced by:
 - `Resolve` and `Absolute` returning virtual paths, never host paths
 - Null byte rejection in all paths
 
-All path resolution goes through `fs::path_security::resolve_path()` which is
-the sole security boundary. **Changes to `path_security.rs` require careful security review.**
+All path resolution goes through `path_security::resolve_path()` (in
+`crates/monty-fs/src/path_security.rs`) which is the sole security boundary.
+**Changes to `path_security.rs` require careful security review.**
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
@@ -94,6 +126,9 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
+  `monty-proto` depends only on `monty-types` by default; its `worker` feature
+  (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
+  interpreter for the child-side `worker` state machine.
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more

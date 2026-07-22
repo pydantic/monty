@@ -138,7 +138,9 @@ def test_os_call_surfaces_without_handler(session: MontySession):
     assert snap.function_name == snapshot('Path.read_text')
 
 
-def test_os_handler_auto_dispatched(session: MontySession):
+def test_os_handler_used_by_resume_auto(session: MontySession):
+    """`feed_start` surfaces the OS call even with `os=`; `resume_auto` answers it."""
+
     def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         assert name == 'Path.read_text'
         return 'file body'
@@ -147,8 +149,11 @@ def test_os_handler_auto_dispatched(session: MontySession):
         "from pathlib import Path\nPath('/data/x').read_text()",
         os=handle_os,
     )
-    assert isinstance(snap, MontyComplete)
-    assert snap.output == snapshot('file body')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function == snapshot(True)
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot('file body')
 
 
 def test_future_mechanism_sync(session: MontySession):
@@ -222,9 +227,9 @@ def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
 
 def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
     # Re-supplying the feed's mounts to load_snapshot rebuilds the mount table,
-    # so the mounted read after resume is served in-worker and never surfaces.
+    # so `resume_auto` on the restored feed's mounted read is served from it.
     (tmp_path / 'hello.txt').write_text('hi')
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
     with pool.checkout() as session:
         snap = session.feed_start(code, mount=mount)
@@ -235,16 +240,65 @@ def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
     with pool.checkout() as session:
         loaded_snap = session.load_snapshot(blob, mount=mount)
         assert isinstance(loaded_snap, FunctionSnapshot)
-        done = loaded_snap.resume({'return_value': None})
+        read = loaded_snap.resume({'return_value': None})
+        assert isinstance(read, FunctionSnapshot)
+        assert read.is_os_function
+        assert read.function_name == snapshot('Path.read_text')
+        done = read.resume_auto()
         assert isinstance(done, MontyComplete)
         assert done.output == snapshot('hi')
 
 
-def test_load_errors_when_required_mount_not_resupplied(pool: Monty, tmp_path: Path):
-    # Omitting a mount the suspended feed had is a loud error, not a silent
-    # drop — load validates the dump's recorded mount requirements.
+def test_load_snapshot_mid_os_call_serviced_by_mount(pool: Monty, tmp_path: Path):
+    # A dump taken while suspended on an OS call retains the call payload, so a
+    # mount supplied to load_snapshot can answer the re-announced call even
+    # though the original feed had none.
     (tmp_path / 'hello.txt').write_text('hi')
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        # no mount: the read surfaces as an OS-call snapshot
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        assert snap.is_os_function
+        assert snap.function_name == snapshot('Path.read_text')
+        blob = snap.dump()
+
+    mount = MountDir(host_path=(tmp_path), virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob, mount=mount)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.is_os_function
+        done = loaded_snap.resume_auto()
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('hi')
+
+
+def test_load_snapshot_mid_os_call_retains_payload(pool: Monty, tmp_path: Path):
+    # Without a mount the re-announced OS call surfaces to the caller — with
+    # its full payload (name, args, and per-call not-handled error) intact.
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.is_os_function
+        assert loaded_snap.function_name == snapshot('Path.read_text')
+        assert loaded_snap.args == snapshot((Path('/data/hello.txt'),))
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            loaded_snap.resume_not_handled()
+    assert exc_info.value.display(format='msg') == snapshot("Permission denied: '/data/hello.txt'")
+
+
+def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):
+    # Mounts are host configuration serviced by the parent and never part of a
+    # dump. A restore that omits them is not validated — the resumed feed's
+    # filesystem calls simply surface as unhandled OS calls.
+    (tmp_path / 'hello.txt').write_text('hi')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
     with pool.checkout() as session:
         snap = session.feed_start(code, mount=mount)
@@ -252,29 +306,30 @@ def test_load_errors_when_required_mount_not_resupplied(pool: Monty, tmp_path: P
         blob = snap.dump()
 
     with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        os_snap = loaded_snap.resume({'return_value': None})
+        # without the mount, the read that a re-supplied mount would have
+        # serviced surfaces as an OS-call snapshot instead
+        assert isinstance(os_snap, FunctionSnapshot)
+        assert os_snap.is_os_function
+        assert os_snap.function_name == snapshot('Path.read_text')
         with pytest.raises(MontyRuntimeError) as exc_info:
-            session.load_snapshot(blob)
-        # a failed load (here a validation error) poisons the session
-        with pytest.raises(RuntimeError):
-            session.feed_run('1 + 1')
-    assert exc_info.value.display(format='msg') == snapshot(
-        'the dump was suspended with a mount at "/data" that was not re-supplied to load; pass the same mounts the original feed used'
-    )
+            os_snap.resume_not_handled()
+    assert exc_info.value.display(format='msg') == snapshot("Permission denied: '/data/hello.txt'")
 
 
-def test_load_errors_when_mount_supplied_to_idle_dump(pool: Monty, tmp_path: Path):
-    # An idle dump has no mount requirements, so supplying one is rejected.
+def test_load_accepts_mount_for_idle_dump(pool: Monty, tmp_path: Path):
+    # Supplying a mount to an idle dump is not validated (there is nothing to
+    # compare against); it is simply unused by the restored session.
     with pool.checkout() as session:
         session.feed_run('kept = 1')
         blob = session.dump()
 
-    mount = MountDir('/data', str(tmp_path), mode='read-only')
+    mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     with pool.checkout() as session:
-        with pytest.raises(MontyRuntimeError) as exc_info:
-            session.load_snapshot(blob, mount=mount)
-    assert exc_info.value.display(format='msg') == snapshot(
-        'a mount at "/data" was supplied to load but the dump\'s feed had no such mount'
-    )
+        assert session.load_session(blob) is None
+        assert session.feed_run('kept + 1', mount=mount) == snapshot(2)
 
 
 def test_load_restores_idle_session(pool: Monty):
@@ -283,7 +338,7 @@ def test_load_restores_idle_session(pool: Monty):
         blob = session.dump()
 
     with pool.checkout() as session:
-        assert session.load(blob) is None
+        assert session.load_session(blob) is None
         assert session.feed_run('kept + 1') == snapshot(8)
 
 
@@ -295,14 +350,14 @@ def test_load_snapshot_on_idle_dump_raises(pool: Monty):
     with pool.checkout() as session:
         with pytest.raises(RuntimeError) as exc_info:
             session.load_snapshot(blob)
-        assert str(exc_info.value) == snapshot('this dump is an idle session — use load() to restore it')
+        assert str(exc_info.value) == snapshot('this dump is an idle session — use load_session() to restore it')
         # the failed load poisons the session — it is not retryable
         with pytest.raises(RuntimeError):
             session.feed_run('1 + 1')
 
 
 def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
-    # the converse mismatch: load() on a suspended snapshot raises
+    # the converse mismatch: load_session() on a suspended snapshot raises
     with pool.checkout() as session:
         snap = session.feed_start('f()')
         assert isinstance(snap, FunctionSnapshot)
@@ -310,7 +365,7 @@ def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
 
     with pool.checkout() as session:
         with pytest.raises(RuntimeError) as exc_info:
-            session.load(blob)
+            session.load_session(blob)
         assert str(exc_info.value) == snapshot('this dump is a suspended snapshot — use load_snapshot() to resume it')
         # the failed load poisons the session — it is not retryable
         with pytest.raises(RuntimeError):
@@ -318,7 +373,7 @@ def test_load_idle_dump_after_a_suspended_dump_path(pool: Monty):
 
 
 def test_load_after_feed_raises(pool: Monty):
-    # load / load_snapshot are only valid on a fresh, undriven session.
+    # load_session / load_snapshot are only valid on a fresh, undriven session.
     with pool.checkout() as session:
         blob = session.dump()
     with pool.checkout() as session:
@@ -326,7 +381,7 @@ def test_load_after_feed_raises(pool: Monty):
         with pytest.raises(RuntimeError) as exc_info:
             session.load_snapshot(blob)
         assert str(exc_info.value) == snapshot(
-            'load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot'
+            'load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot'
         )
 
 

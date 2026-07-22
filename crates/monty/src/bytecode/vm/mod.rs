@@ -18,11 +18,11 @@ mod scheduler;
 use std::mem;
 
 pub(crate) use call::CallResult;
+use monty_types::{InvalidInputError, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
 use crate::{
-    MontyObject,
     args::ArgValues,
     asyncio::{CallId, TaskId},
     builtins::Builtins,
@@ -30,18 +30,15 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
-    object::InvalidInputError,
-    os::OsFunctionCall,
+    object_bridge::MontyObjectExt,
     parse::CodeRange,
-    resource::ResourceTracker,
     types::{
-        Dict, LongInt, MontyIter, PyTrait,
+        Dict, LongInt, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
@@ -1430,26 +1427,22 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
                     let value = self.pop();
-                    // Create a MontyIter from the value and store on heap
-                    match MontyIter::new(value, self) {
-                        Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
-                            Ok(heap_id) => self.push(Value::Ref(heap_id)),
-                            Err(e) => catch_sync!(self, cached_frame, e.into()),
-                        },
+                    let iterator = value.py_iter(self);
+                    value.drop_with(self);
+                    match iterator {
+                        Ok(iterator) => self.push(iterator),
                         Err(e) => catch_sync!(self, cached_frame, e),
                     }
                 }
                 Opcode::ForIter => {
                     let offset = cached_frame.fetch_i16();
-                    // Peek at the iterator on TOS and extract heap_id
+                    // Iterator implementations return heap objects from `py_iter`.
                     let Value::Ref(heap_id) = *self.peek() else {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
-                    let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
-                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
-                    };
+                    let mut iter = self.heap.read(heap_id);
 
-                    match iter.advance(self) {
+                    match iter.py_next(self) {
                         Ok(Some(value)) => self.push(value),
                         Ok(None) => {
                             // Drop the HeapRead before dec_ref to release the reader count

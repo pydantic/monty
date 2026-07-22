@@ -16,14 +16,14 @@ use std::{
     sync::OnceLock,
 };
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 
 use crate::{
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
     heap::{Heap, HeapData},
-    resource::{ResourceError, ResourceTracker},
     value::Value,
 };
 

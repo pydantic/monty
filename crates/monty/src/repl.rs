@@ -7,27 +7,24 @@
 use std::mem;
 
 use ahash::AHashMap;
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ExcType, MontyException,
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
     bytecode::{VM, VMSnapshot},
     defer_drop,
-    exception_private::RunError,
+    exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapReader},
     heap_data::HeapData,
     intern::{InternerBuilder, Interns},
-    io::PrintWriter,
     name_map::NameMap,
-    object::MontyObject,
-    os::OsFunctionCall,
-    resource::ResourceTracker,
+    object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
-    run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
+    run_progress::{ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, NameLookupResult, convert_frame_exit},
     value::Value,
 };
 
@@ -643,13 +640,16 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
-    /// REPL mirror of [`crate::OsCall::take_function_call`] — takes the
-    /// call out for host dispatch, leaving an [`OsFunctionCall::Used`]
-    /// placeholder. Afterwards `self` is only valid for [`Self::resume`]
-    /// or [`Self::into_repl`].
-    #[must_use]
-    pub fn take_function_call(&mut self) -> OsFunctionCall {
-        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    /// REPL mirror of [`crate::OsCall::resume_with`] — dispatches the call
+    /// to `handler` (which receives the [`OsFunctionCall`] by value, so
+    /// write payloads move without cloning) and resumes with its result.
+    pub fn resume_with(
+        self,
+        print: PrintWriter<'_>,
+        handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+        let result = handler(self.function_call);
+        self.snapshot.run(result, print)
     }
 }
 
@@ -1170,11 +1170,11 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
     }
 }
 
-/// Returns `true` if the value is a callable type.
+/// Whether a session global should be surfaced as a "function" by
+/// [`function_names`](MontyRepl::function_names) / [`has_function`](MontyRepl::has_function).
 ///
-/// For heap-allocated values (`Ref`), checks the actual `HeapData` variant
-/// rather than accepting all refs — only closures, functions with defaults,
-/// and heap-allocated external functions are callable.
+/// Deliberately narrower than [`Value::is_callable`]: it omits `Class` and
+/// `BoundMethod`, which are not what a host means by "a function it can invoke".
 fn is_callable(value: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
     match value {
         Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,

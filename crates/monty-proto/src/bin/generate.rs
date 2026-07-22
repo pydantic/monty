@@ -8,7 +8,7 @@
 //! - `src/generated/monty.v1.rs` — the protocol messages, with the
 //!   `monty.v1.MontyObject` message mapped via `extern_path` onto the
 //!   hand-written [`WireObject`](../wire.rs) so values encode/decode straight
-//!   to `monty::MontyObject` with no mirror struct.
+//!   to `monty_types::MontyObject` with no mirror struct.
 //! - `tests/oracle/monty.v1.rs` — the same schema *without* the mapping: a
 //!   fully prost-generated mirror used only by `tests/differential.rs` to
 //!   prove the hand-written implementation is byte-compatible with prost.
@@ -44,7 +44,6 @@ fn main() {
         .out_dir(&out_dir)
         .extern_path(".monty.v1.MontyObject", "crate::WireObject")
         .extern_path(".monty.v1.FunctionCall", "crate::WireFunctionCall")
-        .extern_path(".monty.v1.OsCall", "crate::WireOsCall")
         .compile_fds(descriptors.clone())
         .expect("failed to generate Rust code from monty.proto");
     prepend_header(&out_dir.join("monty.v1.rs"), HEADER);

@@ -7,11 +7,12 @@
 //! call (e.g. `OpenFile.__exit__` issues an `OsCall` to close the file); the
 //! caller routes the result through `handle_call_result!`.
 
+use monty_types::ResourceTracker;
+
 use super::{CallResult, VM};
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     types::PyTrait,
     value::Value,
 };

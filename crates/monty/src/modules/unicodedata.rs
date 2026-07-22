@@ -24,6 +24,7 @@
 //! they return `Value` directly (wrapped in `CallResult::Value` by the dispatch
 //! in [`super`]).
 
+use monty_types::{ResourceError, ResourceTracker};
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
@@ -31,11 +32,10 @@ use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     string_builder::StringBuilder,
     types::{Module, str::allocate_string},
     value::Value,
@@ -210,7 +210,7 @@ fn uni_is_normalized(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
 /// character has no name. `style = unpack` gives the `PyArg_UnpackTuple` arity
 /// wording CPython uses here (`name expected at most 2 arguments, got 3`).
 #[derive(FromArgs)]
-#[from_args(name = "name", style = unpack)]
+#[from_args(name = "name", style = unpack, kwarg_error_name = "unicodedata.name")]
 struct NameArgs {
     #[from_args(pos_only)]
     chr: Value,
@@ -228,7 +228,7 @@ struct NameArgs {
 /// `ValueError`. `style = unpack` (with min == max here) reproduces CPython's
 /// `normalize expected 2 arguments, got N` arity error.
 #[derive(FromArgs)]
-#[from_args(name = "normalize", style = unpack, bad_arg)]
+#[from_args(name = "normalize", style = unpack, bad_arg, kwarg_error_name = "unicodedata.normalize")]
 struct NormalizeArgs {
     #[from_args(pos_only)]
     form: StrArg,
@@ -238,7 +238,7 @@ struct NormalizeArgs {
 
 /// Argument shape for `is_normalized(form, unistr, /)` — see [`NormalizeArgs`].
 #[derive(FromArgs)]
-#[from_args(name = "is_normalized", style = unpack, bad_arg)]
+#[from_args(name = "is_normalized", style = unpack, bad_arg, kwarg_error_name = "unicodedata.is_normalized")]
 struct IsNormalizedArgs {
     #[from_args(pos_only)]
     form: StrArg,

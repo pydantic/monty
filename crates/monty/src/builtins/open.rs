@@ -3,21 +3,21 @@
 //! `open()` itself allocates no heap object. It validates its arguments and
 //! yields an [`OsFunction::Open`] OS call; the host performs the open-time
 //! effect (truncate / create / existence-check) and returns a
-//! [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), which the
+//! [`MontyObject::FileHandle`](monty_types::MontyObject::FileHandle), which the
 //! generic resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
 //! wrapper. `read()`/`write()` then delegate to full-file OS calls, so all
 //! filesystem access remains behind `OsFunction`.
 
 use std::str;
 
+use monty_types::{MontyPath, OpenCallArgs, OsFunctionCall, ResourceTracker};
+
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
-    os::{MontyPath, OpenCallArgs, OsFunctionCall},
-    resource::ResourceTracker,
     types::{PyTrait, file::FileMode},
     value::Value,
 };

@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
+monty-types = { workspace = true }
 monty-pool = { workspace = true }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
 codspeed-criterion-compat = "4.2.1"

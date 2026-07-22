@@ -12,6 +12,7 @@ use std::{
     mem,
 };
 
+use monty_types::{MontyPath, ResourceTracker};
 use smallvec::SmallVec;
 
 use crate::{
@@ -19,12 +20,11 @@ use crate::{
     builtins::open::builtin_open,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    os::{MontyPath, build_path_os_call, is_path_os_method},
-    resource::ResourceTracker,
+    os_dispatch::{build_path_os_call, is_path_os_method},
     types::{LazyHeapSet, PyTrait, Type, allocate_tuple, str::allocate_string},
     value::{EitherStr, Value},
 };

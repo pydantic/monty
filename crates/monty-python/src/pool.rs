@@ -34,9 +34,9 @@ use std::{
     time::Duration,
 };
 
-use ::monty::{AssertMessageAnnotations, ExcType, ExtFunctionResult, MontyException, MontyObject};
-use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_types::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject};
 use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
@@ -175,8 +175,9 @@ pub struct PyMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
-    /// Set once the session has been fed or restored. `load_snapshot` is valid
-    /// only while this is unset (a fresh, undriven session).
+    /// Set once the session has been fed or restored. `load_session` /
+    /// `load_snapshot` are valid only while this is unset (a fresh, undriven
+    /// session).
     used: AtomicBool,
 }
 
@@ -254,14 +255,14 @@ impl PyMontySession {
     /// resolution. The caller answers with `snapshot.resume(...)` and may
     /// `snapshot.dump()` to checkpoint the worker mid-execution.
     ///
-    /// Unlike [`feed_run`](Self::feed_run), external calls and name lookups are
-    /// surfaced as snapshots rather than auto-dispatched — that is the point of
-    /// `feed_start`. An `external_lookup` (and `os=`) may still be supplied: it
-    /// is *not* consulted during this drive but is captured on the snapshot so
-    /// `snapshot.resume_auto()` can answer subsequent suspensions from it,
-    /// letting a caller iterate to completion without resolving each call by
-    /// hand. An `os=` handler additionally auto-dispatches uncovered OS calls
-    /// until the next non-OS event, exactly as before.
+    /// Unlike [`feed_run`](Self::feed_run), *every* suspension is surfaced as a
+    /// snapshot rather than answered — external calls, name lookups and OS
+    /// calls alike, so even a mount-covered file read comes back as a snapshot.
+    /// That is the point of `feed_start`. An `external_lookup` / `os=` may
+    /// still be supplied: neither is consulted during this drive, but both are
+    /// captured on the snapshot so `snapshot.resume_auto()` can answer
+    /// subsequent suspensions from them (and from this feed's mounts), letting
+    /// a caller iterate to completion without resolving each call by hand.
     #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
@@ -300,7 +301,7 @@ impl PyMontySession {
     /// limits / type-check state (the `checkout()` config for those is not
     /// applied); the dataclass registry from `checkout()` is reused. Raises if
     /// the dump is actually a suspended snapshot.
-    fn load(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
+    fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
         if self.restore_turn(py, state, Vec::new())?.0.is_some() {
             py.detach(|| discard_checkout(&self.checkout));
@@ -313,22 +314,20 @@ impl PyMontySession {
 
     /// Restores a dumped **suspended** snapshot — bytes from `feed_start` +
     /// `snapshot.dump()` — and returns the re-announced snapshot to resume. Use
-    /// [`load`](Self::load) for a dump taken between feeds.
+    /// [`load_session`](Self::load_session) for a dump taken between feeds.
     ///
     /// Valid only on a fresh session, before any feed or load; raises
     /// `RuntimeError` otherwise. `mount` re-establishes the suspended feed's
-    /// mounts (whose host paths are not in the dump), validated against the
-    /// dump's recorded requirements. The dump restores its own config; the
-    /// dataclass registry from `checkout()` is reused. Raises if the dump is
-    /// actually an idle session.
+    /// mounts, which are never part of the dump — pass the same mounts the
+    /// original feed used, or its filesystem calls degrade into unhandled OS
+    /// calls. The dump restores its own config; the dataclass registry from
+    /// `checkout()` is reused. Raises if the dump is actually an idle session.
     ///
     /// `external_lookup` / `os` are captured on the restored snapshot so it
-    /// supports `resume_auto()`, just like `feed_start`. Two caveats apply to a
+    /// supports `resume_auto()`, just like `feed_start`. One caveat applies to a
     /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
     /// gone (they lived in the previous process), so async `resume_auto()` on it
-    /// raises — resolve it manually with `resume({call_id: ...})`; and a
-    /// restored OS-call snapshot carries no args/kwargs, so prefer manual
-    /// `resume` / `resume_not_handled` there rather than `resume_auto`.
+    /// raises — resolve it manually with `resume({call_id: ...})`.
     #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
     fn load_snapshot(
         &self,
@@ -350,7 +349,7 @@ impl PyMontySession {
         let Some(event) = event else {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
-                "this dump is an idle session — use load() to restore it",
+                "this dump is an idle session — use load_session() to restore it",
             ));
         };
         let ctx = DriveContext::new(
@@ -406,7 +405,8 @@ impl PyMontySession {
     /// restore off the GIL, returning the re-announced suspension (`Some`) or
     /// `None` for an idle dump, paired with the dump's adopted script name (for
     /// restored snapshots' `script_name`). The restore turn runs no sandbox
-    /// code, so it needs no print sink. Shared by [`load`](Self::load) and
+    /// code, so it needs no print sink. Shared by
+    /// [`load_session`](Self::load_session) and
     /// [`load_snapshot`](Self::load_snapshot).
     fn restore_turn(
         &self,
@@ -666,8 +666,9 @@ pub struct PyAsyncMontySession {
     repl_config: ReplConfig,
     dc_registry: DcRegistry,
     checkout: SharedCheckout,
-    /// Set once the session has been fed or restored; `load_snapshot` is valid
-    /// only while unset. See [`PyMontySession::load_snapshot`].
+    /// Set once the session has been fed or restored; `load_session` /
+    /// `load_snapshot` are valid only while unset. See
+    /// [`PyMontySession::load_snapshot`].
     used: AtomicBool,
 }
 
@@ -783,10 +784,10 @@ impl PyAsyncMontySession {
         feed_start_async(py, args, ext, self.repl_config.script_name.clone())
     }
 
-    /// Async counterpart of [`PyMontySession::load`]: the coroutine restores a
-    /// dumped idle session, resolving to `None`. Valid only on a fresh session;
-    /// raises if the dump is actually a suspended snapshot.
-    fn load<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
+    /// Async counterpart of [`PyMontySession::load_session`]: the coroutine
+    /// restores a dumped idle session, resolving to `None`. Valid only on a
+    /// fresh session; raises if the dump is actually a suspended snapshot.
+    fn load_session<'py>(&self, py: Python<'py>, state: Vec<u8>) -> PyResult<Bound<'py, PyAny>> {
         // claim the session in the synchronous prologue (which completes before
         // the future), so a concurrent call is rejected at call time and the
         // off-thread restore can't race onto a fresh session
@@ -847,7 +848,7 @@ impl PyAsyncMontySession {
                     .await
                     .map_err(join_error_to_py)?;
                 return Err(PyRuntimeError::new_err(
-                    "this dump is an idle session — use load() to restore it",
+                    "this dump is an idle session — use load_session() to restore it",
                 ));
             };
             // the dump's own script name, falling back to the session config
@@ -948,11 +949,12 @@ fn check_os_callable(py: Python<'_>, os: Option<&Py<PyAny>>) -> PyResult<()> {
     Ok(())
 }
 
-/// The error raised when `load` / `load_snapshot` is called on a session that
-/// has already been fed or restored (it would otherwise silently discard work).
+/// The error raised when `load_session` / `load_snapshot` is called on a
+/// session that has already been fed or restored (it would otherwise silently
+/// discard work).
 fn session_used_err() -> PyErr {
     PyRuntimeError::new_err(
-        "load / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load / load_snapshot",
+        "load_session / load_snapshot is only valid on a fresh session, before any feed_run / feed_start / load_session / load_snapshot",
     )
 }
 
@@ -960,7 +962,7 @@ fn session_used_err() -> PyErr {
 /// returning the re-announced suspension (`Some`) or `None` for an idle dump,
 /// paired with the dump's adopted script name. The restore turn runs no sandbox
 /// code, so it needs no print sink. Shared by the async
-/// [`PyAsyncMontySession::load`] / `load_snapshot`.
+/// [`PyAsyncMontySession::load_session`] / `load_snapshot`.
 async fn restore_turn_async(
     checkout: SharedCheckout,
     state: Vec<u8>,
@@ -1161,7 +1163,32 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         // answer discards the checkout (see `sync_turn_answer`).
         let resume_with = match event {
             TurnEvent::Complete(value) => return monty_to_py(py, &value, &dc_registry),
-            event => match sync_turn_answer(py, event, &lookup, os.as_ref(), &dc_registry) {
+            // This feed's mounts get first refusal on every OS call; only what
+            // they don't cover reaches the `os=` callback.
+            TurnEvent::OsCall {
+                function_name,
+                args,
+                kwargs,
+                ..
+            } => {
+                let (result, print_err) =
+                    py.detach(|| run_turn_blocking(&checkout, &print_target, Checkout::resume_from_mounts));
+                match finalize_turn(py, result, print_err)? {
+                    Some(next) => {
+                        event = next;
+                        continue;
+                    }
+                    None => TurnAnswer::Call(dispatch_os_parts(
+                        py,
+                        &function_name,
+                        &args,
+                        &kwargs,
+                        os.as_ref(),
+                        &dc_registry,
+                    )),
+                }
+            }
+            event => match sync_turn_answer(py, event, &lookup, &dc_registry) {
                 Ok(answer) => answer,
                 Err(err) => {
                     py.detach(|| discard_checkout(&checkout));
@@ -1188,7 +1215,6 @@ fn sync_turn_answer(
     py: Python<'_>,
     event: TurnEvent,
     lookup: &ExternalLookup<'_, '_>,
-    os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> PyResult<TurnAnswer> {
     match event {
@@ -1206,27 +1232,11 @@ fn sync_turn_answer(
             };
             Ok(TurnAnswer::Call(ext_to_resume(result)?))
         }
-        TurnEvent::OsCall {
-            function_name,
-            args,
-            kwargs,
-            not_handled_error,
-            ..
-        } => {
-            let result = dispatch_os_parts(
-                py,
-                &function_name,
-                &args,
-                &kwargs,
-                not_handled_error.as_ref(),
-                os,
-                dc_registry,
-            );
-            Ok(TurnAnswer::Call(ext_to_resume(result)?))
-        }
         TurnEvent::NameLookup { name } => Ok(TurnAnswer::Name(lookup.resolve_name(&name)?)),
         TurnEvent::ResolveFutures { .. } => Err(PyRuntimeError::new_err("async external functions require AsyncMonty")),
-        TurnEvent::Complete(_) => unreachable!("Complete is handled by the drive loop"),
+        TurnEvent::Complete(_) | TurnEvent::OsCall { .. } => {
+            unreachable!("Complete and OsCall are handled by the drive loop")
+        }
     }
 }
 
@@ -1277,13 +1287,23 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
                 event = run_turn_async(&checkout, &print_target, move |c, p| c.resume_futures(results, p)).await?;
                 continue;
             }
-            event => match async_turn_answer(
-                event,
-                external_lookup.as_ref(),
-                os.as_ref(),
-                &dc_registry,
-                &mut join_set,
-            ) {
+            // Mounts get first refusal, as in `drive_sync`.
+            TurnEvent::OsCall {
+                function_name,
+                args,
+                kwargs,
+                ..
+            } => {
+                if let Some(next) = run_turn_async(&checkout, &print_target, Checkout::resume_from_mounts).await? {
+                    event = next;
+                    continue;
+                }
+                let value = Python::attach(|py| {
+                    dispatch_os_parts(py, &function_name, &args, &kwargs, os.as_ref(), &dc_registry)
+                });
+                TurnAnswer::Call(value)
+            }
+            event => match async_turn_answer(event, external_lookup.as_ref(), &dc_registry, &mut join_set) {
                 Ok(answer) => answer,
                 Err(err) => {
                     discard_checkout_async(&checkout).await;
@@ -1305,7 +1325,6 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
 fn async_turn_answer(
     event: TurnEvent,
     external_lookup: Option<&Py<PyDict>>,
-    os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
     join_set: &mut JoinSet<(u32, ExtFunctionResult)>,
 ) -> PyResult<TurnAnswer> {
@@ -1330,34 +1349,14 @@ fn async_turn_answer(
                 Ok(TurnAnswer::Call(ResumeValue::Future))
             }
         },
-        TurnEvent::OsCall {
-            function_name,
-            args,
-            kwargs,
-            not_handled_error,
-            ..
-        } => {
-            let result = Python::attach(|py| {
-                dispatch_os_parts(
-                    py,
-                    &function_name,
-                    &args,
-                    &kwargs,
-                    not_handled_error.as_ref(),
-                    os,
-                    dc_registry,
-                )
-            });
-            Ok(TurnAnswer::Call(ext_to_resume(result)?))
-        }
         TurnEvent::NameLookup { name } => {
             let value = Python::attach(|py| {
                 ExternalLookup::new(py, external_lookup.map(|d| d.bind(py)), dc_registry).resolve_name(&name)
             })?;
             Ok(TurnAnswer::Name(value))
         }
-        TurnEvent::Complete(_) | TurnEvent::ResolveFutures { .. } => {
-            unreachable!("Complete and ResolveFutures are handled by the drive loop")
+        TurnEvent::Complete(_) | TurnEvent::ResolveFutures { .. } | TurnEvent::OsCall { .. } => {
+            unreachable!("Complete, ResolveFutures and OsCall are handled by the drive loop")
         }
     }
 }
@@ -1377,13 +1376,41 @@ enum TurnAnswer {
     Name(Option<MontyObject>),
 }
 
+/// What a turn helper may return, so one implementation serves both an
+/// ordinary resume ([`TurnEvent`]) and a mount attempt (`Option<TurnEvent>`,
+/// `None` when no mount covered the call).
+///
+/// Only [`run_turn_blocking`]'s print-failure cleanup needs to tell these
+/// apart: it must know whether the worker is left suspended.
+pub(crate) trait TurnOutcome {
+    /// Whether the worker is left waiting for a resume after this outcome.
+    fn left_suspended(&self) -> bool;
+}
+
+impl TurnOutcome for TurnEvent {
+    fn left_suspended(&self) -> bool {
+        matches!(
+            self,
+            Self::FunctionCall { .. } | Self::OsCall { .. } | Self::NameLookup { .. } | Self::ResolveFutures { .. }
+        )
+    }
+}
+
+impl TurnOutcome for Option<TurnEvent> {
+    /// `None` means no mount covered the call and no turn ran, so the OS-call
+    /// suspension the caller already held is still pending.
+    fn left_suspended(&self) -> bool {
+        self.as_ref().is_none_or(TurnEvent::left_suspended)
+    }
+}
+
 /// Runs one protocol turn against the (locked) checkout, streaming prints to
 /// `print_target` and capturing the first print-callback failure.
-pub(crate) fn run_turn_blocking(
+pub(crate) fn run_turn_blocking<T: TurnOutcome>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
-    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<TurnEvent, PoolError>,
-) -> (Result<TurnEvent, PoolError>, Option<MontyException>) {
+    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<T, PoolError>,
+) -> (Result<T, PoolError>, Option<MontyException>) {
     let mut guard = lock(checkout);
     let Some(checkout) = guard.as_mut() else {
         return (Err(PoolError::Finished), None);
@@ -1403,26 +1430,18 @@ pub(crate) fn run_turn_blocking(
     // suspended awaiting a resume the aborted feed will never send, drop the
     // checkout so the session ends cleanly rather than wedging the next feed
     // with a dangling suspension.
-    if print_err.is_some()
-        && matches!(
-            result,
-            Ok(TurnEvent::FunctionCall { .. }
-                | TurnEvent::OsCall { .. }
-                | TurnEvent::NameLookup { .. }
-                | TurnEvent::ResolveFutures { .. })
-        )
-    {
+    if print_err.is_some() && result.as_ref().is_ok_and(TurnOutcome::left_suspended) {
         *guard = None;
     }
     (result, print_err)
 }
 
 /// `spawn_blocking` wrapper around [`run_turn_blocking`] for the async loop.
-pub(crate) async fn run_turn_async(
+pub(crate) async fn run_turn_async<T: TurnOutcome + Send + 'static>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
-    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send + 'static,
-) -> PyResult<TurnEvent> {
+    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<T, PoolError> + Send + 'static,
+) -> PyResult<T> {
     let checkout = Arc::clone(checkout);
     let print_target = print_target.clone_handle_detached();
     let (result, print_err) = spawn_blocking(move || run_turn_blocking(&checkout, &print_target, turn))
@@ -1433,15 +1452,16 @@ pub(crate) async fn run_turn_async(
 
 /// Converts a turn outcome into the next event, surfacing print-callback
 /// failures (which take precedence — they are host-side errors).
-pub(crate) fn finalize_turn(
+pub(crate) fn finalize_turn<T>(
     py: Python<'_>,
-    result: Result<TurnEvent, PoolError>,
+    result: Result<T, PoolError>,
     print_err: Option<MontyException>,
-) -> PyResult<TurnEvent> {
+) -> PyResult<T> {
     if let Some(err) = print_err {
-        return Err(MontyError::new_err(py, err));
+        Err(MontyError::new_err(py, err))
+    } else {
+        result.map_err(|e| pool_err_to_py(py, e))
     }
-    result.map_err(|e| pool_err_to_py(py, e))
 }
 
 // =============================================================================
@@ -1461,29 +1481,20 @@ pub(crate) fn ext_to_resume(result: ExtFunctionResult) -> PyResult<ResumeValue> 
 }
 
 /// Calls the Python `os=` fallback for a bubbled OS call. With no callback —
-/// or when it returns `NOT_HANDLED` — answers with the child-provided
-/// `not_handled_error`, preserving monty's per-call no-handler semantics.
+/// or when it returns `NOT_HANDLED` — answers [`ResumeValue::NotHandled`], so
+/// the sandbox raises monty's per-call no-handler default itself.
 pub(crate) fn dispatch_os_parts(
     py: Python<'_>,
     function_name: &str,
     args: &[MontyObject],
     kwargs: &[(MontyObject, MontyObject)],
-    not_handled_error: Option<&MontyException>,
     os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
-) -> ExtFunctionResult {
-    let on_no_handler = || {
-        not_handled_error.cloned().unwrap_or_else(|| {
-            MontyException::new(
-                ExcType::RuntimeError,
-                Some(format!("'{function_name}' is not supported in this environment")),
-            )
-        })
-    };
+) -> ResumeValue {
     let Some(os_callback) = os else {
-        return on_no_handler().into();
+        return ResumeValue::NotHandled;
     };
-    let call = || -> PyResult<ExtFunctionResult> {
+    let call = || -> PyResult<ResumeValue> {
         let py_args: Vec<Py<PyAny>> = args
             .iter()
             .map(|arg| monty_to_py(py, arg, dc_registry))
@@ -1495,54 +1506,38 @@ pub(crate) fn dispatch_os_parts(
         }
         let result = os_callback.bind(py).call1((function_name, py_args, py_kwargs))?;
         if result.is(get_not_handled(py)?.bind(py)) {
-            return Ok(on_no_handler().into());
+            return Ok(ResumeValue::NotHandled);
         }
         Ok(match py_to_monty_value(&result, dc_registry) {
-            Ok(obj) => ExtFunctionResult::Return(obj),
-            Err(exc) => ExtFunctionResult::Error(exc),
+            Ok(obj) => ResumeValue::Return(obj),
+            Err(exc) => ResumeValue::Error(exc),
         })
     };
-    call().unwrap_or_else(|err| ExtFunctionResult::Error(exc_py_to_monty(py, &err)))
+    call().unwrap_or_else(|err| ResumeValue::Error(exc_py_to_monty(py, &err)))
 }
 
-/// Extracts `MountDir | list[MountDir] | None` into child-local mount specs.
-/// Only the mount *configuration* crosses the process boundary — overlay
-/// writes live in the worker and are discarded when the feed ends.
+/// Extracts `MountDir | list[MountDir] | None` into mount specs for the pool,
+/// which services mount I/O on the parent side — nothing crosses the process
+/// boundary, and overlay writes are discarded when the feed ends.
 fn extract_mount_specs(mount: Option<&Bound<'_, PyAny>>) -> PyResult<Vec<MountSpec>> {
     let Some(mount) = mount else {
         return Ok(vec![]);
     };
     if let Ok(single) = mount.extract::<PyRef<'_, PyMountDir>>() {
-        return Ok(vec![mount_spec(&single)?]);
+        return Ok(vec![single.spec()]);
     }
     if let Ok(list) = mount.cast::<PyList>() {
         return list
             .iter()
             .map(|item| {
                 let dir = item.extract::<PyRef<'_, PyMountDir>>()?;
-                mount_spec(&dir)
+                Ok(dir.spec())
             })
             .collect();
     }
     Err(PyTypeError::new_err(
         "mount must be a MountDir, a list of MountDir, or None",
     ))
-}
-
-fn mount_spec(dir: &PyRef<'_, PyMountDir>) -> PyResult<MountSpec> {
-    let (virtual_path, host_path, mode, write_bytes_limit) = dir.spec_parts()?;
-    let mode = match mode {
-        "read-only" => MountSpecMode::ReadOnly,
-        "read-write" => MountSpecMode::ReadWrite,
-        "overlay" => MountSpecMode::Overlay,
-        other => return Err(PyValueError::new_err(format!("unknown mount mode {other:?}"))),
-    };
-    Ok(MountSpec {
-        virtual_path,
-        host_path,
-        mode,
-        write_bytes_limit,
-    })
 }
 
 /// Maps a pool failure onto the Python exception hierarchy.

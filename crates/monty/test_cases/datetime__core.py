@@ -773,6 +773,20 @@ try:
 except TypeError as e:
     assert str(e) == 'now() takes at most 1 argument (2 given)', f'datetime.now too many args: {e}'
 
+# === datetime.now() error: arity checked before tz type ===
+
+try:
+    datetime.datetime.now(123, 456)
+    assert False, 'datetime.now(123, 456) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)'
+
+try:
+    datetime.datetime.now(datetime.timezone.utc, badkw=1)
+    assert False, 'datetime.now(utc, badkw=1) should raise TypeError'
+except TypeError as e:
+    assert str(e) == 'now() takes at most 1 argument (2 given)'
+
 # === datetime.now() error: bad keyword argument (lines 370-374) ===
 
 try:

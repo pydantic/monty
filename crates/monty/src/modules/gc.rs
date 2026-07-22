@@ -13,6 +13,8 @@
 //! - `gc.disable()` / `gc.enable()` — toggle automatic collection.
 //!   Explicit `gc.collect()` calls still run while disabled.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -20,7 +22,6 @@ use crate::{
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::Value,
 };

@@ -8,16 +8,16 @@
 //! via the `OsFunction` callback mechanism - Monty yields control to the host
 //! which executes the operation and returns the result.
 
+use monty_types::{GetenvArgs, MontyObject, OsFunctionCall, ResourceError, ResourceTracker};
+
 use crate::{
-    MontyObject,
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os::{GetenvArgs, OsFunctionCall},
-    resource::{ResourceError, ResourceTracker},
+    object_bridge::MontyObjectExt,
     types::{Module, Property, property::ZeroArgOsProperty},
     value::Value,
 };

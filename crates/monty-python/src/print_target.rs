@@ -16,8 +16,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use monty::{MontyException, PrintStream};
 use monty_proto::python::exc_py_to_monty;
+use monty_types::{MontyException, PrintStream};
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,

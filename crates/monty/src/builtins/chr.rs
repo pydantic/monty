@@ -1,11 +1,12 @@
 //! Implementation of the chr() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    resource::ResourceTracker,
     types::str::allocate_char,
     value::Value,
 };

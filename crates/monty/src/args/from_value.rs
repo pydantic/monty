@@ -17,11 +17,12 @@
 
 use std::borrow::Cow;
 
+use monty_types::ResourceTracker;
+
 use crate::{
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };

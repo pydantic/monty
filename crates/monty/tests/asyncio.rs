@@ -3,9 +3,10 @@
 //! These tests verify the behavior of the async execution model, specifically around
 //! resolving external futures incrementally via `ResolveFutures::resume()`.
 
-use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRun, NameLookupResult,
-    NoLimitTracker, PrintWriter, ResolveFutures, RunProgress,
+use monty::{MontyRun, ResolveFutures, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, NoLimitTracker,
+    PrintWriter, ResourceTracker,
 };
 
 /// Helper to create a MontyRun for async external function tests.
@@ -40,9 +41,7 @@ await main()
 }
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
-fn resolve_name_lookups<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> Result<RunProgress<T>, monty::MontyException> {
+fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
@@ -57,7 +56,7 @@ fn resolve_name_lookups<T: monty::ResourceTracker>(
 ///
 /// Returns (pending_call_ids, state, collected_call_ids) where collected_call_ids
 /// are the call_ids from all the FunctionCalls we processed with resume_pending().
-fn drive_to_resolve_futures<T: monty::ResourceTracker>(mut progress: RunProgress<T>) -> (ResolveFutures<T>, Vec<u32>) {
+fn drive_to_resolve_futures<T: ResourceTracker>(mut progress: RunProgress<T>) -> (ResolveFutures<T>, Vec<u32>) {
     let mut collected_call_ids = Vec::new();
 
     loop {
@@ -679,9 +678,7 @@ fn gather_three_all_at_once_mixed() {
 /// Helper to drive execution, collecting function calls and resolving them async,
 /// until we reach ResolveFutures. Returns the snapshot and a vec of
 /// (call_id, function_name) pairs for all external calls made.
-fn drive_collecting_calls<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> (ResolveFutures<T>, Vec<(u32, String)>) {
+fn drive_collecting_calls<T: ResourceTracker>(mut progress: RunProgress<T>) -> (ResolveFutures<T>, Vec<(u32, String)>) {
     let mut collected = Vec::new();
 
     loop {

@@ -10,16 +10,16 @@ use std::{
     mem,
 };
 
+use monty_types::ResourceTracker;
 use num_integer::div_ceil;
 
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
@@ -188,6 +188,10 @@ impl Default for Range {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Range
     }

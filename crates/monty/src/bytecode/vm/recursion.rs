@@ -18,11 +18,10 @@
 
 use std::ops::{Deref, DerefMut};
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use super::VM;
-use crate::{
-    heap::{ContainsHeap, DropWithContext},
-    resource::{ResourceError, ResourceTracker},
-};
+use crate::heap::{ContainsHeap, DropWithContext};
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
     /// Enters a lexically-scoped recursive operation, returning a guard that

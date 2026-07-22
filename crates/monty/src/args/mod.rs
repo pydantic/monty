@@ -1,37 +1,26 @@
 mod bind_native;
 mod bind_python;
 mod from_value;
-mod to_monty_object;
 
 use std::{mem, slice, vec::IntoIter};
 
 pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bind};
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
-pub(crate) use monty_macros::{FromArgs, ToArgs};
-pub(crate) use to_monty_object::ToMontyObject;
+pub(crate) use monty_macros::FromArgs;
+use monty_types::{MontyObject, ResourceTracker};
 
 use crate::{
-    MontyObject, ResourceTracker,
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithContext, Heap},
     intern::StringId,
+    object_bridge::MontyObjectExt,
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
 };
-
-/// Projects a typed args struct into the `(positional, keyword)` `MontyObject`
-/// pair host callbacks expect. Consumes `self` to avoid cloning owned fields.
-///
-/// Inverse of [`FromArgs`]: `FromArgs` is internal `ArgValues` → struct,
-/// `ToArgs` is struct → host-facing `(args, kwargs)`. Driven by
-/// [`crate::os::OsFunctionCall::to_args`] for the monty-python / monty-js bindings.
-pub trait ToArgs {
-    fn to_args(self) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>);
-}
 
 /// Type for method call arguments.
 ///

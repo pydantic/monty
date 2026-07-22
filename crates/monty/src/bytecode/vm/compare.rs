@@ -1,11 +1,12 @@
 //! Comparison operation helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
-    resource::ResourceTracker,
     types::{CmpOrder, PyTrait},
     value::Value,
 };

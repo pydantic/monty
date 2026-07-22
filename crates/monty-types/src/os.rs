@@ -1,37 +1,23 @@
 //! OS-level operations that require host system access.
 //!
 //! Defines [`OsFunctionCall`] — a tagged dispatch value whose variants carry
-//! the typed args each OS-call accepts. Type methods and builtins return one
-//! as [`CallResult::OsCall`](crate::bytecode::CallResult::OsCall); the VM
-//! yields [`FrameExit::OsCall`](crate::bytecode::FrameExit::OsCall) so the
-//! host decides whether to permit it. The interpreter itself never performs
-//! I/O.
+//! the typed args each OS-call accepts. Sandboxed code suspends with one of
+//! these; the host (a `MountTable`, an `os` callback) decides whether to
+//! permit it. The interpreter itself never performs I/O.
 //!
 //! The fs/ layer matches on the enum directly (no `MontyObject` introspection);
 //! host bindings get a generic `(positional, keyword)` view via
 //! [`OsFunctionCall::to_args`].
-//!
-//! # Adding a new OS call
-//!
-//! Add a variant carrying a struct (reuse [`PathOnlyArgs`] etc. if the shape
-//! matches), derive `ToArgs` on the struct, update [`OsFunctionCall::name`]
-//! and the other inherent methods, then wire the new variant into the fs/
-//! dispatcher and any host backends.
 
 use std::{fmt, ops::Deref};
 
 use crate::{
-    ExcType, MontyException, MontyObject,
-    args::{ArgValues, FromArgs, LaxBool, ToArgs, ToMontyObject},
-    bytecode::VM,
-    exception_private::RunResult,
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
-    intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
-    types::{file::FileMode, str::StringRepr},
-    value::Value,
+    args::{ToArgs, ToMontyObject},
+    exceptions::{ExcType, MontyException},
+    file_mode::FileMode,
+    format::StringRepr,
+    object::{MontyObject, MontyTimeZone},
 };
-
 // =============================================================================
 // OsFunctionCall — the central public dispatch value.
 // =============================================================================
@@ -44,38 +30,52 @@ use crate::{
 /// via [`OsFunctionCall::to_args`].
 ///
 /// See the module docs for how to add a new variant.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, strum::IntoStaticStr)]
 pub enum OsFunctionCall {
     // ---- FS read / check (single path) ------------------------------------
     /// Check if a path exists.
+    #[strum(serialize = "Path.exists")]
     Exists(MontyPath),
     /// Check if path is a regular file.
+    #[strum(serialize = "Path.is_file")]
     IsFile(MontyPath),
     /// Check if path is a directory.
+    #[strum(serialize = "Path.is_dir")]
     IsDir(MontyPath),
     /// Check if path is a symbolic link.
+    #[strum(serialize = "Path.is_symlink")]
     IsSymlink(MontyPath),
     /// Read file contents as text.
+    #[strum(serialize = "Path.read_text")]
     ReadText(MontyPath),
     /// Read file contents as bytes.
+    #[strum(serialize = "Path.read_bytes")]
     ReadBytes(MontyPath),
     /// `stat()` — return a stat result tuple.
+    #[strum(serialize = "Path.stat")]
     Stat(MontyPath),
     /// List directory contents.
+    #[strum(serialize = "Path.iterdir")]
     Iterdir(MontyPath),
     /// Resolve symlinks and return absolute path.
+    #[strum(serialize = "Path.resolve")]
     Resolve(MontyPath),
     /// Absolute path without symlink resolution.
+    #[strum(serialize = "Path.absolute")]
     Absolute(MontyPath),
 
     // ---- FS write (path + data) -------------------------------------------
     /// Write text to file (truncating).
+    #[strum(serialize = "Path.write_text")]
     WriteText(PathStringDataArgs),
     /// Append text to file.
+    #[strum(serialize = "Path.append_text")]
     AppendText(PathStringDataArgs),
     /// Write bytes to file (truncating).
+    #[strum(serialize = "Path.write_bytes")]
     WriteBytes(PathBytesDataArgs),
     /// Append bytes to file.
+    #[strum(serialize = "Path.append_bytes")]
     AppendBytes(PathBytesDataArgs),
 
     // ---- FS mutate (custom shapes) ----------------------------------------
@@ -83,67 +83,44 @@ pub enum OsFunctionCall {
     /// `w`/`w+`, create-if-missing for `a`/`a+`, existence check for `r`/`r+`)
     /// and returns a [`MontyObject::FileHandle`] — it never holds a live OS
     /// handle across calls.
+    #[strum(serialize = "open")]
     Open(OpenCallArgs),
     /// Create directory (`parents`/`exist_ok` kwargs).
+    #[strum(serialize = "Path.mkdir")]
     Mkdir(MkdirCallArgs),
     /// Remove file.
+    #[strum(serialize = "Path.unlink")]
     Unlink(MontyPath),
     /// Remove directory.
+    #[strum(serialize = "Path.rmdir")]
     Rmdir(MontyPath),
     /// Rename / move (src → dst).
+    #[strum(serialize = "Path.rename")]
     Rename(RenameCallArgs),
 
     // ---- Non-FS -----------------------------------------------------------
     /// Get an environment variable value.
+    #[strum(serialize = "os.getenv")]
     Getenv(GetenvArgs),
     /// Get the entire environment as a dictionary.
+    #[strum(serialize = "os.environ")]
     GetEnviron,
     /// Get today's date from the host system (for `date.today()`).
+    #[strum(serialize = "date.today")]
     DateToday,
     /// Get the current date/time from the host system (for `datetime.now(tz=...)`).
-    /// Carries the timezone argument (`MontyObject::None` for naive).
-    DateTimeNow(MontyObject),
-
-    /// Placeholder left behind by [`crate::OsCall::take_function_call`] and
-    /// [`crate::ReplOsCall::take_function_call`] after the real call has been
-    /// moved out for host dispatch. Never produced by the VM and never
-    /// dispatched — it just keeps the field droppable.
-    Used,
+    /// Carries the timezone argument, `None` for a naive result.
+    #[strum(serialize = "datetime.now")]
+    DateTimeNow(Option<MontyTimeZone>),
 }
 
 impl OsFunctionCall {
     /// Stable string name for this OS function — surfaces in
-    /// [`Self::on_no_handler`] errors and serialised snapshots. Kept
-    /// byte-identical to the legacy `OsFunction` strum strings for snapshot
-    /// compatibility.
+    /// [`Self::on_no_handler`] errors, host `os` callbacks, and serialised
+    /// snapshots. The strum `serialize` string on each variant.
     #[must_use]
     pub fn name(&self) -> &'static str {
-        match self {
-            Self::Exists(_) => "Path.exists",
-            Self::IsFile(_) => "Path.is_file",
-            Self::IsDir(_) => "Path.is_dir",
-            Self::IsSymlink(_) => "Path.is_symlink",
-            Self::Open(_) => "Open",
-            Self::ReadText(_) => "Path.read_text",
-            Self::ReadBytes(_) => "Path.read_bytes",
-            Self::WriteText(_) => "Path.write_text",
-            Self::WriteBytes(_) => "Path.write_bytes",
-            Self::AppendText(_) => "Path.append_text",
-            Self::AppendBytes(_) => "Path.append_bytes",
-            Self::Mkdir(_) => "Path.mkdir",
-            Self::Unlink(_) => "Path.unlink",
-            Self::Rmdir(_) => "Path.rmdir",
-            Self::Iterdir(_) => "Path.iterdir",
-            Self::Stat(_) => "Path.stat",
-            Self::Rename(_) => "Path.rename",
-            Self::Resolve(_) => "Path.resolve",
-            Self::Absolute(_) => "Path.absolute",
-            Self::Getenv(_) => "os.getenv",
-            Self::GetEnviron => "os.environ",
-            Self::DateToday => "date.today",
-            Self::DateTimeNow(_) => "datetime.now",
-            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
-        }
+        self.into()
     }
 
     /// Projects this call's args into `(positional, keyword)` `MontyObject`
@@ -173,19 +150,40 @@ impl OsFunctionCall {
             Self::Getenv(a) => a.to_args(),
             // Unit & single-value non-FS variants.
             Self::GetEnviron | Self::DateToday => (vec![], vec![]),
-            Self::DateTimeNow(tz) => (vec![tz], vec![]),
-            Self::Used => unreachable!("OsFunctionCall::Used dispatched after take_function_call"),
+            Self::DateTimeNow(tz) => (vec![tz.map_or(MontyObject::None, MontyObject::TimeZone)], vec![]),
         }
     }
 
-    /// Whether this call can be handled by a [`MountTable`](crate::fs::MountTable).
+    /// Whether this call can be handled by a `MountTable` (in the `monty-fs` crate).
     /// Non-FS variants (`Getenv`, `GetEnviron`, `DateToday`, `DateTimeNow`)
     /// must fall through to the host callback.
+    ///
+    /// Deliberately an allowlist: any future non-FS variant must return
+    /// `false`, because `monty-fs` panics if a call without a
+    /// [`Self::primary_path`] reaches its filesystem dispatch.
     #[must_use]
     pub fn is_filesystem(&self) -> bool {
-        !matches!(
+        matches!(
             self,
-            Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_)
+            Self::Exists(_)
+                | Self::IsFile(_)
+                | Self::IsDir(_)
+                | Self::IsSymlink(_)
+                | Self::ReadText(_)
+                | Self::ReadBytes(_)
+                | Self::WriteText(_)
+                | Self::WriteBytes(_)
+                | Self::AppendText(_)
+                | Self::AppendBytes(_)
+                | Self::Stat(_)
+                | Self::Iterdir(_)
+                | Self::Resolve(_)
+                | Self::Absolute(_)
+                | Self::Open(_)
+                | Self::Mkdir(_)
+                | Self::Unlink(_)
+                | Self::Rmdir(_)
+                | Self::Rename(_)
         )
     }
 
@@ -242,7 +240,17 @@ impl OsFunctionCall {
             Self::Mkdir(a) => Some(a.path.as_str()),
             Self::Rename(a) => Some(a.src.as_str()),
             Self::Getenv(_) | Self::GetEnviron | Self::DateToday | Self::DateTimeNow(_) => None,
-            Self::Used => unreachable!("OsFunctionCall::Used inspected after take_function_call"),
+        }
+    }
+
+    /// The rename destination path, or `None` for every other variant — the
+    /// second routing key a mount table needs (both rename endpoints must
+    /// resolve to the same mount).
+    #[must_use]
+    pub fn rename_destination(&self) -> Option<&str> {
+        match self {
+            Self::Rename(a) => Some(a.dst.as_str()),
+            _ => None,
         }
     }
 
@@ -270,15 +278,6 @@ impl fmt::Display for OsFunctionCall {
         f.write_str(self.name())
     }
 }
-
-impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
-    // Owned args (String/Vec<u8>/bool/MontyPath/MontyObject) hold no live
-    // heap references, so a plain drop is correct.
-    fn drop_with(self, _heap: &mut C) {
-        drop(self);
-    }
-}
-
 // =============================================================================
 // Args structs — per-variant payloads carried by `OsFunctionCall`.
 // =============================================================================
@@ -392,245 +391,6 @@ impl ToMontyObject for MontyPath {
         MontyObject::Path(self.0)
     }
 }
-
-// =============================================================================
-// Path-method dispatcher (used by `types/path.rs`).
-// =============================================================================
-
-/// Pre-flight check for [`build_path_os_call`]: lets the caller decide whether
-/// to commit ownership of the path/args to the builder.
-#[must_use]
-pub(crate) fn is_path_os_method(method: StaticStrings) -> bool {
-    matches!(
-        method,
-        StaticStrings::Exists
-            | StaticStrings::IsFile
-            | StaticStrings::IsDir
-            | StaticStrings::IsSymlink
-            | StaticStrings::ReadText
-            | StaticStrings::ReadBytes
-            | StaticStrings::StatMethod
-            | StaticStrings::Iterdir
-            | StaticStrings::Resolve
-            | StaticStrings::Absolute
-            | StaticStrings::Unlink
-            | StaticStrings::Rmdir
-            | StaticStrings::WriteText
-            | StaticStrings::AppendText
-            | StaticStrings::WriteBytes
-            | StaticStrings::AppendBytes
-            | StaticStrings::Mkdir
-            | StaticStrings::Rename
-    )
-}
-
-/// Builds an [`OsFunctionCall`] for a `pathlib.Path` method invocation —
-/// dispatches on `method` and pulls any extra args out of `args` into the
-/// matching typed struct.
-///
-/// Returns `Ok(None)` if `method` isn't an OS call. Owns `path`/`args` and
-/// is responsible for refcount cleanup on every code path.
-pub(crate) fn build_path_os_call(
-    method: StaticStrings,
-    path: MontyPath,
-    args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Option<OsFunctionCall>> {
-    // Simple "no extra args" path operations are bundled into one arm to avoid
-    // 12 near-identical case lines.
-    macro_rules! path_only {
-        ($name:literal, $variant:ident) => {{
-            args.check_zero_args($name, vm.heap)?;
-            OsFunctionCall::$variant(path)
-        }};
-    }
-
-    let call = match method {
-        StaticStrings::Exists => path_only!("exists", Exists),
-        StaticStrings::IsFile => path_only!("is_file", IsFile),
-        StaticStrings::IsDir => path_only!("is_dir", IsDir),
-        StaticStrings::IsSymlink => path_only!("is_symlink", IsSymlink),
-        StaticStrings::ReadText => path_only!("read_text", ReadText),
-        StaticStrings::ReadBytes => path_only!("read_bytes", ReadBytes),
-        StaticStrings::StatMethod => path_only!("stat", Stat),
-        StaticStrings::Iterdir => path_only!("iterdir", Iterdir),
-        StaticStrings::Resolve => path_only!("resolve", Resolve),
-        StaticStrings::Absolute => path_only!("absolute", Absolute),
-        StaticStrings::Unlink => path_only!("unlink", Unlink),
-        StaticStrings::Rmdir => path_only!("rmdir", Rmdir),
-        StaticStrings::WriteText => {
-            OsFunctionCall::WriteText(extract_str_data("write_text", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::AppendText => {
-            OsFunctionCall::AppendText(extract_str_data("append_text", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::WriteBytes => {
-            OsFunctionCall::WriteBytes(extract_bytes_data("write_bytes", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::AppendBytes => {
-            OsFunctionCall::AppendBytes(extract_bytes_data("append_bytes", path, args, vm.heap, vm.interns)?)
-        }
-        StaticStrings::Mkdir => OsFunctionCall::Mkdir(extract_mkdir_args(path, args, vm)?),
-        StaticStrings::Rename => OsFunctionCall::Rename(extract_rename_args(path, args, vm.heap, vm.interns)?),
-        _ => {
-            // Unreachable in practice — callers gate on `is_path_os_method`.
-            // Drop the owned inputs anyway so a stray call doesn't leak refs.
-            let _ = path;
-            args.drop_with(vm.heap);
-            return Ok(None);
-        }
-    };
-    Ok(Some(call))
-}
-
-/// Extracts the `data` arg for `write_text` / `append_text`. Error wording
-/// matches the legacy `fs/` dispatcher so existing tests stay green.
-fn extract_str_data(
-    method: &'static str,
-    path: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<PathStringDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
-    let data_str = value_to_owned_string(&data, heap, interns);
-
-    let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with(heap);
-
-    match data_str {
-        Some(data) => Ok(PathStringDataArgs { path, data }),
-        None => Err(ExcType::type_error(format!("data must be str, not {py_type}"))),
-    }
-}
-
-/// Extracts the `data` arg for `write_bytes` / `append_bytes` — binary
-/// companion to [`extract_str_data`].
-fn extract_bytes_data(
-    method: &'static str,
-    path: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<PathBytesDataArgs> {
-    let data = arg_or_missing_data(method, args, heap)?;
-    let bytes = value_to_owned_bytes(&data, heap, interns);
-
-    let py_type = data.py_type_name_heap(heap, interns);
-    data.drop_with(heap);
-
-    match bytes {
-        Some(data) => Ok(PathBytesDataArgs { path, data }),
-        None => Err(ExcType::type_error(format!(
-            "memoryview: a bytes-like object is required, not '{py_type}'"
-        ))),
-    }
-}
-
-/// Python-facing argument shape for `Path.mkdir(mode=0o777, parents=False, exist_ok=False)`.
-///
-/// `Path.mkdir` is a pure-Python `def` in CPython, hence `style = def` (its
-/// duplicate-arg error is `got multiple values for argument`). The
-/// too-many-positional count still diverges: CPython counts the bound `self`
-/// (`takes from 1 to 4 …`), Monty does not — see `limitations/open.md`.
-///
-/// Monty parses `mode` for signature compatibility and arity validation, but
-/// filesystem backends do not model POSIX permission bits. `parents` and
-/// `exist_ok` use [`LaxBool`] so they accept any truth-tested value (matching
-/// CPython, which evaluates them via `bool()`).
-#[derive(FromArgs)]
-#[from_args(name = "Path.mkdir", style = def)]
-struct PathMkdirArgs {
-    #[from_args(default = 0o777_i64)]
-    mode: i64,
-    #[from_args(default = LaxBool::new(false))]
-    parents: LaxBool,
-    #[from_args(default = LaxBool::new(false))]
-    exist_ok: LaxBool,
-}
-
-/// Extracts `mode`/`parents`/`exist_ok` for `mkdir`, rejecting unknown or
-/// excessive arguments before the host sees the OS call.
-fn extract_mkdir_args(
-    path: MontyPath,
-    args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<MkdirCallArgs> {
-    let PathMkdirArgs {
-        mode,
-        parents,
-        exist_ok,
-    } = PathMkdirArgs::from_args(args, vm)?;
-    let _ = mode;
-    Ok(MkdirCallArgs {
-        path,
-        parents: parents.bool(),
-        exist_ok: exist_ok.bool(),
-    })
-}
-
-/// Extracts the `target` arg for `Path.rename(target)`.
-fn extract_rename_args(
-    src: MontyPath,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<RenameCallArgs> {
-    let target = args.get_one_arg("rename", heap)?;
-    let dst_str = value_to_owned_string(&target, heap, interns);
-    target.drop_with(heap);
-    match dst_str {
-        Some(dst) => Ok(RenameCallArgs {
-            src,
-            dst: MontyPath::new(dst),
-        }),
-        None => Err(ExcType::type_error(
-            "Path.rename() argument 'target' must be str or Path".to_owned(),
-        )),
-    }
-}
-
-/// Pulls the single `data` arg out of `args`, raising the CPython-style
-/// `missing 1 required positional argument: 'data'` error when absent.
-fn arg_or_missing_data(
-    method: &'static str,
-    args: ArgValues,
-    heap: &mut Heap<impl ResourceTracker>,
-) -> RunResult<Value> {
-    if matches!(args, ArgValues::Empty) {
-        return Err(ExcType::type_error(format!(
-            "Path.{method}() missing 1 required positional argument: 'data'"
-        )));
-    }
-    args.get_one_arg(method, heap)
-}
-
-/// Owned `String` if `value` is a `str` or `Path`, else `None`. Caller drops
-/// the source value afterwards.
-fn value_to_owned_string(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<String> {
-    match value {
-        Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Str(s) => Some(s.as_str().to_owned()),
-            HeapData::Path(p) => Some(p.as_str().to_owned()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Owned `Vec<u8>` if `value` is a `bytes` (interned or heap), else `None`.
-fn value_to_owned_bytes(value: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<Vec<u8>> {
-    match value {
-        Value::InternBytes(id) => Some(interns.get_bytes(*id).to_owned()),
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Bytes(b) => Some(b.as_slice().to_owned()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 // =============================================================================
 // stat_result builders — separate utility API used by host backends.
 // =============================================================================

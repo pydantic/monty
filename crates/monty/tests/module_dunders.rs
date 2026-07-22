@@ -17,7 +17,8 @@
 //!   time with `NotImplementedError` (CPython allows it, except `__debug__`
 //!   which it rejects with `SyntaxError`)
 
-use monty::{CompileOptions, DictPairs, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, DictPairs, ExcType, MontyObject};
 
 /// Runs `code` to completion with no resource limits and returns the value of
 /// its final expression.

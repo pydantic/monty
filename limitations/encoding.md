@@ -1,7 +1,9 @@
 # `str.encode()` / `bytes.decode()`
 
 Monty implements a fixed, small set of text codecs rather than the full
-`codecs`/`encodings` registry CPython ships.
+`codecs`/`encodings` registry CPython ships. The `str(b, encoding, errors)`
+and `bytes(s, encoding, errors)` constructor forms route through the same
+registry, so everything below applies to them too.
 
 ## Supported codecs
 

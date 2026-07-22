@@ -9,7 +9,7 @@
 //!
 //! ## Architecture
 //!
-//! - `JsMontyException`: Thin wrapper around `monty::MontyException`. The JS wrapper
+//! - `JsMontyException`: Thin wrapper around `monty_types::MontyException`. The JS wrapper
 //!   checks `exception.typeName` to distinguish syntax errors from runtime errors.
 //! - `MontyTypingError`: Wraps `TypeCheckingDiagnostics` for static type checking errors.
 //!   This is separate because type errors come from static analysis, not Python execution.
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// JavaScript wrapper to construct appropriate error types (`MontySyntaxError`
 /// or `MontyRuntimeError`) based on the exception type.
 #[napi(js_name = "MontyException")]
-pub struct JsMontyException(monty::MontyException);
+pub struct JsMontyException(monty_types::MontyException);
 
 impl fmt::Display for JsMontyException {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -142,7 +142,7 @@ impl JsMontyException {
 impl JsMontyException {
     /// Creates a new JsMontyException from a core MontyException.
     #[must_use]
-    pub fn new(exc: monty::MontyException) -> Self {
+    pub fn new(exc: monty_types::MontyException) -> Self {
         Self(exc)
     }
 }

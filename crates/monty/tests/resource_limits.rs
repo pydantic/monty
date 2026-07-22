@@ -7,9 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{
-    CompileOptions, ExcType, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, PrintWriter,
-    ResourceLimits, RunProgress,
+use monty::{MontyRepl, MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -17,9 +18,7 @@ use monty::{
 /// External functions are no longer declared upfront. Instead, the VM yields `NameLookup`
 /// when it encounters an unresolved name. This helper resolves all such lookups until
 /// a different progress variant is reached.
-fn resolve_name_lookups<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> Result<RunProgress<T>, monty::MontyException> {
+fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
@@ -77,6 +76,30 @@ result
     assert!(
         output.heap_count < 20,
         "GC should collect most unreachable dict cycles: {} heap objects (expected < 20)",
+        output.heap_count
+    );
+}
+
+/// Test that GC collects cycles between lists and their iterators.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_list_iterator_cycles() {
+    let code = r"
+for i in range(100001):
+    a = []
+    iterator = iter(a)
+    a.append(iterator)
+
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    assert!(
+        output.heap_count < 30,
+        "GC should collect list-iterator cycles: {} heap objects (expected < 30)",
         output.heap_count
     );
 }
@@ -167,6 +190,31 @@ result
         exc.message().is_some_and(|m| m.contains("allocation limit exceeded")),
         "expected allocation limit error, got: {exc}"
     );
+}
+
+/// Compact structural identities remain immediate Python integers.
+#[test]
+fn compact_id_does_not_allocate() {
+    let run = MontyRun::new("id(42)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::new().max_allocations(0);
+    let result = run
+        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+
+    assert!(matches!(result, MontyObject::Int(_)));
+}
+
+/// Identity integers wider than `i64` allocate a tracked `LongInt`.
+#[test]
+fn wide_id_respects_allocation_limit() {
+    let run = MontyRun::new("id(1.5)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::new().max_allocations(0);
+    let exc = run
+        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(exc.message(), Some("allocation limit exceeded: 1 > 0"));
 }
 
 #[test]

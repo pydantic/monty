@@ -2,6 +2,7 @@
 
 use std::num::NonZero;
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 
@@ -9,9 +10,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{Heap, HeapData},
-    resource::{ResourceTracker, check_pow_size},
+    resource_checks::check_pow_size,
     types::{LongInt, PyTrait},
     value::Value,
 };

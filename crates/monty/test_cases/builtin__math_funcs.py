@@ -1,3 +1,7 @@
+import sys
+
+is_monty = sys.platform == 'monty'
+
 # === abs() ===
 # Basic abs operations
 assert abs(5) == 5
@@ -23,6 +27,10 @@ assert round(5) == 5
 # round with ndigits
 assert round(3.14159, 2) == 3.14
 assert round(3.14159, 0) == 3.0
+# both round() arguments are keyword-capable in CPython
+assert round(3.14159, ndigits=2) == 3.14
+assert round(number=3.14159, ndigits=2) == 3.14
+assert round(ndigits=2, number=3.14159) == 3.14
 assert repr(round(-0.4, 0)) == '-0.0'
 assert repr(round(-0.5, 0)) == '-0.0'
 assert round(1234, -2) == 1200
@@ -44,6 +52,32 @@ try:
 except TypeError:
     threw = True
 assert threw
+
+# ndigits wider than i64 is clamped by sign: huge positive returns the number
+# unchanged; huge negative rounds to 0 / ±0.0
+assert round(5, 10**30) == 5
+assert round(-5, 10**30) == -5
+assert round(2.675, 10**30) == 2.675
+assert round(5, 2**63 - 1) == 5
+assert round(1.5, -(10**30)) == 0.0
+assert repr(round(-1.5, -(10**30))) == '-0.0'
+assert round(1.5, -(2**63)) == 0.0
+assert round(12345, -(10**5)) == 0
+
+# negative ndigits round exactly in integers (no float corruption), promoting
+# past i64 when rounding up crosses it
+assert round(2**63 - 1, -1) == 9223372036854775810
+assert round(2**63 - 1, -19) == 10**19
+assert round(-(2**63 - 1), -19) == -(10**19)
+assert round(5 * 10**18, -19) == 0
+assert round(2**63 - 1, -25) == 0
+assert round(1234567890123456789, -5) == 1234567890123500000
+assert round(-1250, -2) == -1200
+if is_monty:
+    # CPython tries to materialise 10**(10**30) here and dies with
+    # MemoryError; Monty's clamp returns 0 immediately (limitations/builtins.md)
+    assert round(5, -(10**30)) == 0
+    assert round(5, -(2**63)) == 0
 
 # round edge cases with extreme values
 assert isinstance(round(1e15), int)

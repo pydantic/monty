@@ -7,6 +7,7 @@ use std::{
     ptr::{self, NonNull},
 };
 
+use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -17,11 +18,10 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    resource::{ResourceError, ResourceTracker},
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, date, datetime, timedelta, timezone,
+        TimeZone, Tuple, callable_iterator::CallableIterator, date, datetime, list::ListIterator, timedelta, timezone,
     },
     value::Value,
 };
@@ -225,6 +225,8 @@ pub enum HeapReadOutput<'a> {
     Instance(HeapRead<'a, Instance>),
     BoundMethod(HeapRead<'a, BoundMethod>),
     Iter(HeapRead<'a, MontyIter>),
+    ListIterator(HeapRead<'a, ListIterator>),
+    CallableIterator(HeapRead<'a, CallableIterator>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
@@ -390,7 +392,7 @@ macro_rules! heap_read_ref_as_field {
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            &raw const read.get::<::monty_types::NoLimitTracker>(unreachable!()).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -437,7 +439,7 @@ macro_rules! heap_read_ref_as_field_mut {
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            &raw const read.get::<::monty_types::NoLimitTracker>(unreachable!()).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -614,6 +616,8 @@ impl<'a> HeapPtr<'a> {
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
+            HeapData::ListIterator(list_iter) => HeapReadOutput::ListIterator(heap_read(base, list_iter, readers)),
+            HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
@@ -1071,7 +1075,8 @@ impl<T: ResourceTracker> Heap<T> {
         });
     }
 
-    /// Returns an immutable reference to the heap data stored at the given ID.
+    /// Returns an immutable reference to the heap data stored at the given ID. This can be more efficient
+    /// than `.read()` for short-lived borrows that need read-only access (avoids reader bookkeeping).
     ///
     /// # Panics
     /// Panics if the value ID is invalid, the value has already been freed,
@@ -1560,6 +1565,8 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
+        HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {
@@ -1683,6 +1690,8 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
@@ -1766,8 +1775,13 @@ mod heap_reader_compile_fail_cases;
 /// mark–sweep collector.
 #[cfg(test)]
 mod tests {
+    use monty_types::NoLimitTracker;
+
     use super::*;
-    use crate::{resource::NoLimitTracker, types::List, value::Value};
+    use crate::{
+        types::{List, callable_iterator::CallableIterator},
+        value::Value,
+    };
 
     /// Returns whether a heap entry is still allocated at `id`.
     fn is_alive<T: ResourceTracker>(heap: &Heap<T>, id: HeapId) -> bool {
@@ -2083,5 +2097,86 @@ mod tests {
 
         assert!(!is_alive(&heap, p_id), "P should be collected after pin dropped");
         assert!(!is_alive(&heap, a_id), "A should be collected after pin dropped");
+    }
+
+    /// The GC must see BOTH refs a `callable_iterator` owns, with correct
+    /// multiplicity: under-tracing here would let a live object be collected.
+    #[test]
+    fn callable_iterator_traces_callable_and_sentinel() {
+        let heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let c = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        let s = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+
+        heap.inc_ref(c);
+        heap.inc_ref(s);
+        let iter = heap
+            .allocate(HeapData::CallableIterator(CallableIterator::new(
+                Value::Ref(c),
+                Value::Ref(s),
+            )))
+            .unwrap();
+        let mut traced = vec![];
+        for_each_child_id(heap.get(iter), |id| traced.push(id));
+        assert_eq!(traced, vec![c, s], "callable and sentinel are both traced");
+
+        // Multiplicity: when callable IS sentinel, two counted refs point at one
+        // object, so the id must be reported twice or trial deletion
+        // under-decrements and frees a live object.
+        heap.inc_ref(c);
+        heap.inc_ref(c);
+        let shared = heap
+            .allocate(HeapData::CallableIterator(CallableIterator::new(
+                Value::Ref(c),
+                Value::Ref(c),
+            )))
+            .unwrap();
+        let mut dup = vec![];
+        for_each_child_id(heap.get(shared), |id| dup.push(id));
+        assert_eq!(dup, vec![c, c], "a shared callable/sentinel is traced twice");
+    }
+
+    /// End-to-end: a cycle through the callable must be collected and the
+    /// non-cycle sentinel released — exercising the mark phase
+    /// (`for_each_child_id`) and the free phase (`py_dec_ref_ids`) together.
+    #[test]
+    fn callable_iterator_cycle_is_collected() {
+        let mut heap = Heap::<NoLimitTracker>::new(16, NoLimitTracker);
+        let sentinel = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        let list = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
+        heap.inc_ref(list);
+        heap.inc_ref(sentinel);
+        let iter = heap
+            .allocate(HeapData::CallableIterator(CallableIterator::new(
+                Value::Ref(list),
+                Value::Ref(sentinel),
+            )))
+            .unwrap();
+
+        // Close the cycle: the callable list references the iterator back.
+        heap.inc_ref(iter);
+        HeapReader::with(&mut heap, &mut (), |reader, ()| {
+            let HeapReadOutput::List(mut l) = reader.read(list) else {
+                unreachable!("just allocated a list")
+            };
+            let l = l.get_mut(reader);
+            l.set_contains_refs();
+            l.as_vec_mut().push(Value::Ref(iter));
+        });
+        // list.rc = 2, iter.rc = 2, sentinel.rc = 2.
+
+        // Drop the allocation refs: {iter, list} is now an unreachable cycle and
+        // the sentinel is held only by the iterator.
+        heap.dec_ref(list);
+        heap.dec_ref(iter);
+        heap.dec_ref(sentinel);
+
+        heap.collect_cycles();
+
+        assert!(!is_alive(&heap, iter), "callable_iterator in a cycle must be collected");
+        assert!(!is_alive(&heap, list), "the cycle's other node must be collected");
+        assert!(
+            !is_alive(&heap, sentinel),
+            "sentinel held only by the freed iterator must be released"
+        );
     }
 }

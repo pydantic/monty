@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use monty::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
+use monty_types::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 

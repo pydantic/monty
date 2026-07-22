@@ -1,3 +1,12 @@
+use std::{
+    cell::Cell,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
+
 /// Python tuple type using `SmallVec` for inline storage of small tuples.
 ///
 /// This type provides Python tuple semantics. Tuples are immutable sequences
@@ -14,27 +23,18 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use std::{
-    cell::Cell,
-    cmp::Ordering,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
-
+use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
 
-use super::{CmpOrder, MontyIter, PyTrait};
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{
         LazyHeapSet, Type,
         list::repr_sequence_fmt,
@@ -126,7 +126,7 @@ impl Tuple {
                 Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap)?)
             }
         }
@@ -286,6 +286,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Tuple
     }

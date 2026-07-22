@@ -4,7 +4,8 @@
 //! fallback. Host-facing payload behavior is invisible to `test_cases/`, so
 //! it is pinned here.
 
-use monty::{CompileOptions, JsonErrorData, MontyException, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, JsonErrorData, MontyException};
 
 /// Runs `code` and returns the resulting `MontyException`.
 fn run_exc(code: &str) -> MontyException {

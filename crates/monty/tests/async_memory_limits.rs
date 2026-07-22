@@ -5,9 +5,10 @@
 
 use std::{mem, rc::Rc, time::Duration};
 
-use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRun,
-    NameLookupResult, PrintWriter, ResourceError, ResourceLimits, ResourceTracker, RunProgress,
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, NameLookupResult,
+    PrintWriter, ResourceError, ResourceLimits, ResourceTracker,
 };
 
 /// Wraps `LimitedTracker` in `Rc` so a test can hold its own handle for
@@ -71,9 +72,7 @@ impl ResourceTracker for SharedTracker {
 /// Used by the gather bookkeeping witness, which expects the run to
 /// raise `MemoryError` inside the gather await *before* it would
 /// otherwise settle at `ResolveFutures`.
-fn drive_until_settled<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> Result<RunProgress<T>, monty::MontyException> {
+fn drive_until_settled<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
     loop {
         match progress {
             RunProgress::NameLookup(lookup) => {

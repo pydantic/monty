@@ -1,12 +1,13 @@
 //! Implementation of the print() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     types::PyTrait,
     value::Value,
 };

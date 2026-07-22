@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyException, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyException};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -43,13 +44,6 @@ fn class_inheritance_returns_not_implemented_error() {
         err.message().unwrap(),
         @"The monty syntax parser does not yet support class inheritance and metaclasses"
     );
-}
-
-#[test]
-fn class_decorators_return_not_implemented_error() {
-    let err = get_parse_err("@deco\nclass Foo: pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support class decorators");
 }
 
 #[test]

@@ -18,7 +18,7 @@ error: lifetime may not live long enough
 ...
 154 | /     HeapReader::with(
 155 | |         heap,
-156 | |         &mut (interns, crate::io::PrintWriter::Disabled),
+156 | |         &mut (interns, monty_types::PrintWriter::Disabled),
 157 | |         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
 158 | |     )
     | |_____^ returning this value requires that `'1` must outlive `'static`

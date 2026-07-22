@@ -10,6 +10,8 @@
 
 use std::{borrow::Cow, mem};
 
+use monty_types::{MontyException, StackFrame};
+
 use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget},
@@ -20,7 +22,6 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
         AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
         Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
@@ -33,6 +34,7 @@ use crate::{
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
+    source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -662,8 +664,9 @@ impl<'a> Compiler<'a> {
                 name,
                 body,
                 members,
+                decorators,
                 position,
-            } => self.compile_class_def(name, body, members, *position)?,
+            } => self.compile_class_def(name, body, members, decorators, *position)?,
             Node::Try(try_block) => self.compile_try(try_block)?,
             Node::With {
                 context, target, body, ..
@@ -843,8 +846,14 @@ impl<'a> Compiler<'a> {
         name: &Identifier,
         body: &PreparedFunctionDef,
         members: &[Identifier],
+        decorators: &[ExprLoc],
         position: CodeRange,
     ) -> Result<(), CompileError> {
+        // Pushed in source order so they sit below the class value: the applying
+        // calls below then run bottom-up, like CPython's `cls = deco(cls)`.
+        for decorator in decorators {
+            self.compile_expr(decorator)?;
+        }
         // Build the class-body function/closure value on the stack...
         self.emit_make_class_body(body, members, name, position)?;
         // ...call it with zero args — it runs the body and returns the `Class`.
@@ -853,7 +862,14 @@ impl<'a> Compiler<'a> {
         // CPython) rather than falling back to `CodeRange::default()`.
         self.code.set_location(position, None);
         self.code.emit_u8(Opcode::CallFunction, 0)?;
-        // ...and bind the class object to the class name's slot.
+        // Each call consumes the callable below the current value: `deco(value)`.
+        // Reversed so the bottom-most (last pushed) applies first, and located at
+        // its own decorator so a traceback pins the one that raised, like CPython.
+        for decorator in decorators.iter().rev() {
+            self.code.set_location(decorator.position, None);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
+        }
+        // ...and bind the (possibly decorated) class object to the name's slot.
         self.compile_store(name)?;
         Ok(())
     }
@@ -4041,7 +4057,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 

@@ -37,8 +37,8 @@ export interface MontyOptions {
    * limit, the worker reports cumulative execution time each turn (the
    * sandbox clock runs only while the interpreter executes, never while
    * suspended on the host) and the host kills the worker this long after the
-   * budget expires — covering cases the in-sandbox limit cannot catch, like a
-   * blocking syscall inside a mount. Surfaces as `MontyCrashedError`
+   * budget expires — covering cases the in-sandbox limit cannot catch (its
+   * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
   durationLimitGrace?: number | null

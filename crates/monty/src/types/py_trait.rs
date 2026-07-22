@@ -1,3 +1,6 @@
+use std::{cmp::Ordering, fmt::Write};
+
+use ahash::AHashSet;
 /// Trait for heap-allocated Python values that need common operations.
 ///
 /// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
@@ -9,20 +12,16 @@
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use std::{cmp::Ordering, fmt::Write};
+use monty_types::{OsFunctionCall, ResourceError, ResourceTracker};
 
-use ahash::AHashSet;
-
-use super::{Type, allocate_string};
+use super::{MontyIter, Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithContext, HeapId},
+    heap::{DropWithContext, HeapData, HeapId},
     intern::StringId,
-    os::OsFunctionCall,
-    resource::{ResourceError, ResourceTracker},
     value::{EitherStr, Value},
 };
 
@@ -230,8 +229,12 @@ pub(crate) trait PyTrait<'h> {
         &self,
         f: &mut impl Write,
         vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()>;
+        _heap_ids: &mut LazyHeapSet,
+    ) -> RunResult<()> {
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        write!(f, "<{type_name} object>")?;
+        Ok(())
+    }
 
     /// Returns the Python `repr()` string for this value as a heap `str` `Value`.
     ///
@@ -504,6 +507,43 @@ pub(crate) trait PyTrait<'h> {
     /// attribute access and a generic `AttributeError` should be raised by the caller.
     fn py_getattr(&self, _attr: &EitherStr, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         Ok(None)
+    }
+
+    /// Reports whether [`py_iter`](PyTrait::py_iter) would succeed for this
+    /// object, without building the iterator.
+    ///
+    /// Callers that iterate should just call `py_iter`; this exists for the
+    /// sites that must report their *own* error for a non-iterable — the `*`
+    /// literal unpack (`Value after * must be an iterable`), set unpack
+    /// (`'x' object is not iterable`) and assignment unpacking (`cannot unpack
+    /// non-iterable x object`) all word it differently, so they have to ask
+    /// before delegating rather than map a failure afterwards.
+    ///
+    /// Mirrors [`py_is_context_manager`](PyTrait::py_is_context_manager): a type
+    /// that can be iterated MUST return `true` here, or it will be reported as
+    /// non-iterable by those sites while `list()` and `for` still accept it.
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        false
+    }
+
+    /// Returns a Python iterator for this object (`__iter__`).
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let Some(self_id) = self_id else {
+            return Err(ExcType::type_error_not_iterable(
+                &self.py_type(vm).name(vm.heap, vm.interns),
+            ));
+        };
+        vm.heap.inc_ref(self_id);
+        let iter = MontyIter::new(Value::Ref(self_id), vm)?;
+        let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
+        Ok(Value::Ref(iter_id))
+    }
+
+    /// Advances this object using Python's iterator protocol (`__next__`).
+    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        Err(ExcType::type_error_not_iterator(
+            &self.py_type(vm).name(vm.heap, vm.interns),
+        ))
     }
 }
 

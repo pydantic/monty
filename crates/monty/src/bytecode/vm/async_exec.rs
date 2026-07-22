@@ -9,22 +9,22 @@
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
 use ahash::AHashMap;
+use monty_types::{MontyException, ResourceTracker};
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
-    MontyException,
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, TaskId, awaited_state_size,
     },
     bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    resource::ResourceTracker,
-    run_progress::ExtFunctionResult,
+    object_bridge::MontyObjectExt,
+    run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     types::List,
     value::Value,
 };

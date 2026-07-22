@@ -6,11 +6,19 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fs, mem,
     ops::Bound,
     path::{Path, PathBuf},
     time::SystemTime,
 };
+
+use super::{MountError, common::as_u64};
+
+/// Conservative bookkeeping charge for each overlay map entry.
+///
+/// This covers the map node, key allocation, and entry metadata. Variable-size
+/// file contents and host paths are charged separately.
+pub(super) const ENTRY_MEMORY_USAGE: u64 = 256;
 
 /// In-memory overlay state for [`super::MountMode::OverlayMemory`].
 ///
@@ -24,6 +32,8 @@ pub struct OverlayState {
     /// [`BTreeMap`] is used so prefix walks for directory operations can stay
     /// `O(log n + k)` rather than scanning the entire overlay.
     entries: BTreeMap<String, OverlayEntry>,
+    /// Estimated live bytes retained by `entries`.
+    memory_usage: u64,
 }
 
 impl OverlayState {
@@ -39,20 +49,113 @@ impl OverlayState {
         self.entries.get(relative_path)
     }
 
-    /// Mutable lookup, used by in-place updates like overlay `append_bytes`
-    /// that would otherwise have to clone, mutate, and re-insert the entry.
-    pub(super) fn get_mut(&mut self, relative_path: &str) -> Option<&mut OverlayEntry> {
-        self.entries.get_mut(relative_path)
+    /// Returns the estimated live memory retained by this overlay.
+    #[must_use]
+    pub(super) fn memory_usage(&self) -> u64 {
+        self.memory_usage
     }
 
     /// Removes and returns the entry for `relative_path`.
     pub(super) fn remove(&mut self, relative_path: &str) -> Option<OverlayEntry> {
-        self.entries.remove(relative_path)
+        let entry = self.entries.remove(relative_path)?;
+        self.memory_usage = self
+            .memory_usage
+            .saturating_sub(entry_memory_usage(relative_path, &entry));
+        Some(entry)
     }
 
-    /// Inserts or replaces an entry for `relative_path`.
-    pub(super) fn insert(&mut self, relative_path: String, entry: OverlayEntry) {
+    /// Inserts an entry if the resulting overlay stays within `limit`.
+    pub(super) fn insert(&mut self, relative_path: String, entry: OverlayEntry, limit: u64) -> Result<(), MountError> {
+        let projected = self.projected_usage(&relative_path, &entry);
+        if projected > limit {
+            Err(MountError::MemoryUsageLimitExceeded(limit))
+        } else {
+            self.entries.insert(relative_path, entry);
+            self.memory_usage = projected;
+            Ok(())
+        }
+    }
+
+    /// Inserts an entry after the caller has preflighted a multi-entry update.
+    pub(super) fn insert_unchecked(&mut self, relative_path: String, entry: OverlayEntry) {
+        self.memory_usage = self.projected_usage(&relative_path, &entry);
         self.entries.insert(relative_path, entry);
+    }
+
+    /// Returns total retained usage as if `entry` replaced `relative_path`.
+    fn projected_usage(&self, relative_path: &str, entry: &OverlayEntry) -> u64 {
+        let old_usage = self
+            .entries
+            .get(relative_path)
+            .map_or(0, |old| entry_memory_usage(relative_path, old));
+        let new_usage = entry_memory_usage(relative_path, entry);
+        self.memory_usage.saturating_sub(old_usage).saturating_add(new_usage)
+    }
+
+    /// Appends bytes to an overlay file while accounting for retained content.
+    pub(super) fn append_file(
+        &mut self,
+        relative_path: &str,
+        data: &[u8],
+        mtime: f64,
+        limit: u64,
+    ) -> Result<bool, MountError> {
+        let Some(OverlayEntry::File(file)) = self.entries.get_mut(relative_path) else {
+            return Ok(false);
+        };
+        let projected = self.memory_usage.saturating_add(as_u64(data.len()));
+        if projected > limit {
+            Err(MountError::MemoryUsageLimitExceeded(limit))
+        } else {
+            file.content.extend_from_slice(data);
+            file.mtime = mtime;
+            self.memory_usage = projected;
+            Ok(true)
+        }
+    }
+
+    /// Checks replacing `relative_path` with a file of `content_len` bytes.
+    pub(super) fn check_file_replacement(
+        &self,
+        relative_path: &str,
+        content_len: usize,
+        limit: u64,
+    ) -> Result<(), MountError> {
+        let old_usage = self
+            .entries
+            .get(relative_path)
+            .map_or(0, |old| entry_memory_usage(relative_path, old));
+        let new_usage = base_entry_memory_usage(relative_path).saturating_add(as_u64(content_len));
+        let projected = self.memory_usage.saturating_sub(old_usage).saturating_add(new_usage);
+        if projected > limit {
+            Err(MountError::MemoryUsageLimitExceeded(limit))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Checks a sequence of replacements as one atomic overlay update.
+    pub(super) fn check_replacements<'a>(
+        &self,
+        replacements: impl IntoIterator<Item = (&'a str, &'a OverlayEntry)>,
+        limit: u64,
+    ) -> Result<(), MountError> {
+        let mut projected = self.memory_usage;
+        let mut replaced = BTreeMap::new();
+        for (path, entry) in replacements {
+            let old_usage = replaced
+                .get(path)
+                .copied()
+                .unwrap_or_else(|| self.entries.get(path).map_or(0, |old| entry_memory_usage(path, old)));
+            let new_usage = entry_memory_usage(path, entry);
+            projected = projected.saturating_sub(old_usage).saturating_add(new_usage);
+            replaced.insert(path, new_usage);
+        }
+        if projected > limit {
+            Err(MountError::MemoryUsageLimitExceeded(limit))
+        } else {
+            Ok(())
+        }
     }
 
     /// Iterates over overlay entries whose keys start with `prefix`.
@@ -80,6 +183,23 @@ impl OverlayState {
             .range::<str, _>(bounds)
             .map(|(key, value)| (key.as_str(), value))
     }
+}
+
+/// Estimates retained heap bytes for one overlay entry.
+fn entry_memory_usage(relative_path: &str, entry: &OverlayEntry) -> u64 {
+    let variable = match entry {
+        OverlayEntry::File(file) => file.content.len(),
+        OverlayEntry::RealFileRef(file_ref) => file_ref.host_path.as_os_str().len(),
+        OverlayEntry::Directory { .. } | OverlayEntry::Deleted => 0,
+    };
+    base_entry_memory_usage(relative_path).saturating_add(as_u64(variable))
+}
+
+/// Returns the fixed and key-dependent charge for an overlay entry.
+fn base_entry_memory_usage(relative_path: &str) -> u64 {
+    ENTRY_MEMORY_USAGE
+        .saturating_add(as_u64(relative_path.len()))
+        .saturating_add(as_u64(mem::size_of::<OverlayEntry>()))
 }
 
 /// An entry stored in an overlay mount.

@@ -180,3 +180,93 @@ try:
     assert False, 'str pos + kwarg should raise'
 except TypeError as e:
     assert str(e) == "argument for str() given by name ('object') and position (1)", f'dup: {e}'
+
+# === str() decoding bytes with encoding/errors ===
+assert str(b'x', 'utf-8') == 'x'
+assert str(b'x', encoding='utf-8') == 'x'
+assert str(object=b'x', encoding='utf-8') == 'x'
+assert str(b'\xe2\x82\xac', 'utf-8') == '€'
+assert str(b'\xff', 'utf-8', 'replace') == '�'
+assert str(b'\xff', errors='replace') == '�'
+assert str(b'x', errors='strict') == 'x'
+# a missing object wins over the decoding args
+assert str(encoding='utf-8') == ''
+assert str(errors='strict') == ''
+# without decoding args, bytes stringify to their repr
+assert str(b'x') == "b'x'"
+
+try:
+    str(b'\xff', 'utf-8')
+    assert False, 'expected UnicodeDecodeError'
+except UnicodeDecodeError as e:
+    assert str(e) == "'utf-8' codec can't decode byte 0xff in position 0: invalid start byte"
+
+try:
+    str('x', 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding str is not supported'
+
+try:
+    str('x', errors='strict')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding str is not supported'
+
+try:
+    str(1, 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding to str: need a bytes-like object, int found'
+
+try:
+    str(None, 'utf-8')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'decoding to str: need a bytes-like object, NoneType found'
+
+# encoding/errors are named with the wrong value's type name (NoneType, not
+# the bad-arg 'None' special case used by bytes())
+try:
+    str(b'x', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'encoding' must be str, not int"
+
+try:
+    str(b'x', None)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'encoding' must be str, not NoneType"
+
+try:
+    str(b'x', 'utf-8', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "str() argument 'errors' must be str, not int"
+
+try:
+    str(b'x', 'bogus')
+    assert False, 'expected LookupError'
+except LookupError as e:
+    assert str(e) == 'unknown encoding: bogus'
+
+# no kwargs: unicode_vectorcall's un-parenthesised arity wording
+try:
+    str(b'x', 'utf-8', 'strict', 1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'str expected at most 3 arguments, got 4'
+
+# with kwargs: the clinic parser's parenthesised total-count wording
+try:
+    str(b'x', 'utf-8', 'strict', 'x', bogus=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'str() takes at most 3 arguments (5 given)'
+
+try:
+    str(b'x', 'utf-8', encoding='q')
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == "argument for str() given by name ('encoding') and position (2)"

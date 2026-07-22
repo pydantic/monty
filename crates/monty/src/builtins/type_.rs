@@ -1,14 +1,15 @@
 //! Implementation of the type() builtin function.
 
+use monty_types::ResourceTracker;
+
 use super::Builtins;
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{Class, Dict, PyTrait},
     value::Value,
 };

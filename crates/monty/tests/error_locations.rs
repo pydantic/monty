@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use monty::{CompileOptions, ExcType, LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, LimitedTracker, PrintWriter, ResourceLimits};
 
 #[test]
 fn non_ascii_earlier_line_does_not_shift_column() {
