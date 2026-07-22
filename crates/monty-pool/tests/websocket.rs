@@ -270,7 +270,7 @@ fn duration_backstop_kills_an_unresponsive_worker() {
     let pool = Pool::new(config).expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .expect("checkout");

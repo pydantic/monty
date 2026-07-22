@@ -20,7 +20,7 @@ Project goals:
 ## `monty-types` — shared boundary types
 
 The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
-its arg structs, `ResourceLimits`/`LimitedTracker`, `PrintStream`/`PrintWriter`,
+its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
 depends on `monty-types` but does not blanket re-export it — only a few types

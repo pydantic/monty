@@ -6,7 +6,7 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+    CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -30,7 +30,7 @@ fn monty_run_dump_load_simple() {
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
-    let result = loaded.run_no_limits(vec![]).unwrap();
+    let result = loaded.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(3));
 }
 
@@ -48,7 +48,7 @@ fn monty_run_dump_load_with_inputs() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     let result = loaded
-        .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
+        .run_dft_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
         .unwrap();
     assert_eq!(result, MontyObject::Int(20));
 }
@@ -62,7 +62,7 @@ fn monty_run_dump_load_preserves_code() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     assert_eq!(loaded.code(), code);
-    let result = loaded.run_no_limits(vec![]).unwrap();
+    let result = loaded.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(42));
 }
 
@@ -86,7 +86,7 @@ result
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
-    let result = loaded.run_no_limits(vec![]).unwrap();
+    let result = loaded.run_dft_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
     let expected = MontyObject::List(vec![
         MontyObject::Int(0),
@@ -117,11 +117,11 @@ fn monty_run_dump_load_multiple_runs() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     assert_eq!(
-        loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),
+        loaded.run_dft_limits(vec![MontyObject::Int(5)]).unwrap(),
         MontyObject::Int(10)
     );
     assert_eq!(
-        loaded.run_no_limits(vec![MontyObject::Int(21)]).unwrap(),
+        loaded.run_dft_limits(vec![MontyObject::Int(21)]).unwrap(),
         MontyObject::Int(42)
     );
 }
@@ -140,7 +140,11 @@ fn run_progress_dump_load_roundtrip() {
     .unwrap();
 
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     // First resolve the NameLookup for ext_fn
@@ -175,7 +179,11 @@ fn run_progress_dump_load_multiple_calls() {
 
     // First call - resolve NameLookup for ext_fn first
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
     let bytes = progress.dump().unwrap();
@@ -206,7 +214,11 @@ fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let bytes = progress.dump().unwrap();

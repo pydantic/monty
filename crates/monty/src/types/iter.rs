@@ -16,7 +16,7 @@
 
 use std::mem;
 
-use monty_types::{LimitedTracker, ResourceError};
+use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -190,7 +190,7 @@ struct IterArgs {
 pub(crate) fn checked_preallocation_hint(
     hint: usize,
     elem_size: usize,
-    tracker: &LimitedTracker,
+    tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
     /// Upper bound on the number of slots reserved from an untrusted hint.
     const MAX_PREALLOCATION_HINT: usize = 65_536;

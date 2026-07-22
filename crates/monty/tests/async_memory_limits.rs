@@ -7,8 +7,8 @@ use std::{mem, time::Duration};
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, NameLookupResult,
-    PrintWriter, ResourceLimits,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Drives `RunProgress` past every `NameLookup` and every `FunctionCall`
@@ -73,10 +73,10 @@ fn gather_awaited_state_charged_against_tracker() {
     let n = 10_000;
     let runner = gather_n_pending_runner(n);
 
-    let limits = ResourceLimits::new()
+    let limits = ResourceLimits::default()
         .max_memory(10 * 1024 * 1024)
         .max_duration(Duration::from_secs(30));
-    let tracker = LimitedTracker::new(limits);
+    let tracker = ResourceTracker::new(limits);
     let progress = runner.start(vec![], tracker, PrintWriter::Stdout).unwrap();
     let settled = drive_until_settled(progress).expect("run must reach ResolveFutures without raising");
     let resolve = match settled {
@@ -127,10 +127,10 @@ asyncio.run(deep(20000))
 ";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new()
+    let limits = ResourceLimits::default()
         .max_memory(128 * 1024)
         .max_duration(Duration::from_secs(30));
-    let tracker = LimitedTracker::new(limits);
+    let tracker = ResourceTracker::new(limits);
     let result = runner.run(vec![], tracker, PrintWriter::Stdout);
 
     let exc = result.expect_err("deep recursive gather must be bounded by the memory limit");
@@ -157,10 +157,10 @@ asyncio.run(f())
 ";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let limits = ResourceLimits::new()
+    let limits = ResourceLimits::default()
         .max_memory(128 * 1024)
         .max_duration(Duration::from_secs(30));
-    let tracker = LimitedTracker::new(limits);
+    let tracker = ResourceTracker::new(limits);
     let result = runner.run(vec![], tracker, PrintWriter::Stdout);
 
     let exc = result.expect_err("recursive gather must be bounded by the memory limit");

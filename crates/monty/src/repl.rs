@@ -7,7 +7,7 @@
 use std::mem;
 
 use ahash::AHashMap;
-use monty_types::{ExcType, LimitedTracker, MontyException, MontyObject, OsFunctionCall, PrintWriter};
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 
@@ -76,7 +76,7 @@ impl MontyRepl {
     /// construction from execution, matching the pattern used by `MontyRun::new()`.
     /// The [`CompileOptions`] apply to every snippet fed to the session.
     #[must_use]
-    pub fn new(script_name: &str, resource_tracker: LimitedTracker, options: CompileOptions) -> Self {
+    pub fn new(script_name: &str, resource_tracker: ResourceTracker, options: CompileOptions) -> Self {
         let heap = Heap::new(0, resource_tracker);
 
         Self {
@@ -95,7 +95,7 @@ impl MontyRepl {
     ///
     /// This is primarily intended for host integrations that need to attach
     /// per-execution state, such as cancellation markers, to an existing REPL.
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.heap.tracker()
     }
 
@@ -103,7 +103,7 @@ impl MontyRepl {
     ///
     /// REPL hosts use this to install ephemeral execution controls, such as
     /// async cancellation flags, before calling `feed_start()`.
-    pub fn tracker_mut(&mut self) -> &mut LimitedTracker {
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         self.heap.tracker_mut()
     }
 
@@ -519,7 +519,7 @@ impl ReplProgress {
     /// Lets hosts read resource accounting — e.g. cumulative execution time
     /// for `max_duration` budgeting — at any suspension point without
     /// consuming the progress.
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
             Self::OsCall(call) => call.snapshot.repl.tracker(),

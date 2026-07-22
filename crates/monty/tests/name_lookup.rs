@@ -13,7 +13,7 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+    CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
 };
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
@@ -55,7 +55,11 @@ fn resolve_as_function_and_call() {
     )
     .unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     // Resolve NameLookup for 'ext' as a function
@@ -76,7 +80,11 @@ fn resolve_as_function_and_call() {
 fn resolve_as_int() {
     let runner = MontyRun::new("PI + 1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -97,7 +105,11 @@ fn resolve_as_string() {
     )
     .unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -117,7 +129,11 @@ fn resolve_as_string() {
 fn resolve_as_bool() {
     let runner = MontyRun::new("not FLAG".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -132,7 +148,11 @@ fn resolve_as_bool() {
 fn resolve_as_list() {
     let runner = MontyRun::new("len(ITEMS)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -148,7 +168,11 @@ fn resolve_as_list() {
 fn resolve_as_float() {
     let runner = MontyRun::new("TAU + 0.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -167,7 +191,11 @@ fn resolve_as_float() {
 fn undefined_raises_name_error() {
     let runner = MontyRun::new("unknown_thing".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -183,7 +211,7 @@ fn undefined_raises_name_error() {
     );
 }
 
-/// In non-iterative mode (`run_no_limits`), undefined globals automatically raise `NameError`
+/// In non-iterative mode (`run_dft_limits`), undefined globals automatically raise `NameError`
 /// without yielding to the host.
 #[test]
 fn standard_mode_raises_name_error() {
@@ -194,7 +222,7 @@ fn standard_mode_raises_name_error() {
         CompileOptions::default(),
     )
     .unwrap();
-    let err = runner.run_no_limits(vec![]).unwrap_err();
+    let err = runner.run_dft_limits(vec![]).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("NameError: name 'unknown_fn' is not defined"),
@@ -211,7 +239,11 @@ fn undefined_in_function_raises_name_error() {
     let code = "def f():\n    return missing\nf()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
@@ -238,7 +270,11 @@ fn resolved_name_is_cached() {
     let code = "a = ext(1); b = ext(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let mut call_count = 0;
@@ -268,7 +304,11 @@ fn resolved_constant_is_cached() {
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let mut lookup_count = 0;
@@ -298,7 +338,11 @@ f()"
     .to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let mut lookup_count = 0;
@@ -330,7 +374,11 @@ fn multiple_names_each_looked_up() {
     let code = "a = foo(1); b = bar(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let mut called_names = Vec::new();
@@ -360,7 +408,11 @@ fn mixed_function_and_constant_lookups() {
     let code = "ext(OFFSET)".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let mut progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     let mut looked_up_names = Vec::new();
@@ -407,7 +459,11 @@ fn builtins_do_not_trigger_lookup() {
     )
     .unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
     assert_eq!(progress.into_complete().unwrap(), MontyObject::Int(3));
 }
@@ -423,7 +479,11 @@ fn range_builtin_no_lookup() {
     )
     .unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
     assert_eq!(
         progress.into_complete().unwrap(),
@@ -453,7 +513,7 @@ fn input_function_no_lookup() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            LimitedTracker::new(ResourceLimits::new()),
+            ResourceTracker::new(ResourceLimits::default()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -487,7 +547,7 @@ fn input_function_reassigned_then_called() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            LimitedTracker::new(ResourceLimits::new()),
+            ResourceTracker::new(ResourceLimits::default()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -521,7 +581,7 @@ fn input_function_with_looked_up_arg() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            LimitedTracker::new(ResourceLimits::new()),
+            ResourceTracker::new(ResourceLimits::default()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -554,7 +614,11 @@ fn resolve_function_with_non_interned_name() {
     let code = "x = foobar; x()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
 
     // First: NameLookup for 'foobar'
@@ -602,6 +666,6 @@ sorted([1], key=lambda x: x+1)
         "
     .to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let value = runner.run_no_limits(vec![]).unwrap();
+    let value = runner.run_dft_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
 }

@@ -16,7 +16,7 @@ use monty_types::{CompileOptions, ExcType, MontyObject};
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    ex.run_no_limits(vec![]).unwrap()
+    ex.run_dft_limits(vec![]).unwrap()
 }
 
 fn to_json(obj: &MontyObject) -> String {
@@ -177,7 +177,7 @@ fn json_roundtrip() {
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_dft_limits(vec![]).unwrap();
     let json = serde_json::to_string(&result).unwrap();
     let parsed: MontyObject = serde_json::from_str(&json).unwrap();
     assert_eq!(result, parsed);
@@ -204,7 +204,7 @@ fn cycle_equality_same_id() {
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_dft_limits(vec![]).unwrap();
 
     if let MontyObject::List(outer) = &result {
         assert_eq!(outer.len(), 2, "outer list should have 2 elements");
@@ -232,7 +232,7 @@ fn cycle_equality_different_ids() {
         CompileOptions::default(),
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_dft_limits(vec![]).unwrap();
 
     if let MontyObject::List(outer) = &result {
         assert_eq!(outer.len(), 2, "outer list should have 2 elements");

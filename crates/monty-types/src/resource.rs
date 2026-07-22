@@ -1,4 +1,4 @@
-//! Resource limits: the [`LimitedTracker`] used by the interpreter heap/VM
+//! Resource limits: the [`ResourceTracker`] used by the interpreter heap/VM
 //! and its [`ResourceLimits`] configuration.
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -58,10 +58,13 @@ impl Error for ResourceError {}
 
 /// Configuration for resource limits.
 ///
-/// All limits are optional - set to `None` to disable a specific limit.
-/// Use `ResourceLimits::default()` for no limits, or build custom limits
-/// with the builder pattern.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+/// The time/memory/GC limits are optional — set to `None` to disable — but
+/// recursion depth is always bounded (default
+/// [`DEFAULT_MAX_RECURSION_DEPTH`]): unbounded recursion would let sandboxed
+/// code overflow the native stack and abort the process. Use
+/// `ResourceLimits::default()` for the recursion-only defaults, or build
+/// custom limits with the builder pattern.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResourceLimits {
     /// Maximum execution time.
     pub max_duration: Option<Duration>,
@@ -70,22 +73,25 @@ pub struct ResourceLimits {
     /// Run garbage collection every N GC-tracked allocations.
     pub gc_interval: Option<usize>,
     /// Maximum recursion depth (function call stack depth).
-    pub max_recursion_depth: Option<usize>,
+    pub max_recursion_depth: usize,
 }
 
 /// Recommended maximum recursion depth if not otherwise specified.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 1000;
 
-impl ResourceLimits {
-    /// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
-    #[must_use]
-    pub fn new() -> Self {
+/// Creates a new ResourceLimits with all limits disabled, except max recursion which is set to 1000.
+impl Default for ResourceLimits {
+    fn default() -> Self {
         Self {
-            max_recursion_depth: Some(1000),
-            ..Default::default()
+            max_duration: None,
+            max_memory: None,
+            gc_interval: None,
+            max_recursion_depth: DEFAULT_MAX_RECURSION_DEPTH,
         }
     }
+}
 
+impl ResourceLimits {
     /// Sets the maximum execution duration.
     #[must_use]
     pub fn max_duration(mut self, limit: Duration) -> Self {
@@ -109,7 +115,7 @@ impl ResourceLimits {
 
     /// Sets the maximum recursion depth (function call stack depth).
     #[must_use]
-    pub fn max_recursion_depth(mut self, limit: Option<usize>) -> Self {
+    pub fn max_recursion_depth(mut self, limit: usize) -> Self {
         self.max_recursion_depth = limit;
         self
     }
@@ -140,7 +146,7 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 /// serialized, so a deserialized session resumes its budget where it left
 /// off rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct LimitedTracker {
+pub struct ResourceTracker {
     limits: ResourceLimits,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Serialized so time budgets survive dump/load. The serde
@@ -175,8 +181,8 @@ pub struct LimitedTracker {
     recursion_limit_override: Cell<Option<usize>>,
 }
 
-impl LimitedTracker {
-    /// Creates a new LimitedTracker with the given limits.
+impl ResourceTracker {
+    /// Creates a new ResourceTracker with the given limits.
     ///
     /// The execution-time clock starts at zero and only runs while the VM
     /// executes, so the tracker can be created any amount of time before
@@ -195,8 +201,10 @@ impl LimitedTracker {
 
     /// Returns the live recursion ceiling: the override if one is in effect,
     /// otherwise the configured `max_recursion_depth`.
-    fn active_recursion_limit(&self) -> Option<usize> {
-        self.recursion_limit_override.get().or(self.limits.max_recursion_depth)
+    fn active_recursion_limit(&self) -> usize {
+        self.recursion_limit_override
+            .get()
+            .unwrap_or(self.limits.max_recursion_depth)
     }
 
     /// Returns the current approximate memory usage.
@@ -309,14 +317,13 @@ impl LimitedTracker {
     /// if the limit would be exceeded. `current_depth` is the call stack depth
     /// before the new frame is pushed.
     pub fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
-        if let Some(max) = self.active_recursion_limit() {
-            // current_depth is before push, so new depth would be current_depth + 1
-            if current_depth >= max {
-                return Err(ResourceError::Recursion {
-                    limit: max,
-                    depth: current_depth + 1,
-                });
-            }
+        let limit = self.active_recursion_limit();
+        // current_depth is before push, so new depth would be current_depth + 1
+        if current_depth >= limit {
+            return Err(ResourceError::Recursion {
+                limit,
+                depth: current_depth + 1,
+            });
         }
         Ok(())
     }
@@ -385,16 +392,14 @@ impl LimitedTracker {
     /// tighten the depth ceiling from inside fixture code. The constructed
     /// limit (`limits.max_recursion_depth`) acts as the hard upper bound —
     /// raising it would let sandboxed code escape the host-imposed safety
-    /// bound. Crossing from "no limit configured" to a concrete value counts
-    /// as lowering (infinity → finite); going from `Some(N)` to `Some(K)` with
-    /// `K > N` is rejected with `Err(current)`, which callers surface as a
-    /// `ValueError` in the Python layer.
+    /// bound. A `new_limit` above the active ceiling is rejected with
+    /// `Err(current)`, which callers surface as a `ValueError` in the
+    /// Python layer.
     #[cfg(feature = "test-hooks")]
-    pub fn lower_recursion_limit(&self, new_limit: usize) -> Result<(), Option<usize>> {
-        if let Some(current) = self.active_recursion_limit()
-            && new_limit > current
-        {
-            return Err(Some(current));
+    pub fn lower_recursion_limit(&self, new_limit: usize) -> Result<(), usize> {
+        let limit = self.active_recursion_limit();
+        if new_limit > limit {
+            return Err(limit);
         }
         self.recursion_limit_override.set(Some(new_limit));
         Ok(())

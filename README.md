@@ -202,7 +202,7 @@ The `monty` crate itself provides the in-process interpreter:
 
 ```rust
 use monty::MontyRun;
-use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = r#"
 def fib(n):
@@ -214,7 +214,7 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::new(ResourceLimits::default()), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
@@ -224,7 +224,7 @@ assert_eq!(result, MontyObject::Int(55));
 
 ```rust
 use monty::MontyRun;
-use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, ResourceTracker, MontyObject, PrintWriter, ResourceLimits};
 
 // Serialize parsed code
 let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
@@ -232,7 +232,7 @@ let bytes = runner.dump().unwrap();
 
 // Later, restore and run
 let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout).unwrap();
+let result = runner2.run(vec![MontyObject::Int(41)], ResourceTracker::new(ResourceLimits::default()), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
 

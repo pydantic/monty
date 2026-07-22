@@ -29,7 +29,7 @@ pub use crate::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
         RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
     },
-    resource::{DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, LimitedTracker, ResourceError, ResourceLimits},
+    resource::{DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, ResourceError, ResourceLimits, ResourceTracker},
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
 };

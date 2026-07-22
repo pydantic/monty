@@ -23,9 +23,9 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
     let max_memory = extract_optional_usize(dict, "max_memory")?;
     let gc_interval = extract_optional_usize(dict, "gc_interval")?;
     let max_recursion_depth =
-        extract_optional_usize(dict, "max_recursion_depth")?.or(Some(DEFAULT_MAX_RECURSION_DEPTH));
+        extract_optional_usize(dict, "max_recursion_depth")?.unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
 
-    let mut limits = monty_types::ResourceLimits::new().max_recursion_depth(max_recursion_depth);
+    let mut limits = monty_types::ResourceLimits::default().max_recursion_depth(max_recursion_depth);
 
     if let Some(secs) = max_duration_secs {
         limits = limits

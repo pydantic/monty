@@ -6,7 +6,7 @@
 //! tab expansion, string repetition, container `repr()`, etc. — must use
 //! `StringBuilder` rather than `String::with_capacity(...).push(...)`, because
 //! the intermediate `String` lives on the Rust heap *outside* the
-//! [`LimitedTracker`]. Without a builder, a malicious script can amplify a
+//! [`ResourceTracker`]. Without a builder, a malicious script can amplify a
 //! small tracked input into a multi-gigabyte intermediate before the final
 //! [`allocate_string`](crate::types::str::allocate_string) ever consults the
 //! tracker — bypassing the configured memory limit and OOMing the host.
@@ -14,7 +14,7 @@
 //! # Active reservation, not preview
 //!
 //! Each growth actively *reserves* bytes with the tracker via
-//! [`LimitedTracker::on_grow`]. This matters because Monty allows nested
+//! [`ResourceTracker::on_grow`]. This matters because Monty allows nested
 //! operations: a [`str.join`](crate::types::str) over arbitrary objects can
 //! invoke user-defined `__str__`/`__repr__` methods, which may themselves
 //! build strings. A preview-only check (`check_estimated_size`) would let the
@@ -52,17 +52,17 @@
 
 use std::{fmt, mem};
 
-use monty_types::{LimitedTracker, ResourceError};
+use monty_types::{ResourceError, ResourceTracker};
 
 use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
 
 /// Resource-tracked builder for a `String`.
 ///
 /// Holds an inner `String`, a tracker reference, and the byte count currently
-/// reserved with the tracker. Growth calls [`LimitedTracker::on_grow`] to
+/// reserved with the tracker. Growth calls [`ResourceTracker::on_grow`] to
 /// reserve additional bytes (which fails fast if the memory limit would be
 /// exceeded), and [`Drop`] / [`finish`](Self::finish) release the reservation
-/// via [`LimitedTracker::on_free`].
+/// via [`ResourceTracker::on_free`].
 ///
 /// Typical use:
 ///
@@ -74,7 +74,7 @@ use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_strin
 /// ```
 pub struct StringBuilder<'t> {
     inner: String,
-    tracker: &'t LimitedTracker,
+    tracker: &'t ResourceTracker,
     /// Bytes currently reserved with `tracker` via `on_grow`. Always released
     /// before the builder ceases to exist — either in `finish` (so the
     /// follow-up `allocate_string` can re-add the final size without
@@ -93,7 +93,7 @@ impl<'t> StringBuilder<'t> {
     ///
     /// Use when the final size is not bounded up front. The builder will
     /// request additional reservation from the tracker on each 2× growth.
-    pub fn new(tracker: &'t LimitedTracker) -> Self {
+    pub fn new(tracker: &'t ResourceTracker) -> Self {
         Self {
             inner: String::new(),
             tracker,
@@ -107,7 +107,7 @@ impl<'t> StringBuilder<'t> {
     /// Use when the final size is known or bounded (e.g. padding to a given
     /// width). One up-front `on_grow` call covers every subsequent push that
     /// stays within `capacity`.
-    pub fn with_capacity(capacity: usize, tracker: &'t LimitedTracker) -> Result<Self, ResourceError> {
+    pub fn with_capacity(capacity: usize, tracker: &'t ResourceTracker) -> Result<Self, ResourceError> {
         tracker.on_grow(|| capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),

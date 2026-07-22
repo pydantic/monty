@@ -18,12 +18,12 @@ use pyo3::prelude::*;
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_dft_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
 
     bench.iter(|| {
-        let r = ex.run_no_limits(vec![]).unwrap();
+        let r = ex.run_dft_limits(vec![]).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -40,12 +40,12 @@ fn run_monty_with_data(bench: &mut Bencher, code: &str, data: &str, expected: i6
     )
     .unwrap();
     let make_input = || vec![MontyObject::String(data.to_owned())];
-    let r = ex.run_no_limits(make_input()).unwrap();
+    let r = ex.run_dft_limits(make_input()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
 
     bench.iter(|| {
-        let r = ex.run_no_limits(make_input()).unwrap();
+        let r = ex.run_dft_limits(make_input()).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -399,7 +399,7 @@ fn end_to_end_monty(bench: &mut Bencher) {
             CompileOptions::default(),
         )
         .unwrap();
-        let r = ex.run_no_limits(vec![]).unwrap();
+        let r = ex.run_dft_limits(vec![]).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });

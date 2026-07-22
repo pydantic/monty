@@ -6,15 +6,15 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, PrintWriter,
-    ResourceLimits,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 #[test]
 fn repl_executes_only_new_code() {
     let mut repl = MontyRepl::new(
         "repl.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
@@ -36,7 +36,7 @@ fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, Monty
 fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
     let mut repl = MontyRepl::new(
         "repl.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
     let output = feed_run_print(&mut repl, code).unwrap();
@@ -415,7 +415,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
 
     let repl = MontyRepl::new(
         "repl.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
 
@@ -471,7 +471,7 @@ fn repl_start_new_external_function_in_later_block() {
 fn repl_with_code(code: &str) -> MontyRepl {
     let mut repl = MontyRepl::new(
         "session_test.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();

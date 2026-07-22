@@ -21,8 +21,8 @@ use std::{borrow::Cow, mem};
 use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, type_check};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    OsFunctionCall, PrintWriter, PrintWriterCallback,
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    PrintWriter, PrintWriterCallback, ResourceTracker,
 };
 
 use super::{
@@ -43,9 +43,9 @@ use super::{
 ///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 5 because adding argument-name variants
-/// changed the serialized `StaticStrings` discriminants.
-const DUMP_VERSION: u16 = 5;
+/// version can restore it. Public so tests (and hosts that need to inspect an
+/// envelope) can reference the current version instead of hardcoding it.
+pub const DUMP_VERSION: u16 = 6;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -418,7 +418,7 @@ impl Child {
         };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(
             &self.script_name,
-            LimitedTracker::new(limits),
+            ResourceTracker::new(limits),
             options,
         )));
         Ok(())

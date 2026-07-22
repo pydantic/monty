@@ -10,8 +10,8 @@ use clap::{Parser, Subcommand};
 use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_types::{
-    CompileOptions, ExtFunctionResult, LimitedTracker, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter,
-    ResourceLimits,
+    CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
@@ -132,10 +132,10 @@ impl Cli {
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
     /// When no resource flags were provided, returns the default
-    /// recursion-only limits (`ResourceLimits::new()`).
+    /// recursion-only limits (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
     fn resource_limits(&self) -> Result<ResourceLimits, String> {
-        let mut limits = ResourceLimits::new();
+        let mut limits = ResourceLimits::default();
         if let Some(secs) = self.max_duration {
             limits = limits.max_duration(
                 Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
@@ -148,7 +148,7 @@ impl Cli {
             limits = limits.gc_interval(interval);
         }
         if let Some(depth) = self.max_recursion_depth {
-            limits = limits.max_recursion_depth(Some(depth));
+            limits = limits.max_recursion_depth(depth);
         }
         Ok(limits)
     }
@@ -228,14 +228,14 @@ fn dispatch_script(
         file_path,
         code,
         type_check_enabled,
-        LimitedTracker::new(limits),
+        ResourceTracker::new(limits),
         mount_table,
     )
 }
 
 /// REPL analog of [`dispatch_script`].
 fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, mount_table: Option<MountTable>) -> ExitCode {
-    run_repl(file_path, code, LimitedTracker::new(limits), mount_table)
+    run_repl(file_path, code, ResourceTracker::new(limits), mount_table)
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -251,7 +251,7 @@ fn run_script(
     file_path: &str,
     code: String,
     type_check_enabled: bool,
-    tracker: LimitedTracker,
+    tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
 ) -> ExitCode {
     if type_check_enabled {
@@ -348,7 +348,7 @@ fn run_script(
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(file_path: &str, code: &str, tracker: LimitedTracker, mut mount_table: Option<MountTable>) -> ExitCode {
+fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_table: Option<MountTable>) -> ExitCode {
     let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
 
     if !code.is_empty() {

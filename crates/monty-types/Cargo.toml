@@ -33,7 +33,7 @@ web-time = "1.1"
 
 [features]
 # test-hooks exposes small internal helpers needed by integration tests that
-# exercise production behavior (e.g. `LimitedTracker::lower_recursion_limit`
+# exercise production behavior (e.g. `ResourceTracker::lower_recursion_limit`
 # backing `sys.setrecursionlimit`). Forwarded by monty's own `test-hooks`.
 test-hooks = []
 

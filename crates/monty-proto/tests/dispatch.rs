@@ -8,10 +8,10 @@
 use monty::{MontyRepl, ReplProgress};
 use monty_proto::{
     FrameReader, MONTY_VERSION, WireObject, pb,
-    worker::{Child, HandleOutcome, dispatch_frame},
+    worker::{Child, DUMP_VERSION, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
@@ -172,7 +172,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     // recursive deserialize doesn't overflow the test stack
     let repl = MontyRepl::new(
         "main.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
     let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
@@ -187,7 +187,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
 
     // Assemble the dump envelope the way `Dump` does: [version u16 LE]
     // [tag u8 = 1 (suspended)][script_name str][type_check u8 = 0][payload].
-    let mut state = 5u16.to_le_bytes().to_vec();
+    let mut state = DUMP_VERSION.to_le_bytes().to_vec();
     state.push(1);
     let script_name = b"main.py";
     state.extend_from_slice(&u32::try_from(script_name.len()).unwrap().to_le_bytes());

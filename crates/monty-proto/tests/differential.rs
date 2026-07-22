@@ -442,7 +442,7 @@ fn executed_cycle_value_is_byte_compatible() {
         CompileOptions::default(),
     )
     .unwrap();
-    let cyclic = run.run_no_limits(vec![]).unwrap();
+    let cyclic = run.run_dft_limits(vec![]).unwrap();
     let hand = WireObject::new(cyclic.clone()).encode_to_vec();
     assert_eq!(hand, to_oracle(&cyclic).encode_to_vec());
     assert_eq!(decode_wire(&hand).expect("decode failed"), cyclic);

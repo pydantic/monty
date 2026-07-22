@@ -15,7 +15,7 @@ implementation**.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
-- `LimitedTracker` / `ResourceLimits` — the resource tracker the
+- `ResourceTracker` / `ResourceLimits` — the resource tracker the
   interpreter uses to enforce time/memory/recursion limits.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and

@@ -2689,7 +2689,7 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, LimitedTracker, PrintWriter, ResourceLimits};
+    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceLimits, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
@@ -2700,7 +2700,7 @@ mod tests {
     /// This bypasses `LongInt::into_value()` which would demote i64-fitting values.
     /// Used to test defensive code paths that handle LongInt-as-index scenarios.
     fn create_heap_with_longint(value: BigInt) -> (Heap, HeapId) {
-        let heap = Heap::new(16, LimitedTracker::new(ResourceLimits::new()));
+        let heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
         let long_int = LongInt::new(value);
         let heap_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
         (heap, heap_id)

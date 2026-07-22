@@ -40,9 +40,9 @@ pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
         .max_recursion_depth
         .map(|v| js_number_to_usize(v, "maxRecursionDepth"))
         .transpose()?
-        .or(Some(DEFAULT_MAX_RECURSION_DEPTH));
+        .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
 
-    let mut limits = ResourceLimits::new().max_recursion_depth(max_recursion_depth);
+    let mut limits = ResourceLimits::default().max_recursion_depth(max_recursion_depth);
 
     if let Some(secs) = js_limits.max_duration_secs {
         limits = limits.max_duration(

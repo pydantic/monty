@@ -203,7 +203,7 @@ fn repr_and_cycle_round_trip() {
         CompileOptions::default(),
     )
     .unwrap();
-    let cyclic = run.run_no_limits(vec![]).unwrap();
+    let cyclic = run.run_dft_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
     assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_, _))));
 }
@@ -440,7 +440,7 @@ fn resource_limits_round_trip() {
         max_duration: Some(Duration::from_millis(1500)),
         max_memory: Some(64 * 1024 * 1024),
         gc_interval: Some(100),
-        max_recursion_depth: Some(50),
+        max_recursion_depth: 50,
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
     assert_eq!(back.max_duration, limits.max_duration);
@@ -451,10 +451,10 @@ fn resource_limits_round_trip() {
 
 #[test]
 fn empty_resource_limits_default_recursion_depth() {
-    // an all-absent wire message must behave like ResourceLimits::new():
+    // an all-absent wire message must behave like ResourceLimits::default():
     // unlimited everything except the standard recursion-depth default
     let back = ResourceLimits::from(pb::ResourceLimits::default());
-    let expected = ResourceLimits::new();
+    let expected = ResourceLimits::default();
     assert_eq!(back.max_duration, expected.max_duration);
     assert_eq!(back.max_memory, expected.max_memory);
     assert_eq!(back.gc_interval, expected.gc_interval);

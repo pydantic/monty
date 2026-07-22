@@ -1,4 +1,4 @@
-use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, LimitedTracker, ResourceError};
+use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
 
 use crate::exception_private::{RunError, SimpleException};
 
@@ -7,7 +7,7 @@ use crate::exception_private::{RunError, SimpleException};
 /// Used for sequence repeats (`'x' * 999_999_999`), padding operations
 /// (`str.ljust`, `str.center`, `str.zfill`, etc.), and any other operation
 /// where the result size is a simple product of two known values.
-pub fn check_repeat_size(item_len: usize, count: usize, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub fn check_repeat_size(item_len: usize, count: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(item_len.saturating_mul(count), tracker)
 }
 
@@ -21,7 +21,7 @@ pub fn check_repeat_size(item_len: usize, count: usize, tracker: &LimitedTracker
 /// which allocates intermediate values on the Rust heap (not tracked by the resource tracker).
 /// At peak, old/new base and old/new accumulator coexist simultaneously during each
 /// multiplication step, requiring roughly 4× the final result size in memory.
-pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     // 0**n = 0, 1**n = 1, (-1)**n = ±1 — always small
     if base_bits <= 1 {
         return Ok(());
@@ -36,7 +36,7 @@ pub fn check_pow_size(base_bits: u64, exponent: u64, tracker: &LimitedTracker) -
 /// Pre-checks that an integer multiplication won't exceed resource limits.
 ///
 /// The result of multiplying two numbers has at most `a_bits + b_bits` bits.
-pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(estimate_bits_to_bytes(a_bits.saturating_add(b_bits)), tracker)
 }
 
@@ -44,7 +44,7 @@ pub fn check_mult_size(a_bits: u64, b_bits: u64, tracker: &LimitedTracker) -> Re
 ///
 /// The result of `value << shift` has approximately `value_bits + shift` bits.
 /// For zero values the result is always zero, so the check is skipped.
-pub fn check_lshift_size(value_bits: u64, shift_amount: u64, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub fn check_lshift_size(value_bits: u64, shift_amount: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     if value_bits == 0 {
         return Ok(());
     }
@@ -55,7 +55,7 @@ pub fn check_lshift_size(value_bits: u64, shift_amount: u64, tracker: &LimitedTr
 ///
 /// Division results are bounded by the dividend size, but we still check for consistency
 /// with other BigInt promotion paths.
-pub fn check_div_size(dividend_bits: u64, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub fn check_div_size(dividend_bits: u64, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     check_estimated_size(estimate_bits_to_bytes(dividend_bits), tracker)
 }
 
@@ -69,7 +69,7 @@ pub fn check_replace_size(
     old_len: usize,
     new_len: usize,
     count: i64,
-    tracker: &LimitedTracker,
+    tracker: &ResourceTracker,
 ) -> Result<(), ResourceError> {
     let estimated = if new_len < old_len {
         input_len
@@ -98,7 +98,7 @@ pub fn check_replace_size(
 ///
 /// Only calls the tracker when the estimate exceeds `LARGE_RESULT_THRESHOLD`
 /// to avoid overhead on small operations.
-pub(crate) fn check_estimated_size(estimated_bytes: usize, tracker: &LimitedTracker) -> Result<(), ResourceError> {
+pub(crate) fn check_estimated_size(estimated_bytes: usize, tracker: &ResourceTracker) -> Result<(), ResourceError> {
     if estimated_bytes > LARGE_RESULT_THRESHOLD {
         tracker.check_large_result(estimated_bytes)?;
     }

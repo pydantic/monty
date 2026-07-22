@@ -967,7 +967,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
 
 #[cfg(test)]
 mod tests {
-    use monty_types::{AssertMessageAnnotations, LimitedTracker, PrintWriter, ResourceLimits};
+    use monty_types::{AssertMessageAnnotations, PrintWriter, ResourceLimits, ResourceTracker};
     use num_bigint::BigInt;
 
     use super::*;
@@ -987,7 +987,7 @@ mod tests {
     ///
     /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
     fn create_heap_with_list_and_longint(list_items: Vec<Value>, index_value: BigInt) -> (Heap, HeapId, HeapId) {
-        let heap = Heap::new(16, LimitedTracker::new(ResourceLimits::new()));
+        let heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
         let list = List::new(list_items);
         let list_id = heap.allocate(HeapData::List(list)).unwrap();
         let long_int = LongInt::new(index_value);

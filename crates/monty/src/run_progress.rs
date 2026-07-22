@@ -8,7 +8,7 @@
 
 use std::mem;
 
-use monty_types::{ExcType, LimitedTracker, MontyException, MontyObject, OsFunctionCall, PrintWriter};
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 
 use crate::{
     asyncio::CallId,
@@ -164,14 +164,14 @@ impl FunctionCall {
     ///
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
-    pub fn tracker_mut(&mut self) -> &mut LimitedTracker {
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         self.snapshot.heap.tracker_mut()
     }
 
     /// Returns the resource tracker, letting hosts inspect resource usage
-    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended.
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
     #[must_use]
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.snapshot.heap.tracker()
     }
 
@@ -270,11 +270,11 @@ impl OsCall {
     }
 
     /// Returns the resource tracker, letting hosts inspect resource usage
-    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended —
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended —
     /// for example verifying that a `read()` counts the file buffer against
     /// `max_memory` between OS-call resumes.
     #[must_use]
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.snapshot.heap.tracker()
     }
 }
@@ -316,9 +316,9 @@ impl NameLookup {
     }
 
     /// Returns the resource tracker, letting hosts inspect resource usage
-    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended.
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
     #[must_use]
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.snapshot.heap.tracker()
     }
 
@@ -436,9 +436,9 @@ impl ResolveFutures {
     }
 
     /// Returns the resource tracker, letting hosts inspect resource usage
-    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended.
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
     #[must_use]
-    pub fn tracker(&self) -> &LimitedTracker {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.heap.tracker()
     }
 

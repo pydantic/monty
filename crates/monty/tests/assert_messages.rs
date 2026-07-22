@@ -6,14 +6,14 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, PrintWriter,
-    ResourceLimits,
+    AssertMessageAnnotations, CompileOptions, ExcType, MontyException, MontyObject, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 /// Runs `code` and returns the exception it raises.
 fn get_err(code: &str) -> MontyException {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should compile");
-    run.run_no_limits(vec![]).expect_err("expected an exception")
+    run.run_dft_limits(vec![]).expect_err("expected an exception")
 }
 
 /// Runs `code` and returns the failed assert's `AssertionError` message.
@@ -116,7 +116,7 @@ assert 2 == 2, msg()
 len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_no_limits(vec![]).unwrap();
+    let result = run.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(0));
 }
 
@@ -132,7 +132,7 @@ for _ in range(100):
 len(xs)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_no_limits(vec![]).unwrap();
+    let result = run.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
 
@@ -150,7 +150,7 @@ except AssertionError:
 len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_no_limits(vec![]).unwrap();
+    let result = run.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(1));
 }
 
@@ -164,7 +164,7 @@ except AssertionError as e:
 r
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_no_limits(vec![]).unwrap();
+    let result = run.run_dft_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::String("assert 1 == 2".into()));
 }
 
@@ -245,7 +245,7 @@ fn custom_truncation_limit() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10),
     };
     let run = MontyRun::new("assert list(range(200)) == []".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_snapshot!(err.message().unwrap(), @"assert [0, 1, 2, … == []");
 
@@ -254,7 +254,7 @@ fn custom_truncation_limit() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10_000),
     };
     let run = MontyRun::new("assert list(range(50)) == []".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     let msg = err.message().unwrap();
     assert!(msg.ends_with("48, 49] == []"), "{msg}");
 }
@@ -273,9 +273,9 @@ except AssertionError as e:
 r[:10] + '|' + r[-9:] + '|' + str(len(r))
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let limits = ResourceLimits::default().max_memory(1_048_576);
     let result = run
-        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .expect("AssertionError must stay catchable under the memory limit");
     // 7 ("assert ") + 121 (120-char repr + `…`) + 6 (" == []") = 134 chars.
     assert_eq!(result, MontyObject::String("assert ['x|xx… == []|134".into()));
@@ -289,7 +289,7 @@ fn truncation_cuts_on_char_boundaries() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
     };
     let run = MontyRun::new("assert '日本語です' == ''".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     assert_snapshot!(err.message().unwrap(), @"assert '日… == ''");
 }
 
@@ -316,7 +316,7 @@ fn custom_limit_survives_repl_snippets() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
     };
-    let mut repl = MontyRepl::new("repl.py", LimitedTracker::new(ResourceLimits::new()), options);
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::new(ResourceLimits::default()), options);
     repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == ''", vec![], PrintWriter::Stdout)
@@ -340,7 +340,7 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(0),
     };
     let run = MontyRun::new("assert 2 == 5".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 }
@@ -385,7 +385,7 @@ fn opt_out_restores_cpython_behavior() {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 
@@ -393,7 +393,7 @@ fn opt_out_restores_cpython_behavior() {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.message(), Some("msg"));
 }
 
@@ -401,7 +401,7 @@ fn opt_out_restores_cpython_behavior() {
 fn assert_inside_repl_gets_messages() {
     let mut repl = MontyRepl::new(
         "repl.py",
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         CompileOptions::default(),
     );
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
@@ -417,7 +417,7 @@ fn repl_opt_out_applies_to_every_snippet() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
-    let mut repl = MontyRepl::new("repl.py", LimitedTracker::new(ResourceLimits::new()), options);
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::new(ResourceLimits::default()), options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)

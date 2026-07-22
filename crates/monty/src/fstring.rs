@@ -9,7 +9,7 @@
 use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
 
 pub use monty_types::FormatFloat;
-use monty_types::LimitedTracker;
+use monty_types::ResourceTracker;
 
 use crate::{
     bytecode::VM,
@@ -1316,7 +1316,7 @@ fn format_long_int(
     li: &LongInt,
     value_type: &str,
     spec: &ParsedFormatSpec,
-    tracker: &LimitedTracker,
+    tracker: &ResourceTracker,
 ) -> Result<String, RunError> {
     let sign = if li.is_negative() {
         "-"

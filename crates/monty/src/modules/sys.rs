@@ -129,11 +129,8 @@ fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     }
     match vm.heap.tracker().lower_recursion_limit(new_limit) {
         Ok(()) => Ok(Value::None),
-        Err(Some(current)) => Err(ExcType::value_error(format!(
+        Err(current) => Err(ExcType::value_error(format!(
             "sys.setrecursionlimit: cannot raise above current limit {current} (sandbox only allows lowering)"
         ))),
-        Err(None) => Err(ExcType::value_error(
-            "sys.setrecursionlimit: this runtime does not expose a settable recursion limit",
-        )),
     }
 }

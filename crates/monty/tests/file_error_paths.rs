@@ -8,8 +8,8 @@
 
 use monty::MontyRun;
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyException, MontyFileHandle, MontyObject,
-    PrintWriter, ResourceLimits,
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Drives an `open()` followed by a single read/write OS call, then resumes
@@ -25,7 +25,11 @@ fn run_with_open_then_io(
 ) -> Result<MontyObject, MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     assert_eq!(open_call.function_call.name(), "open");
@@ -84,7 +88,11 @@ f.readline()
 ";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .start(
+            vec![],
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     let progress = open_call

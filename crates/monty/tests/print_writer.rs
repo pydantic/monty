@@ -10,7 +10,7 @@
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, LimitedTracker, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, PrintWriter, ResourceLimits, ResourceTracker};
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care
@@ -20,7 +20,7 @@ fn run_and_capture(code: &str) -> String {
     let mut output = String::new();
     ex.run(
         vec![],
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         PrintWriter::collect_string(&mut output),
     )
     .unwrap();
@@ -116,7 +116,7 @@ fn writer_reuse_accumulates() {
     .unwrap();
     ex1.run(
         vec![],
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         PrintWriter::collect_string(&mut output),
     )
     .unwrap();
@@ -130,7 +130,7 @@ fn writer_reuse_accumulates() {
     .unwrap();
     ex2.run(
         vec![],
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         PrintWriter::collect_string(&mut output),
     )
     .unwrap();
@@ -151,7 +151,7 @@ for i in range(100):
     // Should complete without error, output is silently discarded
     let result = ex.run(
         vec![],
-        LimitedTracker::new(ResourceLimits::new()),
+        ResourceTracker::new(ResourceLimits::default()),
         PrintWriter::Disabled,
     );
     assert!(result.is_ok());

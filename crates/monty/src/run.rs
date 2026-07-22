@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 pub use monty_types::CompileOptions;
-use monty_types::{ExcType, LimitedTracker, MontyException, MontyObject, PrintWriter, ResourceLimits};
+use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -26,7 +26,7 @@ use crate::{
 /// Primary interface for running Monty code.
 ///
 /// `MontyRun` supports two execution modes:
-/// - **Simple execution**: Use `run()` or `run_no_limits()` to run code to completion
+/// - **Simple execution**: Use `run()` or `run_dft_limits()` to run code to completion
 /// - **Iterative execution**: Use `start()` to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
@@ -42,7 +42,7 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
+/// let result = runner.run_dft_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -91,7 +91,7 @@ impl MontyRun {
     pub fn run_ref_counts_with_tracker(
         &self,
         inputs: Vec<MontyObject>,
-        resource_tracker: LimitedTracker,
+        resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         self.executor.run_ref_counts_with_tracker(inputs, resource_tracker)
     }
@@ -108,15 +108,19 @@ impl MontyRun {
     pub fn run(
         &self,
         inputs: Vec<MontyObject>,
-        resource_tracker: LimitedTracker,
+        resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         self.executor.run(inputs, resource_tracker, print)
     }
 
-    /// Executes the code to completion with no resource limits, printing to stdout/stderr.
-    pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(inputs, LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+    /// Executes the code to completion with default resource limits, printing to stdout/stderr.
+    pub fn run_dft_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
+        self.run(
+            inputs,
+            ResourceTracker::new(ResourceLimits::default()),
+            PrintWriter::Stdout,
+        )
     }
 
     /// Serializes the runner to a binary format.
@@ -169,7 +173,7 @@ impl MontyRun {
     pub fn start(
         self,
         inputs: Vec<MontyObject>,
-        resource_tracker: LimitedTracker,
+        resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<RunProgress, MontyException> {
         let executor = self.executor;
@@ -366,7 +370,7 @@ impl Executor {
     fn run(
         &self,
         inputs: Vec<MontyObject>,
-        resource_tracker: LimitedTracker,
+        resource_tracker: ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         let heap_capacity = self.heap_capacity.load(Ordering::Relaxed);
@@ -442,7 +446,7 @@ impl Executor {
     /// Executes the code and returns both the result and reference count data, used for testing only.
     #[cfg(feature = "ref-count-return")]
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
-        self.run_ref_counts_with_tracker(inputs, LimitedTracker::new(ResourceLimits::new()))
+        self.run_ref_counts_with_tracker(inputs, ResourceTracker::new(ResourceLimits::default()))
     }
 
     /// Executes the code and returns both the result and reference count data with a custom tracker,
@@ -463,7 +467,7 @@ impl Executor {
     fn run_ref_counts_with_tracker(
         &self,
         inputs: Vec<MontyObject>,
-        resource_tracker: LimitedTracker,
+        resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
