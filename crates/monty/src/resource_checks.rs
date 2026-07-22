@@ -127,7 +127,7 @@ fn estimate_bits_to_bytes(bits: u64) -> usize {
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
         let (exc_type, catchable) = match &err {
-            ResourceError::Allocation { .. } | ResourceError::Memory { .. } => (ExcType::MemoryError, false),
+            ResourceError::Memory { .. } => (ExcType::MemoryError, false),
             ResourceError::Time { .. } => (ExcType::TimeoutError, false),
             ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
         };

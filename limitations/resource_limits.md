@@ -1,14 +1,13 @@
 # Resource limits
 
-Monty enforces hard limits on memory, time, allocations, and recursion to
-keep untrusted code bounded. Memory and allocation limits surface to the host
-as terminal `MemoryError`s, while time limits surface as terminal
-`TimeoutError`s; sandboxed code cannot catch them. `RecursionError` is
-catchable, as in CPython.
+Monty enforces hard limits on memory, time, and recursion to keep untrusted
+code bounded. Memory limits surface to the host as terminal `MemoryError`s,
+while time limits surface as terminal `TimeoutError`s; sandboxed code cannot
+catch them. `RecursionError` is catchable, as in CPython.
 
 ## Memory / size limits
 
-- Allocation tracking is global; the host sets the bytes budget when
+- Memory tracking is global; the host sets the bytes budget when
   constructing the VM.
 - The byte count is **approximate**: per-object sizing uses `py_estimate_size`,
   which elides bookkeeping overhead (HashMap bucket padding, `Vec` capacity
@@ -80,7 +79,7 @@ catchable, as in CPython.
 
 ## After a terminal resource error
 
-After a memory, allocation, or time limit fires, **no guarantees are made about
+After a memory or time limit fires, **no guarantees are made about
 heap state or reference counts**. The host should discard the VM rather than
 try to recover and continue running code in it. A caught `RecursionError` does
 not invalidate the VM and execution may continue inside the sandbox.

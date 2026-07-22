@@ -65,10 +65,6 @@ struct Cli {
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
 
-    /// Maximum number of heap allocations before execution is terminated.
-    #[arg(long)]
-    max_allocations: Option<usize>,
-
     /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
     #[arg(long)]
     max_duration: Option<f64>,
@@ -127,8 +123,7 @@ impl Cli {
     /// `--max-duration` that fails `Duration::try_from_secs_f64`) would be
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
-        self.max_allocations.is_some()
-            || self.max_duration.is_some()
+        self.max_duration.is_some()
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
@@ -145,9 +140,6 @@ impl Cli {
         }
 
         let mut limits = ResourceLimits::new();
-        if let Some(n) = self.max_allocations {
-            limits = limits.max_allocations(n);
-        }
         if let Some(secs) = self.max_duration {
             limits = limits.max_duration(
                 Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,

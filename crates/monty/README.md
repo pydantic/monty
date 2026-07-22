@@ -46,7 +46,7 @@ Errors are returned as `MontyException`, with a traceback matching what CPython 
 
 ## Resource limits
 
-Untrusted code shouldn't be able to hog the host. `LimitedTracker` enforces limits on memory, allocation count, execution time, GC interval and recursion depth; exceeding one terminates execution with a `ResourceError`:
+Untrusted code shouldn't be able to hog the host. `LimitedTracker` enforces limits on memory, execution time, GC interval and recursion depth; exceeding one terminates execution with a `ResourceError`:
 
 ```rust
 use std::time::Duration;

@@ -437,14 +437,12 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
 #[test]
 fn resource_limits_round_trip() {
     let limits = ResourceLimits {
-        max_allocations: Some(10_000),
         max_duration: Some(Duration::from_millis(1500)),
         max_memory: Some(64 * 1024 * 1024),
         gc_interval: Some(100),
         max_recursion_depth: Some(50),
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
-    assert_eq!(back.max_allocations, limits.max_allocations);
     assert_eq!(back.max_duration, limits.max_duration);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
@@ -457,7 +455,6 @@ fn empty_resource_limits_default_recursion_depth() {
     // unlimited everything except the standard recursion-depth default
     let back = ResourceLimits::from(pb::ResourceLimits::default());
     let expected = ResourceLimits::new();
-    assert_eq!(back.max_allocations, expected.max_allocations);
     assert_eq!(back.max_duration, expected.max_duration);
     assert_eq!(back.max_memory, expected.max_memory);
     assert_eq!(back.gc_interval, expected.gc_interval);

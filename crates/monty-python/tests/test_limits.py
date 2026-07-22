@@ -13,13 +13,11 @@ from pydantic_monty import Monty, MontyRuntimeError, ResourceLimits
 
 def test_resource_limits_typed_dict():
     limits = ResourceLimits(
-        max_allocations=100,
         max_duration_secs=5.0,
         max_memory=1024,
         gc_interval=10,
         max_recursion_depth=500,
     )
-    assert limits.get('max_allocations') == snapshot(100)
     assert limits.get('max_duration_secs') == snapshot(5.0)
     assert limits.get('max_memory') == snapshot(1024)
     assert limits.get('gc_interval') == snapshot(10)
@@ -59,20 +57,6 @@ def recurse(n):
 recurse(5)
 """
     assert monty_run(code, limits={'max_recursion_depth': 100}) == snapshot(5)
-
-
-def test_allocation_limit(monty_run: RunMonty):
-    # Note: allocation counting may not trigger on all operations
-    # Use a more aggressive allocation pattern
-    code = """
-result = []
-for i in range(10000):
-    result.append([i])  # Each append creates a new list
-len(result)
-"""
-    with pytest.raises(MontyRuntimeError) as exc_info:
-        monty_run(code, limits={'max_allocations': 5})
-    assert isinstance(exc_info.value.exception(), MemoryError)
 
 
 def test_memory_limit(monty_run: RunMonty):
@@ -116,13 +100,13 @@ def test_limits_with_inputs(monty_run: RunMonty):
 
 def test_limits_wrong_type_raises_error(pool: Monty):
     with pytest.raises(TypeError):
-        with pool.checkout(limits={'max_allocations': 'not an int'}):  # pyright: ignore[reportArgumentType]
+        with pool.checkout(limits={'max_memory': 'not an int'}):  # pyright: ignore[reportArgumentType]
             pass
 
 
 def test_limits_none_value_allowed(monty_run: RunMonty):
     # None is valid to explicitly disable a limit
-    assert monty_run('1 + 1', limits={'max_allocations': None}) == snapshot(2)
+    assert monty_run('1 + 1', limits={'max_memory': None}) == snapshot(2)
 
 
 def test_pow_memory_limit(monty_run: RunMonty):

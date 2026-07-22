@@ -282,8 +282,6 @@ pub struct StackFrame {
 /// limit (1000) when absent.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ResourceLimits {
-    #[prost(uint64, optional, tag = "1")]
-    pub max_allocations: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "2")]
     pub max_duration_micros: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "3")]

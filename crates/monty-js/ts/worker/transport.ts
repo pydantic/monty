@@ -23,7 +23,6 @@ type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
 /** Resource limits enforced inside the worker, mirroring the napi pool's. */
 export interface ResourceLimits {
-  maxAllocations?: number
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
@@ -748,7 +747,6 @@ function decodeSingleString(bytes: Uint8Array): string {
 /** Encodes a `ResourceLimits` message (durations are seconds -> microseconds). */
 function encodeLimits(limits: ResourceLimits): Uint8Array {
   const w = new Writer()
-  if (limits.maxAllocations !== undefined) w.uint(1, limits.maxAllocations) // max_allocations
   if (limits.maxDurationSecs !== undefined) w.uint(2, Math.round(limits.maxDurationSecs * 1_000_000)) // max_duration_micros
   if (limits.maxMemory !== undefined) w.uint(3, limits.maxMemory) // max_memory_bytes
   if (limits.gcInterval !== undefined) w.uint(4, limits.gcInterval) // gc_interval

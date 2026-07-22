@@ -534,7 +534,6 @@ impl Tokens {
 fn fuzz_limits() -> LimitedTracker {
     LimitedTracker::new(
         ResourceLimits::new()
-            .max_allocations(10_000)
             .max_memory(1024 * 1024) // 1 MB
             .max_duration(Duration::from_millis(100)),
     )

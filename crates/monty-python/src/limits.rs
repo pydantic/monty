@@ -8,7 +8,6 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// Extracts resource limits from a Python dict.
 ///
 /// The dict should have the following optional keys:
-/// - `max_allocations`: Maximum number of heap allocations allowed (int)
 /// - `max_duration_secs`: Maximum execution time in seconds (float)
 /// - `max_memory`: Maximum heap memory in bytes (int)
 /// - `gc_interval`: Run garbage collection every N allocations (int)
@@ -20,7 +19,6 @@ use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 /// Raises `TypeError` if a value is present but has the wrong type.
 /// Raises `ValueError` if `max_duration_secs` is not a valid duration value.
 pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::ResourceLimits> {
-    let max_allocations = extract_optional_usize(dict, "max_allocations")?;
     let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
     let max_memory = extract_optional_usize(dict, "max_memory")?;
     let gc_interval = extract_optional_usize(dict, "gc_interval")?;
@@ -29,9 +27,6 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
 
     let mut limits = monty_types::ResourceLimits::new().max_recursion_depth(max_recursion_depth);
 
-    if let Some(max) = max_allocations {
-        limits = limits.max_allocations(max);
-    }
     if let Some(secs) = max_duration_secs {
         limits = limits
             .max_duration(Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(err.to_string()))?);

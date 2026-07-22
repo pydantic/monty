@@ -1,7 +1,7 @@
 /// Tests for resource limits and garbage collection.
 ///
 /// These tests verify that the `ResourceTracker` system correctly enforces
-/// allocation limits, time limits, and triggers garbage collection.
+/// memory limits, time limits, and triggers garbage collection.
 use std::{
     thread,
     time::{Duration, Instant},
@@ -167,36 +167,11 @@ len(result)
     );
 }
 
-/// Test that allocation limits return an error.
-#[test]
-fn allocation_limit_exceeded() {
-    // Use multi-character strings to ensure heap allocation (single ASCII chars are interned)
-    let code = r"
-result = []
-for i in range(100, 115):
-    result.append(str(i))
-result
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_allocations(4);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    // Should fail due to allocation limit
-    assert!(result.is_err(), "should exceed allocation limit");
-    let exc = result.unwrap_err();
-    assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert!(
-        exc.message().is_some_and(|m| m.contains("allocation limit exceeded")),
-        "expected allocation limit error, got: {exc}"
-    );
-}
-
 /// Compact structural identities remain immediate Python integers.
 #[test]
 fn compact_id_does_not_allocate() {
     let run = MontyRun::new("id(42)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_allocations(0);
+    let limits = ResourceLimits::new().max_memory(0);
     let result = run
         .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
@@ -206,35 +181,18 @@ fn compact_id_does_not_allocate() {
 
 /// Identity integers wider than `i64` allocate a tracked `LongInt`.
 #[test]
-fn wide_id_respects_allocation_limit() {
+fn wide_id_respects_memory_limit() {
     let run = MontyRun::new("id(1.5)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let limits = ResourceLimits::new().max_allocations(0);
+    let limits = ResourceLimits::new().max_memory(0);
     let exc = run
         .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap_err();
 
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
-    assert_eq!(exc.message(), Some("allocation limit exceeded: 1 > 0"));
-}
-
-#[test]
-fn allocation_limit_not_exceeded() {
-    // Single-digit strings are interned (no allocation), so this uses minimal heap
-    let code = r"
-result = []
-for i in range(9):
-    result.append(str(i))
-result
-";
-    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    // Allocations: list (1) + range (1) + iterator (1) = 3
-    // Note: str(0)...str(8) are single ASCII chars, so they use pre-interned strings
-    let limits = ResourceLimits::new().max_allocations(5);
-    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
-
-    // Should succeed
-    assert!(result.is_ok(), "should not exceed allocation limit");
+    assert!(
+        exc.message().is_some_and(|m| m.starts_with("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
 }
 
 #[test]
@@ -535,7 +493,6 @@ fn combined_limits() {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let limits = ResourceLimits::new()
-        .max_allocations(1000)
         .max_duration(Duration::from_secs(5))
         .max_memory(1024 * 1024);
 
@@ -633,12 +590,12 @@ fn executor_iter_resource_limit_on_resume() {
     // Test that resource limits are enforced across function calls
     // First function call succeeds, but resumed execution exceeds limit
 
-    // f-string to create multi-char strings (not interned)
-    let code = "foo(1)\nx = []\nfor i in range(10):\n    x.append(f'x{i}')\nlen(x)";
+    // 1KB strings so the loop clearly overruns the memory budget
+    let code = "foo(1)\nx = []\nfor i in range(10):\n    x.append('x' * 1000)\nlen(x)";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    // First function call should succeed with generous limit
-    let limits = ResourceLimits::new().max_allocations(5);
+    // First function call should succeed within the budget
+    let limits = ResourceLimits::new().max_memory(5000);
     let progress = run
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
@@ -649,14 +606,14 @@ fn executor_iter_resource_limit_on_resume() {
     assert_eq!(call.function_name, "foo");
     assert_eq!(call.args, vec![MontyObject::Int(1)]);
 
-    // Resume - should fail due to allocation limit during the for loop
+    // Resume - should fail due to memory limit during the for loop
     let result = call.resume(MontyObject::None, PrintWriter::Stdout);
-    assert!(result.is_err(), "should exceed allocation limit on resume");
+    assert!(result.is_err(), "should exceed memory limit on resume");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert!(
-        exc.message().is_some_and(|m| m.contains("allocation limit exceeded")),
-        "expected allocation limit error, got: {exc}"
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
     );
 }
 
@@ -664,33 +621,21 @@ fn executor_iter_resource_limit_on_resume() {
 fn executor_iter_resource_limit_before_function_call() {
     // Test that resource limits are enforced before first function call
 
-    // f-string to create multi-char strings (not interned)
-    let code = "x = []\nfor i in range(10):\n    x.append(f'x{i}')\nfoo(len(x))\n42";
+    // 1KB strings so the loop clearly overruns the memory budget
+    let code = "x = []\nfor i in range(10):\n    x.append('x' * 1000)\nfoo(len(x))\n42";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Should fail before reaching the function call
-    let limits = ResourceLimits::new().max_allocations(3);
+    let limits = ResourceLimits::new().max_memory(5000);
     let result = run.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
 
-    assert!(result.is_err(), "should exceed allocation limit before function call");
+    assert!(result.is_err(), "should exceed memory limit before function call");
     let exc = result.unwrap_err();
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
     assert!(
-        exc.message().is_some_and(|m| m.contains("allocation limit exceeded")),
-        "expected allocation limit error, got: {exc}"
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
     );
-}
-
-#[test]
-fn char_f_string_not_allocated() {
-    // Single character f-string interned not not allocated
-
-    let code = "x = []\nfor i in range(10):\n    x.append(f'{i}')";
-    let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-
-    let limits = ResourceLimits::new().max_allocations(4);
-    run.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
-        .unwrap();
 }
 
 #[test]
@@ -699,8 +644,8 @@ fn executor_iter_resource_limit_multiple_function_calls() {
     let code = "foo(1)\nbar(2)\nbaz(3)\n4";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    // Very tight allocation limit - should still work for simple function calls
-    let limits = ResourceLimits::new().max_allocations(100);
+    // Tight memory budget - should still work for simple function calls
+    let limits = ResourceLimits::new().max_memory(100_000);
 
     let progress = run
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
