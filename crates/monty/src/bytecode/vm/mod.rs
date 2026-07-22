@@ -38,7 +38,7 @@ use crate::{
     object_bridge::MontyObjectExt,
     parse::CodeRange,
     types::{
-        BinaryOp, Dict, LongInt, PyTrait,
+        Dict, LongInt, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
@@ -1123,10 +1123,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_or()),
                 Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_xor()),
                 Opcode::BinaryLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::BinaryRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
@@ -1265,17 +1265,17 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 Opcode::InplaceAnd => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::And));
+                    try_catch_sync!(self, cached_frame, self.binary_and());
                 }
-                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::Or)),
+                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_or()),
                 Opcode::InplaceXor => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::Xor));
+                    try_catch_sync!(self, cached_frame, self.binary_xor());
                 }
                 Opcode::InplaceLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::InplaceRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BinaryOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {

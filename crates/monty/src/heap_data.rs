@@ -7,7 +7,6 @@ use std::{
 };
 
 use monty_types::{ExcType, ResourceError, ResourceTracker};
-use num_integer::Integer;
 
 use crate::{
     args::ArgValues,
@@ -18,16 +17,12 @@ use crate::{
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        BinaryOp, BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet,
-        Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch,
-        RePattern, Set, Slice, Str, Tuple, Type,
-        callable_iterator::CallableIterator,
-        date, datetime,
-        list::ListIterator,
-        str::{allocate_string, concat_allocate_str},
-        timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
+        LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch, RePattern,
+        Set, Slice, Str, Tuple, Type, callable_iterator::CallableIterator, date, datetime, list::ListIterator,
+        str::allocate_string, timedelta, timezone,
     },
-    value::{EitherStr, Value, eq_bigint, eq_ext_function},
+    value::{EitherStr, Value, eq_ext_function},
 };
 
 /// HeapData captures every runtime value that must live in the arena.
@@ -500,6 +495,8 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
+            Self::Iter($value) => $body,
+            Self::LongInt($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
             Self::RePattern($value) => $body,
@@ -513,8 +510,6 @@ macro_rules! heap_read_output_py_trait_forward {
             | Self::ExtFunction(_)
             | Self::Cell(_)
             | Self::Exception(_)
-            | Self::Iter(_)
-            | Self::LongInt(_)
             | Self::Module(_)
             | Self::Coroutine(_)
             | Self::GatherFuture(_)
@@ -530,13 +525,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |value| value.py_bool(vm),
             else {
                 match self {
-                    Self::LongInt(li) => !li.get(vm.heap).is_zero(),
                     Self::Closure(_)
                     | Self::FunctionDefaults(_)
                     | Self::ExtFunction(_)
                     | Self::Cell(_)
                     | Self::Exception(_)
-                    | Self::Iter(_)
                     | Self::Module(_)
                     | Self::Coroutine(_)
                     | Self::GatherFuture(_)
@@ -547,22 +540,106 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_binary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_binary_impl(other, op, vm), else Ok(None))
+    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
     }
 
-    fn py_rbinary_impl(
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rsub_impl(other, vm), else Ok(None))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_mul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_matmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rmatmul_impl(other, vm), else Ok(None))
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_truediv_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rtruediv_impl(other, vm), else Ok(None))
+    }
+
+    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_floordiv_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rfloordiv_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rmod_impl(other, vm), else Ok(None))
+    }
+
+    fn py_pow_impl(
         &self,
         other: &Value,
-        op: BinaryOp,
+        modulus: Option<&Value>,
         vm: &mut VM<'h, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_rbinary_impl(other, op, vm), else Ok(None))
+        heap_read_output_py_trait_forward!(self, |value| value.py_pow_impl(other, modulus, vm), else Ok(None))
+    }
+
+    fn py_rpow_impl(
+        &self,
+        other: &Value,
+        modulus: Option<&Value>,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm), else Ok(None))
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_ror_impl(other, vm), else Ok(None))
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_xor_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rxor_impl(other, vm), else Ok(None))
+    }
+
+    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_lshift_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rlshift_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rshift_impl(other, vm), else Ok(None))
+    }
+
+    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_rrshift_impl(other, vm), else Ok(None))
     }
 
     fn py_call_attr(
@@ -588,50 +665,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_is_iterable(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
-        // Exhaustive, mirroring `py_iter`: each type answers for itself, so a new
-        // heap variant cannot silently default to "not iterable" — it fails to
-        // compile until it says which it is.
-        match self {
-            Self::Str(value) => value.py_is_iterable(vm),
-            Self::Bytes(value) => value.py_is_iterable(vm),
-            Self::List(value) => value.py_is_iterable(vm),
-            Self::ListIterator(value) => value.py_is_iterable(vm),
-            Self::CallableIterator(value) => value.py_is_iterable(vm),
-            Self::Tuple(value) => value.py_is_iterable(vm),
-            Self::NamedTuple(value) => value.py_is_iterable(vm),
-            Self::Dict(value) => value.py_is_iterable(vm),
-            Self::DictKeysView(value) => value.py_is_iterable(vm),
-            Self::DictItemsView(value) => value.py_is_iterable(vm),
-            Self::DictValuesView(value) => value.py_is_iterable(vm),
-            Self::Set(value) => value.py_is_iterable(vm),
-            Self::FrozenSet(value) => value.py_is_iterable(vm),
-            Self::Range(value) => value.py_is_iterable(vm),
-            Self::Slice(value) => value.py_is_iterable(vm),
-            Self::Dataclass(value) => value.py_is_iterable(vm),
-            Self::Class(value) => value.py_is_iterable(vm),
-            Self::Instance(value) => value.py_is_iterable(vm),
-            Self::BoundMethod(value) => value.py_is_iterable(vm),
-            Self::Iter(value) => value.py_is_iterable(vm),
-            Self::Path(value) => value.py_is_iterable(vm),
-            Self::OpenFile(value) => value.py_is_iterable(vm),
-            Self::ReMatch(value) => value.py_is_iterable(vm),
-            Self::RePattern(value) => value.py_is_iterable(vm),
-            Self::Date(value) => value.py_is_iterable(vm),
-            Self::DateTime(value) => value.py_is_iterable(vm),
-            Self::TimeDelta(value) => value.py_is_iterable(vm),
-            Self::TimeZone(value) => value.py_is_iterable(vm),
-            // Types `py_iter` cannot build an iterator for.
-            Self::Closure(_)
-            | Self::FunctionDefaults(_)
-            | Self::ExtFunction(_)
-            | Self::Cell(_)
-            | Self::Exception(_)
-            | Self::LongInt(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => false,
-        }
+        heap_read_output_py_trait_forward!(self, |value| value.py_is_iterable(vm), else false)
     }
 
     fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
@@ -676,8 +710,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     Self::Closure(_) | Self::FunctionDefaults(_) | Self::ExtFunction(_) => Type::Function,
                     Self::Cell(_) => Type::Cell,
                     Self::Exception(e) => e.py_type(vm),
-                    Self::Iter(_) => Type::Iterator,
-                    Self::LongInt(_) => Type::Int,
                     Self::Module(_) => Type::Module,
                     Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
                     _ => unreachable!("py-trait variants handled by heap_read_output_py_trait_forward"),
@@ -696,7 +728,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             |value| value.py_eq_impl(other, vm),
             else {
                 match self {
-                    Self::LongInt(a) => Ok(eq_bigint(a.get(vm.heap).inner(), other, vm)),
                     Self::ExtFunction(a) => Ok(eq_ext_function(a.get(vm.heap).as_str(), other, vm)),
                     Self::Closure(a) => Ok(match other.read_heap(vm) {
                         Some(Self::Closure(b)) => {
@@ -712,7 +743,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                     }),
                     Self::Cell(_)
                     | Self::Exception(_)
-                    | Self::Iter(_)
                     | Self::Module(_)
                     | Self::Coroutine(_)
                     | Self::GatherFuture(_)
@@ -741,10 +771,8 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                         Ok(Some(HashValue::new(hasher.finish())))
                     }
                     Self::Cell(_) => Ok(Some(identity_hash(self_id))),
-                    Self::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
                     Self::ExtFunction(name) => Ok(Some(hash_python_str(name.get(vm.heap)))),
                     Self::Exception(_)
-                    | Self::Iter(_)
                     | Self::Module(_)
                     | Self::Coroutine(_)
                     | Self::GatherFuture(_)
@@ -776,12 +804,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                         .py_repr_fmt(f, vm.interns, 0)?),
                     Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type_name(vm))?),
                     Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
-                    Self::Iter(_) => Ok(write!(f, "<iterator>")?),
-                    Self::LongInt(li) => {
-                        let li = li.get(vm.heap);
-                        li.check_str_digits_limit()?;
-                        Ok(write!(f, "{li}")?)
-                    }
                     Self::Module(m) => Ok(write!(f, "<module '{}'>", vm.interns.get_str(m.get(vm.heap).name()))?),
                     Self::Coroutine(coro) => {
                         let func = vm.interns.get_function(coro.get(vm.heap).func_id);
@@ -802,127 +824,37 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        match self {
-            Self::LongInt(li) => {
-                let li = li.get(vm.heap);
-                li.check_str_digits_limit()?;
-                Ok(allocate_string(li.to_string(), vm.heap)?)
-            }
-            Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)?),
-            Self::Path(p) => Ok(allocate_string(p.get(vm.heap).as_str(), vm.heap)?),
-            _ => heap_read_output_py_trait_forward!(self, |value| value.py_str(vm), else self.py_repr(vm)),
-        }
-    }
-
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        match (self, other) {
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(Some(concat_allocate_str(
-                a.get(vm.heap).as_str(),
-                b.get(vm.heap).as_str(),
-                vm.heap,
-            )?)),
-            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
-                let a_bytes = a.get(vm.heap).as_slice();
-                let b_bytes = b.get(vm.heap).as_slice();
-                let mut result = Vec::with_capacity(a_bytes.len() + b_bytes.len());
-                result.extend_from_slice(a_bytes);
-                result.extend_from_slice(b_bytes);
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Bytes(result.into()))?)))
-            }
-            (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
-            (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_add(b, vm),
-            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
-                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
-            }
-            // Datetime arithmetic: copy small values to release the borrow before allocating
-            (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td))
-            | (HeapReadOutput::TimeDelta(td), HeapReadOutput::Date(d)) => {
-                let d = *d.get(vm.heap);
-                let td = *td.get(vm.heap);
-                date::py_add(d, td, vm.heap)
-            }
-            (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td))
-            | (HeapReadOutput::TimeDelta(td), HeapReadOutput::DateTime(dt)) => {
-                let dt = dt.get(vm.heap).clone();
-                let td = *td.get(vm.heap);
-                datetime::py_add(&dt, &td, vm.heap)
-            }
-            (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                let total = timedelta::total_microseconds(a.get(vm.heap))
-                    .checked_add(timedelta::total_microseconds(b.get(vm.heap)));
-                let Some(total) = total else { return Ok(None) };
-                let Ok(result) = timedelta::from_total_microseconds(total) else {
-                    return Ok(None);
-                };
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn py_sub(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        match (self, other) {
-            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
-                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
-            }
-            // Datetime same-type subtraction: copy small values to release borrow before allocating
-            (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
-                let a = *a.get(vm.heap);
-                let b = *b.get(vm.heap);
-                date::py_sub_date(a, b, vm.heap)
-            }
-            (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
-                let a = a.get(vm.heap).clone();
-                let b = b.get(vm.heap).clone();
-                datetime::py_sub_datetime(&a, &b, vm.heap)
-            }
-            (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                let total = timedelta::total_microseconds(a.get(vm.heap))
-                    .checked_sub(timedelta::total_microseconds(b.get(vm.heap)));
-                let Some(total) = total else { return Ok(None) };
-                let Ok(result) = timedelta::from_total_microseconds(total) else {
-                    return Ok(None);
-                };
-                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
-            }
-            // Cross-type datetime subtraction
-            (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td)) => {
-                let d = *d.get(vm.heap);
-                let td = *td.get(vm.heap);
-                date::py_sub_timedelta(d, td, vm.heap)
-            }
-            (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td)) => {
-                let dt = dt.get(vm.heap).clone();
-                let td = *td.get(vm.heap);
-                datetime::py_sub_timedelta(&dt, &td, vm.heap)
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn py_mod(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        match (self, other) {
-            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                if b.get(vm.heap).is_zero() {
-                    Err(ExcType::zero_division().into())
-                } else {
-                    let bi = a.get(vm.heap).inner().mod_floor(b.get(vm.heap).inner());
-                    Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_str(vm),
+            else {
+                match self {
+                    Self::Exception(e) => Ok(allocate_string(e.get(vm.heap).py_str(), vm.heap)?),
+                    _ => self.py_repr(vm),
                 }
             }
-            _ => Ok(None),
-        }
+        )
     }
 
-    fn py_iadd(
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm), else Ok(None))
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm), else Ok(None))
+    }
+
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_mod_impl(other, vm), else Ok(None))
+    }
+
+    fn py_iadd_impl(
         &mut self,
         other: &Value,
         vm: &mut VM<'h, impl ResourceTracker>,
         self_id: Option<HeapId>,
     ) -> Result<bool, ResourceError> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_iadd(other, vm, self_id), else Ok(false))
+        heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm, self_id), else Ok(false))
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
@@ -948,95 +880,42 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        match self {
-            Self::Module(m) => Ok(m.py_getattr(attr, vm)),
-            Self::Exception(e) => e.py_getattr(attr, vm),
-            _ => heap_read_output_py_trait_forward!(self, |value| value.py_getattr(attr, vm), else Ok(None)),
-        }
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_getattr(attr, vm),
+            else {
+                match self {
+                    Self::Module(m) => Ok(m.py_getattr(attr, vm)),
+                    Self::Exception(e) => e.py_getattr(attr, vm),
+                    _ => Ok(None),
+                }
+            }
+        )
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-        match self {
-            Self::Str(value) => value.py_iter(self_id, vm),
-            Self::Bytes(value) => value.py_iter(self_id, vm),
-            Self::List(value) => value.py_iter(self_id, vm),
-            Self::ListIterator(value) => value.py_iter(self_id, vm),
-            Self::CallableIterator(value) => value.py_iter(self_id, vm),
-            Self::Tuple(value) => value.py_iter(self_id, vm),
-            Self::NamedTuple(value) => value.py_iter(self_id, vm),
-            Self::Dict(value) => value.py_iter(self_id, vm),
-            Self::DictKeysView(value) => value.py_iter(self_id, vm),
-            Self::DictItemsView(value) => value.py_iter(self_id, vm),
-            Self::DictValuesView(value) => value.py_iter(self_id, vm),
-            Self::Set(value) => value.py_iter(self_id, vm),
-            Self::FrozenSet(value) => value.py_iter(self_id, vm),
-            Self::Range(value) => value.py_iter(self_id, vm),
-            Self::Slice(value) => value.py_iter(self_id, vm),
-            Self::Dataclass(value) => value.py_iter(self_id, vm),
-            Self::Class(value) => value.py_iter(self_id, vm),
-            Self::Instance(value) => value.py_iter(self_id, vm),
-            Self::BoundMethod(value) => value.py_iter(self_id, vm),
-            Self::Iter(value) => value.py_iter(self_id, vm),
-            Self::Path(value) => value.py_iter(self_id, vm),
-            Self::OpenFile(value) => value.py_iter(self_id, vm),
-            Self::ReMatch(value) => value.py_iter(self_id, vm),
-            Self::RePattern(value) => value.py_iter(self_id, vm),
-            Self::Date(value) => value.py_iter(self_id, vm),
-            Self::DateTime(value) => value.py_iter(self_id, vm),
-            Self::TimeDelta(value) => value.py_iter(self_id, vm),
-            Self::TimeZone(value) => value.py_iter(self_id, vm),
-            Self::Closure(_)
-            | Self::FunctionDefaults(_)
-            | Self::ExtFunction(_)
-            | Self::Cell(_)
-            | Self::Exception(_)
-            | Self::LongInt(_)
-            | Self::Module(_)
-            | Self::Coroutine(_)
-            | Self::GatherFuture(_)
-            | Self::ExternalFuture(_) => {
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_iter(self_id, vm),
+            else {
                 let self_id = self_id.expect("heap values have an id");
                 vm.heap.inc_ref(self_id);
                 let iter = MontyIter::new(Value::Ref(self_id), vm)?;
                 let iter_id = vm.heap.allocate(HeapData::Iter(iter))?;
                 Ok(Value::Ref(iter_id))
             }
-        }
+        )
     }
 
     fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        match self {
-            Self::Str(value) => value.py_next(vm),
-            Self::Bytes(value) => value.py_next(vm),
-            Self::List(value) => value.py_next(vm),
-            Self::ListIterator(value) => value.py_next(vm),
-            Self::CallableIterator(value) => value.py_next(vm),
-            Self::Tuple(value) => value.py_next(vm),
-            Self::NamedTuple(value) => value.py_next(vm),
-            Self::Dict(value) => value.py_next(vm),
-            Self::DictKeysView(value) => value.py_next(vm),
-            Self::DictItemsView(value) => value.py_next(vm),
-            Self::DictValuesView(value) => value.py_next(vm),
-            Self::Set(value) => value.py_next(vm),
-            Self::FrozenSet(value) => value.py_next(vm),
-            Self::Range(value) => value.py_next(vm),
-            Self::Slice(value) => value.py_next(vm),
-            Self::Dataclass(value) => value.py_next(vm),
-            Self::Class(value) => value.py_next(vm),
-            Self::Instance(value) => value.py_next(vm),
-            Self::BoundMethod(value) => value.py_next(vm),
-            Self::Iter(value) => value.py_next(vm),
-            Self::Path(value) => value.py_next(vm),
-            Self::OpenFile(value) => value.py_next(vm),
-            Self::ReMatch(value) => value.py_next(vm),
-            Self::RePattern(value) => value.py_next(vm),
-            Self::Date(value) => value.py_next(vm),
-            Self::DateTime(value) => value.py_next(vm),
-            Self::TimeDelta(value) => value.py_next(vm),
-            Self::TimeZone(value) => value.py_next(vm),
-            other => Err(ExcType::type_error_not_iterator(
-                &other.py_type(vm).name(vm.heap, vm.interns),
-            )),
-        }
+        heap_read_output_py_trait_forward!(
+            self,
+            |value| value.py_next(vm),
+            else {
+                Err(ExcType::type_error_not_iterator(
+                    &self.py_type(vm).name(vm.heap, vm.interns),
+                ))
+            }
+        )
     }
 }

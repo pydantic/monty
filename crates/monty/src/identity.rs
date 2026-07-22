@@ -14,7 +14,7 @@ use crate::{
     bytecode::VM,
     heap::{Heap, HeapData},
     modules::ModuleFunctions,
-    types::{LongInt, Property},
+    types::{LongInt, Property, long_int::u128_into_value},
     value::{Marker, Value},
 };
 
@@ -97,7 +97,7 @@ impl<'a> Identity<'a> {
     /// external-function names allocate a heap `LongInt` for the returned value.
     pub(crate) fn into_value(self, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
         if let Some(encoded) = self.fixed_encoding() {
-            encoded_u128_to_value(encoded, heap)
+            u128_into_value(encoded, heap)
         } else if let Self::ExtFunction(name) = self {
             encode_long_name(name, heap)
         } else {
@@ -183,15 +183,6 @@ fn compact_float_bits(bits: u64) -> u64 {
     let exponent = (bits >> MANTISSA_BITS) & EXPONENT_MASK;
     let mantissa = bits & MANTISSA_MASK;
     (mantissa << 12) | (sign << 11) | exponent
-}
-
-/// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
-fn encoded_u128_to_value(encoded: u128, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
-    if let Ok(encoded) = i64::try_from(encoded) {
-        Ok(Value::Int(encoded))
-    } else {
-        allocate_identity_int(BigInt::from(encoded), heap)
-    }
 }
 
 /// Encodes an arbitrary external-function name into its necessarily wide identity.

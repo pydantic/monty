@@ -10,7 +10,7 @@
 
 use std::{
     cmp::Ordering,
-    fmt::{self, Display},
+    fmt::{self, Display, Write},
     mem,
     ops::{Add, Mul, Neg, Sub},
     sync::OnceLock,
@@ -18,13 +18,17 @@ use std::{
 
 use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
 
 use crate::{
+    bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_long_int},
-    heap::{Heap, HeapData},
-    value::Value,
+    heap::{Heap, HeapData, HeapId, HeapRead},
+    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size},
+    types::{LazyHeapSet, PyTrait, Type, str::allocate_string},
+    value::{Value, eq_bigint},
 };
 
 /// Maximum number of decimal digits allowed for integer-string conversion.
@@ -54,6 +58,24 @@ static INT_MAX_STR_DIGITS_THRESHOLD: OnceLock<BigInt> = OnceLock::new();
 /// i64 when the value fits, maintaining this optimization.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct LongInt(pub BigInt);
+
+/// Converts an `i128` into the compact integer representation.
+pub(crate) fn i128_into_value(value: i128, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    if let Ok(value) = i64::try_from(value) {
+        Ok(Value::Int(value))
+    } else {
+        LongInt::new(BigInt::from(value)).into_value(heap)
+    }
+}
+
+/// Converts a `u128` into the compact integer representation.
+pub(crate) fn u128_into_value(value: u128, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    if let Ok(value) = i64::try_from(value) {
+        Ok(Value::Int(value))
+    } else {
+        LongInt::new(BigInt::from(value)).into_value(heap)
+    }
+}
 
 impl LongInt {
     /// Creates a new `LongInt` from a `BigInt`.
@@ -157,6 +179,15 @@ impl LongInt {
         self.0.to_usize()
     }
 
+    /// Converts this integer to a Python sequence repetition count.
+    pub(crate) fn repeat_count(&self) -> RunResult<usize> {
+        if self.is_negative() {
+            Ok(0)
+        } else {
+            self.to_usize().ok_or_else(|| ExcType::overflow_repeat_count().into())
+        }
+    }
+
     /// Returns the absolute value as a new `LongInt`.
     pub fn abs(&self) -> Self {
         Self(self.0.abs())
@@ -178,6 +209,36 @@ impl LongInt {
     /// 4301-digit values reliably raise the same error as CPython.
     pub fn check_str_digits_limit(&self) -> RunResult<()> {
         check_bigint_str_digits_limit(&self.0)
+    }
+
+    /// Left-shifts an immediate integer, promoting only when the result requires it.
+    pub(crate) fn left_shift_i64(value: i64, shift: u64, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+        let bits = u64::from(i64::BITS - value.unsigned_abs().leading_zeros());
+        check_lshift_size(bits, shift, vm.heap.tracker())?;
+        let input = i128::from(value);
+        if let Ok(shift) = u32::try_from(shift)
+            && shift < i128::BITS
+            && let Some(value) = input.checked_shl(shift)
+            && (value >> shift) == input
+        {
+            Ok(i128_into_value(value, vm.heap)?)
+        } else {
+            Ok(Self::new(BigInt::from(value) << shift).into_value(vm.heap)?)
+        }
+    }
+}
+
+/// Extracts a Python integer as a sequence repetition count.
+pub(crate) fn repeat_count(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Option<usize>> {
+    match value {
+        Value::Int(value) => Ok(Some(if *value <= 0 {
+            0
+        } else {
+            usize::try_from(*value).map_err(|_| ExcType::overflow_repeat_count())?
+        })),
+        Value::Bool(value) => Ok(Some(usize::from(*value))),
+        Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => Ok(Some(value.repeat_count()?)),
+        _ => Ok(None),
     }
 }
 
@@ -324,6 +385,390 @@ fn int_max_str_digits_threshold() -> &'static BigInt {
 }
 
 // === Trait Implementations ===
+
+impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
+    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+        Type::Int
+    }
+
+    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+        None
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+        !self.get(vm.heap).is_zero()
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
+    }
+
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+        Ok(Some(self.get(vm.heap).hash()))
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        _heap_ids: &mut LazyHeapSet,
+    ) -> RunResult<()> {
+        let value = self.get(vm.heap);
+        value.check_str_digits_limit()?;
+        Ok(write!(f, "{value}")?)
+    }
+
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let value = self.get(vm.heap);
+        value.check_str_digits_limit()?;
+        Ok(allocate_string(value.to_string(), vm.heap)?)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap).inner();
+        let result = match other {
+            Value::Int(rhs) => lhs + rhs,
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs + rhs.inner(),
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.py_add_impl(other, vm)
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap).inner();
+        let result = match other {
+            Value::Int(rhs) => lhs - rhs,
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs - rhs.inner(),
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let rhs = self.get(vm.heap).inner();
+        let result = match other {
+            Value::Int(lhs) => BigInt::from(*lhs) - rhs,
+            Value::Ref(id) if let HeapData::LongInt(lhs) = vm.heap.get(*id) => lhs.inner() - rhs,
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap).inner();
+        let result = match other {
+            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(rhs) => lhs.mod_floor(&BigInt::from(*rhs)),
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
+                if rhs.is_zero() {
+                    return Err(ExcType::zero_division().into());
+                }
+                lhs.mod_floor(rhs.inner())
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let rhs = self.get(vm.heap);
+        if rhs.is_zero() {
+            return Err(ExcType::zero_division().into());
+        }
+        let result = match other {
+            Value::Int(lhs) => BigInt::from(*lhs).mod_floor(rhs.inner()),
+            Value::Ref(id) if let HeapData::LongInt(lhs) = vm.heap.get(*id) => lhs.inner().mod_floor(rhs.inner()),
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap);
+        let result = match other {
+            Value::Int(rhs) => {
+                check_mult_size(lhs.bits(), i64_bits(*rhs), vm.heap.tracker())?;
+                Some(LongInt::new(lhs.inner() * rhs).into_value(vm.heap)?)
+            }
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
+                check_mult_size(lhs.bits(), rhs.bits(), vm.heap.tracker())?;
+                Some(LongInt::new(lhs.inner() * rhs.inner()).into_value(vm.heap)?)
+            }
+            _ => None,
+        };
+        Ok(result)
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap);
+        let rhs = match other {
+            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(rhs) => *rhs as f64,
+            Value::Float(0.0) => return Err(ExcType::zero_division().into()),
+            Value::Float(rhs) => *rhs,
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
+                if rhs.is_zero() {
+                    return Err(ExcType::zero_division().into());
+                }
+                rhs.to_f64().unwrap_or(f64::INFINITY)
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Value::Float(lhs.to_f64().unwrap_or(f64::INFINITY) / rhs)))
+    }
+
+    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let rhs = self.get(vm.heap);
+        if rhs.is_zero() {
+            return Err(ExcType::zero_division().into());
+        }
+        let lhs = match other {
+            Value::Int(lhs) => *lhs as f64,
+            Value::Float(lhs) => *lhs,
+            _ => return Ok(None),
+        };
+        Ok(Some(Value::Float(lhs / rhs.to_f64().unwrap_or(f64::INFINITY))))
+    }
+
+    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let lhs = self.get(vm.heap);
+        let result = match other {
+            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(rhs) => {
+                check_div_size(lhs.bits(), vm.heap.tracker())?;
+                lhs.inner().div_floor(&BigInt::from(*rhs))
+            }
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
+                if rhs.is_zero() {
+                    return Err(ExcType::zero_division().into());
+                }
+                check_div_size(lhs.bits(), vm.heap.tracker())?;
+                lhs.inner().div_floor(rhs.inner())
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let rhs = self.get(vm.heap);
+        if rhs.is_zero() {
+            return Err(ExcType::zero_division().into());
+        }
+        let Value::Int(lhs) = other else {
+            return Ok(None);
+        };
+        check_div_size(i64_bits(*lhs), vm.heap.tracker())?;
+        let result = BigInt::from(*lhs).div_floor(rhs.inner());
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+
+    fn py_pow_impl(
+        &self,
+        other: &Value,
+        modulus: Option<&Value>,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        if modulus.is_some() {
+            return Ok(None);
+        }
+        let Value::Int(exp) = other else {
+            return Ok(None);
+        };
+        let base = self.get(vm.heap);
+        if base.is_zero() && *exp < 0 {
+            Err(ExcType::zero_negative_power())
+        } else if *exp >= 0 {
+            #[expect(clippy::cast_sign_loss)]
+            let exp = *exp as u64;
+            check_pow_size(base.bits(), exp, vm.heap.tracker())?;
+            let result = bigint_pow(base.inner().clone(), exp);
+            Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+        } else {
+            Ok(Some(Value::Float(
+                base.to_f64().map_or(0.0, |base| base.powf(*exp as f64)),
+            )))
+        }
+    }
+
+    fn py_rpow_impl(
+        &self,
+        other: &Value,
+        modulus: Option<&Value>,
+        vm: &mut VM<'h, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        if modulus.is_some() {
+            return Ok(None);
+        }
+        let Value::Int(base) = other else {
+            return Ok(None);
+        };
+        let exp = self.get(vm.heap);
+        if *base == 0 && exp.is_negative() {
+            Err(ExcType::zero_negative_power())
+        } else if exp.is_negative() {
+            Ok(Some(Value::Float(
+                exp.to_f64().map_or(0.0, |exp| (*base as f64).powf(exp)),
+            )))
+        } else if exp.is_zero() || *base == 1 {
+            Ok(Some(Value::Int(1)))
+        } else if *base == 0 {
+            Ok(Some(Value::Int(0)))
+        } else if *base == -1 {
+            Ok(Some(Value::Int(if (exp.inner() % 2i32).is_zero() { 1 } else { -1 })))
+        } else if let Some(exp) = exp.to_u32() {
+            check_pow_size(i64_bits(*base), u64::from(exp), vm.heap.tracker())?;
+            Ok(Some(LongInt::new(BigInt::from(*base).pow(exp)).into_value(vm.heap)?))
+        } else {
+            Err(ExcType::overflow_exponent_too_large())
+        }
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs)
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| rhs | lhs)
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| lhs ^ rhs)
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.bitwise_value(other, vm, |lhs, rhs| rhs ^ lhs)
+    }
+
+    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(shift) = shift_amount(other, vm)? else {
+            return Ok(None);
+        };
+        let value = self.get(vm.heap);
+        check_lshift_size(value.bits(), shift, vm.heap.tracker())?;
+        Ok(Some(LongInt::new(value.inner() << shift).into_value(vm.heap)?))
+    }
+
+    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Value::Int(lhs) = other else {
+            return Ok(None);
+        };
+        let shift = self.get(vm.heap);
+        if shift.is_negative() {
+            Err(ExcType::value_error_negative_shift_count())
+        } else if let Some(shift) = shift.inner().to_u64() {
+            Ok(Some(LongInt::left_shift_i64(*lhs, shift, vm)?))
+        } else {
+            Err(ExcType::overflow_c_ssize_t())
+        }
+    }
+
+    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(shift) = shift_amount(other, vm)? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            LongInt::new(self.get(vm.heap).inner() >> shift).into_value(vm.heap)?,
+        ))
+    }
+
+    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Value::Int(lhs) = other else {
+            return Ok(None);
+        };
+        let shift = self.get(vm.heap);
+        if shift.is_negative() {
+            Err(ExcType::value_error_negative_shift_count())
+        } else {
+            let result = shift
+                .inner()
+                .to_u32()
+                .filter(|shift| *shift < 64)
+                .map_or_else(|| if *lhs < 0 { -1 } else { 0 }, |shift| lhs >> shift);
+            Ok(Some(Value::Int(result)))
+        }
+    }
+}
+
+impl<'h> HeapRead<'h, LongInt> {
+    /// Applies a two-operand bitwise operation using this long integer as the left operand.
+    fn bitwise_value(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        operation: impl FnOnce(BigInt, BigInt) -> BigInt,
+    ) -> RunResult<Option<Value>> {
+        let rhs = match other {
+            Value::Int(value) => BigInt::from(*value),
+            Value::Bool(value) => BigInt::from(*value),
+            Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => value.inner().clone(),
+            _ => return Ok(None),
+        };
+        let result = operation(self.get(vm.heap).inner().clone(), rhs);
+        Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+    }
+}
+
+/// Raises a `BigInt` to a `u64` exponent without truncating the exponent.
+fn bigint_pow(mut base: BigInt, mut exp: u64) -> BigInt {
+    let mut result = BigInt::from(1);
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result *= &base;
+        }
+        exp >>= 1;
+        if exp > 0 {
+            base = &base * &base;
+        }
+    }
+    result
+}
+
+/// Returns the significant bit count of an immediate integer.
+fn i64_bits(value: i64) -> u64 {
+    u64::from(i64::BITS - value.unsigned_abs().leading_zeros())
+}
+
+/// Extracts a validated non-negative shift amount from an integer value.
+fn shift_amount(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunResult<Option<u64>> {
+    let value = match value {
+        Value::Int(value) => return shift_i64(*value).map(Some),
+        Value::Bool(value) => return Ok(Some(u64::from(*value))),
+        Value::Ref(id) if let HeapData::LongInt(value) = vm.heap.get(*id) => value,
+        _ => return Ok(None),
+    };
+    if value.is_negative() {
+        Err(ExcType::value_error_negative_shift_count())
+    } else {
+        value.inner().to_u64().map(Some).ok_or_else(ExcType::overflow_c_ssize_t)
+    }
+}
+
+/// Validates an immediate integer shift amount.
+fn shift_i64(value: i64) -> RunResult<u64> {
+    if value < 0 {
+        Err(ExcType::value_error_negative_shift_count())
+    } else {
+        #[expect(clippy::cast_sign_loss)]
+        Ok(value as u64)
+    }
+}
 
 impl From<BigInt> for LongInt {
     fn from(bi: BigInt) -> Self {

@@ -35,9 +35,11 @@ use crate::{
     hash::HashValue,
     heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    resource_checks::check_repeat_size,
     types::{
         LazyHeapSet, Type,
         list::repr_sequence_fmt,
+        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value},
@@ -418,10 +420,38 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
         Ok(Some(allocate_tuple(items, vm.heap)?))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        if count == 0 {
+            return Ok(Some(vm.heap.get_empty_tuple()));
+        }
+        let value = self.get(vm.heap);
+        check_repeat_size(
+            value.as_slice().len().saturating_mul(mem::size_of::<Value>()),
+            count,
+            vm.heap.tracker(),
+        )?;
+        let mut result = SmallVec::with_capacity(value.as_slice().len() * count);
+        for _ in 0..count {
+            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+            vm.heap.check_time()?;
+        }
+        Ok(Some(allocate_tuple(result, vm.heap)?))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
     }
 
     fn py_call_attr(

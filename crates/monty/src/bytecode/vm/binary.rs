@@ -5,66 +5,72 @@ use monty_types::ResourceTracker;
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::DropGuard,
-    types::{BinaryOp, PyTrait},
+    types::PyTrait,
+    value::Value,
 };
 
 impl<T: ResourceTracker> VM<'_, T> {
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Add)
+        self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))
     }
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Sub)
+        self.binary_op(|lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
     /// Binary multiplication.
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Mul)
+        self.binary_op(|lhs, rhs, vm| lhs.py_mul(rhs, vm))
     }
 
     /// Binary division.
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::TrueDiv)
+        self.binary_op(|lhs, rhs, vm| lhs.py_truediv(rhs, vm))
     }
 
     /// Binary floor division.
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::FloorDiv)
+        self.binary_op(|lhs, rhs, vm| lhs.py_floordiv(rhs, vm))
     }
 
     /// Binary modulo.
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Mod)
+        self.binary_op(|lhs, rhs, vm| lhs.py_mod(rhs, vm))
     }
 
     /// Binary power.
     #[inline(never)]
     pub(super) fn binary_pow(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Pow)
-    }
-
-    /// Binary bitwise operation.
-    pub(super) fn binary_bitwise(&mut self, op: BinaryOp) -> Result<(), RunError> {
-        self.binary_op(op)
+        self.binary_op(|lhs, rhs, vm| lhs.py_pow(rhs, None, vm))
     }
 
     /// Binary `&`.
     pub(super) fn binary_and(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::And)
+        self.binary_op(|lhs, rhs, vm| lhs.py_and(rhs, vm))
     }
 
     /// Binary `|`.
     pub(super) fn binary_or(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Or)
+        self.binary_op(|lhs, rhs, vm| lhs.py_or(rhs, vm))
     }
 
     /// Binary `^`.
     pub(super) fn binary_xor(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::Xor)
+        self.binary_op(|lhs, rhs, vm| lhs.py_xor(rhs, vm))
+    }
+
+    /// Binary left shift.
+    pub(super) fn binary_lshift(&mut self) -> Result<(), RunError> {
+        self.binary_op(|lhs, rhs, vm| lhs.py_lshift(rhs, vm))
+    }
+
+    /// Binary right shift.
+    pub(super) fn binary_rshift(&mut self) -> Result<(), RunError> {
+        self.binary_op(|lhs, rhs, vm| lhs.py_rshift(rhs, vm))
     }
 
     /// In-place addition (uses py_iadd for mutable containers, falls back to py_add).
@@ -73,9 +79,6 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// For immutable types, we fall back to regular addition.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths.
-    ///
-    /// Note: Cannot use `defer_drop!` for `lhs` here because on successful in-place
-    /// operation, we need to push `lhs` back onto the stack rather than drop it.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
         let this = self;
 
@@ -85,37 +88,36 @@ impl<T: ResourceTracker> VM<'_, T> {
         let mut lhs_guard = DropGuard::new(this.pop(), this);
         let (lhs, this) = lhs_guard.as_parts_mut();
 
-        // Try in-place operation first (for mutable types like lists)
-        if lhs.py_iadd(rhs, this, lhs.ref_id())? {
-            // In-place operation succeeded - push lhs back
+        if lhs.py_iadd_impl(rhs, this, lhs.ref_id())? {
             let (lhs, this) = lhs_guard.into_parts();
             this.push(lhs);
             return Ok(());
         }
 
-        // Next try regular addition
-        if let Some(v) = lhs.py_add(rhs, this)? {
-            this.push(v);
-            return Ok(());
+        if let Some(value) = lhs.py_add_result(rhs, this)? {
+            this.push(value);
+            Ok(())
+        } else {
+            let lhs_type = lhs.py_type(this);
+            Err(ExcType::binary_type_error(
+                "+=",
+                lhs_type,
+                lhs.py_type_name(this),
+                rhs.py_type_name(this),
+            ))
         }
-
-        let lhs_type = lhs.py_type(this);
-        let lhs_name = lhs_type.name(this.heap, this.interns);
-        Err(ExcType::binary_type_error(
-            "+=",
-            lhs_type,
-            lhs_name,
-            rhs.py_type_name(this),
-        ))
     }
 
     /// Binary matrix multiplication (`@` operator).
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
-        self.binary_op(BinaryOp::MatMul)
+        self.binary_op(|lhs, rhs, vm| lhs.py_matmul(rhs, vm))
     }
 
-    /// Executes a binary operation through `Value::py_binary`.
-    fn binary_op(&mut self, op: BinaryOp) -> Result<(), RunError> {
+    /// Applies a binary operation while owning stack-value cleanup.
+    fn binary_op(
+        &mut self,
+        operation: impl FnOnce(&Value, &Value, &mut Self) -> RunResult<Value>,
+    ) -> Result<(), RunError> {
         let this = self;
 
         let rhs = this.pop();
@@ -123,7 +125,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
-        let result = lhs.py_binary(rhs, op, this)?;
+        let result = operation(lhs, rhs, this)?;
         this.push(result);
         Ok(())
     }

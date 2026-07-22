@@ -332,8 +332,8 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_, impl ResourceTrack
 /// Handles the `/` operator for Path objects (path concatenation).
 ///
 /// In Python, `Path('/usr') / 'bin'` produces `Path('/usr/bin')`.
-pub(crate) fn path_div(
-    path_id: HeapId,
+fn path_div(
+    path: &Path,
     other: &Value,
     heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
@@ -349,14 +349,7 @@ pub(crate) fn path_div(
         _ => return Ok(None),
     };
 
-    // Get the path string
-    let path_str = match heap.get(path_id) {
-        HeapData::Path(p) => p.as_str().to_owned(),
-        _ => return Ok(None),
-    };
-
-    // Perform path concatenation
-    let result = Path::new(path_str).joinpath(&other_str);
+    let result = path.joinpath(&other_str);
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
@@ -491,6 +484,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
         // Paths are always truthy (even empty paths)
         true
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        path_div(self.get(vm.heap), other, vm.heap, vm.interns)
+    }
+
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
     fn py_repr_fmt(

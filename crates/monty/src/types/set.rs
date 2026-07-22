@@ -4,7 +4,7 @@ use hashbrown::HashTable;
 use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
 
-use super::{BinaryOp, PyTrait, iter::checked_preallocation_hint};
+use super::{PyTrait, iter::checked_preallocation_hint};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -889,29 +889,46 @@ impl<'h> HeapRead<'h, FrozenSet> {
     ///
     /// Clones self's storage entries to release the heap borrow before calling
     /// the set operations (which need `&mut VM` for hashing and equality checks).
-    pub(crate) fn binary_op_value(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<FrozenSet>> {
-        if !op.is_set_op() {
-            return Ok(None);
-        }
+    /// Applies set sub when the other value is a set operand.
+    fn sub_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<FrozenSet>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().difference(&other_storage, vm)?)))
+    }
 
-        let result = match op {
-            BinaryOp::And => FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?),
-            BinaryOp::Or => FrozenSet::wrap(self.storage().union(&other_storage, vm)?),
-            BinaryOp::Xor => FrozenSet::wrap(self.storage().symmetric_difference(&other_storage, vm)?),
-            BinaryOp::Sub => FrozenSet::wrap(self.storage().difference(&other_storage, vm)?),
-            _ => unreachable!("non-set op rejected above"),
+    /// Applies set and when the other value is a set operand.
+    fn and_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
         };
-        Ok(Some(result))
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?)))
+    }
+
+    /// Applies set or when the other value is a set operand.
+    fn or_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().union(&other_storage, vm)?)))
+    }
+
+    /// Applies set xor when the other value is a set operand.
+    fn xor_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(
+            self.storage().symmetric_difference(&other_storage, vm)?,
+        )))
     }
 
     /// Set algebra operations for frozenset via HeapRead.
@@ -1004,13 +1021,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         !self.get(vm.heap).is_empty()
     }
 
-    fn py_binary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        let Some(result) = self.binary_op_value(other, op, vm)? else {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.sub_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.and_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.or_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::Set(result))?;
@@ -1120,29 +1156,44 @@ impl<'h> HeapRead<'h, Set> {
     /// the set-like values CPython accepts here (`set`, `frozenset`,
     /// `dict_keys`, and `dict_items`) so the VM can raise the standard
     /// unsupported-operands `TypeError`.
-    pub(crate) fn binary_op_value(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Set>> {
-        if !op.is_set_op() {
-            return Ok(None);
-        }
+    /// Applies set sub when the other value is a set operand.
+    fn sub_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Set>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().difference(&other_storage, vm)?)))
+    }
 
-        let result = match op {
-            BinaryOp::And => Set(self.storage().intersection(&other_storage, vm)?),
-            BinaryOp::Or => Set(self.storage().union(&other_storage, vm)?),
-            BinaryOp::Xor => Set(self.storage().symmetric_difference(&other_storage, vm)?),
-            BinaryOp::Sub => Set(self.storage().difference(&other_storage, vm)?),
-            _ => unreachable!("non-set op rejected above"),
+    /// Applies set and when the other value is a set operand.
+    fn and_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
         };
-        Ok(Some(result))
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().intersection(&other_storage, vm)?)))
+    }
+
+    /// Applies set or when the other value is a set operand.
+    fn or_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().union(&other_storage, vm)?)))
+    }
+
+    /// Applies set xor when the other value is a set operand.
+    fn xor_value(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().symmetric_difference(&other_storage, vm)?)))
     }
 }
 
@@ -1307,13 +1358,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         !self.get(vm.heap).is_empty()
     }
 
-    fn py_binary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        let Some(result) = self.binary_op_value(other, op, vm)? else {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.sub_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.and_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.or_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(result) = self.xor_value(other, vm)? else {
             return Ok(None);
         };
         let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;

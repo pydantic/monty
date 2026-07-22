@@ -18,10 +18,11 @@ use crate::{
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
-    resource_checks::check_replace_size,
+    resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
+        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
@@ -200,6 +201,12 @@ pub fn allocate_string(
 /// formatted date). For inputs of unknown length, use [`allocate_string`].
 ///
 /// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
+/// Repeats a string after validating the allocation against resource limits.
+pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    check_repeat_size(value.len(), count, heap.tracker())?;
+    allocate_string(value.repeat(count), heap)
+}
+
 pub fn allocate_string_no_interning(
     s: impl Into<Box<str>>,
     heap: &Heap<impl ResourceTracker>,
@@ -333,12 +340,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        Ok(Some(concat_allocate_str(
-            self.get(vm.heap).as_str(),
-            other.get(vm.heap).as_str(),
-            vm.heap,
-        )?))
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let other = match other {
+            Value::InternString(id) => vm.interns.get_str(*id),
+            Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
+            _ => return Ok(None),
+        };
+        Ok(Some(concat_allocate_str(self.get(vm.heap).as_str(), other, vm.heap)?))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        Ok(Some(repeat_str(self.get(vm.heap).as_str(), count, vm.heap)?))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
     }
 
     fn py_call_attr(

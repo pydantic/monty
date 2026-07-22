@@ -10,9 +10,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{
-        BinaryOp, Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint,
-    },
+    types::{Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint},
     value::{EitherStr, Value},
 };
 
@@ -165,30 +163,36 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         }
     }
 
-    fn py_binary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        if op.is_set_op() {
-            dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_rbinary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        if op.is_set_op() {
-            dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_and)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_xor)
+    }
+
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_sub)
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_and)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_or)
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_xor)
     }
 
     fn py_repr_fmt(
@@ -353,30 +357,36 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         }
     }
 
-    fn py_binary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        if op.is_set_op() {
-            dict_view_binary_op_value(self.to_set(vm)?, other, op, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_rbinary_impl(
-        &self,
-        other: &Value,
-        op: BinaryOp,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
-        if op.is_set_op() {
-            dict_view_rbinary_op_value(other, self.to_set(vm)?, op, vm)
-        } else {
-            Ok(None)
-        }
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_and)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_xor)
+    }
+
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_sub)
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_and)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_or)
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_xor)
     }
 
     fn py_repr_fmt(
@@ -613,93 +623,90 @@ fn write_dict_values_contents<'h>(
 }
 
 /// Applies a dict-view set-like binary operator and returns a plain `set`.
-fn dict_view_binary_op_value(
+fn dict_view_binary_op_value<T: ResourceTracker>(
     lhs_set: Set,
     rhs: &Value,
-    op: BinaryOp,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_, T>,
+    operation: impl FnOnce(&Set, &Set, &mut VM<'_, T>) -> RunResult<Set>,
 ) -> RunResult<Option<Value>> {
     defer_drop!(lhs_set, vm);
     let rhs_set = collect_iterable_to_set(rhs.clone_with_heap(vm), vm)?;
     defer_drop!(rhs_set, vm);
 
-    let result = apply_dict_view_binary_op(lhs_set, rhs_set, op, vm)?;
+    let result = operation(lhs_set, rhs_set, vm)?;
     let result_id = vm.heap.allocate(HeapData::Set(result))?;
     Ok(Some(Value::Ref(result_id)))
 }
 
-/// Applies a reflected dict-view set-like binary operator and returns a plain `set`.
-fn dict_view_rbinary_op_value(
+/// Applies a reflected dictionary-view set operation and returns a plain `set`.
+fn dict_view_rbinary_op_value<T: ResourceTracker>(
     lhs: &Value,
     rhs_set: Set,
-    op: BinaryOp,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_, T>,
+    operation: impl FnOnce(&Set, &Set, &mut VM<'_, T>) -> RunResult<Set>,
 ) -> RunResult<Option<Value>> {
     defer_drop!(rhs_set, vm);
     let lhs_set = collect_iterable_to_set(lhs.clone_with_heap(vm), vm)?;
     defer_drop!(lhs_set, vm);
 
-    let result = apply_dict_view_binary_op(lhs_set, rhs_set, op, vm)?;
+    let result = operation(lhs_set, rhs_set, vm)?;
     let result_id = vm.heap.allocate(HeapData::Set(result))?;
     Ok(Some(Value::Ref(result_id)))
 }
 
-/// Applies a set-like operator to two temporary sets.
-fn apply_dict_view_binary_op(
-    lhs: &Set,
-    rhs: &Set,
-    op: BinaryOp,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Set> {
-    let requested_capacity = match op {
-        BinaryOp::And => lhs.len().min(rhs.len()),
-        BinaryOp::Or | BinaryOp::Xor => lhs.len().saturating_add(rhs.len()),
-        BinaryOp::Sub => lhs.len(),
-        _ => unreachable!("non-set op rejected before materializing the view"),
-    };
-    let capacity = Set::preallocation_capacity(requested_capacity, vm.heap.tracker())?;
+/// Computes dictionary-view intersection.
+fn apply_dict_view_and(lhs: &Set, rhs: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().min(rhs.len()), vm.heap.tracker())?;
     let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
     let (result, vm) = result_guard.as_parts_mut();
-
-    match op {
-        BinaryOp::And => {
-            let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
-            for value in smaller.iter() {
-                if vm.heap.protect(larger).contains(value, vm)? {
-                    result.add(value.clone_with_heap(vm), vm)?;
-                }
-            }
+    let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
+    for value in smaller.iter() {
+        if vm.heap.protect(larger).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
         }
-        BinaryOp::Or => {
-            for value in lhs.iter() {
-                result.add(value.clone_with_heap(vm), vm)?;
-            }
-            for value in rhs.iter() {
-                result.add(value.clone_with_heap(vm), vm)?;
-            }
-        }
-        BinaryOp::Xor => {
-            for value in lhs.iter() {
-                if !vm.heap.protect(rhs).contains(value, vm)? {
-                    result.add(value.clone_with_heap(vm), vm)?;
-                }
-            }
-            for value in rhs.iter() {
-                if !vm.heap.protect(lhs).contains(value, vm)? {
-                    result.add(value.clone_with_heap(vm), vm)?;
-                }
-            }
-        }
-        BinaryOp::Sub => {
-            for value in lhs.iter() {
-                if !vm.heap.protect(rhs).contains(value, vm)? {
-                    result.add(value.clone_with_heap(vm), vm)?;
-                }
-            }
-        }
-        _ => unreachable!("non-set op rejected before materializing the view"),
     }
+    Ok(result_guard.into_inner())
+}
 
+/// Computes dictionary-view union.
+fn apply_dict_view_or(lhs: &Set, rhs: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter().chain(rhs.iter()) {
+        result.add(value.clone_with_heap(vm), vm)?;
+    }
+    Ok(result_guard.into_inner())
+}
+
+/// Computes dictionary-view symmetric difference.
+fn apply_dict_view_xor(lhs: &Set, rhs: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter() {
+        if !vm.heap.protect(rhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    for value in rhs.iter() {
+        if !vm.heap.protect(lhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    Ok(result_guard.into_inner())
+}
+
+/// Computes dictionary-view difference.
+fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len(), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter() {
+        if !vm.heap.protect(rhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
     Ok(result_guard.into_inner())
 }
 

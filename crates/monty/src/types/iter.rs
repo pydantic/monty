@@ -14,7 +14,7 @@
 //!
 //! The `iterator_next()` helper implements the `next()` builtin.
 
-use std::mem;
+use std::{fmt::Write, mem};
 
 use monty_types::{ResourceError, ResourceTracker};
 
@@ -26,7 +26,9 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
     resource_checks::check_estimated_size,
-    types::{PyTrait, Range, Type, callable_iterator::CallableIterator, dict_view::DictView, str::allocate_char},
+    types::{
+        LazyHeapSet, PyTrait, Range, Type, callable_iterator::CallableIterator, dict_view::DictView, str::allocate_char,
+    },
     value::{VALUE_SIZE, Value, ValueRead},
 };
 
@@ -776,6 +778,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, MontyIter> {
 
     fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
         Ok(None)
+    }
+
+    fn py_repr_fmt(
+        &self,
+        f: &mut impl Write,
+        _vm: &mut VM<'h, impl ResourceTracker>,
+        _heap_ids: &mut LazyHeapSet,
+    ) -> RunResult<()> {
+        Ok(f.write_str("<iterator>")?)
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
