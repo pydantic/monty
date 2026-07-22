@@ -269,11 +269,11 @@ impl OsCall {
         self.snapshot.run(result, print)
     }
 
-    /// Returns a reference to the resource tracker.
-    ///
-    /// Useful for assertions in tests that need to verify
-    /// memory/allocation accounting between OS-call resumes (e.g. that a
-    /// `read()` correctly counts the file buffer against `max_memory`).
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended —
+    /// for example verifying that a `read()` counts the file buffer against
+    /// `max_memory` between OS-call resumes.
+    #[must_use]
     pub fn tracker(&self) -> &LimitedTracker {
         self.snapshot.heap.tracker()
     }
@@ -313,6 +313,13 @@ impl NameLookup {
             is_global,
             snapshot,
         }
+    }
+
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`LimitedTracker::current_memory`]) while execution is suspended.
+    #[must_use]
+    pub fn tracker(&self) -> &LimitedTracker {
+        self.snapshot.heap.tracker()
     }
 
     /// Resumes execution after name resolution.
