@@ -9,7 +9,7 @@ use std::{
 
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter,
+    CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceError,
     ResourceLimits, ResourceTracker,
 };
 
@@ -193,6 +193,28 @@ fn wide_id_respects_memory_limit() {
         exc.message().is_some_and(|m| m.starts_with("memory limit exceeded")),
         "expected memory limit error, got: {exc}"
     );
+}
+
+/// A postcard round-trip must re-derive the tracker's enforced memory limit
+/// from `limits` — the resolved value is deliberately not serialized, so
+/// snapshot bytes cannot carry a limit diverging from the configured one.
+#[test]
+fn limited_tracker_roundtrip_preserves_memory_limit() {
+    let tracker = LimitedTracker::new(ResourceLimits::new().max_memory(1000));
+    tracker.on_grow(|| 600).unwrap();
+
+    let bytes = postcard::to_allocvec(&tracker).unwrap();
+    let restored: LimitedTracker = postcard::from_bytes(&bytes).unwrap();
+
+    assert_eq!(restored.current_memory(), 600);
+    let err = restored.on_grow(|| 500).unwrap_err();
+    assert!(matches!(
+        err,
+        ResourceError::Memory {
+            limit: 1000,
+            used: 1100
+        }
+    ));
 }
 
 #[test]

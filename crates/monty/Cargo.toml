@@ -60,6 +60,7 @@ test-hooks = ["monty-types/test-hooks"]
 tempfile = "3"
 insta = { workspace = true }
 serde_json = { workspace = true }
+postcard = { workspace = true }
 
 [lints]
 workspace = true

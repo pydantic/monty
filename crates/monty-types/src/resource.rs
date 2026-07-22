@@ -301,10 +301,16 @@ const TIME_CHECK_INTERVAL: u16 = 10;
 /// serialized, so a deserialized session resumes its budget where it left
 /// off rather than restarting from zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(from = "LimitedTrackerSnapshot")]
 pub struct LimitedTracker {
     limits: ResourceLimits,
     /// `limits.max_memory` resolved at construction (`usize::MAX` = unlimited),
     /// so the per-allocation hot path is one compare with no `Option` branch.
+    ///
+    /// Never serialized — recomputed from `limits` on load (via
+    /// [`LimitedTrackerSnapshot`]) so a tampered snapshot cannot make the
+    /// enforced value diverge from the configured one.
+    #[serde(skip)]
     max_memory: usize,
     /// Execution time accumulated by completed `on_execution_start`/`stop`
     /// windows. Serialized so time budgets survive dump/load. The serde
@@ -348,7 +354,7 @@ impl LimitedTracker {
     #[must_use]
     pub fn new(limits: ResourceLimits) -> Self {
         Self {
-            max_memory: limits.max_memory.unwrap_or(usize::MAX),
+            max_memory: resolved_max_memory(&limits),
             limits,
             total_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
@@ -397,6 +403,45 @@ impl LimitedTracker {
         self.limits.max_duration = Some(duration);
         self.total_execution_time.set(Duration::ZERO);
     }
+}
+
+/// The serialized form of [`LimitedTracker`]: every serialized field except
+/// the derived `max_memory` cache, which is recomputed from `limits` on load
+/// so the enforced limit can never diverge from the configured one.
+///
+/// Field order and serde attributes must mirror `LimitedTracker`'s — postcard
+/// snapshots are positional, and the dump/load round-trip tests break on any
+/// mismatch.
+#[derive(serde::Deserialize)]
+struct LimitedTrackerSnapshot {
+    limits: ResourceLimits,
+    #[serde(default)]
+    total_execution_time: Cell<Duration>,
+    current_memory: Cell<usize>,
+    check_counter: Cell<u16>,
+    #[serde(default)]
+    recursion_limit_override: Cell<Option<usize>>,
+}
+
+impl From<LimitedTrackerSnapshot> for LimitedTracker {
+    fn from(snapshot: LimitedTrackerSnapshot) -> Self {
+        Self {
+            max_memory: resolved_max_memory(&snapshot.limits),
+            limits: snapshot.limits,
+            total_execution_time: snapshot.total_execution_time,
+            running_since: Cell::new(None),
+            current_memory: snapshot.current_memory,
+            check_counter: snapshot.check_counter,
+            recursion_limit_override: snapshot.recursion_limit_override,
+        }
+    }
+}
+
+/// Resolves the configured memory limit to the value `on_grow` enforces
+/// (`usize::MAX` = unlimited). The single source for the `max_memory` cache,
+/// used at construction and on snapshot restore.
+fn resolved_max_memory(limits: &ResourceLimits) -> usize {
+    limits.max_memory.unwrap_or(usize::MAX)
 }
 
 impl ResourceTracker for LimitedTracker {
