@@ -38,7 +38,7 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::new(ResourceLimits::default()), PrintWriter::Stdout).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
@@ -77,7 +77,7 @@ let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned(
 
 // pass the external function in as an input
 let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
-let progress = runner.start(vec![get_data], ResourceTracker::new(ResourceLimits::default()), PrintWriter::Stdout).unwrap();
+let progress = runner.start(vec![get_data], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
@@ -101,7 +101,7 @@ let bytes = runner.dump().unwrap();
 
 // later, restore and run
 let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], ResourceTracker::new(ResourceLimits::default()), PrintWriter::Stdout).unwrap();
+let result = runner2.run(vec![MontyObject::Int(41)], ResourceTracker::default(), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
 

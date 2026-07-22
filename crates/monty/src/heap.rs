@@ -1764,7 +1764,7 @@ mod heap_reader_compile_fail_cases;
 /// mark–sweep collector.
 #[cfg(test)]
 mod tests {
-    use monty_types::{ResourceLimits, ResourceTracker};
+    use monty_types::ResourceTracker;
 
     use super::*;
     use crate::{
@@ -1849,7 +1849,7 @@ mod tests {
 
     #[test]
     fn cstack_only_cycle_survives_collection() {
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let id = alloc_self_cycle(&heap);
 
         // Simulate a Rust-side local `Value::Ref` binding by bumping the
@@ -1880,7 +1880,7 @@ mod tests {
 
     #[test]
     fn heap_read_rooted_cycle_survives_collection() {
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let id = alloc_self_cycle(&heap);
 
         // Bump `readers` manually to mimic a live `HeapRead` pointing into
@@ -1931,7 +1931,7 @@ mod tests {
     /// `dec_ref` on the same `HeapId` while the list reader is still live).
     #[test]
     fn dec_ref_must_not_invalidate_live_heap_read() {
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let id = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
         // Bump refcount so `dec_ref` enters the non-freeing branch where
         // the offending `data.0.get_mut()` lives. `List` is GC-tracked, so
@@ -1957,7 +1957,7 @@ mod tests {
     fn isolated_simple_cycle_is_collected() {
         // Sanity check: a self-reference cycle with no external rooting
         // gets collected on the next `collect_cycles` call.
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let id = alloc_self_cycle(&heap);
         // After alloc_self_cycle: rc = 2 (allocate's 1 + self-ref's 1).
         // Drop the caller's reference. rc 2 → 1, marks Purple.
@@ -1974,7 +1974,7 @@ mod tests {
         // collector. Its refcount stays ≥ 1 forever (initial heap-owned
         // ref), which is what keeps it alive — verify the collector does
         // not accidentally free it even after spurious Purple flagging.
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         // Fake a dec_ref event that would mark the empty tuple Purple.
         heap.inc_ref(EMPTY_TUPLE_ID);
         heap.dec_ref(EMPTY_TUPLE_ID);
@@ -1992,7 +1992,7 @@ mod tests {
         // collector must survive serde round-trips. Otherwise a cycle that
         // becomes garbage just before snapshot would leak permanently after
         // restore (the post-restore VM would never re-touch it).
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let id = alloc_self_cycle(&heap);
         // Drop the caller's external ref so the entry is genuinely
         // unreachable except via its self-pointer. dec_ref flags Purple.
@@ -2029,7 +2029,7 @@ mod tests {
         // refcount-underflow `debug_assert`; in release it wraps the
         // refcount to `usize::MAX` and `scan` resurrects the cycle —
         // either way, the cycle is not collected.
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let (p_id, a_id) = alloc_dup_child_cycle(&heap);
         // After construction: P.rc = 2, A.rc = 4.
 
@@ -2060,7 +2060,7 @@ mod tests {
         // the cycle. If `mark_black` over-incremented during resurrection,
         // dropping the pin leaves the refcounts artificially high and the
         // cycle leaks.
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let (p_id, a_id) = alloc_dup_child_cycle(&heap);
         // After construction: P.rc = 2, A.rc = 4.
 
@@ -2092,7 +2092,7 @@ mod tests {
     /// multiplicity: under-tracing here would let a live object be collected.
     #[test]
     fn callable_iterator_traces_callable_and_sentinel() {
-        let heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let heap = Heap::new(16, ResourceTracker::default());
         let c = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
         let s = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
 
@@ -2129,7 +2129,7 @@ mod tests {
     /// (`for_each_child_id`) and the free phase (`py_dec_ref_ids`) together.
     #[test]
     fn callable_iterator_cycle_is_collected() {
-        let mut heap = Heap::new(16, ResourceTracker::new(ResourceLimits::default()));
+        let mut heap = Heap::new(16, ResourceTracker::default());
         let sentinel = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
         let list = heap.allocate(HeapData::List(List::new(vec![]))).unwrap();
         heap.inc_ref(list);

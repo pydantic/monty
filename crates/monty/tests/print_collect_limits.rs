@@ -35,7 +35,7 @@ fn collect_string_respects_max_bytes() {
     let err = ex
         .run(
             vec![],
-            ResourceTracker::new(ResourceLimits::default()),
+            ResourceTracker::default(),
             PrintWriter::CollectString(&mut output, Some(LIMIT_BYTES)),
         )
         .expect_err("expected MemoryError when collect buffer exceeds max_bytes");
@@ -65,7 +65,7 @@ fn collect_streams_respects_max_bytes() {
     let err = ex
         .run(
             vec![],
-            ResourceTracker::new(ResourceLimits::default()),
+            ResourceTracker::default(),
             PrintWriter::CollectStreams(&mut streams, Some(LIMIT_BYTES)),
         )
         .expect_err("expected MemoryError when collect buffer exceeds max_bytes");
@@ -101,7 +101,7 @@ fn collect_string_unlimited_allows_growth_past_64kib() {
 
     ex.run(
         vec![],
-        ResourceTracker::new(ResourceLimits::default()),
+        ResourceTracker::default(),
         PrintWriter::CollectString(&mut output, None),
     )
     .expect("unlimited collect should succeed");
@@ -127,7 +127,7 @@ fn collect_streams_helper_merges_newline_push() {
 
     ex.run(
         vec![],
-        ResourceTracker::new(ResourceLimits::default()),
+        ResourceTracker::default(),
         PrintWriter::collect_streams(&mut streams),
     )
     .expect("default-capped collect_streams should accept a short print");
@@ -144,7 +144,7 @@ fn collect_streams_empty_print_pushes_newline_entry() {
 
     ex.run(
         vec![],
-        ResourceTracker::new(ResourceLimits::default()),
+        ResourceTracker::default(),
         PrintWriter::collect_streams(&mut streams),
     )
     .expect("empty print should succeed");
@@ -161,7 +161,7 @@ fn collect_string_max_bytes_rejects_newline_push() {
     let err = ex
         .run(
             vec![],
-            ResourceTracker::new(ResourceLimits::default()),
+            ResourceTracker::default(),
             PrintWriter::CollectString(&mut output, Some(1)),
         )
         .expect_err("expected MemoryError on newline push past max_bytes");
@@ -180,7 +180,7 @@ fn collect_streams_max_bytes_rejects_newline_push() {
     let err = ex
         .run(
             vec![],
-            ResourceTracker::new(ResourceLimits::default()),
+            ResourceTracker::default(),
             PrintWriter::CollectStreams(&mut streams, Some(1)),
         )
         .expect_err("expected MemoryError on newline push past max_bytes");

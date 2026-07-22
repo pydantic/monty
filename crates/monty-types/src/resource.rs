@@ -181,6 +181,12 @@ pub struct ResourceTracker {
     recursion_limit_override: Cell<Option<usize>>,
 }
 
+impl Default for ResourceTracker {
+    fn default() -> Self {
+        Self::new(ResourceLimits::default())
+    }
+}
+
 impl ResourceTracker {
     /// Creates a new ResourceTracker with the given limits.
     ///
@@ -201,6 +207,7 @@ impl ResourceTracker {
 
     /// Returns the live recursion ceiling: the override if one is in effect,
     /// otherwise the configured `max_recursion_depth`.
+    #[inline]
     fn active_recursion_limit(&self) -> usize {
         self.recursion_limit_override
             .get()
@@ -248,6 +255,7 @@ impl ResourceTracker {
     ///
     /// `get_size` lazily computes the size in bytes of the freed allocation;
     /// it is never called when no memory limit is configured.
+    #[inline]
     pub fn on_free(&self, get_size: impl FnOnce() -> usize) {
         // Memory is only tracked when a limit is configured (`on_grow` skips
         // the size computation otherwise), so skip symmetrically here.
@@ -266,6 +274,7 @@ impl ResourceTracker {
     /// entry release reads `py_estimate_size()`, which includes in-place growth.
     /// `get_additional` lazily computes the approximate growth in bytes and is
     /// never called when no memory limit is configured.
+    #[inline]
     pub fn on_grow(&self, get_additional: impl FnOnce() -> usize) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_memory {
             // Saturating: a wrapping add on 32-bit targets must not slip past
@@ -292,6 +301,7 @@ impl ResourceTracker {
     /// Takes `&self` rather than `&mut self` because checking elapsed time is a
     /// read-only operation. This allows time checks in contexts that only have
     /// an immutable heap reference, such as `py_repr_fmt`.
+    #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_duration {
             self.check_counter.update(|c| c.wrapping_add(1));
@@ -316,6 +326,7 @@ impl ResourceTracker {
     /// Returns `Ok(())` if within recursion limit, or `Err(ResourceError::Recursion)`
     /// if the limit would be exceeded. `current_depth` is the call stack depth
     /// before the new frame is pushed.
+    #[inline]
     pub fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
         let limit = self.active_recursion_limit();
         // current_depth is before push, so new depth would be current_depth + 1
@@ -334,6 +345,7 @@ impl ResourceTracker {
     /// before the memory is actually allocated. The check only happens for
     /// estimated result sizes above `LARGE_RESULT_THRESHOLD` to avoid overhead
     /// on small operations.
+    #[inline]
     pub fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
         if let Some(max) = self.limits.max_memory {
             let new_memory = self.current_memory.get().saturating_add(estimated_bytes);
@@ -356,6 +368,7 @@ impl ResourceTracker {
     /// cost regardless of their allocation rate. `None` tells the heap to use
     /// its built-in default scheduling threshold.
     #[must_use]
+    #[inline]
     pub fn gc_interval(&self) -> Option<usize> {
         self.limits.gc_interval
     }

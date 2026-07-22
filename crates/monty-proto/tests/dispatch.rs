@@ -11,7 +11,7 @@ use monty_proto::{
     worker::{Child, DUMP_VERSION, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
@@ -170,11 +170,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     // suspend in-process (no wire depth bound) at `f(x)` with x nested 100
     // lists deep — over the ~48 wire bound, shallow enough that postcard's
     // recursive deserialize doesn't overflow the test stack
-    let repl = MontyRepl::new(
-        "main.py",
-        ResourceTracker::new(ResourceLimits::default()),
-        CompileOptions::default(),
-    );
+    let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
     let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
     let progress = repl
         .feed_start(code, vec![], PrintWriter::Stdout)

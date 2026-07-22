@@ -7,7 +7,7 @@
 use monty::{MontyRun, RunProgress};
 use monty_types::{
     CompileOptions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter,
-    ResourceLimits, ResourceTracker, file_stat,
+    ResourceTracker, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -19,11 +19,7 @@ use monty_types::{
 fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     match progress {
@@ -89,11 +85,7 @@ fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     match progress {

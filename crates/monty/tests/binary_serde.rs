@@ -5,9 +5,7 @@
 //! - Snapshotting execution state for external function calls
 
 use monty::{MontyRun, RunProgress};
-use monty_types::{
-    CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits, ResourceTracker,
-};
+use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
 fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
@@ -140,11 +138,7 @@ fn run_progress_dump_load_roundtrip() {
     .unwrap();
 
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     // First resolve the NameLookup for ext_fn
@@ -179,11 +173,7 @@ fn run_progress_dump_load_multiple_calls() {
 
     // First call - resolve NameLookup for ext_fn first
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
     let bytes = progress.dump().unwrap();
@@ -214,11 +204,7 @@ fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let bytes = progress.dump().unwrap();

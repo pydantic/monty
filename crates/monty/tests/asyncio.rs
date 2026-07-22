@@ -6,7 +6,7 @@
 use monty::{MontyRun, ResolveFutures, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NameLookupResult, PrintWriter,
-    ResourceLimits, ResourceTracker,
+    ResourceTracker,
 };
 
 /// Helper to create a MontyRun for async external function tests.
@@ -108,11 +108,7 @@ await asyncio.gather(parked(), ready())
 ";
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -145,11 +141,7 @@ await asyncio.gather(parked(), ready())
 fn resume_with_all_call_ids() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -172,11 +164,7 @@ fn resume_with_all_call_ids() {
 fn resume_with_partial_results() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -202,11 +190,7 @@ fn resume_with_partial_results() {
 fn resume_with_unknown_call_id() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, _call_ids) = drive_to_resolve_futures(progress);
@@ -231,11 +215,7 @@ fn resume_with_unknown_call_id() {
 fn resume_with_empty_results() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -263,11 +243,7 @@ fn resume_with_empty_results() {
 fn resume_with_error_result() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -296,11 +272,7 @@ fn resume_with_error_result() {
 fn resume_with_reversed_order() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -322,11 +294,7 @@ fn resume_with_reversed_order() {
 fn three_way_gather_incremental() {
     let runner = create_gather_three_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -354,11 +322,7 @@ fn three_way_gather_incremental() {
 fn resume_with_duplicate_call_id() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -381,11 +345,7 @@ fn resume_with_duplicate_call_id() {
 fn gather_error_propagated_as_exception() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -431,11 +391,7 @@ await main()
 fn sequential_awaits_second_fails() {
     let runner = create_sequential_awaits_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -486,11 +442,7 @@ fn sequential_awaits_second_fails() {
 fn sequential_awaits_first_fails() {
     let runner = create_sequential_awaits_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -526,11 +478,7 @@ fn sequential_awaits_first_fails() {
 fn gather_first_external_fails_immediately() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -557,11 +505,7 @@ fn gather_first_external_fails_immediately() {
 fn gather_second_external_fails() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -589,11 +533,7 @@ fn gather_second_external_fails() {
 fn gather_both_fail() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -622,11 +562,7 @@ fn gather_both_fail() {
 fn three_way_gather_partial_error() {
     let runner = create_gather_three_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -656,11 +592,7 @@ fn three_way_gather_partial_error() {
 fn incremental_resolution_error_on_second_round() {
     let runner = create_gather_two_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -706,11 +638,7 @@ results
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     // Use drive_collecting_calls so we know which call_id maps to which invocation.
@@ -754,11 +682,7 @@ results
 fn gather_three_all_at_once_mixed() {
     let runner = create_gather_three_runner();
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -844,11 +768,7 @@ results
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
@@ -925,11 +845,7 @@ await main()
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     // Drive until all initial external calls are made and we need to resolve futures
@@ -1001,11 +917,7 @@ await main()
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     let progress = runner
-        .start(
-            vec![],
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
 
     // Drive to get the initial step1 calls

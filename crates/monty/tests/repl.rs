@@ -6,17 +6,12 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceLimits,
-    ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, PrintWriter, ResourceTracker,
 };
 
 #[test]
 fn repl_executes_only_new_code() {
-    let mut repl = MontyRepl::new(
-        "repl.py",
-        ResourceTracker::new(ResourceLimits::default()),
-        CompileOptions::default(),
-    );
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
     assert_eq!(init_output, MontyObject::None);
 
@@ -34,11 +29,7 @@ fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, Monty
 }
 
 fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
-    let mut repl = MontyRepl::new(
-        "repl.py",
-        ResourceTracker::new(ResourceLimits::default()),
-        CompileOptions::default(),
-    );
+    let mut repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
     let output = feed_run_print(&mut repl, code).unwrap();
     (repl, output)
 }
@@ -413,11 +404,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         frozen: true,
     };
 
-    let repl = MontyRepl::new(
-        "repl.py",
-        ResourceTracker::new(ResourceLimits::default()),
-        CompileOptions::default(),
-    );
+    let repl = MontyRepl::new("repl.py", ResourceTracker::default(), CompileOptions::default());
 
     // Calling point.sum() should yield a FunctionCall with method_call=true.
     // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
@@ -469,11 +456,7 @@ fn repl_start_new_external_function_in_later_block() {
 
 /// Helper to create a REPL session pre-seeded with code for function calling.
 fn repl_with_code(code: &str) -> MontyRepl {
-    let mut repl = MontyRepl::new(
-        "session_test.py",
-        ResourceTracker::new(ResourceLimits::default()),
-        CompileOptions::default(),
-    );
+    let mut repl = MontyRepl::new("session_test.py", ResourceTracker::default(), CompileOptions::default());
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
     repl
 }

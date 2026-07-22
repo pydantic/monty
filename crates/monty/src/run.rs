@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 pub use monty_types::CompileOptions;
-use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
+use monty_types::{ExcType, MontyException, MontyObject, PrintWriter, ResourceTracker};
 use ruff_python_stdlib::identifiers::is_identifier;
 
 use crate::{
@@ -116,11 +116,7 @@ impl MontyRun {
 
     /// Executes the code to completion with default resource limits, printing to stdout/stderr.
     pub fn run_dft_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
-        self.run(
-            inputs,
-            ResourceTracker::new(ResourceLimits::default()),
-            PrintWriter::Stdout,
-        )
+        self.run(inputs, ResourceTracker::default(), PrintWriter::Stdout)
     }
 
     /// Serializes the runner to a binary format.
@@ -446,7 +442,7 @@ impl Executor {
     /// Executes the code and returns both the result and reference count data, used for testing only.
     #[cfg(feature = "ref-count-return")]
     fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
-        self.run_ref_counts_with_tracker(inputs, ResourceTracker::new(ResourceLimits::default()))
+        self.run_ref_counts_with_tracker(inputs, ResourceTracker::default())
     }
 
     /// Executes the code and returns both the result and reference count data with a custom tracker,
