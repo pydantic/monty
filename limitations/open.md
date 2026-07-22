@@ -39,9 +39,11 @@ further down.
   mount-table operation.
 - The mode string is normalized to a canonical form at parse time
   (`'rt'` → `'r'`, `'br'` → `'rb'`); the original raw input is not
-  preserved, and `file.mode` reports the canonical form. CPython instead
-  preserves and reports the string as passed: `open(p, 'rt').mode` is
-  `'rt'` in CPython but `'r'` in Monty.
+  preserved, and `file.mode` reports the canonical form. For *text* modes
+  this diverges from CPython, whose `TextIOWrapper` preserves the string
+  as passed: `open(p, 'rt').mode` is `'rt'` in CPython but `'r'` in Monty.
+  Binary modes match, because CPython's buffered classes normalize too
+  (`open(p, 'br').mode` is `'rb'` in both).
 
 ## `open()` arguments
 
