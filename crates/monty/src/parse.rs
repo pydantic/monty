@@ -1736,7 +1736,12 @@ impl<'a> Parser<'a> {
                     .into_iter()
                     .map(|cond| self.parse_expression(cond))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Comprehension { target, iter, ifs })
+                Ok(Comprehension {
+                    target,
+                    iter,
+                    ifs,
+                    captured_slots: Vec::new(),
+                })
             })
             .collect()
     }

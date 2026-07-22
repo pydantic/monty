@@ -34,16 +34,20 @@ pub enum NameScope {
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
     Cell,
-    /// Comprehension target stored in the frame's anonymous comp-var region.
+    /// Comprehension target stored in isolated operand-stack storage.
     ///
-    /// Inlined list/set/dict comprehensions allocate their loop variables in a
-    /// fixed-size frame-local region that sits between the regular locals and
-    /// operand-stack growth. The slot index in `opt_namespace_id` is
-    /// interpreted as a comp-var slot index (separate namespace from locals
-    /// or globals). The region is initialized to `Value::Undefined` on frame
-    /// entry and drained on frame exit, so comprehension targets never leak
-    /// into the enclosing scope. See `limitations/comprehensions.md` for details.
+    /// The namespace ID is a comprehension-local slot ID. The compiler stores
+    /// uncaptured targets directly and gives captured targets a stable cell.
     CompVar,
+}
+
+/// Identifies where an enclosing scope stores a cell captured by a callable.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum CaptureSource {
+    /// Cell reference stored in an ordinary enclosing-frame namespace slot.
+    Namespace(NamespaceId),
+    /// Cell reference stored in an active comprehension's stable stack slot.
+    CompVar(u16),
 }
 
 /// An identifier (variable or function name) with source location and scope information.
@@ -424,6 +428,8 @@ pub struct Comprehension {
     pub iter: ExprLoc,
     /// Zero or more filter conditions (all must be truthy for the element to be included).
     pub ifs: Vec<ExprLoc>,
+    /// Target slots requiring stable cells because a nested callable captures them.
+    pub captured_slots: Vec<u16>,
 }
 
 impl Expr {
@@ -746,12 +752,11 @@ pub struct PreparedFunctionDef {
     pub body: Vec<Node<Self>>,
     /// Number of local variable slots needed in the namespace.
     pub namespace_size: usize,
-    /// Enclosing namespace slots for variables captured from enclosing scopes.
+    /// Enclosing locations for variables captured from enclosing scopes.
     ///
-    /// At definition time the enclosing frame looks up the cell `HeapId` from
-    /// its own namespace at each slot and bundles them into the `Closure`.
-    /// Parallel (same index/order) to [`Self::free_var_slots`].
-    pub free_var_enclosing_slots: Vec<NamespaceId>,
+    /// At definition time each source supplies a cell `HeapId` to bundle into
+    /// the `Closure`. Parallel (same index/order) to [`Self::free_var_slots`].
+    pub free_var_enclosing_slots: Vec<CaptureSource>,
     /// This function's own namespace slots that receive the captured free-var
     /// cells, parallel to [`Self::free_var_enclosing_slots`]: cell `i` (gathered
     /// from `free_var_enclosing_slots[i]` in the enclosing frame) is installed

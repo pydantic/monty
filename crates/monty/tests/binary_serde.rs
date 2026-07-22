@@ -102,6 +102,19 @@ result
     assert_eq!(result, expected);
 }
 
+/// Captured comprehension cells and their closure metadata survive code serialization.
+#[test]
+fn monty_run_dump_load_comprehension_closure() {
+    let code = "funcs = [lambda: item for item in ['first', 'second']]\nfuncs[0]()".to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let loaded = MontyRun::load(&runner.dump().unwrap()).unwrap();
+
+    assert_eq!(
+        loaded.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("second".to_owned())
+    );
+}
+
 #[test]
 fn monty_run_dump_load_multiple_runs() {
     // A loaded runner can be run multiple times

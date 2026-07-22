@@ -559,6 +559,11 @@ pub enum Opcode {
     /// or with `ASSERT_CMP_FLAG` [..., lhs, rhs, msg] -> raises. The message
     /// comes first, with introspected detail appended when available.
     AssertFailed,
+    /// Allocate a closure cell initialized to `Undefined` and push its reference.
+    ///
+    /// Used for captured targets in inlined comprehensions. Appended to preserve
+    /// the serialized byte values of all older opcodes.
+    BuildCell,
 }
 // Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
@@ -720,7 +725,7 @@ impl Opcode {
             (Dup, Operand::None) => 1,
             (Dup2, Operand::None) => 2,
             (Rot2 | Rot3, Operand::None) => 0,
-            (LoadNone | LoadTrue | LoadFalse, Operand::None) => 1,
+            (LoadNone | LoadTrue | LoadFalse | BuildCell, Operand::None) => 1,
             (LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3, Operand::None) => 1,
             (
                 BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd
@@ -862,7 +867,7 @@ mod tests {
     #[test]
     fn test_opcode_roundtrip() {
         // Verify that all opcodes from 0 to the last opcode can be converted to u8 and back.
-        for byte in 0..=Opcode::AssertFailed as u8 {
+        for byte in 0..=Opcode::BuildCell as u8 {
             let opcode = Opcode::try_from(byte).unwrap();
             assert_eq!(opcode as u8, byte, "opcode {opcode:?} has wrong discriminant");
         }
@@ -893,12 +898,13 @@ mod tests {
         // for bare asserts, raise-only for the lazy explicit-message forms.
         assert_eq!(Opcode::Assert as u8, 119);
         assert_eq!(Opcode::AssertFailed as u8, 120);
+        assert_eq!(Opcode::BuildCell as u8, 121);
     }
 
     #[test]
     fn test_invalid_opcode() {
         // Byte just after the last valid opcode should fail
-        let result = Opcode::try_from(Opcode::AssertFailed as u8 + 1);
+        let result = Opcode::try_from(Opcode::BuildCell as u8 + 1);
         assert!(result.is_err());
         // 255 should also fail
         let result = Opcode::try_from(255u8);

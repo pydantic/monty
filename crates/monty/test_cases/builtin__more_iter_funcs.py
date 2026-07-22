@@ -68,6 +68,9 @@ tie_items = [
 assert max(tie_items, key=lambda item: (item['downloads'], item['likes']))['name'] == 'first'
 assert min(tie_items, key=lambda item: (item['downloads'], item['likes']))['name'] == 'first'
 
+rows = [{'x': 1}, {'x': 2}]
+assert {name: max(rows, key=lambda row: row[name]) for name in ['x']} == {'x': {'x': 2}}
+
 try:
     max([1], nope=1)
     assert False, 'invalid max keyword should raise TypeError'
