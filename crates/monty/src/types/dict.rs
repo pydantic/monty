@@ -1334,10 +1334,10 @@ struct DictIteratorState {
 impl DictIteratorState {
     /// Validates mutation and returns the next storage index.
     fn next_index(&mut self, current_len: usize) -> RunResult<Option<usize>> {
-        if current_len != self.expected_len {
-            Err(ExcType::runtime_error_dict_changed_size())
-        } else if self.index >= self.expected_len {
+        if self.index >= self.expected_len {
             Ok(None)
+        } else if current_len != self.expected_len {
+            Err(ExcType::runtime_error_dict_changed_size())
         } else {
             let index = self.index;
             self.index += 1;

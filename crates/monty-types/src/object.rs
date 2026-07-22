@@ -729,24 +729,6 @@ pub enum MontyType {
     List,
     #[strum(serialize = "list_iterator")]
     ListIterator,
-    #[strum(serialize = "tuple_iterator")]
-    TupleIterator,
-    #[strum(serialize = "str_ascii_iterator")]
-    StrAsciiIterator,
-    #[strum(serialize = "str_iterator")]
-    StrIterator,
-    #[strum(serialize = "bytes_iterator")]
-    BytesIterator,
-    #[strum(serialize = "range_iterator")]
-    RangeIterator,
-    #[strum(serialize = "dict_keyiterator")]
-    DictKeyIterator,
-    #[strum(serialize = "dict_itemiterator")]
-    DictItemIterator,
-    #[strum(serialize = "dict_valueiterator")]
-    DictValueIterator,
-    #[strum(serialize = "set_iterator")]
-    SetIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
     Tuple,
@@ -799,6 +781,25 @@ pub enum MontyType {
     RePattern,
     #[strum(serialize = "re.Match")]
     ReMatch,
+    // Serialized enum variants are append-only to preserve postcard discriminants.
+    #[strum(serialize = "tuple_iterator")]
+    TupleIterator,
+    #[strum(serialize = "str_ascii_iterator")]
+    StrAsciiIterator,
+    #[strum(serialize = "str_iterator")]
+    StrIterator,
+    #[strum(serialize = "bytes_iterator")]
+    BytesIterator,
+    #[strum(serialize = "range_iterator")]
+    RangeIterator,
+    #[strum(serialize = "dict_keyiterator")]
+    DictKeyIterator,
+    #[strum(serialize = "dict_itemiterator")]
+    DictItemIterator,
+    #[strum(serialize = "dict_valueiterator")]
+    DictValueIterator,
+    #[strum(serialize = "set_iterator")]
+    SetIterator,
 }
 
 impl fmt::Display for MontyType {

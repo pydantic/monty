@@ -107,24 +107,6 @@ pub enum Type {
     Iterator,
     #[strum(serialize = "list_iterator")]
     ListIterator,
-    #[strum(serialize = "tuple_iterator")]
-    TupleIterator,
-    #[strum(serialize = "str_ascii_iterator")]
-    StrAsciiIterator,
-    #[strum(serialize = "str_iterator")]
-    StrIterator,
-    #[strum(serialize = "bytes_iterator")]
-    BytesIterator,
-    #[strum(serialize = "range_iterator")]
-    RangeIterator,
-    #[strum(serialize = "dict_keyiterator")]
-    DictKeyIterator,
-    #[strum(serialize = "dict_itemiterator")]
-    DictItemIterator,
-    #[strum(serialize = "dict_valueiterator")]
-    DictValueIterator,
-    #[strum(serialize = "set_iterator")]
-    SetIterator,
     #[strum(serialize = "callable_iterator")]
     CallableIterator,
     /// Coroutine type for async functions and external futures.
@@ -156,6 +138,25 @@ pub enum Type {
     /// A regex match result from `re.match()` / `re.search()` etc. - displays as "re.Match"
     #[strum(serialize = "re.Match")]
     ReMatch,
+    // Serialized enum variants are append-only to preserve postcard discriminants.
+    #[strum(serialize = "tuple_iterator")]
+    TupleIterator,
+    #[strum(serialize = "str_ascii_iterator")]
+    StrAsciiIterator,
+    #[strum(serialize = "str_iterator")]
+    StrIterator,
+    #[strum(serialize = "bytes_iterator")]
+    BytesIterator,
+    #[strum(serialize = "range_iterator")]
+    RangeIterator,
+    #[strum(serialize = "dict_keyiterator")]
+    DictKeyIterator,
+    #[strum(serialize = "dict_itemiterator")]
+    DictItemIterator,
+    #[strum(serialize = "dict_valueiterator")]
+    DictValueIterator,
+    #[strum(serialize = "set_iterator")]
+    SetIterator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

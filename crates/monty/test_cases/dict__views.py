@@ -111,6 +111,13 @@ try:
 except RuntimeError as e:
     assert str(e) == 'dictionary changed size during iteration'
 
+# Exhausted iterators remain exhausted after the dictionary changes size.
+exhausted_dict = {'a': 1}
+exhausted_iter = iter(exhausted_dict)
+assert list(exhausted_iter) == ['a']
+exhausted_dict['b'] = 2
+assert next(exhausted_iter, None) is None
+
 # === dict_keys & iterable ===
 d = {'a': 1, 'b': 2, 'c': 3}
 assert d.keys() & {'b', 'c', 'x'} == {'b', 'c'}

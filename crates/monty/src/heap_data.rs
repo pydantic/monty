@@ -205,8 +205,6 @@ impl HeapData {
                 | Self::BoundMethod(_)
                 | Self::ListIterator(_)
                 | Self::TupleIterator(_)
-                | Self::StringIterator(_)
-                | Self::BytesIterator(_)
                 | Self::DictKeyIterator(_)
                 | Self::DictItemIterator(_)
                 | Self::DictValueIterator(_)
