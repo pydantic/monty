@@ -65,15 +65,9 @@ pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Res
 
 /// Pre-checks that a string/bytes replace won't exceed resource limits before allocating.
 ///
-/// This prevents DoS via expressions like `('a' * 1000).replace('a', 'b' * 10_000_000)`
-/// where a small tracked input is amplified into a huge untracked Rust `String`/`Vec`
-/// by `String::replace()` before `allocate_string()` can check the result.
-///
-/// The upper bound on result size is: if `old` is non-empty, at most `input_len / old_len`
-/// replacements can occur, each producing `new_len` bytes instead of `old_len`. When `count`
-/// is specified, replacements are capped to that value. For shrinking replaces
-/// (`new_len < old_len`) matches only make the result smaller, so the worst case is zero
-/// matches: the full input copied into an untracked `String`/`Vec` — bound by `input_len`.
+/// Expanding replacements use the maximum possible match count. Shrinking
+/// replacements use `input_len`, since zero matches copies the full input into
+/// an otherwise untracked Rust `String` or `Vec`.
 pub fn check_replace_size(
     input_len: usize,
     old_len: usize,
@@ -82,8 +76,6 @@ pub fn check_replace_size(
     tracker: &impl ResourceTracker,
 ) -> Result<(), ResourceError> {
     let estimated = if new_len < old_len {
-        // Shrinking replace: the max-matches formula below would *underestimate* the
-        // result (each match shrinks it), letting huge inputs skip the pre-check.
         input_len
     } else {
         // Empty pattern (old_len == 0): inserts before each element + after the last = input_len + 1
@@ -128,42 +120,22 @@ fn estimate_bits_to_bytes(bits: u64) -> usize {
     usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
 }
 
-/// Converts a resource error to a Python exception, deciding type, message and
-/// catchability in a single lookup: `Allocation`/`Memory` → `MemoryError`,
-/// `Time` → `TimeoutError`, `Recursion` → `RecursionError`. Only
-/// `RecursionError` is catchable (matching CPython); the rest are uncatchable
-/// so untrusted code cannot suppress resource limit violations.
+/// Converts a resource error to its host-visible Python exception.
+///
+/// Recursion errors remain catchable for CPython compatibility; terminal
+/// memory and time errors cannot be suppressed by sandboxed code.
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        match err {
-            ResourceError::Allocation { limit, count } => Self::UncatchableExc(
-                SimpleException::new(
-                    ExcType::MemoryError,
-                    Some(format!("allocation limit exceeded: {count} > {limit}")),
-                )
-                .into(),
-            ),
-            ResourceError::Memory { limit, used } => Self::UncatchableExc(
-                SimpleException::new(
-                    ExcType::MemoryError,
-                    Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
-                )
-                .into(),
-            ),
-            ResourceError::Time { limit, elapsed } => Self::UncatchableExc(
-                SimpleException::new(
-                    ExcType::TimeoutError,
-                    Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
-                )
-                .into(),
-            ),
-            ResourceError::Recursion { .. } => Self::Exc(
-                SimpleException::new(
-                    ExcType::RecursionError,
-                    Some("maximum recursion depth exceeded".to_string()),
-                )
-                .into(),
-            ),
+        let (exc_type, catchable) = match &err {
+            ResourceError::Allocation { .. } | ResourceError::Memory { .. } => (ExcType::MemoryError, false),
+            ResourceError::Time { .. } => (ExcType::TimeoutError, false),
+            ResourceError::Recursion { .. } => (ExcType::RecursionError, true),
+        };
+        let exc = SimpleException::new_msg(exc_type, err).into();
+        if catchable {
+            Self::Exc(exc)
+        } else {
+            Self::UncatchableExc(exc)
         }
     }
 }

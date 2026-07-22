@@ -249,7 +249,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
-        // For uncatchable exceptions (ResourceError like RecursionError),
+        // For terminal resource errors such as memory limits,
         // we still need to unwind the stack to collect all frames for the traceback
         if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
             return Some(self.unwind_for_traceback(error));
@@ -378,7 +378,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Unwinds the call stack to collect all frames for a traceback.
     ///
-    /// Used for uncatchable exceptions (like RecursionError) that can't be handled
+    /// Used for terminal resource errors that can't be handled
     /// but still need a complete traceback showing all active call frames.
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
