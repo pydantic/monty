@@ -1367,10 +1367,16 @@ impl<'i, 'g> Prepare<'i, 'g> {
             None => None,
         };
 
-        // Record captured targets so compilation allocates stable cells for them.
+        // Record captured targets so compilation allocates one stable cell per lexical name.
         let comp_scope = self.comp_name_scopes.pop().expect("comprehension scope was pushed");
+        let mut captured_slots = AHashSet::new();
         for generator in &mut prepared_generators {
-            collect_captured_comp_target_slots(&generator.target, &comp_scope, &mut generator.captured_slots);
+            collect_captured_comp_target_slots(
+                &generator.target,
+                &comp_scope,
+                &mut captured_slots,
+                &mut generator.captured_slots,
+            );
         }
         self.comp_var_depth = saved_var_depth;
 
@@ -1453,13 +1459,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// Predeclares an unpack target's names as comprehension-variable slots.
     ///
     /// Called during the first pass of `prepare_comprehension`, before any
-    /// generator iter expressions are walked, so a later generator's target
-    /// shadows references to the same name in earlier generators' iters. Each
-    /// new name claims the next comp-var slot (recorded in
-    /// `comp_var_depth`) and is inserted into the current `comp_name_scopes`
-    /// frame. Subsequent reads inside the comprehension resolve through the
-    /// scope stack and emit `Load/StoreCompTarget`; outside the comprehension
-    /// the slot is unreachable.
+    /// generator iter expressions are walked, so later target names shadow
+    /// enclosing scopes. Each new lexical name claims the next comp-var slot;
+    /// repeated targets reuse it. Reads inside the comprehension resolve
+    /// through this scope, while outside it the slot is unreachable.
     fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
@@ -1493,28 +1496,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
     }
 
-    /// Allocates the next comp-var slot for `name_id`, registering it in
-    /// the topmost comp-name scope and updating the high-water mark.
+    /// Returns the comp-var slot for `name_id`, allocating it on first use.
     ///
-    /// Returns the slot index (a `u16`, matching the `Load/StoreCompTarget`
-    /// operand width). Raises a syntax error anchored to `position` if the
-    /// scratch region would exceed `u16::MAX` slots — the same overflow
-    /// behavior `alloc_slot` uses for the regular namespace.
+    /// Repeated targets in one comprehension share a slot because the whole
+    /// comprehension is one lexical scope. New slots use a `u16` operand and
+    /// report namespace overflow consistently with regular namespace slots.
     fn alloc_comp_var_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<u16, ParseError> {
-        let slot = self.comp_var_depth;
-        let next = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
-        self.comp_var_depth = next;
-        // No per-slot side table for names — each `Load/StoreCompTarget`
-        // opcode carries its target's `name_id` inline. Just push the name
-        // onto the active comp scope so subsequent reads inside the
-        // comprehension can resolve to this slot.
         let top = self
             .comp_name_scopes
             .last_mut()
             .expect("alloc_comp_var_slot called outside an active comp scope");
-        top.insert(name_id, CompBinding { slot, captured: false });
-
-        Ok(slot)
+        if let Some(binding) = top.get(&name_id) {
+            Ok(binding.slot)
+        } else {
+            let slot = self.comp_var_depth;
+            self.comp_var_depth = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
+            top.insert(name_id, CompBinding { slot, captured: false });
+            Ok(slot)
+        }
     }
 
     /// Prepares a function definition using a two-pass approach for correct scope resolution.
@@ -2188,6 +2187,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
 fn collect_captured_comp_target_slots(
     target: &UnpackTarget,
     scope: &AHashMap<StringId, CompBinding>,
+    seen: &mut AHashSet<u16>,
     slots: &mut Vec<u16>,
 ) {
     match target {
@@ -2196,13 +2196,14 @@ fn collect_captured_comp_target_slots(
             if scope
                 .get(&ident.name_id)
                 .is_some_and(|binding| binding.captured && binding.slot == slot)
+                && seen.insert(slot)
             {
                 slots.push(slot);
             }
         }
         UnpackTarget::Tuple { targets, .. } => {
             for target in targets {
-                collect_captured_comp_target_slots(target, scope, slots);
+                collect_captured_comp_target_slots(target, scope, seen, slots);
             }
         }
     }

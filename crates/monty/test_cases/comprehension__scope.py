@@ -57,6 +57,16 @@ pair_funcs = [lambda: (left, right) for left, right in [(1, 2), (3, 4)]]
 assert pair_funcs[0]() == (3, 4)
 assert pair_funcs[1]() == (3, 4)
 
+# Repeated targets in one comprehension bind the same lexical name. Later
+# iterables observe the preceding binding, and closures share its stable cell.
+assert [repeated for repeated in [1, 2] for repeated in [repeated + 10]] == [11, 12]
+repeated_funcs = [lambda: repeated for repeated in [1, 2] for repeated in [repeated]]
+assert repeated_funcs[0]() == 2
+assert repeated_funcs[1]() == 2
+
+repeated_unpack_funcs = [lambda: repeated for repeated, repeated in [(1, 2)]]
+assert repeated_unpack_funcs[0]() == 2
+
 nested_funcs = [[lambda: item for item in row] for item, row in [('outer', ['a', 'b'])]]
 assert nested_funcs[0][0]() == 'b'
 
