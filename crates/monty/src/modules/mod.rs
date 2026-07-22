@@ -5,6 +5,7 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::{ResourceError, ResourceTracker};
 use strum::FromRepr;
 
 use crate::{
@@ -13,7 +14,6 @@ use crate::{
     exception_private::RunResult,
     heap::HeapId,
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
 };
 
 pub(crate) mod asyncio;

@@ -1,11 +1,12 @@
 //! Implementation of the len() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     types::PyTrait,
     value::Value,
 };

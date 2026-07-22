@@ -32,12 +32,26 @@ any code runs.
 
 ## Expressions rejected at parse time
 
-- **Starred expressions** in expression position (e.g. `[*xs, *ys]`,
-  `f(*args)`). Function calls with `*args` unpacking are not supported.
 - **Multiple `**kwargs` unpacking** in a single call (`f(**a, **b)`).
 - **Complex number literals** (`1j`, `2+3j`).
 - **Template strings (t-strings)** — PEP 750.
 - **Walrus operator** (`:=`) — also rejected.
+
+## Starred unpacking
+
+Anything Monty can iterate may follow a `*`, matching CPython — `[*xs]`,
+`(*xs,)`, `{*xs}`, `f(*xs)`, `a, b = xs` and `a, *b = xs` all accept whatever
+`list(xs)` accepts.
+
+One message divergence: passing a non-iterable to a call, `f(*1)`, reports
+`TypeError: Value after * must be an iterable, not int` — the same wording as a
+list literal. CPython instead names the callable by its module-qualified
+`__qualname__`: `__main__.f() argument after * must be an iterable, not int`,
+and correspondingly `__main__.C.m()`, `__main__.<lambda>()` or
+`__main__.outer.<locals>.inner()`. Monty has neither function `__qualname__`
+nor module-qualified names (see the class-name note in
+[collections.md](collections.md)), so it reports the generic form. Every other
+unpacking form matches CPython exactly.
 
 ## Source nesting depth
 

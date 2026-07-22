@@ -18,8 +18,8 @@ use std::{
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{MontyObject, PrintStream};
 use monty_pool::{Checkout, Pool, PoolConfig, ReplConfig, ResumeValue, TurnEvent};
+use monty_types::{MontyObject, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 

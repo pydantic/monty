@@ -7,9 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monty::{
-    CompileOptions, ExcType, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, PrintWriter,
-    ResourceLimits, RunProgress,
+use monty::{MontyRepl, MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter,
+    ResourceLimits, ResourceTracker,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -17,9 +18,7 @@ use monty::{
 /// External functions are no longer declared upfront. Instead, the VM yields `NameLookup`
 /// when it encounters an unresolved name. This helper resolves all such lookups until
 /// a different progress variant is reached.
-fn resolve_name_lookups<T: monty::ResourceTracker>(
-    mut progress: RunProgress<T>,
-) -> Result<RunProgress<T>, monty::MontyException> {
+fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(

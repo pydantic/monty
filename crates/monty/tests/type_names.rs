@@ -1,4 +1,4 @@
-use monty::{ExcType, MontyType};
+use monty_types::{ExcType, MontyType};
 use strum::IntoEnumIterator;
 
 /// `MontyType::from_type_name` must be the exact inverse of `Display`/`name()`

@@ -4,10 +4,10 @@ use std::{
     vec::{Drain, IntoIter},
 };
 
+use monty_types::ResourceTracker;
 use smallvec::SmallVec;
 
 use crate::{
-    ResourceTracker,
     heap::{Heap, HeapId},
     value::Value,
 };

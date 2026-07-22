@@ -15,15 +15,16 @@
 //! change both; coverage lives in `test_cases/function__arity_defaults.py`
 //! and `test_cases/args__macro_errors.py`.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
     defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     expressions::Identifier,
     heap::{DropGuard, DropWithContext, HeapData},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
     types::{Dict, allocate_tuple},
     value::Value,
 };

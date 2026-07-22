@@ -9,7 +9,8 @@
 //! `INSTA_UPDATE=always`).
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, MontyRun, NoLimitTracker, PrintWriter};
+use monty::MontyRun;
+use monty_types::{CompileOptions, NoLimitTracker, PrintWriter};
 
 /// Run `code` under Monty with a string-collecting `PrintWriter` and return
 /// whatever was printed. Panics on parse/runtime errors — callers only care

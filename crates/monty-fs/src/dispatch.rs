@@ -7,7 +7,7 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall};
+use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall};
 
 use super::{
     common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,

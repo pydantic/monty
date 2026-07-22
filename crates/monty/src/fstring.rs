@@ -8,6 +8,9 @@
 
 use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
 
+pub use monty_types::FormatFloat;
+use monty_types::ResourceTracker;
+
 use crate::{
     bytecode::VM,
     defer_drop,
@@ -15,7 +18,7 @@ use crate::{
     expressions::ExprLoc,
     heap::HeapData,
     intern::StringId,
-    resource::{ResourceTracker, check_repeat_size},
+    resource_checks::check_repeat_size,
     types::{LongInt, PyTrait, Type, long_int::check_bits_str_digits_limit},
     value::Value,
 };
@@ -1578,125 +1581,6 @@ fn format_float_default(f: f64, spec: &ParsedFormatSpec) -> String {
     let abs_str = maybe_alternate_point(FormatFloat(abs_val).to_string(), abs_val, spec);
     let sign = numeric_sign(is_negative, &abs_str, spec);
     pad_signed_numeric(sign, "", &abs_str, spec)
-}
-
-/// A [`Display`](fmt::Display) adapter that writes a float exactly as CPython's
-/// `repr()`/`str()` (identical for floats in Python 3): the shortest decimal
-/// string that round-trips, switching to scientific notation when the base-10
-/// exponent is `< -4` or `>= 16`, and always keeping at least one fractional
-/// digit (`1.0`, never `1`) — `1e16` → `"1e+16"`, `1234.5` → `"1234.5"`,
-/// `inf`/`nan` lowercased.
-///
-/// This is the default rendering for a bare `f"{x}"`, `str(x)`, `repr(x)` and
-/// floats inside container reprs — *not* the format mini-language (that's
-/// [`format_float_g`] et al). Rust can't do this directly: its `f64` `Display`
-/// never uses scientific notation (`1e16` prints as `10000000000000000`) and
-/// renders NaN as `"NaN"`.
-///
-/// As a `Display` adapter it writes straight to the caller's sink with **no
-/// heap allocation**: it borrows Rust's *shortest-digits* guarantee via `{:e}`
-/// into a small stack buffer (an `f64` `{:e}` is ASCII and ≤ 24 bytes) and
-/// re-lays-out those digits per CPython's rules.
-pub struct FormatFloat(pub f64);
-
-impl fmt::Display for FormatFloat {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let v = self.0;
-        if v.is_nan() {
-            return f.write_str("nan");
-        }
-        if v.is_sign_negative() {
-            f.write_char('-')?;
-        }
-        if v.is_infinite() {
-            return f.write_str("inf");
-        }
-        // Rust's shortest scientific form gives minimal round-tripping digits
-        // plus the base-10 exponent (`1234.5` → `"1.2345e3"`, `0.0` → `"0e0"`),
-        // captured in a stack buffer so nothing touches the heap.
-        let mut sci = StackStr::new();
-        write!(sci, "{:e}", v.abs())?;
-        let sci = sci.as_str();
-        let (mantissa, exp_str) = sci.split_once('e').ok_or(fmt::Error)?;
-        // `{:e}` always emits a single leading digit, so the integer part is one
-        // char and the fraction (if any) follows the `.`.
-        let (int_part, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-        let exp10: i32 = exp_str.parse().map_err(|_| fmt::Error)?;
-        let ndigits = int_part.len() + frac.len();
-        // `decpt` = number of digits to the left of the decimal point.
-        let decpt = exp10 + 1;
-
-        if !(-4..16).contains(&exp10) {
-            // Scientific: leading digit, optional fraction, then `e±NN`.
-            f.write_str(int_part)?;
-            if !frac.is_empty() {
-                f.write_char('.')?;
-                f.write_str(frac)?;
-            }
-            let exp_sign = if exp10 < 0 { '-' } else { '+' };
-            write!(f, "e{exp_sign}{:02}", exp10.unsigned_abs())
-        } else if decpt <= 0 {
-            // `0.00…digits` — `-decpt` leading zeros after the point.
-            f.write_str("0.")?;
-            for _ in 0..-decpt {
-                f.write_char('0')?;
-            }
-            f.write_str(int_part)?;
-            f.write_str(frac)
-        } else {
-            let decpt = usize::try_from(decpt).expect("decpt is positive in this branch");
-            if decpt >= ndigits {
-                // Integer-valued: digits, zeros up to the point, then `.0`.
-                f.write_str(int_part)?;
-                f.write_str(frac)?;
-                for _ in 0..decpt - ndigits {
-                    f.write_char('0')?;
-                }
-                f.write_str(".0")
-            } else {
-                // Point falls inside the digit run. `int_part` is a single digit
-                // and `decpt >= 1`, so the split always lands within `frac`.
-                f.write_str(int_part)?;
-                let split = decpt - int_part.len();
-                f.write_str(&frac[..split])?;
-                f.write_char('.')?;
-                f.write_str(&frac[split..])
-            }
-        }
-    }
-}
-
-/// A fixed-capacity [`fmt::Write`] sink backed by a stack array, used to capture
-/// a bounded `{:e}` rendering without a heap allocation.
-///
-/// 32 bytes comfortably holds any `f64` `{:e}` output (the longest is ~24 ASCII
-/// bytes, e.g. `2.2250738585072014e-308`). A write that would overflow returns
-/// [`fmt::Error`] rather than panicking — unreachable for the bounded `f64`
-/// case, but it keeps the type panic-free for any future caller.
-struct StackStr {
-    buf: [u8; 32],
-    len: usize,
-}
-
-impl StackStr {
-    fn new() -> Self {
-        Self { buf: [0; 32], len: 0 }
-    }
-
-    fn as_str(&self) -> &str {
-        // Only `{:e}` of an `f64` is written here, which is always valid ASCII.
-        str::from_utf8(&self.buf[..self.len]).unwrap_or("")
-    }
-}
-
-impl fmt::Write for StackStr {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let end = self.len.checked_add(s.len()).ok_or(fmt::Error)?;
-        let slot = self.buf.get_mut(self.len..end).ok_or(fmt::Error)?;
-        slot.copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
 }
 
 /// Applies ASCII conversion to a string (escapes non-ASCII characters).

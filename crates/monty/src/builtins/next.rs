@@ -1,11 +1,12 @@
 //! Implementation of the next() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    resource::ResourceTracker,
     types::iter::iterator_next,
     value::Value,
 };

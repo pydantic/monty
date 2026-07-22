@@ -1,15 +1,15 @@
 use std::{borrow::Cow, fmt};
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
-    resource::ResourceTracker,
     types::{
         AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
         TimeZone, Tuple,
@@ -251,29 +251,6 @@ impl Type {
             "property" => Some(Self::Property),
             _ => None,
         }
-    }
-
-    /// The inverse of `Display`: resolves any string it produces back to the
-    /// `Type`, including internal names (`"iterator"`,
-    /// `"_io.TextIOWrapper"`, ...) and exception types.
-    ///
-    /// Unlike [`Type::from_builtin_name`] this is NOT restricted to nameable
-    /// builtins — it exists for boundaries that serialize a type by its
-    /// display name (e.g. the subprocess wire protocol) and must round-trip
-    /// every variant; the round-trip is enforced by a test over all variants.
-    /// [`Instance`](Self::Instance) is intentionally excluded (`"object"`
-    /// returns `None`): its `HeapId` payload cannot be reconstructed from a
-    /// name, and no boundary may carry it.
-    #[must_use]
-    pub(crate) fn from_type_name(name: &str) -> Option<Self> {
-        // `EnumString` parses via the same strum `serialize` attributes that
-        // `IntoStaticStr`/`Display` render with, so the two stay in lockstep
-        // by construction. Exception types display as their exception name
-        // ("ValueError", "json.JSONDecodeError", ...) — fall back to the
-        // ExcType parser.
-        name.parse::<Self>()
-            .ok()
-            .or_else(|| name.parse::<ExcType>().ok().map(Self::Exception))
     }
 
     /// Checks if a value of type `self` is an instance of `other`.

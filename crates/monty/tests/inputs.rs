@@ -3,8 +3,8 @@
 //! These tests verify that `MontyObject` inputs are correctly converted to `Object`
 //! and can be used in Python code execution.
 
-use indexmap::IndexMap;
-use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 // === Immediate Value Tests ===
 
@@ -203,8 +203,7 @@ fn input_tuple() {
 
 #[test]
 fn input_dict() {
-    let mut map = IndexMap::new();
-    map.insert(MontyObject::String("a".to_string()), MontyObject::Int(1));
+    let map = vec![(MontyObject::String("a".to_string()), MontyObject::Int(1))];
 
     let ex = MontyRun::new(
         "x".to_owned(),
@@ -216,15 +215,15 @@ fn input_dict() {
     let result = ex.run_no_limits(vec![MontyObject::dict(map)]).unwrap();
 
     // Build expected map for comparison
-    let mut expected = IndexMap::new();
-    expected.insert(MontyObject::String("a".to_string()), MontyObject::Int(1));
-    assert_eq!(result, MontyObject::Dict(expected.into()));
+    assert_eq!(
+        result,
+        MontyObject::dict(vec![(MontyObject::String("a".to_string()), MontyObject::Int(1))])
+    );
 }
 
 #[test]
 fn input_dict_get() {
-    let mut map = IndexMap::new();
-    map.insert(MontyObject::String("key".to_string()), MontyObject::Int(42));
+    let map = vec![(MontyObject::String("key".to_string()), MontyObject::Int(42))];
 
     let ex = MontyRun::new(
         "x['key']".to_owned(),

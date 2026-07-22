@@ -11,7 +11,7 @@ use std::{
     time::SystemTime,
 };
 
-use monty::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
+use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
 
 use super::error::MountError;
 

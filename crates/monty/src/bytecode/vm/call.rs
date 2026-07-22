@@ -6,20 +6,20 @@
 
 use std::mem;
 
+use monty_types::{OsFunctionCall, ResourceTracker};
+
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError},
     function::Function,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    os::OsFunctionCall,
-    resource::ResourceTracker,
     types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };

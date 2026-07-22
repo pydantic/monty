@@ -16,7 +16,7 @@ repository = { workspace = true }
 name = "monty_pool"
 
 [dependencies]
-monty = { workspace = true }
+monty-types = { workspace = true }
 monty-fs = { workspace = true }
 monty-proto = { workspace = true }
 # Blocking WebSocket client for the remote (Websocket) transport. The pool is

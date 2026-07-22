@@ -10,11 +10,11 @@ use std::os::unix::fs::symlink as unix_symlink;
 use std::os::windows::fs::symlink_file as win_symlink_file;
 use std::{fs, path::Path};
 
-use monty::{
+use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
+use monty_types::{
     ExcType, MkdirCallArgs, MontyException, MontyObject, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
-use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use tempfile::TempDir;
 
 // =============================================================================
@@ -1563,7 +1563,7 @@ fn non_filesystem_ops_not_handled() {
     let dir = create_test_dir();
     let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
 
-    let result = mt.handle_os_call(OsFunctionCall::Getenv(monty::GetenvArgs {
+    let result = mt.handle_os_call(OsFunctionCall::Getenv(monty_types::GetenvArgs {
         key: "PATH".to_owned(),
         default: MontyObject::None,
     }));

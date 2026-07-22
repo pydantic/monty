@@ -1,11 +1,12 @@
 //! Binary and in-place operation helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError},
     heap::DropGuard,
-    resource::ResourceTracker,
     types::{BinaryOp, PyTrait},
 };
 

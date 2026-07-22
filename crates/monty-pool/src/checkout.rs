@@ -2,11 +2,11 @@
 
 use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Duration};
 
-use monty::{
-    AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
-};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
+use monty_types::{
+    AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
+};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 

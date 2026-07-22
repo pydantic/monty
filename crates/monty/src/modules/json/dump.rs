@@ -8,13 +8,14 @@ use std::{
     fmt::{Display, Write},
 };
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{ContainsVM, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,

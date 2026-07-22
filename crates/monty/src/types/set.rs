@@ -1,6 +1,7 @@
 use std::{cell::Cell, fmt::Write, mem};
 
 use hashbrown::HashTable;
+use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
 
 use super::{BinaryOp, PyTrait, iter::checked_preallocation_hint};
@@ -8,14 +9,13 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{
         BorrowedHeapRead, BorrowedHeapReadMut, ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapItem,
         HeapRead, HeapReadOutput, heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{LazyHeapSet, Type},
     value::{EitherStr, Value},
 };
@@ -977,6 +977,10 @@ impl<C: ContainsHeap> DropWithContext<C> for SetEntry {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Set
     }
@@ -1255,6 +1259,10 @@ impl FrozenSet {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::FrozenSet
     }

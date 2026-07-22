@@ -33,11 +33,12 @@
 
 use std::{mem, ptr};
 
+use monty_types::ResourceTracker;
+
 use crate::{
-    ResourceTracker,
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::{Interns, StringId},
     value::{EitherStr, Value},

@@ -52,13 +52,9 @@
 
 use std::{fmt, mem};
 
-use crate::{
-    exception_private::RunResult,
-    heap::Heap,
-    resource::{ResourceError, ResourceTracker},
-    types::str::allocate_string,
-    value::Value,
-};
+use monty_types::{ResourceError, ResourceTracker};
+
+use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
 
 /// Resource-tracked builder for a `String`.
 ///

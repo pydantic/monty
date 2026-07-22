@@ -1,5 +1,7 @@
 //! F-string and value formatting helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
@@ -9,7 +11,7 @@ use crate::{
         ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec, validate_string_spec,
     },
     heap::HeapReadOutput,
-    resource::{ResourceTracker, check_repeat_size},
+    resource_checks::check_repeat_size,
     types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
     value::Value,
 };

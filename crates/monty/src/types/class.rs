@@ -1,14 +1,15 @@
 use std::{fmt::Write, mem};
 
+use monty_types::ResourceTracker;
+
 use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{BorrowedHeapReadMut, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
-    resource::ResourceTracker,
     types::str::allocate_string,
     value::{EitherStr, Value},
 };

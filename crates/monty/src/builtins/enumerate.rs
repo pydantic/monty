@@ -1,14 +1,14 @@
 //! Implementation of the enumerate() builtin function.
 
+use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::{List, allocate_tuple},
     value::Value,
 };

@@ -7,10 +7,10 @@
 
 use std::mem;
 
+use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ResourceTracker,
     args::ArgValues,
     bytecode::VM,
     defer_drop,
@@ -68,6 +68,10 @@ impl HeapItem for CallableIterator {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, CallableIterator> {
+    fn py_is_iterable(&self, _: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
         Type::CallableIterator
     }

@@ -6,12 +6,13 @@
 //! The `Path` class supports both pure methods (no I/O, handled directly) and
 //! filesystem methods (require I/O, yield external function calls for host resolution).
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
     value::Value,
 };

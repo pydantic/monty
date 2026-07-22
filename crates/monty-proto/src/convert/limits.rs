@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use monty::{DEFAULT_MAX_RECURSION_DEPTH, ResourceLimits};
+use monty_types::{DEFAULT_MAX_RECURSION_DEPTH, ResourceLimits};
 
 use crate::pb;
 

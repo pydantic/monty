@@ -1562,8 +1562,6 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.0",
- "serde",
- "serde_core",
 ]
 
 [[package]]
@@ -1998,13 +1996,13 @@ dependencies = [
  "chrono",
  "fancy-regex 0.17.0",
  "hashbrown 0.16.1",
- "indexmap",
  "insta",
  "itertools 0.14.0",
  "itoa",
  "jiter",
  "libm",
  "monty-macros",
+ "monty-types",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -2022,7 +2020,6 @@ dependencies = [
  "unicode-general-category",
  "unicode-normalization",
  "unicode_names2",
- "web-time",
 ]
 
 [[package]]
@@ -2033,6 +2030,7 @@ dependencies = [
  "criterion",
  "monty",
  "monty-pool",
+ "monty-types",
  "pprof",
  "pyo3",
  "pyo3-build-config",
@@ -2047,6 +2045,7 @@ dependencies = [
  "datatest-stable",
  "monty",
  "monty-fs",
+ "monty-types",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
@@ -2058,7 +2057,7 @@ name = "monty-fs"
 version = "0.0.19-beta.4"
 dependencies = [
  "ahash",
- "monty",
+ "monty-types",
  "tempfile",
 ]
 
@@ -2069,15 +2068,16 @@ dependencies = [
  "arbitrary",
  "libfuzzer-sys",
  "monty",
+ "monty-types",
 ]
 
 [[package]]
 name = "monty-js"
 version = "0.0.19-beta.4"
 dependencies = [
- "monty",
  "monty-pool",
  "monty-type-checking",
+ "monty-types",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2100,9 +2100,9 @@ dependencies = [
 name = "monty-pool"
 version = "0.0.19-beta.4"
 dependencies = [
- "monty",
  "monty-fs",
  "monty-proto",
+ "monty-types",
  "rustls",
  "tempfile",
  "tungstenite",
@@ -2114,6 +2114,7 @@ version = "0.0.19-beta.4"
 dependencies = [
  "monty",
  "monty-type-checking",
+ "monty-types",
  "num-bigint",
  "prost",
  "prost-build",
@@ -2130,6 +2131,7 @@ dependencies = [
  "monty-fs",
  "monty-proto",
  "monty-type-checking",
+ "monty-types",
  "rustyline",
  "tempfile",
 ]
@@ -2151,6 +2153,20 @@ dependencies = [
  "ty_module_resolver",
  "ty_python_core",
  "ty_python_semantic",
+]
+
+[[package]]
+name = "monty-types"
+version = "0.0.19-beta.4"
+dependencies = [
+ "chrono",
+ "monty-macros",
+ "num-bigint",
+ "num-traits",
+ "serde",
+ "strum 0.27.2",
+ "unicode-general-category",
+ "web-time",
 ]
 
 [[package]]
@@ -2722,10 +2738,10 @@ name = "pydantic-monty"
 version = "0.0.19-beta.4"
 dependencies = [
  "ahash",
- "monty",
  "monty-fs",
  "monty-pool",
  "monty-proto",
+ "monty-types",
  "num-bigint",
  "pyo3",
  "pyo3-async-runtimes",

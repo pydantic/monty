@@ -16,14 +16,16 @@
 
 use std::mem;
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
-    resource::{ResourceError, ResourceTracker, check_estimated_size},
+    resource_checks::check_estimated_size,
     types::{PyTrait, Range, Type, callable_iterator::CallableIterator, dict_view::DictView, str::allocate_char},
     value::{VALUE_SIZE, Value, ValueRead},
 };
@@ -760,6 +762,10 @@ impl HeapItem for MontyIter {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, MontyIter> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Iterator
     }

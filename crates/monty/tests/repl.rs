@@ -4,9 +4,10 @@
 //! only the newly fed snippet each time.
 
 use insta::assert_snapshot;
-use monty::{
-    CompileOptions, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter,
-    ReplContinuationMode, ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
+use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NoLimitTracker, PrintWriter,
+    ResourceTracker,
 };
 
 #[test]
@@ -356,7 +357,7 @@ fn repl_start_runtime_error_preserves_repl_state() {
         .feed_start("y = 20\nraise ValueError('boom')", vec![], PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
-    assert_eq!(error.exc_type(), monty::ExcType::ValueError);
+    assert_eq!(error.exc_type(), ExcType::ValueError);
     assert_eq!(error.message(), Some("boom"));
 
     // Variables from BEFORE the error snippet survive.
@@ -377,12 +378,12 @@ fn repl_start_runtime_error_during_external_call_preserves_repl_state() {
     let call = progress.into_function_call().expect("expected function call");
 
     // Resume with an exception from the external function.
-    let exc = monty::MontyException::new(monty::ExcType::RuntimeError, Some("ext failed".to_string()));
+    let exc = MontyException::new(ExcType::RuntimeError, Some("ext failed".to_string()));
     let err = call
         .resume(ExtFunctionResult::Error(exc), PrintWriter::Stdout)
         .expect_err("expected ReplStartError");
     let ReplStartError { mut repl, error } = *err;
-    assert_eq!(error.exc_type(), monty::ExcType::RuntimeError);
+    assert_eq!(error.exc_type(), ExcType::RuntimeError);
 
     // Variable from before the error is still accessible.
     assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(99));

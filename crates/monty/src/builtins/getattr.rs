@@ -1,13 +1,13 @@
 //! Implementation of the getattr() builtin function.
 
+use monty_types::{ExcType, ResourceTracker};
+
 use crate::{
-    ExcType,
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{RunError, RunResult, SimpleException},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::DropWithContext,
-    resource::ResourceTracker,
     value::Value,
 };
 

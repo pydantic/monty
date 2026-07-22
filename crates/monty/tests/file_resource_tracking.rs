@@ -7,8 +7,9 @@
 //! successful read raises `current_memory()` by roughly the file size, and
 //! `close()` drops it back down.
 
-use monty::{
-    CompileOptions, ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, PrintWriter,
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, FileMode, LimitedTracker, MontyException, MontyFileHandle, MontyObject, PrintWriter,
     ResourceLimits,
 };
 
@@ -32,7 +33,7 @@ fn open_then_read(
     handle: MontyFileHandle,
     io_result: MontyObject,
     limits: ResourceLimits,
-) -> Result<(usize, MontyObject), monty::MontyException> {
+) -> Result<(usize, MontyObject), MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
@@ -49,7 +50,7 @@ fn open_then_read(
     // reading — typically a follow-up OS call inserted by the test to
     // observe state. Tests that complete immediately use `into_complete`.
     match progress {
-        monty::RunProgress::OsCall(next_call) => {
+        RunProgress::OsCall(next_call) => {
             let mem = next_call.tracker().current_memory();
             // Resume the follow-up call so the runner can finish — tests
             // typically use a no-op `Getenv` for this purpose.
@@ -59,7 +60,7 @@ fn open_then_read(
             let complete = progress.into_complete().expect("expected Complete");
             Ok((mem, complete))
         }
-        monty::RunProgress::Complete(value) => Ok((0, value)),
+        RunProgress::Complete(value) => Ok((0, value)),
         _ => panic!("unexpected progress variant"),
     }
 }

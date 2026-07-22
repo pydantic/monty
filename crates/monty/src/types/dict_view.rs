@@ -1,15 +1,15 @@
 use std::{fmt::Write, mem};
 
+use monty_types::ResourceTracker;
 use smallvec::smallvec;
 
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{
         BinaryOp, Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint,
     },
@@ -131,6 +131,10 @@ impl DictView for DictKeysView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictKeys
     }
@@ -321,6 +325,10 @@ impl DictView for DictItemsView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictItems
     }
@@ -450,6 +458,10 @@ impl<'h> HeapRead<'h, DictValuesView> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::DictValues
     }

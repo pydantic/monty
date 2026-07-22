@@ -1,4 +1,5 @@
-use monty::{CompileOptions, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject};
 
 /// Helper to run a Python expression and return the result.
 fn run_expr(code: &str) -> MontyObject {

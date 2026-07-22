@@ -16,8 +16,10 @@ repository = { workspace = true }
 name = "monty_proto"
 
 [dependencies]
-monty = { workspace = true }
+monty-types = { workspace = true }
 num-bigint = { workspace = true }
+# Optional: the worker feature's Child state machine drives the interpreter
+monty = { workspace = true, optional = true }
 prost = { workspace = true }
 # Optional: used with the worker feature
 monty-type-checking = { workspace = true, optional = true }
@@ -36,8 +38,10 @@ generate = ["dep:prost-build", "dep:protox"]
 # and `MontyObject`/`MontyException`. Off by default so pure-Rust consumers
 # (monty-pool, monty-runtime) never build or link against libpython.
 python = ["dep:pyo3"]
-# enable the worker feature
-worker = ["dep:monty-type-checking"]
+# Enables the `worker` module: the child-side Child state machine that drives
+# the interpreter. Off by default so host-side consumers (monty-pool, the
+# bindings) never link the interpreter itself.
+worker = ["dep:monty", "dep:monty-type-checking"]
 
 [[bin]]
 name = "generate-proto"
@@ -49,6 +53,9 @@ required-features = ["generate"]
 [[test]]
 name = "dispatch"
 required-features = ["worker"]
+
+[dev-dependencies]
+monty = { workspace = true }
 
 [lints]
 workspace = true

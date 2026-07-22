@@ -17,6 +17,30 @@ Project goals:
 - **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
 
+## `monty-types` — shared boundary types
+
+The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
+its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
+`CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
+which depends on no other monty crate except the `monty-macros` derives. `monty`
+depends on `monty-types` but does not blanket re-export it — only a few types
+are re-exported inline where they appear in `monty`'s public API (e.g.
+`run::CompileOptions`, `run_progress::{ExtFunctionResult, NameLookupResult}`).
+Code needing `MontyObject`, `MontyException`, `OsFunctionCall`, etc. must
+depend on `monty-types` directly.
+
+Host-side crates (`monty-fs`, `monty-pool`, `monty-proto` without its `worker`
+feature, `monty-python`, `monty-js`) MUST depend on `monty-types`, NOT `monty` —
+this keeps the interpreter out of their binaries. Only the worker side
+(`monty-runtime`, `monty-wasm-runtime`, `monty-proto` with `worker`) links the
+interpreter. Don't add a `monty` dependency to a host-side crate; if it needs a
+type, that type belongs in `monty-types`.
+
+Interpreter-coupled methods on these types live in `monty` as `pub(crate)`
+extension traits (`ExcTypeExt`, `MontyObjectExt`, `MontyTypeExt`, `StackFrameExt`,
+`FileModeExt`, `BuiltinsFunctionsExt`, `ExtFunctionResultExt`) — import the trait
+to call e.g. `ExcType::type_error(...)` or `MontyObject::new(value, vm)`.
+
 ## Cross-Platform Requirements
 
 Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
@@ -102,6 +126,9 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
+  `monty-proto` depends only on `monty-types` by default; its `worker` feature
+  (enabled by `monty-runtime`/`monty-wasm-runtime`) pulls in the full `monty`
+  interpreter for the child-side `worker` state machine.
 - `monty subprocess` (in `crates/monty-runtime/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more

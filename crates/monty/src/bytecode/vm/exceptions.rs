@@ -2,15 +2,16 @@
 
 use std::fmt::{self, Write};
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
-    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };

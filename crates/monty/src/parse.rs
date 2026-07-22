@@ -1,5 +1,6 @@
 use std::{borrow::Cow, fmt};
 
+use monty_types::{MontyException, StackFrame};
 use num_bigint::BigInt;
 use num_traits::Num;
 use ruff_python_ast::{
@@ -13,16 +14,15 @@ use ruff_python_parser::parse_module;
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
 use crate::{
-    StackFrame,
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
+    source_map::{SourceMap, StackFrameExt},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
 };
@@ -2237,7 +2237,7 @@ impl ParseError {
     pub fn into_python_exc(self, filename: &str, source: &str) -> MontyException {
         let mut source_map = SourceMap::new(source);
         match self {
-            Self::Syntax { msg, position } => MontyException::new_full(
+            Self::Syntax { msg, position } => MontyException::with_traceback(
                 ExcType::SyntaxError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position_syntax_error(
@@ -2246,17 +2246,17 @@ impl ParseError {
                     &mut source_map,
                 )],
             ),
-            Self::NotImplemented { msg, position } => MontyException::new_full(
+            Self::NotImplemented { msg, position } => MontyException::with_traceback(
                 ExcType::NotImplementedError,
                 Some(format!("The monty syntax parser does not yet support {msg}")),
                 vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
-            Self::NotSupported { msg, position } => MontyException::new_full(
+            Self::NotSupported { msg, position } => MontyException::with_traceback(
                 ExcType::NotImplementedError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position(position, filename, &mut source_map)],
             ),
-            Self::Import { msg, position } => MontyException::new_full(
+            Self::Import { msg, position } => MontyException::with_traceback(
                 ExcType::ImportError,
                 Some(msg.into_owned()),
                 vec![StackFrame::from_position_no_caret(position, filename, &mut source_map)],

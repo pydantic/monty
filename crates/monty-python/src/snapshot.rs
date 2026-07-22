@@ -32,9 +32,9 @@ use std::{
     },
 };
 
-use ::monty::{ExtFunctionResult, MontyException, MontyObject};
 use monty_pool::{Checkout, OnPrint, PoolError, ResumeValue, TurnEvent};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
+use monty_types::{ExtFunctionResult, MontyException, MontyObject};
 use pyo3::{
     Borrowed,
     exceptions::{PyBaseException, PyRuntimeError, PyTypeError},

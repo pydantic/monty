@@ -1,13 +1,14 @@
 //! Implementation of the isinstance() builtin function.
 
+use monty_types::ResourceTracker;
+
 use super::Builtins;
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     types::{PyTrait, Tuple, Type},
     value::Value,
 };

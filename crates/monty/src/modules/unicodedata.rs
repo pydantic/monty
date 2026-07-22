@@ -24,6 +24,7 @@
 //! they return `Value` directly (wrapped in `CallResult::Value` by the dispatch
 //! in [`super`]).
 
+use monty_types::{ResourceError, ResourceTracker};
 use unicode_general_category::{GeneralCategory, get_general_category};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
@@ -31,11 +32,10 @@ use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::{Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
     string_builder::StringBuilder,
     types::{Module, str::allocate_string},
     value::Value,

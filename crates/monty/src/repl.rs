@@ -7,27 +7,24 @@
 use std::mem;
 
 use ahash::AHashMap;
+use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ExcType, MontyException,
     args::{ArgValues, KwargsValues},
     asyncio::CallId,
     bytecode::{VM, VMSnapshot},
     defer_drop,
-    exception_private::RunError,
+    exception_private::{ExcTypeExt, RunError},
     heap::{DropWithContext, Heap, HeapReader},
     heap_data::HeapData,
     intern::{InternerBuilder, Interns},
-    io::PrintWriter,
     name_map::NameMap,
-    object::MontyObject,
-    os::OsFunctionCall,
-    resource::ResourceTracker,
+    object_bridge::MontyObjectExt,
     run::{CompileOptions, Executor},
-    run_progress::{ConvertedExit, ExtFunctionResult, NameLookupResult, convert_frame_exit},
+    run_progress::{ConvertedExit, ExtFunctionResult, ExtFunctionResultExt, NameLookupResult, convert_frame_exit},
     value::Value,
 };
 

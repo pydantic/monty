@@ -7,6 +7,7 @@ use std::{
     ptr::{self, NonNull},
 };
 
+use monty_types::{ResourceError, ResourceTracker};
 use serde::ser::SerializeStruct;
 
 // Re-export items moved to `heap_traits` so that `crate::heap::DropGuard` etc. continue
@@ -17,7 +18,6 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
-    resource::{ResourceError, ResourceTracker},
     types::{
         BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
         List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
@@ -392,7 +392,7 @@ macro_rules! heap_read_ref_as_field {
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            &raw const read.get::<::monty_types::NoLimitTracker>(unreachable!()).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -439,7 +439,7 @@ macro_rules! heap_read_ref_as_field_mut {
         let offset = std::mem::offset_of!($ty, $field);
         #[expect(unreachable_code)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            &raw const read.get::<::monty_types::NoLimitTracker>(unreachable!()).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -1775,9 +1775,10 @@ mod heap_reader_compile_fail_cases;
 /// mark–sweep collector.
 #[cfg(test)]
 mod tests {
+    use monty_types::NoLimitTracker;
+
     use super::*;
     use crate::{
-        resource::NoLimitTracker,
         types::{List, callable_iterator::CallableIterator},
         value::Value,
     };

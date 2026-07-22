@@ -10,9 +10,9 @@ use std::{
     time::Duration,
 };
 
-use monty::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
+use monty_types::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with

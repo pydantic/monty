@@ -12,7 +12,8 @@ use std::{
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use monty::{CompileOptions, LimitedTracker, MontyRun, PrintWriter, ResourceLimits};
+use monty::MontyRun;
+use monty_types::{CompileOptions, LimitedTracker, PrintWriter, ResourceLimits};
 
 /// A token representing a piece of Python syntax.
 #[derive(Debug, Clone, Arbitrary)]

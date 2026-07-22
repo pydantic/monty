@@ -6,6 +6,7 @@ use std::{
 };
 
 use hashbrown::HashTable;
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
@@ -14,10 +15,9 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -816,6 +816,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
 /// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
 /// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
 impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Dict
     }

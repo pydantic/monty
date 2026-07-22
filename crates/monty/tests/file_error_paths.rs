@@ -6,9 +6,10 @@
 //! interned-string return value that hits the `InternBytes`/empty-string
 //! materialisation branch of [`apply_buffer_store`]).
 
-use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, MontyRun,
-    NoLimitTracker, PrintWriter,
+use monty::MontyRun;
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyException, MontyFileHandle, MontyObject, NoLimitTracker,
+    PrintWriter,
 };
 
 /// Drives an `open()` followed by a single read/write OS call, then resumes

@@ -17,9 +17,9 @@
 
 use std::sync::Arc;
 
-use ::monty::{ExcType, MontyException};
 use ahash::AHashMap;
 use monty_proto::python::exc_monty_to_py;
+use monty_types::{ExcType, MontyException};
 use pyo3::{
     PyClassInitializer,
     exceptions::{self},

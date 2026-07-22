@@ -153,7 +153,7 @@ fn smuggle_vm<T: ResourceTracker>(
     use crate::bytecode::VM;
     HeapReader::with(
         heap,
-        &mut (interns, crate::io::PrintWriter::Disabled),
+        &mut (interns, monty_types::PrintWriter::Disabled),
         |reader, (interns, print)| VM::new(Vec::new(), reader, *interns, print.reborrow(), 120),
     )
 }

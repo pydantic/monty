@@ -10,7 +10,8 @@
 //! conversion must agree on a single answer based on the name string, regardless
 //! of which path the conversion took.
 
-use monty::{CompileOptions, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty::{MontyRepl, MontyRun};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.

@@ -1,5 +1,6 @@
 //! Implementation of the round() builtin function.
 
+use monty_types::ResourceTracker;
 use num_bigint::{BigInt, Sign};
 
 use crate::{
@@ -8,7 +9,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     types::LongInt,
     value::Value,
 };

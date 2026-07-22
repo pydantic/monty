@@ -7,13 +7,14 @@
 //! - Type constructors (int, str, float, etc.)
 //! - User-defined functions (via `vm.evaluate_function`)
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait},
     value::Value,
 };

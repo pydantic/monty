@@ -7,11 +7,12 @@
 //! These markers exist so code that imports typing constructs works correctly,
 //! though Monty doesn't perform static type checking.
 
+use monty_types::{ResourceError, ResourceTracker};
+
 use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::Module,
     value::{Marker, Value},
 };

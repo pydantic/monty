@@ -25,7 +25,8 @@ See the [project README](https://github.com/pydantic/monty) for the full feature
 `MontyRun` parses and compiles code once; `run` executes it with input values and returns the value of the final expression as a `MontyObject`:
 
 ```rust
-use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
 
 let code = r#"
 def fib(n):
@@ -49,7 +50,8 @@ Untrusted code shouldn't be able to hog the host. `LimitedTracker` enforces limi
 
 ```rust
 use std::time::Duration;
-use monty::{CompileOptions, MontyRun, LimitedTracker, PrintWriter, ResourceLimits};
+use monty::MontyRun;
+use monty_types::{CompileOptions, LimitedTracker, PrintWriter, ResourceLimits};
 
 let limits = ResourceLimits {
     max_memory: Some(10 * 1024 * 1024),
@@ -67,7 +69,8 @@ assert!(err.to_string().contains("time limit exceeded"));
 The defining feature of the crate: instead of running to completion, `MontyRun::start` returns a `RunProgress` that pauses execution whenever the sandboxed code calls a function provided by the host. The host runs the real function (an API call, a database query, an LLM tool) and resumes with the result:
 
 ```rust
-use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{MontyRun, RunProgress};
+use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
 
 let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
@@ -90,7 +93,8 @@ assert_eq!(result, MontyObject::Int(42));
 A paused `RunProgress` is a self-contained snapshot of the interpreter: serialize it with `dump()`, store it in a file or database, and `load()` + resume it later — in a different process or on a different machine. `MontyRun` itself can also be dumped and loaded to cache parsed code:
 
 ```rust
-use monty::{CompileOptions, MontyRun, MontyObject, NoLimitTracker, PrintWriter};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
 
 let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let bytes = runner.dump().unwrap();
@@ -112,6 +116,7 @@ Async host functions are supported too: `FunctionCall::resume_pending` continues
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox. **this crate**
+- [`monty-types`](https://crates.io/crates/monty-types) — the shared boundary data types (values, exceptions, OS calls, resource limits) hosts use without linking the interpreter.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode.
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.

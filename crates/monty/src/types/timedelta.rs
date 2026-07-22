@@ -13,15 +13,15 @@ use std::{
 };
 
 use chrono::TimeDelta as ChronoTimeDelta;
+use monty_types::ResourceTracker;
 
 use crate::{
     args::{ArgValues, FromArgs, FromValue, FromValueFail, is_long_int},
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{CmpOrder, LazyHeapSet, PyTrait, Type, str::allocate_string},
     value::{EitherStr, Value},
 };

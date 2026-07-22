@@ -22,6 +22,7 @@ monty = { workspace = true }
 monty-fs = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
 monty-type-checking = { workspace = true }
+monty-types = { workspace = true }
 rustyline = "15"
 
 [dev-dependencies]

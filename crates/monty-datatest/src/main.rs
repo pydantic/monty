@@ -24,12 +24,13 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
-use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyRun, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter,
-    ResourceLimits, RunProgress, dir_stat, file_stat,
-};
+use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
+    dir_stat, file_stat,
+};
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 

@@ -1,5 +1,6 @@
 //! Implementation of the abs() builtin function.
 
+use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::Signed;
 
@@ -9,7 +10,6 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     types::{LongInt, timedelta},
     value::Value,
 };

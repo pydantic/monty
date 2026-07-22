@@ -10,7 +10,8 @@
 //! structural values, not strings.
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {

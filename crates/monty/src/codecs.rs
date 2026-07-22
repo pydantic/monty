@@ -17,9 +17,11 @@ use std::{
     str,
 };
 
+use monty_types::ResourceTracker;
+pub use monty_types::utf8_error_reason;
+
 use crate::{
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     string_builder::StringBuilder,
 };
 
@@ -426,26 +428,6 @@ fn decode_utf8(bytes: &[u8], errors: &str) -> RunResult<String> {
         }
     }
     Ok(out)
-}
-
-/// Classifies an invalid-UTF-8 error into CPython's reason wording, from the
-/// first unexpected byte and `Utf8Error::error_len()`.
-///
-/// `error_len == None` means the input ended mid-sequence (`unexpected end of
-/// data`); otherwise a byte that is a legal multi-byte lead (0xC2–0xF4) was
-/// followed by an invalid continuation, and anything else (stray
-/// continuation bytes, the overlong leads 0xC0/0xC1, 0xF5–0xFF) is an
-/// `invalid start byte`. Public (re-exported at the crate root) so `monty-fs`
-/// produces identical wording for text-mode file reads.
-#[must_use]
-pub fn utf8_error_reason(first_bad_byte: u8, error_len: Option<usize>) -> &'static str {
-    if error_len.is_none() {
-        "unexpected end of data"
-    } else if (0xC2..=0xF4).contains(&first_bad_byte) {
-        "invalid continuation byte"
-    } else {
-        "invalid start byte"
-    }
 }
 
 /// Returns true if `rest` starts with a complete CESU-8-encoded surrogate

@@ -6,14 +6,14 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
+use monty_types::{ResourceError, ResourceTracker};
 
 use super::JsonStringCache;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
-    resource::{ResourceError, ResourceTracker},
     types::{
         Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},

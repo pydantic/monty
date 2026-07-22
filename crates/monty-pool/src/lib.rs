@@ -7,8 +7,8 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
-use monty::MontyException;
 pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
+use monty_types::MontyException;
 
 pub use crate::{
     checkout::{Checkout, MountSpec, MountSpecMode, OnPrint, ReplConfig, ResumeValue, TurnEvent},

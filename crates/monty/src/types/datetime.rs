@@ -13,18 +13,16 @@ use std::{
 use chrono::{
     Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
 };
+use monty_types::{MontyTimeZone, OsFunctionCall, ResourceError, ResourceTracker};
 
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    object::MontyTimeZone,
-    os::OsFunctionCall,
-    resource::{ResourceError, ResourceTracker},
     types::{
         AttrCallResult, CmpOrder, LazyHeapSet, PyTrait, TimeDelta, TimeZone, Type,
         date::{self, StrftimeArgs},

@@ -1,12 +1,13 @@
 //! Implementation of the ord() builtin function.
 
+use monty_types::ResourceTracker;
+
 use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    resource::ResourceTracker,
     value::Value,
 };
 

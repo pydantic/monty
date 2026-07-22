@@ -394,7 +394,7 @@ impl Signature {
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
-                    vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
+                    vm: &mut crate::bytecode::VM<'_, impl ::monty_types::ResourceTracker>,
                 ) -> crate::exception_private::RunResult<Self> {
                     #spec
 
