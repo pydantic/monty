@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use monty_types::DEFAULT_MAX_RECURSION_DEPTH;
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
 
 /// Extracts resource limits from a Python dict.
@@ -22,14 +21,16 @@ pub fn extract_limits(dict: &Bound<'_, PyDict>) -> PyResult<monty_types::Resourc
     let max_duration_secs = extract_optional_f64(dict, "max_duration_secs")?;
     let max_memory = extract_optional_usize(dict, "max_memory")?;
     let gc_interval = extract_optional_usize(dict, "gc_interval")?;
-    let max_recursion_depth =
-        extract_optional_usize(dict, "max_recursion_depth")?.unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
+    let max_recursion_depth = extract_optional_usize(dict, "max_recursion_depth")?;
 
-    let mut limits = monty_types::ResourceLimits::default().max_recursion_depth(max_recursion_depth);
+    let mut limits = monty_types::ResourceLimits::default();
 
+    if let Some(max_recursion_depth) = max_recursion_depth {
+        limits = limits.max_recursion_depth(max_recursion_depth);
+    }
     if let Some(secs) = max_duration_secs {
-        limits = limits
-            .max_duration(Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(err.to_string()))?);
+        let d = Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(err.to_string()))?;
+        limits = limits.max_duration(d);
     }
     if let Some(max) = max_memory {
         limits = limits.max_memory(max);

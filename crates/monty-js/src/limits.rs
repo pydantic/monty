@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use monty_types::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
+use monty_types::ResourceLimits;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 
@@ -36,13 +36,15 @@ pub struct JsResourceLimits {
 /// `usize` or for invalid duration values rejected by
 /// `std::time::Duration::try_from_secs_f64`.
 pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
+    let mut limits = ResourceLimits::default();
+
     let max_recursion_depth = js_limits
         .max_recursion_depth
         .map(|v| js_number_to_usize(v, "maxRecursionDepth"))
-        .transpose()?
-        .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH);
-
-    let mut limits = ResourceLimits::default().max_recursion_depth(max_recursion_depth);
+        .transpose()?;
+    if let Some(max_recursion_depth) = max_recursion_depth {
+        limits = limits.max_recursion_depth(max_recursion_depth);
+    }
 
     if let Some(secs) = js_limits.max_duration_secs {
         limits = limits.max_duration(
