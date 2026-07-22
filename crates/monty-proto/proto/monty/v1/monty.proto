@@ -518,32 +518,32 @@ message OsCall {
 
   oneof call {
     // ---- FS read / check / remove — the string is the virtual path -------
-    string exists = 2; // Path.exists
-    string is_file = 3; // Path.is_file
-    string is_dir = 4; // Path.is_dir
-    string is_symlink = 5; // Path.is_symlink
-    string read_text = 6; // Path.read_text
-    string read_bytes = 7; // Path.read_bytes
-    string stat = 8; // Path.stat
-    string iterdir = 9; // Path.iterdir
-    string resolve = 10; // Path.resolve
-    string absolute = 11; // Path.absolute
-    string unlink = 12; // Path.unlink
-    string rmdir = 13; // Path.rmdir
+    string exists = 2;      // Path.exists
+    string is_file = 3;     // Path.is_file
+    string is_dir = 4;      // Path.is_dir
+    string is_symlink = 5;  // Path.is_symlink
+    string read_text = 6;   // Path.read_text
+    string read_bytes = 7;  // Path.read_bytes
+    string stat = 8;        // Path.stat
+    string iterdir = 9;     // Path.iterdir
+    string resolve = 10;    // Path.resolve
+    string absolute = 11;   // Path.absolute
+    string unlink = 12;     // Path.unlink
+    string rmdir = 13;      // Path.rmdir
 
     // ---- FS write / mutate -----------------------------------------------
-    TextWrite write_text = 14; // Path.write_text (truncating)
-    TextWrite append_text = 15; // Path.append_text
-    BytesWrite write_bytes = 16; // Path.write_bytes (truncating)
-    BytesWrite append_bytes = 17; // Path.append_bytes
+    TextWrite write_text = 14;     // Path.write_text (truncating)
+    TextWrite append_text = 15;    // Path.append_text
+    BytesWrite write_bytes = 16;   // Path.write_bytes (truncating)
+    BytesWrite append_bytes = 17;  // Path.append_bytes
     Open open = 18;
     Mkdir mkdir = 19;
     Rename rename = 20;
 
     // ---- Non-FS ----------------------------------------------------------
-    Getenv getenv = 21; // os.getenv
-    Unit get_environ = 22; // the os.environ snapshot
-    Unit date_today = 23; // date.today()
+    Getenv getenv = 21;     // os.getenv
+    Unit get_environ = 22;  // the os.environ snapshot
+    Unit date_today = 23;   // date.today()
     // datetime.now(tz) — the timezone argument (absent for a naive result).
     DateTimeNow date_time_now = 24;
   }
