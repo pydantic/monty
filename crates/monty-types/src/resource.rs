@@ -14,7 +14,6 @@ use std::{cell::Cell, error::Error, fmt, time::Duration};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use web_time::Instant;
 
-use crate::exceptions::MontyException;
 /// Threshold in bytes above which `check_large_result` is called.
 ///
 /// Operations that may produce results larger than this threshold (100KB) should call
@@ -26,6 +25,10 @@ pub const LARGE_RESULT_THRESHOLD: usize = 100_000;
 ///
 /// This allows the sandbox to enforce strict limits on allocation count,
 /// execution time, and memory usage.
+///
+/// All variants except `Recursion` are **uncatchable** inside the sandbox:
+/// untrusted code must never intercept resource enforcement. `Recursion`
+/// surfaces as a catchable `RecursionError`, matching CPython.
 #[derive(Debug, Clone)]
 pub enum ResourceError {
     /// Maximum number of allocations exceeded.
@@ -36,8 +39,6 @@ pub enum ResourceError {
     Memory { limit: usize, used: usize },
     /// Maximum recursion depth exceeded.
     Recursion { limit: usize, depth: usize },
-    /// Any other error, e.g. when propagating a python exception
-    Exception(MontyException),
 }
 
 impl fmt::Display for ResourceError {
@@ -54,9 +55,6 @@ impl fmt::Display for ResourceError {
             }
             Self::Recursion { .. } => {
                 write!(f, "maximum recursion depth exceeded")
-            }
-            Self::Exception(exc) => {
-                write!(f, "{exc}")
             }
         }
     }

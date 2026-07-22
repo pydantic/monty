@@ -1,9 +1,10 @@
 # Resource limits
 
 Monty enforces hard limits on memory, time, allocations, and recursion to
-keep untrusted code bounded. When a limit is exceeded, execution
-terminates with a `ResourceError` (visible to the *host*, not catchable
-inside the sandbox).
+keep untrusted code bounded. When a memory, time, or allocation limit is
+exceeded, execution terminates with a `ResourceError` (visible to the
+*host*, not catchable inside the sandbox). `RecursionError` is catchable,
+as in CPython.
 
 ## Memory / size limits
 

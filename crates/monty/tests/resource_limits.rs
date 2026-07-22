@@ -1764,6 +1764,34 @@ s.replace('', 'x' * 1000)
     assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
+/// Test that a shrinking `str.replace` is pre-checked against the full input size.
+///
+/// When `new` is shorter than `old`, the max-replacements formula estimates a result
+/// *smaller* than the input, but the true worst case (zero matches) copies the whole
+/// input into an untracked Rust `String` — the pre-check must bound by the input length.
+#[test]
+fn str_replace_shrinking_memory_limit() {
+    let code = r"
+s = 'ab' * 150000
+s.replace('ab', 'a')
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::new().max_memory(500_000);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "shrinking str.replace of a large input should be pre-checked"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert!(
+        exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
+        "expected memory limit error, got: {exc}"
+    );
+}
+
 /// Test that `str.ljust` with huge width is rejected before allocation.
 ///
 /// Without the pre-check, `String::with_capacity(width)` would allocate

@@ -1874,14 +1874,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    pub(crate) fn with_frame(self, frame: RawStackFrame) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(frame),
-            hide_caret: false,
-        }
-    }
-
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,

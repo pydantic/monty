@@ -1,6 +1,6 @@
 use monty_types::{ExcType, LARGE_RESULT_THRESHOLD, ResourceError, ResourceTracker};
 
-use crate::exception_private::{ExceptionRaise, RawStackFrame, RunError, SimpleException};
+use crate::exception_private::{RunError, SimpleException};
 
 /// Pre-checks that an operation producing `item_len * count` bytes won't exceed resource limits.
 ///
@@ -71,7 +71,9 @@ pub fn check_div_size(dividend_bits: u64, tracker: &impl ResourceTracker) -> Res
 ///
 /// The upper bound on result size is: if `old` is non-empty, at most `input_len / old_len`
 /// replacements can occur, each producing `new_len` bytes instead of `old_len`. When `count`
-/// is specified, replacements are capped to that value.
+/// is specified, replacements are capped to that value. For shrinking replaces
+/// (`new_len < old_len`) matches only make the result smaller, so the worst case is zero
+/// matches: the full input copied into an untracked `String`/`Vec` — bound by `input_len`.
 pub fn check_replace_size(
     input_len: usize,
     old_len: usize,
@@ -79,21 +81,27 @@ pub fn check_replace_size(
     count: i64,
     tracker: &impl ResourceTracker,
 ) -> Result<(), ResourceError> {
-    // Empty pattern (old_len == 0): inserts before each element + after the last = input_len + 1
-    let max_replacements = input_len
-        .checked_div(old_len)
-        .unwrap_or_else(|| input_len.saturating_add(1));
-
-    let replacements = if count < 0 {
-        max_replacements
+    let estimated = if new_len < old_len {
+        // Shrinking replace: the max-matches formula below would *underestimate* the
+        // result (each match shrinks it), letting huge inputs skip the pre-check.
+        input_len
     } else {
-        max_replacements.min(usize::try_from(count).unwrap_or(usize::MAX))
-    };
+        // Empty pattern (old_len == 0): inserts before each element + after the last = input_len + 1
+        let max_replacements = input_len
+            .checked_div(old_len)
+            .unwrap_or_else(|| input_len.saturating_add(1));
 
-    // Result = input_len - (replacements * old_len) + (replacements * new_len)
-    let removed = replacements.saturating_mul(old_len);
-    let added = replacements.saturating_mul(new_len);
-    let estimated = input_len.saturating_sub(removed).saturating_add(added);
+        let replacements = if count < 0 {
+            max_replacements
+        } else {
+            max_replacements.min(usize::try_from(count).unwrap_or(usize::MAX))
+        };
+
+        // Result = input_len - (replacements * old_len) + (replacements * new_len)
+        let removed = replacements.saturating_mul(old_len);
+        let added = replacements.saturating_mul(new_len);
+        input_len.saturating_sub(removed).saturating_add(added)
+    };
 
     check_estimated_size(estimated, tracker)
 }
@@ -120,49 +128,42 @@ fn estimate_bits_to_bytes(bits: u64) -> usize {
     usize::try_from(bits.saturating_add(7) / 8).unwrap_or(usize::MAX)
 }
 
-/// Converts a resource error to a Python exception with optional stack frame.
-///
-/// Maps resource error types to Python exception types:
-/// - `Allocation` → `MemoryError`
-/// - `Memory` → `MemoryError`
-/// - `Time` → `TimeoutError`
-/// - `Recursion` → `RecursionError`
-pub(crate) fn resource_error_into_exception(err: ResourceError, frame: Option<RawStackFrame>) -> ExceptionRaise {
-    let (exc_type, msg) = match err {
-        ResourceError::Allocation { limit, count } => (
-            ExcType::MemoryError,
-            Some(format!("allocation limit exceeded: {count} > {limit}")),
-        ),
-        ResourceError::Memory { limit, used } => (
-            ExcType::MemoryError,
-            Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
-        ),
-        ResourceError::Time { limit, elapsed } => (
-            ExcType::TimeoutError,
-            Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
-        ),
-        ResourceError::Recursion { .. } => (
-            ExcType::RecursionError,
-            Some("maximum recursion depth exceeded".to_string()),
-        ),
-        ResourceError::Exception(exc) => (exc.exc_type(), exc.into_message()),
-    };
-    let exc = SimpleException::new(exc_type, msg);
-    match frame {
-        Some(f) => exc.with_frame(f),
-        None => exc.into(),
-    }
-}
-
+/// Converts a resource error to a Python exception, deciding type, message and
+/// catchability in a single lookup: `Allocation`/`Memory` → `MemoryError`,
+/// `Time` → `TimeoutError`, `Recursion` → `RecursionError`. Only
+/// `RecursionError` is catchable (matching CPython); the rest are uncatchable
+/// so untrusted code cannot suppress resource limit violations.
 impl From<ResourceError> for RunError {
     fn from(err: ResourceError) -> Self {
-        // RecursionError is catchable in CPython, so it must be catchable here too.
-        // Other resource errors (memory, time, allocation) remain uncatchable to prevent
-        // untrusted code from suppressing resource limit violations.
-        if matches!(err, ResourceError::Recursion { .. }) {
-            Self::Exc(resource_error_into_exception(err, None))
-        } else {
-            Self::UncatchableExc(resource_error_into_exception(err, None))
+        match err {
+            ResourceError::Allocation { limit, count } => Self::UncatchableExc(
+                SimpleException::new(
+                    ExcType::MemoryError,
+                    Some(format!("allocation limit exceeded: {count} > {limit}")),
+                )
+                .into(),
+            ),
+            ResourceError::Memory { limit, used } => Self::UncatchableExc(
+                SimpleException::new(
+                    ExcType::MemoryError,
+                    Some(format!("memory limit exceeded: {used} bytes > {limit} bytes")),
+                )
+                .into(),
+            ),
+            ResourceError::Time { limit, elapsed } => Self::UncatchableExc(
+                SimpleException::new(
+                    ExcType::TimeoutError,
+                    Some(format!("time limit exceeded: {elapsed:?} > {limit:?}")),
+                )
+                .into(),
+            ),
+            ResourceError::Recursion { .. } => Self::Exc(
+                SimpleException::new(
+                    ExcType::RecursionError,
+                    Some("maximum recursion depth exceeded".to_string()),
+                )
+                .into(),
+            ),
         }
     }
 }
