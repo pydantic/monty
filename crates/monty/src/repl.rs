@@ -318,15 +318,7 @@ impl MontyRepl {
                 // push and run a single function frame itself.
                 vm.heap.tracker().on_execution_start();
                 let eval_result = vm.evaluate_function("MontyRepl::call_function", callable, arg_values);
-                // An over-budget call must fail even if it produced a value
-                // (see `on_execution_stop`); folded into `eval_result` rather
-                // than `?` so the globals restore below still runs.
-                let eval_result = vm
-                    .heap
-                    .tracker()
-                    .on_execution_stop()
-                    .map_err(RunError::from)
-                    .and(eval_result);
+                vm.heap.tracker().on_execution_stop();
 
                 let result = match eval_result {
                     Ok(value) => Ok(MontyObject::new(value, vm)),

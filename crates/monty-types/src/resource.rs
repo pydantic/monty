@@ -121,6 +121,14 @@ impl ResourceLimits {
     }
 }
 
+/// How often to actually check `Instant::elapsed()` in `check_time`.
+///
+/// Calling `Instant::elapsed()` on every `check_time` invocation adds measurable
+/// overhead in tight loops (the VM calls `check_time` on every instruction).
+/// By only checking every N calls, we reduce this overhead while still catching
+/// timeouts promptly.
+const TIME_CHECK_INTERVAL: u16 = 10;
+
 /// A resource tracker that enforces configurable limits.
 ///
 /// Tracks memory usage and execution time, returning errors when limits
@@ -153,6 +161,8 @@ pub struct ResourceTracker {
     running_since: Cell<Option<Instant>>,
     /// Current approximate memory usage in bytes.
     current_memory: Cell<usize>,
+    /// Counter for rate-limiting `Instant::elapsed()` calls in `check_time`.
+    check_counter: Cell<u16>,
     /// Optional override applied on top of `limits.max_recursion_depth`.
     ///
     /// `None` (the default — also the value any pre-`test-hooks` snapshot
@@ -190,6 +200,7 @@ impl ResourceTracker {
             total_execution_time: Cell::new(Duration::ZERO),
             running_since: Cell::new(None),
             current_memory: Cell::new(0),
+            check_counter: Cell::new(0),
             recursion_limit_override: Cell::new(None),
         }
     }
@@ -282,23 +293,29 @@ impl ResourceTracker {
         Ok(())
     }
 
-    /// Called periodically to check time limits — the VM dispatch loop
-    /// rate-limits its calls, and native long-running ops (str search,
-    /// sorting, iteration) call it per iteration.
+    /// Called periodically (at statement boundaries) to check time limits.
     ///
     /// Returns `Ok(())` if within time limit, or `Err(ResourceError::Time)`
-    /// if the limit is exceeded. Free when no `max_duration` is configured;
-    /// with one, each call reads the monotonic clock.
+    /// if the limit is exceeded.
     ///
     /// Takes `&self` rather than `&mut self` because checking elapsed time is a
     /// read-only operation. This allows time checks in contexts that only have
     /// an immutable heap reference, such as `py_repr_fmt`.
     #[inline]
     pub fn check_time(&self) -> Result<(), ResourceError> {
-        if let Some(limit) = self.limits.max_duration {
-            let elapsed = self.elapsed();
-            if elapsed > limit {
-                return Err(ResourceError::Time { limit, elapsed });
+        if let Some(max) = self.limits.max_duration {
+            self.check_counter.update(|c| c.wrapping_add(1));
+            if self.check_counter.get().is_multiple_of(TIME_CHECK_INTERVAL) {
+                // Only call Instant::elapsed() every TIME_CHECK_INTERVAL calls
+                let elapsed = self.elapsed();
+                if elapsed > max {
+                    // Reset counter so the very next check_time call also triggers
+                    // an elapsed check. This is important because some callers
+                    // (e.g. repr_sequence_fmt) catch the error and return normally,
+                    // and we need the VM loop's next check_time to re-detect timeout.
+                    self.check_counter.set(TIME_CHECK_INTERVAL.wrapping_sub(1));
+                    return Err(ResourceError::Time { limit: max, elapsed });
+                }
             }
         }
         Ok(())
@@ -375,24 +392,11 @@ impl ResourceTracker {
 
     /// Called when the VM leaves its execution loop — on completion, error,
     /// or suspension at an external call. See [`on_execution_start`](Self::on_execution_start).
-    ///
-    /// Also performs a final, non-rate-limited time-limit check: the VM loop
-    /// only polls the clock periodically, so a turn ending between polls could
-    /// otherwise smuggle a result out after its budget expired — e.g. a repr
-    /// that swallowed a timeout to truncate its output. Callers must fail the
-    /// turn on `Err` even if execution itself produced a value.
-    pub fn on_execution_stop(&self) -> Result<(), ResourceError> {
+    pub fn on_execution_stop(&self) {
         if let Some(started) = self.running_since.take() {
             self.total_execution_time
                 .set(self.total_execution_time.get() + started.elapsed());
         }
-        if let Some(max) = self.limits.max_duration {
-            let elapsed = self.total_execution_time.get();
-            if elapsed > max {
-                return Err(ResourceError::Time { limit: max, elapsed });
-            }
-        }
-        Ok(())
     }
 
     /// Lowers the live recursion ceiling to `new_limit`, refusing to raise it.
