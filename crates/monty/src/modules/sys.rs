@@ -12,7 +12,7 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 
 #[cfg(feature = "test-hooks")]
 use crate::{
@@ -49,7 +49,7 @@ pub(crate) enum SysFunctions {
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Sys);
 
     // sys.platform
@@ -100,7 +100,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 /// no callables on the `sys` module, so this dispatcher would have nothing
 /// to do.
 #[cfg(feature = "test-hooks")]
-pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         SysFunctions::Setrecursionlimit => setrecursionlimit(vm, args),
     }
@@ -115,7 +115,7 @@ pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: SysFunctions
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-fn setrecursionlimit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("sys.setrecursionlimit", vm.heap)?;
     let Value::Int(limit) = arg else {
         arg.drop_with(vm);

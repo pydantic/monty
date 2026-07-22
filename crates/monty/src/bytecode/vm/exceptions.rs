@@ -2,8 +2,6 @@
 
 use std::fmt::{self, Write};
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     builtins::Builtins,
@@ -16,7 +14,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Returns the current frame's name for traceback generation: the
     /// function name for user-defined functions, or `<module>` for
     /// module-level code. The empty-frames branch is defensive — async
@@ -484,7 +482,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
 /// Streams an assert operand's repr into the configured byte-capped writer.
 /// Reaching the cap stops formatting the remainder and appends `…`.
-fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let mut writer = TruncatingWriter::new(vm.assert_repr_max_bytes as usize);
     let mut heap_ids = LazyHeapSet::default();
     match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
@@ -498,7 +496,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> 
 
 /// `str()` of an explicit assert message, matching how the message renders in
 /// `AssertionError: {msg}` — not truncated, since the user chose it explicitly.
-fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
     Ok(str_value.to_str(vm)?.to_owned())

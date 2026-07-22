@@ -1,64 +1,15 @@
 //! Tests that the async runtime accounts its dynamically-allocated state
-//! against `ResourceTracker`, so a configured `max_memory` actually
+//! against the resource tracker, so a configured `max_memory` actually
 //! bounds gathers over many unresolved externals and unbounded async
 //! recursion via `gather`.
 
-use std::{mem, rc::Rc, time::Duration};
+use std::{mem, time::Duration};
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, NameLookupResult,
-    PrintWriter, ResourceError, ResourceLimits, ResourceTracker,
+    PrintWriter, ResourceLimits,
 };
-
-/// Wraps `LimitedTracker` in `Rc` so a test can hold its own handle for
-/// probing `current_memory()` while the VM owns one for accounting.
-#[derive(Debug, Clone)]
-struct SharedTracker(Rc<LimitedTracker>);
-
-impl SharedTracker {
-    fn new(limits: ResourceLimits) -> Self {
-        Self(Rc::new(LimitedTracker::new(limits)))
-    }
-
-    fn current_memory(&self) -> usize {
-        self.0.current_memory()
-    }
-}
-
-impl ResourceTracker for SharedTracker {
-    fn on_free(&self, get_size: impl FnOnce() -> usize) {
-        self.0.on_free(get_size);
-    }
-
-    fn check_time(&self) -> Result<(), ResourceError> {
-        self.0.check_time()
-    }
-
-    fn check_recursion_depth(&self, current_depth: usize) -> Result<(), ResourceError> {
-        self.0.check_recursion_depth(current_depth)
-    }
-
-    fn check_large_result(&self, estimated_bytes: usize) -> Result<(), ResourceError> {
-        self.0.check_large_result(estimated_bytes)
-    }
-
-    fn on_grow(&self, get_additional: impl FnOnce() -> usize) -> Result<(), ResourceError> {
-        self.0.on_grow(get_additional)
-    }
-
-    fn gc_interval(&self) -> Option<usize> {
-        self.0.gc_interval()
-    }
-
-    fn on_execution_start(&self) {
-        self.0.on_execution_start();
-    }
-
-    fn on_execution_stop(&self) {
-        self.0.on_execution_stop();
-    }
-}
 
 /// Drives `RunProgress` past every `NameLookup` and every `FunctionCall`
 /// (treating each external call as still pending — the host never
@@ -68,7 +19,7 @@ impl ResourceTracker for SharedTracker {
 /// Used by the gather bookkeeping witness, which expects the run to
 /// raise `MemoryError` inside the gather await *before* it would
 /// otherwise settle at `ResolveFutures`.
-fn drive_until_settled<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
+fn drive_until_settled(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
     loop {
         match progress {
             RunProgress::NameLookup(lookup) => {
@@ -125,8 +76,7 @@ fn gather_awaited_state_charged_against_tracker() {
     let limits = ResourceLimits::new()
         .max_memory(10 * 1024 * 1024)
         .max_duration(Duration::from_secs(30));
-    let tracker = SharedTracker::new(limits);
-    let handle = tracker.clone();
+    let tracker = LimitedTracker::new(limits);
     let progress = runner.start(vec![], tracker, PrintWriter::Stdout).unwrap();
     let settled = drive_until_settled(progress).expect("run must reach ResolveFutures without raising");
     let resolve = match settled {
@@ -137,7 +87,7 @@ fn gather_awaited_state_charged_against_tracker() {
         ),
     };
 
-    let memory = handle.current_memory();
+    let memory = resolve.tracker().current_memory();
     let post_fix_threshold = 1_250_000;
     let threshold_failure = (memory < post_fix_threshold).then_some(memory);
 

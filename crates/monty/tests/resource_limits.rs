@@ -1,6 +1,6 @@
 /// Tests for resource limits and garbage collection.
 ///
-/// These tests verify that the `ResourceTracker` system correctly enforces
+/// These tests verify that the `LimitedTracker` system correctly enforces
 /// memory limits, time limits, and triggers garbage collection.
 use std::{
     thread,
@@ -10,7 +10,7 @@ use std::{
 use monty::{MontyRepl, MontyRun, RunProgress};
 use monty_types::{
     CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceError,
-    ResourceLimits, ResourceTracker,
+    ResourceLimits,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -18,7 +18,7 @@ use monty_types::{
 /// External functions are no longer declared upfront. Instead, the VM yields `NameLookup`
 /// when it encounters an unresolved name. This helper resolves all such lookups until
 /// a different progress variant is reached.
-fn resolve_name_lookups<T: ResourceTracker>(mut progress: RunProgress<T>) -> Result<RunProgress<T>, MontyException> {
+fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let name = lookup.name.clone();
         progress = lookup.resume(
@@ -704,7 +704,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
 
 /// Test that deep recursion triggers memory limit due to namespace tracking.
 ///
-/// Function call namespaces (local variables) are tracked by ResourceTracker.
+/// Function call namespaces (local variables) are tracked by the resource tracker.
 /// Each recursive call creates a new namespace, which should count against
 /// the memory limit.
 #[test]

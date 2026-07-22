@@ -1,7 +1,5 @@
 //! Binary and in-place operation helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     defer_drop,
@@ -11,7 +9,7 @@ use crate::{
     value::{BitwiseOp, Value},
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Binary addition with proper refcount handling.
     ///
     /// Uses lazy type capture: only calls `py_type()` in error paths to avoid
@@ -467,12 +465,7 @@ enum DictViewBinaryOp {
 }
 
 /// Applies a set-like operator to two temporary sets and returns a plain `set`.
-fn apply_dict_view_binary_op(
-    lhs: &Set,
-    rhs: &Set,
-    op: DictViewBinaryOp,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<Set, RunError> {
+fn apply_dict_view_binary_op(lhs: &Set, rhs: &Set, op: DictViewBinaryOp, vm: &mut VM<'_>) -> Result<Set, RunError> {
     let mut result = match op {
         DictViewBinaryOp::And => Set::with_capacity(lhs.len().min(rhs.len())),
         DictViewBinaryOp::Or => Set::with_capacity(lhs.len() + rhs.len()),

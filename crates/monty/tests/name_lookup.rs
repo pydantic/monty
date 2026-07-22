@@ -12,14 +12,16 @@
 //! - Builtins bypass the `NameLookup` mechanism entirely
 
 use monty::{MontyRun, RunProgress};
-use monty_types::{CompileOptions, MontyException, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty_types::{
+    CompileOptions, LimitedTracker, MontyException, MontyObject, NameLookupResult, PrintWriter, ResourceLimits,
+};
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
 /// resolving each by calling `resolver(name)`.
 fn resolve_lookups_with(
-    mut progress: RunProgress<NoLimitTracker>,
+    mut progress: RunProgress,
     resolver: impl Fn(&str) -> NameLookupResult,
-) -> Result<RunProgress<NoLimitTracker>, MontyException> {
+) -> Result<RunProgress, MontyException> {
     while let RunProgress::NameLookup(lookup) = progress {
         let result = resolver(&lookup.name);
         progress = lookup.resume(result, PrintWriter::Stdout)?;
@@ -29,7 +31,7 @@ fn resolve_lookups_with(
 
 /// Helper: resolves all `NameLookup` yields as `Function` objects (the common case
 /// for external function calls).
-fn resolve_as_functions(progress: RunProgress<NoLimitTracker>) -> Result<RunProgress<NoLimitTracker>, MontyException> {
+fn resolve_as_functions(progress: RunProgress) -> Result<RunProgress, MontyException> {
     resolve_lookups_with(progress, |name| {
         NameLookupResult::Value(MontyObject::Function {
             name: name.to_string(),
@@ -52,7 +54,9 @@ fn resolve_as_function_and_call() {
         CompileOptions::default(),
     )
     .unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     // Resolve NameLookup for 'ext' as a function
     let progress = resolve_as_functions(progress).unwrap();
@@ -71,7 +75,9 @@ fn resolve_as_function_and_call() {
 #[test]
 fn resolve_as_int() {
     let runner = MontyRun::new("PI + 1".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "PI");
@@ -90,7 +96,9 @@ fn resolve_as_string() {
         CompileOptions::default(),
     )
     .unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "GREETING");
@@ -108,7 +116,9 @@ fn resolve_as_string() {
 #[test]
 fn resolve_as_bool() {
     let runner = MontyRun::new("not FLAG".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "FLAG");
@@ -121,7 +131,9 @@ fn resolve_as_bool() {
 #[test]
 fn resolve_as_list() {
     let runner = MontyRun::new("len(ITEMS)".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "ITEMS");
@@ -135,7 +147,9 @@ fn resolve_as_list() {
 #[test]
 fn resolve_as_float() {
     let runner = MontyRun::new("TAU + 0.5".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "TAU");
@@ -152,7 +166,9 @@ fn resolve_as_float() {
 #[test]
 fn undefined_raises_name_error() {
     let runner = MontyRun::new("unknown_thing".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "unknown_thing");
@@ -194,7 +210,9 @@ fn undefined_in_function_raises_name_error() {
     // `missing` is not assigned inside `f()`, so Python treats it as a global lookup
     let code = "def f():\n    return missing\nf()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "missing");
@@ -219,7 +237,9 @@ fn undefined_in_function_raises_name_error() {
 fn resolved_name_is_cached() {
     let code = "a = ext(1); b = ext(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let mut call_count = 0;
     loop {
@@ -247,7 +267,9 @@ fn resolved_constant_is_cached() {
     // Use the same constant twice — should only yield one NameLookup
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let mut lookup_count = 0;
     loop {
@@ -275,7 +297,9 @@ f()
 f()"
     .to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let mut lookup_count = 0;
     loop {
@@ -305,7 +329,9 @@ f()"
 fn multiple_names_each_looked_up() {
     let code = "a = foo(1); b = bar(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let mut called_names = Vec::new();
     loop {
@@ -333,7 +359,9 @@ fn multiple_names_each_looked_up() {
 fn mixed_function_and_constant_lookups() {
     let code = "ext(OFFSET)".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     let mut looked_up_names = Vec::new();
     loop {
@@ -378,7 +406,9 @@ fn builtins_do_not_trigger_lookup() {
         CompileOptions::default(),
     )
     .unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(progress.into_complete().unwrap(), MontyObject::Int(3));
 }
 
@@ -392,7 +422,9 @@ fn range_builtin_no_lookup() {
         CompileOptions::default(),
     )
     .unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(
         progress.into_complete().unwrap(),
         MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
@@ -421,7 +453,7 @@ fn input_function_no_lookup() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            NoLimitTracker,
+            LimitedTracker::new(ResourceLimits::new()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -455,7 +487,7 @@ fn input_function_reassigned_then_called() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            NoLimitTracker,
+            LimitedTracker::new(ResourceLimits::new()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -489,7 +521,7 @@ fn input_function_with_looked_up_arg() {
                 name: "my_fn".to_string(),
                 docstring: None,
             }],
-            NoLimitTracker,
+            LimitedTracker::new(ResourceLimits::new()),
             PrintWriter::Stdout,
         )
         .unwrap();
@@ -521,7 +553,9 @@ fn resolve_function_with_non_interned_name() {
     // named 'not_foobar'. Then `x()` calls the function.
     let code = "x = foobar; x()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout)
+        .unwrap();
 
     // First: NameLookup for 'foobar'
     let lookup = progress.into_name_lookup().unwrap();

@@ -64,7 +64,7 @@
 
 use std::{fmt::Write, mem};
 
-use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, ResourceTracker};
+use monty_types::{MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs};
 
 use super::{
     LazyHeapSet, List, PyTrait, Type,
@@ -325,29 +325,24 @@ impl HeapItem for OpenFile {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
-    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h>) -> Type {
         self.get(vm.heap).file_type()
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // File objects use identity equality (handled before the heap read).
         Ok(None)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let file = self.get(vm.heap);
         write!(
             f,
@@ -362,7 +357,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -396,11 +391,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         }
     }
 
-    fn py_is_context_manager(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_context_manager(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
         // Match CPython: entering on a closed file raises before the body runs.
         // (Reusing a closed file as a context manager is rare but the error
         // message is part of the user contract.)
@@ -413,12 +408,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::Ref(self_id)))
     }
 
-    fn py_exit(
-        &mut self,
-        _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _exc: Option<HeapId>,
-    ) -> RunResult<CallResult> {
+    fn py_exit(&mut self, _self_id: HeapId, vm: &mut VM<'h>, _exc: Option<HeapId>) -> RunResult<CallResult> {
         // `with open(...) as f:` always closes the file on exit, success or
         // failure. We don't suppress exceptions: returning `None` is falsy, so
         // any in-flight exception propagates as it would in CPython.
@@ -429,7 +419,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, OpenFile> {
         Ok(CallResult::Value(Value::None))
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let Some(method) = attr.static_string() else {
             return Err(ExcType::attribute_error(
                 self.py_type(vm).name(vm.heap, vm.interns),
@@ -462,12 +452,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// caller mixes bare `read()`, sized `read(N)`, or line-oriented
     /// operations. The buffer holds the full file content; further reads
     /// slice it in pure Monty.
-    fn read(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn read(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let spec = parse_read_size_arg(args.get_zero_one_arg("read", vm.heap)?, vm)?;
         if matches!(spec, ReadSpec::Size(0)) {
             // `read(0)`: empty result without any OS call, position unchanged.
@@ -489,24 +474,14 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Implements `file.readline()` — yields up to and including the next
     /// `\n`, or the rest of the buffer if the final line has no newline. At
     /// EOF returns `''`/`b''`.
-    fn readline(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn readline(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("readline", vm.heap)?;
         self.read_with_spec(self_id, vm, ReadSpec::Line)
     }
 
     /// Implements `file.readlines()` — returns a `list[str]` (or `list[bytes]`
     /// for binary mode) of every remaining line.
-    fn readlines(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn readlines(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("readlines", vm.heap)?;
         self.read_with_spec(self_id, vm, ReadSpec::Lines)
     }
@@ -516,7 +491,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// In text mode the value is a char index into the buffer (a documented
     /// divergence from CPython, which returns an opaque byte cookie); in
     /// binary mode it is a byte offset, which matches CPython.
-    fn tell(&self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn tell(&self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("tell", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -532,12 +507,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Implements `file.seek(offset, whence=0)` — repositions within the
     /// buffer, loading it on demand if not yet present, then returns the new
     /// absolute position.
-    fn seek(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn seek(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let (offset, whence) = parse_seek_args(args, vm)?;
         if self.get(vm.heap).mode.readable() {
             self.read_with_spec(self_id, vm, ReadSpec::Seek { offset, whence })
@@ -567,12 +537,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Otherwise records the spec on the file and yields a
     /// [`CallResult::OsCallStoreBuffer`] so the host loads the full content
     /// and the resume hook completes the operation.
-    fn read_with_spec(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        spec: ReadSpec,
-    ) -> RunResult<CallResult> {
+    fn read_with_spec(&mut self, self_id: HeapId, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
         let (binary, buffer_loaded) = {
             let file = self.get(vm.heap);
             file.ensure_open()?;
@@ -612,12 +577,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     ///
     /// As with [`Self::read`], the first OS-call argument is the file object
     /// itself, delivered to the host as a `MontyObject::FileHandle`.
-    fn write(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        args: ArgValues,
-    ) -> RunResult<CallResult> {
+    fn write(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
         let binary = self.get(vm.heap).mode.is_binary();
         if let Err(err) = validate_write_data(&data, binary, vm) {
@@ -691,7 +651,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Other holders (e.g. a `data = f.read()` reference) keep the entry
     /// alive via their own refcounts, so this release is safe — it only
     /// frees the buffer if nothing else points at it.
-    fn close(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn close(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("close", vm.heap)?;
         let buffer_id = {
             let file = self.get_mut(vm.heap);
@@ -709,14 +669,14 @@ impl<'h> HeapRead<'h, OpenFile> {
     }
 
     /// Implements `flush()` as a no-op because writes are committed immediately.
-    fn flush(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn flush(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("flush", vm.heap)?;
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::None))
     }
 
     /// Returns whether this file object supports `read()`.
-    fn readable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn readable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("readable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -724,7 +684,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     }
 
     /// Returns whether this file object supports `write()`.
-    fn writable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn writable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("writable", vm.heap)?;
         let file = self.get(vm.heap);
         file.ensure_open()?;
@@ -734,7 +694,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// Returns `True`: Monty file wrappers are modelled as regular files and
     /// support logical `seek()` / `tell()` state even though actual host I/O is
     /// still performed as one-shot calls.
-    fn seekable(&mut self, vm: &mut VM<'h, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+    fn seekable(&mut self, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         args.check_zero_args("seekable", vm.heap)?;
         self.get(vm.heap).ensure_open()?;
         Ok(CallResult::Value(Value::Bool(true)))
@@ -777,7 +737,7 @@ impl OpenFile {
 /// [`apply_write_position`] (success), `resume_with_exception` (host raised),
 /// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before
 /// dispatch).
-fn inc_ref_for_pending_oscall(vm: &VM<'_, impl ResourceTracker>, file_id: HeapId) {
+fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
     vm.heap.inc_ref(file_id);
 }
 
@@ -798,7 +758,7 @@ fn inc_ref_for_pending_oscall(vm: &VM<'_, impl ResourceTracker>, file_id: HeapId
 /// the returned `HeapId` keeps the refcount it would have had without
 /// the dance. This avoids `mem::forget`, which clippy flags on the
 /// no-Drop release configuration.
-fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<HeapId> {
+fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
     // Match by reference: `Value` has a Drop impl under `memory-model-checks`,
     // so we cannot destructure variants by move.
     let id = match &result {
@@ -858,11 +818,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_, impl ResourceTracker
 /// **Error handling**: `pending_read` is taken up-front so every subsequent
 /// error path leaves the file in a retry-safe state — a user-caught
 /// exception followed by a retry sees no stale slice spec.
-pub(crate) fn apply_buffer_store(
-    file_id: HeapId,
-    result: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Value> {
+pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     // The pin's dec_ref happens automatically on every path via the guard's
     // Drop, so the early-return branches do not need explicit `dec_ref`s.
     let mut pin = DropGuard::new(Value::Ref(file_id), vm);
@@ -937,11 +893,7 @@ pub(crate) fn apply_buffer_store(
 /// As with [`apply_buffer_store`], the pending-file-effect pin on `file_id`
 /// is released via the RAII [`DropGuard`] regardless of which path the
 /// function takes.
-pub(crate) fn apply_write_position(
-    file_id: HeapId,
-    result: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Value> {
+pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut pin = DropGuard::new(Value::Ref(file_id), vm);
     let (_, vm) = pin.as_parts_mut();
     let mut result_guard = DropGuard::new(result, vm);
@@ -981,7 +933,7 @@ pub(crate) fn apply_write_position(
 /// that's being returned, and allocates a fresh `Str`/`Bytes`/`List` for the
 /// result. All buffer reads go through the heap so the slice content is fully
 /// snapshot-safe.
-fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_>) -> RunResult<Value> {
     // Defensive: if `buffer` is loaded but `buffer_meta` is missing (e.g. a
     // restored snapshot from an older schema, or a future code path that
     // sets `buffer` directly), reconstruct the cache before slicing instead
@@ -1041,7 +993,7 @@ fn compute_slice_text(
     byte_position: usize,
     buffer_total: usize,
     spec: ReadSpec,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     // Phase 1: read the buffer through an immutable heap borrow, compute the
     // slice, and allocate the result. `update_file_state` needs `&mut Heap`,
@@ -1140,7 +1092,7 @@ fn compute_slice_binary(
     position: usize,
     buffer_total: usize,
     spec: ReadSpec,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     // `seek()` allows positioning past EOF; clamp here so the slice index
     // operations below never panic when `position > len`. The cap is per-call
@@ -1278,7 +1230,7 @@ fn update_file_state(
     new_position: usize,
     new_byte_position: usize,
     eof: bool,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     // `usize > u64` is impossible on every platform we support, but
     // surfacing the conversion as an `expect` (rather than `as u64`) keeps
@@ -1315,7 +1267,7 @@ fn update_file_state(
 /// values derived from `buffer.len()` and `position`. The walk is O(buffer)
 /// for text but happens exactly once per file (the cache is then maintained
 /// incrementally by [`update_file_state`]).
-fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
     // Pull what we need out of the file under a short scoped borrow so we
     // can call `heap.get(buffer_id)` and `file.get_mut` separately without
     // overlapping borrows.
@@ -1375,7 +1327,7 @@ fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) 
 /// CPython's argument validation: missing `offset` raises `TypeError`,
 /// `whence` outside `{0, 1, 2}` is deferred to `compute_slice` so the error
 /// matches CPython's `invalid whence` message.
-fn parse_seek_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<(i64, i64)> {
+fn parse_seek_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(i64, i64)> {
     let (offset, maybe_whence) = args.get_one_two_args("seek", vm.heap)?;
     let offset_int = offset.as_int(vm)?;
     let whence_int = match maybe_whence {
@@ -1390,7 +1342,7 @@ fn parse_seek_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> Ru
 /// CPython accepts `None` as "read all" and treats `bool` as an integer for
 /// this argument. Heap-backed integer arguments are explicitly dropped after
 /// conversion because `get_zero_one_arg` transfers ownership to the caller.
-fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<ReadSpec> {
+fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_>) -> RunResult<ReadSpec> {
     let Some(size) = size_arg else {
         return Ok(ReadSpec::All);
     };
@@ -1416,7 +1368,7 @@ fn parse_read_size_arg(size_arg: Option<Value>, vm: &mut VM<'_, impl ResourceTra
 /// path so a hot `read(0)` does not allocate. Binary mode still allocates
 /// a fresh empty `Bytes` because there is no equivalent interned bytes
 /// singleton.
-fn empty_result(binary: bool, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn empty_result(binary: bool, heap: &mut Heap) -> RunResult<Value> {
     if binary {
         let id = heap.allocate(HeapData::Bytes(Bytes::new(Vec::new())))?;
         Ok(Value::Ref(id))
@@ -1426,7 +1378,7 @@ fn empty_result(binary: bool, heap: &mut Heap<impl ResourceTracker>) -> RunResul
 }
 
 /// Validates that `write()` receives text for text files and bytes for binary files.
-fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_, impl ResourceTracker>) -> RunResult<()> {
+fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_>) -> RunResult<()> {
     if binary {
         if is_bytes(data, vm.heap) {
             Ok(())
@@ -1448,7 +1400,7 @@ fn validate_write_data(data: &Value, binary: bool, vm: &VM<'_, impl ResourceTrac
 
 /// Owned `String` from a value pre-validated as a Python `str` (returns
 /// `None` only if `validate_write_data` was bypassed — caller unwraps).
-fn extract_str_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<String> {
+fn extract_str_payload(data: &Value, vm: &VM<'_>) -> Option<String> {
     match data {
         Value::InternString(id) => Some(vm.interns.get_str(*id).to_owned()),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -1461,7 +1413,7 @@ fn extract_str_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Optio
 
 /// Owned `Vec<u8>` from a value pre-validated as Python `bytes` — binary
 /// companion to [`extract_str_payload`].
-fn extract_bytes_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<Vec<u8>> {
+fn extract_bytes_payload(data: &Value, vm: &VM<'_>) -> Option<Vec<u8>> {
     match data {
         Value::InternBytes(id) => Some(vm.interns.get_bytes(*id).to_owned()),
         Value::Ref(id) => match vm.heap.get(*id) {
@@ -1473,7 +1425,7 @@ fn extract_bytes_payload(data: &Value, vm: &VM<'_, impl ResourceTracker>) -> Opt
 }
 
 /// Returns whether a value is a Python `bytes` object.
-fn is_bytes(data: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
+fn is_bytes(data: &Value, heap: &Heap) -> bool {
     match data {
         Value::InternBytes(_) => true,
         Value::Ref(id) => matches!(heap.get(*id), HeapData::Bytes(_)),

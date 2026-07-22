@@ -6,7 +6,7 @@
 //! tab expansion, string repetition, container `repr()`, etc. — must use
 //! `StringBuilder` rather than `String::with_capacity(...).push(...)`, because
 //! the intermediate `String` lives on the Rust heap *outside* the
-//! [`ResourceTracker`]. Without a builder, a malicious script can amplify a
+//! [`LimitedTracker`]. Without a builder, a malicious script can amplify a
 //! small tracked input into a multi-gigabyte intermediate before the final
 //! [`allocate_string`](crate::types::str::allocate_string) ever consults the
 //! tracker — bypassing the configured memory limit and OOMing the host.
@@ -14,7 +14,7 @@
 //! # Active reservation, not preview
 //!
 //! Each growth actively *reserves* bytes with the tracker via
-//! [`ResourceTracker::on_grow`]. This matters because Monty allows nested
+//! [`LimitedTracker::on_grow`]. This matters because Monty allows nested
 //! operations: a [`str.join`](crate::types::str) over arbitrary objects can
 //! invoke user-defined `__str__`/`__repr__` methods, which may themselves
 //! build strings. A preview-only check (`check_estimated_size`) would let the
@@ -52,17 +52,17 @@
 
 use std::{fmt, mem};
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::{LimitedTracker, ResourceError};
 
 use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_string, value::Value};
 
 /// Resource-tracked builder for a `String`.
 ///
 /// Holds an inner `String`, a tracker reference, and the byte count currently
-/// reserved with the tracker. Growth calls [`ResourceTracker::on_grow`] to
+/// reserved with the tracker. Growth calls [`LimitedTracker::on_grow`] to
 /// reserve additional bytes (which fails fast if the memory limit would be
 /// exceeded), and [`Drop`] / [`finish`](Self::finish) release the reservation
-/// via [`ResourceTracker::on_free`].
+/// via [`LimitedTracker::on_free`].
 ///
 /// Typical use:
 ///
@@ -72,9 +72,9 @@ use crate::{exception_private::RunResult, heap::Heap, types::str::allocate_strin
 /// for _ in 0..pad { builder.push(fill)?; }
 /// builder.finish(vm.heap)
 /// ```
-pub struct StringBuilder<'t, T: ResourceTracker> {
+pub struct StringBuilder<'t> {
     inner: String,
-    tracker: &'t T,
+    tracker: &'t LimitedTracker,
     /// Bytes currently reserved with `tracker` via `on_grow`. Always released
     /// before the builder ceases to exist — either in `finish` (so the
     /// follow-up `allocate_string` can re-add the final size without
@@ -88,12 +88,12 @@ pub struct StringBuilder<'t, T: ResourceTracker> {
     pending_error: Option<ResourceError>,
 }
 
-impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
+impl<'t> StringBuilder<'t> {
     /// Creates an empty builder with no pre-approved capacity.
     ///
     /// Use when the final size is not bounded up front. The builder will
     /// request additional reservation from the tracker on each 2× growth.
-    pub fn new(tracker: &'t T) -> Self {
+    pub fn new(tracker: &'t LimitedTracker) -> Self {
         Self {
             inner: String::new(),
             tracker,
@@ -107,7 +107,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
     /// Use when the final size is known or bounded (e.g. padding to a given
     /// width). One up-front `on_grow` call covers every subsequent push that
     /// stays within `capacity`.
-    pub fn with_capacity(capacity: usize, tracker: &'t T) -> Result<Self, ResourceError> {
+    pub fn with_capacity(capacity: usize, tracker: &'t LimitedTracker) -> Result<Self, ResourceError> {
         tracker.on_grow(|| capacity)?;
         Ok(Self {
             inner: String::with_capacity(capacity),
@@ -142,7 +142,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
     /// (or interns the result for empty / single-ASCII strings). If a prior
     /// [`fmt::Write`] call captured a tracker error, that error is returned
     /// here rather than the (now-stale) inner string.
-    pub fn finish(mut self, heap: &Heap<T>) -> RunResult<Value> {
+    pub fn finish(mut self, heap: &Heap) -> RunResult<Value> {
         if let Some(e) = self.pending_error.take() {
             // The reservation is released by Drop when `self` goes out of
             // scope at function return — no need to release here.
@@ -196,7 +196,7 @@ impl<'t, T: ResourceTracker> StringBuilder<'t, T> {
 /// into the payload-free [`fmt::Error`] and stashed in `pending_error`;
 /// short-circuits subsequent writes so a partially-built string doesn't keep
 /// accruing reservations after the limit has been hit.
-impl<T: ResourceTracker> fmt::Write for StringBuilder<'_, T> {
+impl fmt::Write for StringBuilder<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if self.pending_error.is_some() {
             return Err(fmt::Error);
@@ -218,7 +218,7 @@ impl<T: ResourceTracker> fmt::Write for StringBuilder<'_, T> {
     }
 }
 
-impl<T: ResourceTracker> Drop for StringBuilder<'_, T> {
+impl Drop for StringBuilder<'_> {
     fn drop(&mut self) {
         // Release any outstanding reservation if the builder is dropped without
         // finishing (e.g. an early return via `?` during a push, or a stashed

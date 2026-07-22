@@ -33,7 +33,7 @@
 use std::rc::Rc;
 
 use ahash::RandomState;
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -101,7 +101,7 @@ pub(crate) enum ReFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Re);
 
     // Functions
@@ -195,11 +195,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 /// Extracts arguments, compiles patterns as needed, and delegates to the appropriate
 /// `RePattern` method. All functions return `CallResult::Value` since regex
 /// operations don't need host involvement.
-pub(super) fn call(
-    vm: &mut VM<'_, impl ResourceTracker>,
-    function: ReFunctions,
-    args: ArgValues,
-) -> RunResult<CallResult> {
+pub(super) fn call(vm: &mut VM<'_>, function: ReFunctions, args: ArgValues) -> RunResult<CallResult> {
     match function {
         ReFunctions::Compile => call_compile(vm, args).map(CallResult::Value),
         ReFunctions::Search => call_search(vm, args).map(CallResult::Value),
@@ -218,7 +214,7 @@ pub(super) fn call(
 /// Returns a `re.Pattern` object that can be reused for multiple match operations.
 /// An already-compiled pattern is returned unchanged (`re.compile(p) is p`,
 /// matching CPython's `_compile` pass-through).
-fn call_compile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_compile(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReCompileArgs { pattern, flags } = ReCompileArgs::from_args(args, vm)?;
     match resolve_pattern(pattern, flags, vm)? {
         // Clone out of the shared cache entry: the returned `re.Pattern` is the
@@ -236,7 +232,7 @@ fn call_compile(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 ///
 /// Resolves the pattern, then delegates to `RePattern::search`. Returns a `re.Match`
 /// object on success, or `None` if no position in the string matches.
-fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_search(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReSearchArgs { pattern, string, flags } = ReSearchArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
@@ -248,7 +244,7 @@ fn call_search(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRes
 ///
 /// Resolves the pattern, then delegates to `RePattern::match_start`. Returns a `re.Match`
 /// object if the pattern matches at position 0, or `None` otherwise.
-fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_match(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReMatchArgs { pattern, string, flags } = ReMatchArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
@@ -262,7 +258,7 @@ fn call_match(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResu
 ///
 /// Resolves the pattern, then delegates to `RePattern::fullmatch`. Returns a `re.Match`
 /// object if the pattern matches the whole string, or `None` otherwise.
-fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_fullmatch(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReFullmatchArgs { pattern, string, flags } = ReFullmatchArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
@@ -276,7 +272,7 @@ fn call_fullmatch(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
 ///
 /// Resolves the pattern, then delegates to `RePattern::findall`. Returns a list of
 /// strings or tuples depending on the number of capture groups (matching CPython semantics).
-fn call_findall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_findall(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReFindallArgs { pattern, string, flags } = ReFindallArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
@@ -292,7 +288,7 @@ fn call_findall(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunRe
 /// The pattern is resolved *before* `count` is validated so a bad pattern (or
 /// flags with a compiled pattern) wins over a bad count, matching CPython
 /// where `_compile` runs before `Pattern.sub` parses its arguments.
-fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_sub(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReSubArgs {
         pattern,
         repl,
@@ -339,7 +335,7 @@ fn call_sub(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 ///
 /// Returns a list of strings. If `maxsplit` is non-zero, at most `maxsplit` splits occur
 /// and the remainder of the string is returned as the final list element.
-fn call_split(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_split(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReSplitArgs {
         pattern,
         string,
@@ -494,7 +490,7 @@ struct ReFinditerArgs {
 /// the heap for the duration of the match. Monty has no bytes matching, so a
 /// bytes subject gets CPython's mixed-types message and anything else gets
 /// the `sre` "expected string or bytes-like object" wording.
-fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+fn subject_str<'a>(value: &'a Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     if value.is_str(vm.heap) {
         value.to_str(vm)
     } else if value.py_type_heap(vm.heap) == Type::Bytes {
@@ -534,7 +530,7 @@ pub(crate) enum PatternArg {
 impl PatternArg {
     /// Coerces the raw `pattern` value, consuming it on every path (the
     /// `Compiled` variant transfers ownership in rather than dropping).
-    fn extract(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn extract(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(either) = value.as_either_str(vm.heap) {
             let pattern = either.into_string(vm.interns);
             value.drop_with(vm);
@@ -570,7 +566,7 @@ pub(crate) struct ReFlags(u16);
 
 impl ReFlags {
     /// Coerces the raw `flags` value, consuming it on every path.
-    fn extract(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    fn extract(value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         let result = match value {
             Value::Int(n) => u16::try_from(n)
                 .map(Self)
@@ -608,7 +604,7 @@ enum ResolvedPattern {
 
 impl ResolvedPattern {
     /// Borrows the compiled pattern (from the heap for the `Heap` variant).
-    fn get<'a>(&'a self, heap: &'a Heap<impl ResourceTracker>) -> &'a RePattern {
+    fn get<'a>(&'a self, heap: &'a Heap) -> &'a RePattern {
         match self {
             Self::Cached(pattern) => pattern,
             Self::Heap(value) => {
@@ -644,7 +640,7 @@ type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
 const CACHE_CAPACITY: usize = 256;
 
 /// `delegate_size_limit` for compiles that will be retained in the cache. The cache
-/// is invisible to the `ResourceTracker`, so this caps its worst-case footprint at
+/// is invisible to the resource tracker, so this caps its worst-case footprint at
 /// ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`; patterns whose compiled form is bigger
 /// still work — they are recompiled per call at default limits and never retained.
 const CACHED_SIZE_LIMIT: usize = 64 * 1024;
@@ -727,7 +723,7 @@ impl RePatternCache {
 /// Coercion happens here — after `from_args` has fully bound the signature —
 /// and in CPython's order: pattern type first, then flags type, then the
 /// compiled-pattern flags rejection, then pattern compilation.
-fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<ResolvedPattern> {
+fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_>) -> RunResult<ResolvedPattern> {
     // Sequential hand-rolled cleanup: each coercion consumes its value, so on
     // failure only the *other*, not-yet-consumed value needs dropping.
     let pattern = match PatternArg::extract(pattern, vm) {
@@ -766,7 +762,7 @@ fn resolve_pattern(pattern: Value, flags: Value, vm: &mut VM<'_, impl ResourceTr
 /// Eagerly collects all match objects into a list. When the user iterates with
 /// `for m in re.finditer(...)`, the VM's `GetIter` opcode handles iteration
 /// over the returned list automatically.
-fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_finditer(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReFinditerArgs { pattern, string, flags } = ReFinditerArgs::from_args(args, vm)?;
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
@@ -783,7 +779,7 @@ fn call_finditer(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunR
 /// escaped, matching CPython 3.7+ behavior.
 ///
 /// Escaped characters: `\t \n \v \f \r   # $ & ( ) * + - . ? [ \ ] ^ { | } ~`
-fn call_escape(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_escape(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReEscapeArgs { pattern } = ReEscapeArgs::from_args(args, vm)?;
     defer_drop!(pattern, vm);
     let Ok(text) = pattern.to_str(vm) else {

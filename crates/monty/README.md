@@ -26,7 +26,7 @@ See the [project README](https://github.com/pydantic/monty) for the full feature
 
 ```rust
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = r#"
 def fib(n):
@@ -38,7 +38,7 @@ fib(x)
 "#;
 
 let runner = MontyRun::new(code.to_owned(), "fib.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
-let result = runner.run(vec![MontyObject::Int(10)], NoLimitTracker, PrintWriter::Stdout).unwrap();
+let result = runner.run(vec![MontyObject::Int(10)], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(55));
 ```
 
@@ -70,14 +70,14 @@ The defining feature of the crate: instead of running to completion, `MontyRun::
 
 ```rust
 use monty::{MontyRun, RunProgress};
-use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let code = "data = get_data(3)\ndata * 2";
 let runner = MontyRun::new(code.to_owned(), "main.py", vec!["get_data".to_owned()], CompileOptions::default()).unwrap();
 
 // pass the external function in as an input
 let get_data = MontyObject::Function { name: "get_data".to_owned(), docstring: None };
-let progress = runner.start(vec![get_data], NoLimitTracker, PrintWriter::Stdout).unwrap();
+let progress = runner.start(vec![get_data], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout).unwrap();
 
 // execution pauses at the `get_data(3)` call
 let RunProgress::FunctionCall(call) = progress else { panic!("expected a function call") };
@@ -94,14 +94,14 @@ A paused `RunProgress` is a self-contained snapshot of the interpreter: serializ
 
 ```rust
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
 
 let runner = MontyRun::new("x + 1".to_owned(), "main.py", vec!["x".to_owned()], CompileOptions::default()).unwrap();
 let bytes = runner.dump().unwrap();
 
 // later, restore and run
 let runner2 = MontyRun::load(&bytes).unwrap();
-let result = runner2.run(vec![MontyObject::Int(41)], NoLimitTracker, PrintWriter::Stdout).unwrap();
+let result = runner2.run(vec![MontyObject::Int(41)], LimitedTracker::new(ResourceLimits::new()), PrintWriter::Stdout).unwrap();
 assert_eq!(result, MontyObject::Int(42));
 ```
 

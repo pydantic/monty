@@ -7,8 +7,6 @@
 //! - Type constructors (int, str, float, etc.)
 //! - User-defined functions (via `vm.evaluate_function`)
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -31,7 +29,7 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 

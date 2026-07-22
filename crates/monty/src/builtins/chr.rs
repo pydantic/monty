@@ -1,7 +1,5 @@
 //! Implementation of the chr() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -15,7 +13,7 @@ use crate::{
 ///
 /// Returns a string representing a character whose Unicode code point is the integer.
 /// The valid range for the argument is from 0 through 1,114,111 (0x10FFFF).
-pub fn builtin_chr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_chr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("chr", vm.heap)?;
     defer_drop!(value, vm);
 

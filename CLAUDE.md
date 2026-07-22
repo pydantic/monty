@@ -20,7 +20,7 @@ Project goals:
 ## `monty-types` — shared boundary types
 
 The public data types (`MontyObject`, `MontyException`/`ExcType`, `OsFunctionCall` +
-its arg structs, `ResourceLimits`/`ResourceTracker`, `PrintStream`/`PrintWriter`,
+its arg structs, `ResourceLimits`/`LimitedTracker`, `PrintStream`/`PrintWriter`,
 `CompileOptions`, `ExtFunctionResult`, `FileMode`, ...) live in `crates/monty-types`,
 which depends on no other monty crate except the `monty-macros` derives. `monty`
 depends on `monty-types` but does not blanket re-export it — only a few types
@@ -202,7 +202,7 @@ Type methods are implemented as `impl<'h> HeapRead<'h, T>` blocks. The `PyTrait<
 ```rust
 // Methods on a heap type
 impl<'h> HeapRead<'h, List> {
-    pub fn append(&mut self, vm: &mut VM<'h, impl ResourceTracker>, item: Value) -> RunResult<()> {
+    pub fn append(&mut self, vm: &mut VM<'h>, item: Value) -> RunResult<()> {
         self.get_mut(vm.heap).items.push(item);
         Ok(())
     }
@@ -210,8 +210,8 @@ impl<'h> HeapRead<'h, List> {
 
 // PyTrait implementation
 impl<'h> PyTrait<'h> for HeapRead<'h, List> {
-    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type { Type::List }
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_type(&self, vm: &VM<'h>) -> Type { Type::List }
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).items.len())
     }
     // ...
@@ -277,7 +277,7 @@ Avoid manual `drop_with` whenever there are multiple code paths (branching, `?`,
 
 ### Resource-tracked string construction (`StringBuilder`)
 
-Any code that builds a `String` whose final size is not already bounded by an already-tracked input **must** use `StringBuilder` (in `crates/monty/src/string_builder.rs`) rather than `String::with_capacity(...).push(...)`. Intermediate `String`s live on the Rust heap *outside* the `ResourceTracker`, so a loop-built string can OOM the host before `allocate_string` ever consults the tracker — this is exactly the class of bug that hit `str.expandtabs` (huge `tabsize` amplifying a single tab into a multi-gigabyte allocation).
+Any code that builds a `String` whose final size is not already bounded by an already-tracked input **must** use `StringBuilder` (in `crates/monty/src/string_builder.rs`) rather than `String::with_capacity(...).push(...)`. Intermediate `String`s live on the Rust heap *outside* the resource tracker, so a loop-built string can OOM the host before `allocate_string` ever consults the tracker — this is exactly the class of bug that hit `str.expandtabs` (huge `tabsize` amplifying a single tab into a multi-gigabyte allocation).
 
 `StringBuilder` actively *reserves* bytes with the tracker (via `on_grow`) as it grows, not just previews. This matters for nested builds: a `str.join` that invokes user-defined `__str__` methods, an f-string spec that evaluates an inner expression, etc. With a preview-only check, each builder would only see the *committed* memory and miss the outer's in-progress buffer — together they could exceed the limit. Reservations are released on `Drop` (cleanup on `?` / early-return paths) or in `finish(heap)` (which folds the handoff to `allocate_string` into the builder so the final size is re-added via `on_grow` exactly once). Growth is amortized via 2× doubling:
 

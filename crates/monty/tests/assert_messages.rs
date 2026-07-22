@@ -6,8 +6,8 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, MontyRun};
 use monty_types::{
-    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, NoLimitTracker,
-    PrintWriter, ResourceLimits,
+    AssertMessageAnnotations, CompileOptions, ExcType, LimitedTracker, MontyException, MontyObject, PrintWriter,
+    ResourceLimits,
 };
 
 /// Runs `code` and returns the exception it raises.
@@ -316,7 +316,7 @@ fn custom_limit_survives_repl_snippets() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
     };
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    let mut repl = MontyRepl::new("repl.py", LimitedTracker::new(ResourceLimits::new()), options);
     repl.feed_run("x = 'abcdefghij'", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == ''", vec![], PrintWriter::Stdout)
@@ -399,7 +399,11 @@ fn opt_out_restores_cpython_behavior() {
 
 #[test]
 fn assert_inside_repl_gets_messages() {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let mut repl = MontyRepl::new(
+        "repl.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)
@@ -413,7 +417,7 @@ fn repl_opt_out_applies_to_every_snippet() {
     let options = CompileOptions {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, options);
+    let mut repl = MontyRepl::new("repl.py", LimitedTracker::new(ResourceLimits::new()), options);
     repl.feed_run("x = 3", vec![], PrintWriter::Stdout).unwrap();
     let err = repl
         .feed_run("assert x == 4", vec![], PrintWriter::Stdout)

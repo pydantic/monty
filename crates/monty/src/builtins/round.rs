@@ -1,6 +1,5 @@
 //! Implementation of the round() builtin function.
 
-use monty_types::ResourceTracker;
 use num_bigint::{BigInt, Sign};
 
 use crate::{
@@ -37,7 +36,7 @@ struct RoundArgs {
 /// Rounds a number to a given precision in decimal digits.
 /// If ndigits is omitted or None, returns the nearest integer.
 /// Uses banker's rounding (round half to even).
-pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let RoundArgs { number, ndigits } = RoundArgs::from_args(args, vm)?;
     let number = normalize_bool_to_int(number);
     defer_drop!(number, vm);
@@ -133,7 +132,7 @@ pub fn builtin_round(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
 
 /// True when a LongInt-valued `ndigits` (interned or heap-allocated) is
 /// negative — decides which i64 extreme [`builtin_round`] clamps it to.
-fn long_int_is_negative(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+fn long_int_is_negative(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
         Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),

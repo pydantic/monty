@@ -9,7 +9,7 @@
 use std::{fmt, fmt::Write, iter, iter::Peekable, str, str::FromStr};
 
 pub use monty_types::FormatFloat;
-use monty_types::ResourceTracker;
+use monty_types::LimitedTracker;
 
 use crate::{
     bytecode::VM,
@@ -603,11 +603,7 @@ impl fmt::Display for FormatError {
 /// - Strings: `format_string`
 ///
 /// Returns a `ValueError` if the format type character is incompatible with the value type.
-pub fn format_with_spec(
-    value: &Value,
-    spec: &ParsedFormatSpec,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<String, RunError> {
+pub fn format_with_spec(value: &Value, spec: &ParsedFormatSpec, vm: &mut VM<'_>) -> Result<String, RunError> {
     let value_type = value.py_type(vm);
 
     // Bool is an `int` subclass: every integer/float presentation applies to it
@@ -1320,7 +1316,7 @@ fn format_long_int(
     li: &LongInt,
     value_type: &str,
     spec: &ParsedFormatSpec,
-    tracker: &impl ResourceTracker,
+    tracker: &LimitedTracker,
 ) -> Result<String, RunError> {
     let sign = if li.is_negative() {
         "-"

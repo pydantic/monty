@@ -15,9 +15,8 @@ implementation**.
 - `OsFunctionCall` — the typed OS-call payloads sandboxed code suspends with
   (file reads/writes, `open()`, `os.getenv`, ...), plus the `stat_result`
   builders hosts use to answer them.
-- `ResourceTracker` / `ResourceLimits` — the resource-limit trait the
-  interpreter is generic over, with the stock `NoLimitTracker` and
-  `LimitedTracker` implementations.
+- `LimitedTracker` / `ResourceLimits` — the resource tracker the
+  interpreter uses to enforce time/memory/recursion limits.
 - `PrintStream` / `PrintWriter` — `print()` output capture.
 - `CompileOptions`, `ExtFunctionResult`, `NameLookupResult`, `FileMode`, and
   the CPython-compatible formatting helpers behind their `repr()`s.

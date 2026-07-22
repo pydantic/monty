@@ -6,13 +6,17 @@
 use insta::assert_snapshot;
 use monty::{MontyRepl, ReplContinuationMode, ReplProgress, ReplStartError, detect_repl_continuation_mode};
 use monty_types::{
-    CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, NoLimitTracker, PrintWriter,
-    ResourceTracker,
+    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, PrintWriter,
+    ResourceLimits,
 };
 
 #[test]
 fn repl_executes_only_new_code() {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let mut repl = MontyRepl::new(
+        "repl.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
     let init_output = feed_run_print(&mut repl, "counter = 0").unwrap();
     assert_eq!(init_output, MontyObject::None);
 
@@ -25,12 +29,16 @@ fn repl_executes_only_new_code() {
     assert_eq!(output, MontyObject::Int(1));
 }
 
-fn feed_run_print(repl: &mut MontyRepl<impl ResourceTracker>, code: &str) -> Result<MontyObject, MontyException> {
+fn feed_run_print(repl: &mut MontyRepl, code: &str) -> Result<MontyObject, MontyException> {
     repl.feed_run(code, vec![], PrintWriter::Stdout)
 }
 
-fn init_repl(code: &str) -> (MontyRepl<NoLimitTracker>, MontyObject) {
-    let mut repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+fn init_repl(code: &str) -> (MontyRepl, MontyObject) {
+    let mut repl = MontyRepl::new(
+        "repl.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
     let output = feed_run_print(&mut repl, code).unwrap();
     (repl, output)
 }
@@ -206,7 +214,7 @@ fn repl_dump_load_survives_between_snippets() {
     feed_run_print(&mut repl, "total = total + 1").unwrap();
 
     let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl<NoLimitTracker> = MontyRepl::load(&bytes).unwrap();
+    let mut loaded: MontyRepl = MontyRepl::load(&bytes).unwrap();
 
     feed_run_print(&mut loaded, "total = total * 21").unwrap();
     let output = feed_run_print(&mut loaded, "total").unwrap();
@@ -220,7 +228,7 @@ fn repl_dump_load_preserves_heap_aliasing() {
     feed_run_print(&mut repl, "a.append(1)").unwrap();
 
     let bytes = repl.dump().unwrap();
-    let mut loaded: MontyRepl<NoLimitTracker> = MontyRepl::load(&bytes).unwrap();
+    let mut loaded: MontyRepl = MontyRepl::load(&bytes).unwrap();
 
     feed_run_print(&mut loaded, "b.append(2)").unwrap();
     assert_eq!(
@@ -295,7 +303,7 @@ fn repl_progress_dump_load_roundtrip() {
     let progress = repl.feed_start("ext_fn(20) + 22", vec![], PrintWriter::Stdout).unwrap();
 
     let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
+    let loaded: ReplProgress = ReplProgress::load(&bytes).unwrap();
 
     let call = loaded.into_function_call().expect("expected function call");
     assert_eq!(call.args, vec![MontyObject::Int(20)]);
@@ -327,7 +335,7 @@ async def main():
 
     let progress = call.resume_pending(PrintWriter::Stdout).unwrap();
     let bytes = progress.dump().unwrap();
-    let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
+    let loaded: ReplProgress = ReplProgress::load(&bytes).unwrap();
     let state = loaded.into_resolve_futures().expect("expected resolve futures");
     assert_eq!(state.pending_call_ids(), &[call_id]);
 
@@ -405,7 +413,11 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         frozen: true,
     };
 
-    let repl = MontyRepl::new("repl.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new(
+        "repl.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
 
     // Calling point.sum() should yield a FunctionCall with method_call=true.
     // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
@@ -456,8 +468,12 @@ fn repl_start_new_external_function_in_later_block() {
 // ===========================================================================
 
 /// Helper to create a REPL session pre-seeded with code for function calling.
-fn repl_with_code(code: &str) -> MontyRepl<NoLimitTracker> {
-    let mut repl = MontyRepl::new("session_test.py", NoLimitTracker, CompileOptions::default());
+fn repl_with_code(code: &str) -> MontyRepl {
+    let mut repl = MontyRepl::new(
+        "session_test.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
     repl.feed_run(code, vec![], PrintWriter::Stdout).unwrap();
     repl
 }

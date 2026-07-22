@@ -11,7 +11,7 @@
 //! of which path the conversion took.
 
 use monty::{MontyRepl, MontyRun};
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, LimitedTracker, MontyObject, NameLookupResult, PrintWriter, ResourceLimits};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
@@ -190,7 +190,11 @@ fn callable_export_stable_across_source_mention() {
 /// unit-input tests above cannot reach.
 #[test]
 fn repl_cross_representation_extfunction_identity() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new(
+        "session.py",
+        LimitedTracker::new(ResourceLimits::new()),
+        CompileOptions::default(),
+    );
 
     // Feed 1: `x = foobar` triggers NameLookup for "foobar"; host returns a
     // `Function` whose `__name__` ("ext_fn") does not appear in feed 1's
