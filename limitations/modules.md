@@ -15,6 +15,7 @@ and no way for sandboxed code to load additional modules.
 | `os`       | [os.md](os.md)                       |
 | `pathlib`  | [pathlib.md](pathlib.md)             |
 | `re`       | [re.md](re.md)                       |
+| `struct`   | [struct.md](struct.md)               |
 | `sys`      | [sys.md](sys.md)                     |
 | `typing`   | [typing.md](typing.md)               |
 
@@ -32,7 +33,7 @@ as a builtin, not via `collections`), `contextlib`, `copy`, `csv`,
 module is not importable), `decimal`, `enum`, `fractions`, `functools`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`, `itertools`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
-`socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
+`socket`, `string`, `subprocess`, `tempfile`, `threading`,
 `time`, `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
 `zipfile`, `zlib`.
 

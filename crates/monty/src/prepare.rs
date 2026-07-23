@@ -11,6 +11,7 @@ use crate::{
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
+    modules::registry::{self, ModuleDescriptor},
     name_map::{NameMap, namespace_overflow},
     namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, ParseError, ParseNode, ParseResult, ParsedSignature, RawFunctionDef, Try},
@@ -86,7 +87,7 @@ pub(crate) fn prepare_with_existing_names(
     parse_result: ParseResult,
     mut globals: NameMap,
 ) -> Result<PrepareResult, ParseError> {
-    let ParseResult { nodes, interner } = parse_result;
+    let ParseResult { nodes, mut interner } = parse_result;
     let mut prepared_nodes = Prepare::new_module(&mut globals, &interner).prepare_nodes(nodes)?;
 
     // In the root frame, the last expression is implicitly returned if it
@@ -98,6 +99,21 @@ pub(crate) fn prepare_with_existing_names(
         let new_expr_loc = expr_loc.clone();
         prepared_nodes.pop();
         prepared_nodes.push(Node::Return(Some(new_expr_loc)));
+    }
+
+    // Seed the dynamic string pool with the names of the registered modules this
+    // source actually imports, so `registry::create_module` can resolve their
+    // function names at runtime. Seeding only imported modules — rather than the
+    // whole registry — keeps per-compile cost proportional to what the program
+    // imports, not to how many modules are registered. Done after user strings
+    // are assigned (so no existing id shifts) and kept out of `StaticStrings` so
+    // the per-token `from_str` probe stays flat too.
+    let mut imported_modules: Vec<&'static ModuleDescriptor> = Vec::new();
+    collect_imported_registry_modules(&prepared_nodes, &interner, &mut imported_modules);
+    for desc in imported_modules {
+        for name in registry::descriptor_names(desc) {
+            interner.intern(name);
+        }
     }
 
     Ok(PrepareResult {
@@ -123,6 +139,63 @@ fn build_initial_globals(input_names: Vec<String>, interner: &mut InternerBuilde
         globals.ensure_slot(name_id, CodeRange::default())?;
     }
     Ok(globals)
+}
+
+/// Collects the descriptor of every registered module imported anywhere in
+/// `nodes`, deduplicated by name.
+///
+/// Walks nested bodies (function, class, loop, `try`, `with`) because an
+/// `import` can sit at any depth, and every reachable import must have its
+/// module's names seeded before the VM builds the module (see
+/// [`registry::create_module`]). Feeds the lazy seeding in
+/// [`prepare_with_existing_names`]: only imported modules are interned, so
+/// registering more modules does not slow preparation.
+fn collect_imported_registry_modules(
+    nodes: &[PreparedNode],
+    interner: &InternerBuilder,
+    out: &mut Vec<&'static ModuleDescriptor>,
+) {
+    for node in nodes {
+        match node {
+            Node::Import { names } => {
+                for import_name in names {
+                    push_registered(import_name.module_name, interner, out);
+                }
+            }
+            Node::ImportFrom { module_name, .. } => push_registered(*module_name, interner, out),
+            Node::For { body, or_else, .. } | Node::While { body, or_else, .. } | Node::If { body, or_else, .. } => {
+                collect_imported_registry_modules(body, interner, out);
+                collect_imported_registry_modules(or_else, interner, out);
+            }
+            Node::FunctionDef { def, .. } => collect_imported_registry_modules(&def.body, interner, out),
+            Node::ClassDef { body, .. } => collect_imported_registry_modules(&body.body, interner, out),
+            Node::Try(Try {
+                body,
+                handlers,
+                or_else,
+                finally,
+            }) => {
+                collect_imported_registry_modules(body, interner, out);
+                for handler in handlers {
+                    collect_imported_registry_modules(&handler.body, interner, out);
+                }
+                collect_imported_registry_modules(or_else, interner, out);
+                collect_imported_registry_modules(finally, interner, out);
+            }
+            Node::With { body, .. } => collect_imported_registry_modules(body, interner, out),
+            _ => {}
+        }
+    }
+}
+
+/// Pushes the descriptor for `module_name` onto `out` if it names a registered
+/// module not already collected. Utility for [`collect_imported_registry_modules`].
+fn push_registered(module_name: StringId, interner: &InternerBuilder, out: &mut Vec<&'static ModuleDescriptor>) {
+    if let Some(desc) = registry::lookup_by_name(interner.get_str(module_name))
+        && !out.iter().any(|d| d.name == desc.name)
+    {
+        out.push(desc);
+    }
 }
 
 /// State machine for the preparation phase that transforms parsed AST nodes into a prepared form.

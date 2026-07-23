@@ -22,7 +22,10 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{
+        ModuleFunctions,
+        registry::{self, ModuleFuncId},
+    },
     resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
     types::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, MontyIter, Property, PyTrait, Type, allocate_tuple,
@@ -88,6 +91,13 @@ pub(crate) enum Value {
 
     // Heap-allocated values (stored in arena)
     Ref(HeapId),
+
+    /// A function from a module in the open module registry ([`crate::modules::registry`]),
+    /// e.g. `struct.calcsize`. The [`ModuleFuncId`] indexes the registry's
+    /// dispatch table. Unlike [`Self::ModuleFunction`] (the closed `StandardLib`
+    /// enum path), this is the extensible path new native modules use. Holds no
+    /// heap reference, so clone/drop are trivial.
+    RegistryFunction(ModuleFuncId),
 
     /// Sentinel value indicating this Value was properly cleaned up via `drop_with`.
     /// Only exists when `memory-model-checks` feature is enabled. Used to verify reference counting
@@ -204,7 +214,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
-            Self::ModuleFunction(_) => Type::BuiltinFunction,
+            Self::ModuleFunction(_) | Self::RegistryFunction(_) => Type::BuiltinFunction,
             Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
@@ -255,6 +265,10 @@ impl<'h> PyTrait<'h> for Value {
             }),
             Self::ModuleFunction(mf) => Ok(match other {
                 Self::ModuleFunction(o) => Some(mf == o),
+                _ => None,
+            }),
+            Self::RegistryFunction(f) => Ok(match other {
+                Self::RegistryFunction(o) => Some(f == o),
                 _ => None,
             }),
             Self::DefFunction(f) => Ok(match other {
@@ -392,10 +406,10 @@ impl<'h> PyTrait<'h> for Value {
             Self::Float(f) => *f != 0.0,
             // InternLongInt is always truthy (if it were zero, it would fit in i64)
             Self::InternLongInt(_) => true,
-            Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
+            Self::Builtin(_) | Self::ModuleFunction(_) | Self::RegistryFunction(_) => true, // Builtins are always truthy
             Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
-            Self::Marker(_) => true,                            // Markers are always truthy
-            Self::Property(_) => true,                          // Properties are always truthy
+            Self::Marker(_) => true,                             // Markers are always truthy
+            Self::Property(_) => true,                           // Properties are always truthy
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
             Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
@@ -426,6 +440,16 @@ impl<'h> PyTrait<'h> for Value {
                 let py_id = self.id(vm).into_value(vm.heap)?;
                 defer_drop!(py_id, vm);
                 Ok(mf.py_repr_fmt(f, PythonIdDisplay::new(py_id, vm.heap))?)
+            }
+            Self::RegistryFunction(id) => {
+                let py_id = self.id(vm).into_value(vm.heap)?;
+                defer_drop!(py_id, vm);
+                Ok(write!(
+                    f,
+                    "<function {} at 0x{:x}>",
+                    registry::function_name(*id),
+                    PythonIdDisplay::new(py_id, vm.heap)
+                )?)
             }
             Self::DefFunction(f_id) => {
                 let py_id = self.id(vm).into_value(vm.heap)?;
@@ -1591,7 +1615,9 @@ impl Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
-            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
+            Self::ModuleFunction(_) | Self::RegistryFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => {
+                Type::Function
+            }
             Self::Marker(_) => Type::SpecialForm,
             Self::Property(_) => Type::Property,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
@@ -1741,6 +1767,7 @@ impl Value {
             Self::Undefined | Self::Ellipsis | Self::None => Ok(Some(hash_one(discriminant(self)))),
             Self::Builtin(b) => Ok(Some(hash_one(b))),
             Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
+            Self::RegistryFunction(f) => Ok(Some(hash_one(f))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
             // Hash the function name's string contents so the inline path
@@ -2138,6 +2165,7 @@ impl Value {
             Self::Float(v) => Self::Float(*v),
             Self::Builtin(b) => Self::Builtin(*b),
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
+            Self::RegistryFunction(f) => Self::RegistryFunction(*f),
             Self::DefFunction(f) => Self::DefFunction(*f),
             Self::ExtFunction(f) => Self::ExtFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
@@ -2272,7 +2300,11 @@ impl Value {
     /// `debug_assert!`s in dispatch's "not callable" arms.
     pub(crate) fn is_callable(&self, heap: &Heap) -> bool {
         match self {
-            Self::Builtin(_) | Self::ModuleFunction(_) | Self::ExtFunction(_) | Self::DefFunction(_) => true,
+            Self::Builtin(_)
+            | Self::ModuleFunction(_)
+            | Self::RegistryFunction(_)
+            | Self::ExtFunction(_)
+            | Self::DefFunction(_) => true,
             Self::Ref(id) => heap.get(*id).is_callable(),
             _ => false,
         }

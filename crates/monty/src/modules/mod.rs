@@ -25,6 +25,8 @@ pub(crate) mod math;
 pub(crate) mod os;
 pub(crate) mod pathlib;
 pub(crate) mod re;
+pub(crate) mod registry;
+pub(crate) mod struct_;
 pub(crate) mod sys;
 pub(crate) mod typing;
 pub(crate) mod unicodedata;

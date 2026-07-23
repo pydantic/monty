@@ -1165,7 +1165,11 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<ArgValues, Mo
 /// `BoundMethod`, which are not what a host means by "a function it can invoke".
 fn is_callable(value: &Value, heap: &Heap) -> bool {
     match value {
-        Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
+        Value::DefFunction(_)
+        | Value::Builtin(_)
+        | Value::ExtFunction(_)
+        | Value::ModuleFunction(_)
+        | Value::RegistryFunction(_) => true,
         Value::Ref(id) => matches!(
             heap.get(*id),
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)

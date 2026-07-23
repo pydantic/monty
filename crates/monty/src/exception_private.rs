@@ -795,6 +795,15 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::ValueError, msg).into()
     }
 
+    /// Creates a generic `RuntimeError` with a custom message.
+    ///
+    /// For internal-invariant failures that have no CPython analogue (e.g. a
+    /// corrupt registry id from a deserialized snapshot) — surfaced as a
+    /// catchable Python error rather than a panic.
+    fn runtime_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, msg).into()
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`

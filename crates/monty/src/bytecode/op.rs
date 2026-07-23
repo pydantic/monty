@@ -431,10 +431,12 @@ pub enum Opcode {
     Nop,
 
     // === Module Operations ===
-    /// Load a built-in module onto the stack. Operand: u8 module_id.
+    /// Load a built-in module onto the stack. Operand: u16 constant index for the module name.
     ///
-    /// The module_id maps to `BuiltinModule` (0=sys, 1=typing).
-    /// Creates the module on the heap and pushes a `Value::Ref` to it.
+    /// The operand indexes the constant pool at an `InternString` holding the
+    /// module name (the same encoding `RaiseImportError` uses). The VM resolves
+    /// it against the open module registry then `StandardLib`, creates the
+    /// module on the heap, and pushes a `Value::Ref` to it.
     LoadModule,
     /// Raises `ModuleNotFoundError` at runtime. Operand: u16 constant index for module name.
     ///
@@ -753,7 +755,7 @@ impl Opcode {
             (LoadSmallInt, Operand::I8(_)) => 1,
 
             // === Fixed-effect, U8 operand ===
-            (LoadLocal | LoadModule, Operand::U8(_)) => 1,
+            (LoadLocal, Operand::U8(_)) => 1,
             (StoreLocal, Operand::U8(_)) => -1,
             (DeleteLocal, Operand::U8(_)) => 0,
             // `ListAppend`/`SetAdd`/`DictSetItem` carry a u8 stack-depth operand
@@ -777,7 +779,7 @@ impl Opcode {
             (WithExceptStart, Operand::None) => 1,
 
             // === Fixed-effect, U16 operand ===
-            (LoadConst, Operand::U16(_)) => 1,
+            (LoadConst | LoadModule, Operand::U16(_)) => 1,
             (CompareModEq, Operand::U16(_)) => -1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,

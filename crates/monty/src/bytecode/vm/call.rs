@@ -20,6 +20,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
+    modules::registry,
     types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };
@@ -481,6 +482,7 @@ impl VM<'_> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
+            Value::RegistryFunction(id) => registry::call(*id, self, args),
             Value::ExtFunction(name_id) => {
                 // External function - return to caller to execute
                 Ok(CallResult::External(EitherStr::Interned(*name_id), args))
