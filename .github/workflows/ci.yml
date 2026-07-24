@@ -91,6 +91,18 @@ jobs:
         with:
           persist-credentials: false
 
+      # The instrumented (llvm-cov) builds of every feature config don't fit on
+      # the runner's free disk when the rust-cache is cold: the job fills the
+      # disk mid-link, which also fails the cache save, so the next run is cold
+      # again. Drop the large preinstalled toolchains we never use (~25-30 GB)
+      # so cold runs fit and the cache can re-establish itself.
+      - name: free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
       # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
