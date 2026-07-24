@@ -11,6 +11,7 @@
 // tuple), dataclasses, file handles, function values (→ name), and the marker
 // types. See `convert.rs` for the full mapping.
 
+import { MontyFileHandle, canonicalFileMode, validateFilePosition } from '../types.js'
 import { Reader, Writer, bitsToDouble, readInt32, unzigzag } from './proto.js'
 
 // MontyObject oneof field numbers (monty.v1.MontyObject).
@@ -148,9 +149,7 @@ function encodeFileHandle(obj: Record<string, unknown>): Uint8Array {
   if (typeof obj.mode !== 'string') throw new TypeError('MontyFileHandle mode must be a string')
   const mode = canonicalFileMode(obj.mode)
   const position = obj.position === undefined ? 0 : obj.position
-  if (typeof position !== 'number' || !Number.isSafeInteger(position) || position < 0) {
-    throw new TypeError('MontyFileHandle position must be a non-negative safe integer')
-  }
+  validateFilePosition(position)
 
   const w = new Writer()
   w.string(1, obj.path)
@@ -330,7 +329,7 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
   }
 }
 
-function decodeFileHandle(bytes: Uint8Array): MarkedValue {
+function decodeFileHandle(bytes: Uint8Array): MontyFileHandle {
   let path = ''
   let mode = ''
   let position = 0n
@@ -344,7 +343,7 @@ function decodeFileHandle(bytes: Uint8Array): MarkedValue {
   if (position > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")
   }
-  return { [TYPE_MARKER]: 'FileHandle', path, mode: canonicalFileMode(mode), position: Number(position) }
+  return new MontyFileHandle(path, mode, { position: Number(position) })
 }
 
 function decodeNamedTupleValues(bytes: Uint8Array): unknown[] {
@@ -572,36 +571,6 @@ function isTuple(array: unknown[]): boolean {
 /** Coerces a marked-value field (typed `unknown`) to a number for encoding. */
 function num(value: unknown): number {
   return Number(value)
-}
-
-function canonicalFileMode(mode: string): string {
-  if (mode.length === 0) {
-    throw new TypeError('Must have exactly one of create/read/write/append mode and at most one plus')
-  }
-
-  let action: string | undefined
-  let binary = false
-  let text = false
-  for (const char of mode) {
-    if (char === 'r' || char === 'w' || char === 'a') {
-      if (action !== undefined) throw new TypeError('must have exactly one of create/read/write/append mode')
-      action = char
-    } else if (char === 'x') {
-      throw new TypeError('exclusive creation mode is not supported')
-    } else if (char === 'b') {
-      if (binary) throw new TypeError('invalid mode: binary mode specified twice')
-      binary = true
-    } else if (char === 't') {
-      if (text) throw new TypeError('invalid mode: text mode specified twice')
-      text = true
-    } else if (char === '+') {
-      throw new TypeError("update modes ('+') are not yet supported")
-    } else {
-      throw new TypeError(`invalid mode: '${char}'`)
-    }
-  }
-  if (binary && text) throw new TypeError("can't have text and binary mode at once")
-  return `${action ?? 'r'}${binary ? 'b' : ''}`
 }
 
 function unsupported(what: string): Error {

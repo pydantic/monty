@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { MontyRuntimeError, MountDir, type MontyFileHandle } from '@pydantic/monty/node'
+import { MontyFileHandle, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -129,13 +129,25 @@ test('MountDir write_bytes_limit', (ctx) => {
 // Callback-backed file handles
 // =============================================================================
 
+test('MontyFileHandle exposes canonical file properties', () => {
+  const handle = new MontyFileHandle('/data/message.bin', 'br', { position: 12 })
+  t.deepEqual(Object.keys(handle), ['path', 'mode', 'position'])
+  t.is(handle.path, '/data/message.bin')
+  t.is(handle.mode, 'rb')
+  t.is(handle.position, 12)
+  t.is(handle.binary, true)
+  t.is(handle.readable, true)
+  t.is(handle.writable, false)
+  t.true(Object.isFrozen(handle))
+})
+
 test('os callback file handles support text and binary reads', async () => {
   const calls: [string, unknown[]][] = []
   const osCallback = (name: string, args: unknown[]) => {
     calls.push([name, args])
     const path = args[0] as string
     if (name === 'open') {
-      return { __monty_type__: 'FileHandle', path, mode: args[1] as string } satisfies MontyFileHandle
+      return new MontyFileHandle(path, args[1] as string)
     } else if (name === 'Path.read_text') {
       return 'hello'
     } else if (name === 'Path.read_bytes') {
@@ -158,32 +170,21 @@ test('os callback file handles support text and binary reads', async () => {
 test('file handles round-trip with canonical modes and positions', async () => {
   await using session = await pool().checkout()
   const returned = (await session.feedRun("open('/data/message.txt')", {
-    os: (_name, args) => ({
-      __monty_type__: 'FileHandle',
-      path: args[0] as string,
-      mode: 'tr',
-      position: 42,
-    }),
+    os: (_name, args) => new MontyFileHandle(args[0] as string, 'tr', { position: 42 }),
   })) as MontyFileHandle
-  t.deepEqual(returned, {
-    __monty_type__: 'FileHandle',
-    path: '/data/message.txt',
-    mode: 'r',
-    position: 42,
-  })
+  t.true(returned instanceof MontyFileHandle)
+  t.deepEqual(returned, new MontyFileHandle('/data/message.txt', 'r', { position: 42 }))
+  t.is(returned.binary, false)
+  t.is(returned.readable, true)
+  t.is(returned.writable, false)
 
   const returnedAgain = await session.feedRun("open('/data/message.txt')", { os: () => returned })
   t.deepEqual(returnedAgain, returned)
 
   const defaultPosition = await session.feedRun("open('/data/default.txt')", {
-    os: (_name, args) => ({ __monty_type__: 'FileHandle', path: args[0] as string, mode: 'r' }),
+    os: (_name, args) => new MontyFileHandle(args[0] as string, 'r'),
   })
-  t.deepEqual(defaultPosition, {
-    __monty_type__: 'FileHandle',
-    path: '/data/default.txt',
-    mode: 'r',
-    position: 0,
-  })
+  t.deepEqual(defaultPosition, new MontyFileHandle('/data/default.txt', 'r'))
 })
 
 test('malformed file handles are rejected precisely', async () => {

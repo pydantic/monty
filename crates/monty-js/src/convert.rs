@@ -325,7 +325,6 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
     }
 
     let mut obj = Object::new(env)?;
-    obj.set_named_property("__monty_type__", "FileHandle")?;
     obj.set_named_property("path", handle.path.as_str())?;
     obj.set_named_property("mode", handle.mode.as_str())?;
     #[expect(
@@ -333,6 +332,31 @@ fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<U
         reason = "position is within JavaScript's safe integer range"
     )]
     obj.set_named_property("position", handle.position as f64)?;
+
+    let marker = env.create_string("FileHandle")?;
+    let binary = create_js_bool(handle.mode.is_binary(), env)?;
+    let readable = create_js_bool(handle.mode.readable(), env)?;
+    let writable = create_js_bool(handle.mode.writable(), env)?;
+    let hidden = PropertyAttributes::empty();
+    obj.define_properties(&[
+        Property::new()
+            .with_utf8_name("__monty_type__")?
+            .with_value(&marker)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("binary")?
+            .with_value(&binary)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("readable")?
+            .with_value(&readable)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("writable")?
+            .with_value(&writable)
+            .with_property_attributes(hidden),
+    ])?;
+    obj.freeze()?;
     obj.into_unknown(env)
 }
 
