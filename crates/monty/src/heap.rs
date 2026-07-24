@@ -1006,6 +1006,13 @@ impl<T: ResourceTracker> Heap<T> {
         }
     }
 
+    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
+    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
+        if cache.get(name) == Some(&id) {
+            cache.remove(name);
+        }
+    }
+
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
     ///
     /// The returned `Value::Ref` has its refcount incremented so the caller can drop
@@ -1096,10 +1103,8 @@ impl<T: ResourceTracker> Heap<T> {
                     };
                     // Clear the cache (only if it points to this exact function, it's possible for
                     // snapshot deserialization to create duplicate functions with the same name)
-                    if let Some(name) = ext_function_name
-                        && reader.heap.ext_function_cache.get(name.as_ref()) == Some(&current_id)
-                    {
-                        reader.heap.ext_function_cache.remove(name.as_ref());
+                    if let Some(name) = ext_function_name {
+                        Self::remove_ext_function_cache_entry(&mut reader.heap.ext_function_cache, &name, current_id);
                     }
 
                     // It is not possible to free from `HeapPtr` because it is created through
@@ -1274,6 +1279,10 @@ impl<T: ResourceTracker> Heap<T> {
                 heap_entry.readers.get(),
             );
             let mut value = entry.free();
+            // Clear weak entries before freeing their slots, just as `dec_ref`.
+            if let HeapData::ExtFunction(function) = value.data.0.get_mut() {
+                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &function.cache_key(), id);
+            }
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`

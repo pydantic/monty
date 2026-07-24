@@ -299,3 +299,59 @@ fn repl_extfunction_cache_does_not_retain_freed_id() {
         MontyObject::Tuple(vec![MontyObject::Bool(false), MontyObject::Bool(false)]),
     );
 }
+
+/// Cycle collection removes weak entries for external-function children.
+#[cfg(feature = "test-hooks")]
+#[test]
+fn gc_freed_ext_function_does_not_retain_freed_id() {
+    let code = "\
+import gc
+d = {}
+d['f'] = a
+d['self'] = d
+d = None
+a = None
+gc.collect()
+occupied = [1, 2, 3]
+y = missing
+(y is occupied, repr(y))
+";
+    let runner = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["a".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(
+            vec![MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }],
+            NoLimitTracker,
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let lookup = progress.into_name_lookup().expect("expected NameLookup for 'missing'");
+    assert_eq!(lookup.name, "missing");
+    let progress = lookup
+        .resume(
+            NameLookupResult::Value(MontyObject::Function {
+                name: "ext_fn".to_owned(),
+                docstring: None,
+            }),
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+    let result = progress.into_complete().expect("run should complete");
+
+    assert_eq!(
+        result,
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(false),
+            MontyObject::String("<function 'ext_fn' external>".to_owned()),
+        ]),
+    );
+}
