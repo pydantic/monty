@@ -241,8 +241,7 @@ pub struct Parser<'a> {
     /// never records where `class` sat, and its range starts at the first
     /// decorator. CPython locates a statement at its keyword, so a decorated
     /// class's traceback frame needs the concrete position. Read only by
-    /// [`Parser::class_keyword_range`]. A decorated `def` needs no equivalent:
-    /// `MakeFunction` pushes no frame, so nothing locates a `def` statement.
+    /// [`Parser::class_keyword_range`].
     class_keyword_offsets: Vec<TextSize>,
 }
 
