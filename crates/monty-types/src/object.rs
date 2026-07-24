@@ -974,7 +974,7 @@ impl Error for ConversionError {}
 ///
 /// This can occur when:
 /// - A `MontyObject` variant (like `Repr`) is only valid as an output, not an input
-/// - A resource limit (memory, allocations) is exceeded during conversion
+/// - A resource limit is exceeded during conversion
 #[derive(Debug, Clone)]
 pub enum InvalidInputError {
     /// The input type is not valid for conversion to a runtime Value.

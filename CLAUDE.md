@@ -732,7 +732,7 @@ If you find yourself fighting the borrow checker around `clone_with_heap` or `al
 Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial deletion**
 (`Heap::collect_cycles` in `crates/monty/src/heap.rs`).
 
-**Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
+**Resource limits**: When a memory or time limit is exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
 ## JavaScript Package (`@pydantic/monty`, `crates/monty-js/`)
 
