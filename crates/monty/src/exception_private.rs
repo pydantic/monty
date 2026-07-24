@@ -838,6 +838,18 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates a TypeError for a class opting out of `in` with
+    /// `__contains__ = None`.
+    ///
+    /// Matches CPython's `slot_sq_contains` format: `TypeError: '{type}' object
+    /// is not a container` — deliberately distinct from
+    /// [`type_error_not_container`], which covers a type that never had
+    /// `__contains__` at all.
+    #[must_use]
+    fn type_error_object_not_container(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not a container")).into()
+    }
+
     /// Creates a TypeError when `next()` receives a non-iterator.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not an iterator`

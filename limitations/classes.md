@@ -206,6 +206,10 @@ e.g. return a `dict` of the fields.
   a `StopIteration` raised anywhere inside it ends the iteration — including one
   that propagates out of a nested call, where CPython's PEP 479 protections
   apply only to generators, which Monty does not have.
+- **A `__contains__` returning a user instance is always `True`.** The result is
+  coerced by Monty's truthiness, which reports every instance as truthy (see
+  above), where CPython's `PyObject_IsTrue` consults the returned object's
+  `__bool__`/`__len__`. Every other return type coerces as CPython does.
 - Attribute-access hooks are **never** dispatched: `__getattr__`,
   `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
   attribute always raises the default `AttributeError` even when the class

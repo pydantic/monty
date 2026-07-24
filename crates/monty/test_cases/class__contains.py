@@ -58,6 +58,49 @@ assert 1 not in NoneContains()
 assert isinstance(1 in NoneContains(), bool)
 
 
+class EmptyContainer:
+    def __contains__(self, item):
+        return []
+
+
+assert 1 not in EmptyContainer()
+
+
+# === __contains__ = None opts out of `in` entirely ===
+# The None is never called, and — unlike an absent __contains__ — there is no
+# fallback to iteration, so a class defining __iter__ too still raises.
+class OptOut:
+    __contains__ = None
+
+
+try:
+    1 in OptOut()
+    assert False, 'expected TypeError for an opted-out __contains__'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not a container"
+
+
+class OptOutIterable:
+    def __iter__(self):
+        return iter([1, 2])
+
+    __contains__ = None
+
+
+try:
+    1 in OptOutIterable()
+    assert False, 'expected TypeError rather than a fallback to iteration'
+except TypeError as e:
+    assert str(e) == "'OptOutIterable' object is not a container"
+try:
+    1 not in OptOutIterable()
+    assert False, 'expected TypeError from `not in` as well'
+except TypeError as e:
+    assert str(e) == "'OptOutIterable' object is not a container"
+# iteration itself is unaffected — only `in` is opted out
+assert list(OptOutIterable()) == [1, 2]
+
+
 # === __contains__ receives the item, and self when it is a plain function ===
 class Recorder:
     def __init__(self):

@@ -235,6 +235,80 @@ except TypeError as e:
     assert str(e) == 'can only join an iterable'
 
 
+# === __iter__ = None opts out of the protocol ===
+# The None is never called: every site reports not-iterable, exactly as if
+# __iter__ were absent. The two unpacking sites keep the plain message rather
+# than their own wording, because the slot is filled (CPython's slot_tp_iter).
+class OptOut:
+    __iter__ = None
+
+
+try:
+    iter(OptOut())
+    assert False, 'expected TypeError for iter() of an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    list(OptOut())
+    assert False, 'expected TypeError for list() of an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    for _x in OptOut():
+        pass
+    assert False, 'expected TypeError for a for loop over an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    sorted(OptOut())
+    assert False, 'expected TypeError for sorted() of an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    _p, _q = OptOut()
+    assert False, 'expected TypeError for unpacking an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    _head, *_tail = OptOut()
+    assert False, 'expected TypeError for starred unpacking of an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    [*OptOut()]
+    assert False, 'expected TypeError for `*` unpack of an opted-out class'
+except TypeError as e:
+    assert str(e) == "'OptOut' object is not iterable"
+try:
+    ''.join(OptOut())
+    assert False, 'expected TypeError for join of an opted-out class'
+except TypeError as e:
+    assert str(e) == 'can only join an iterable'
+try:
+    2 in OptOut()
+    assert False, 'expected TypeError for `in` on an opted-out class'
+except TypeError as e:
+    assert str(e) == "argument of type 'OptOut' is not a container or iterable"
+
+
+# === __next__ = None is not an opt-out ===
+# Only __iter__ (and __contains__) treat None as absent, so this class stays an
+# iterator and the None is reached and called.
+class NoneNext:
+    def __iter__(self):
+        return self
+
+    __next__ = None
+
+
+assert iter(NoneNext()) is not None
+try:
+    list(NoneNext())
+    assert False, 'expected TypeError from calling a None __next__'
+except TypeError as e:
+    assert str(e) == "'NoneType' object is not callable"
+
+
 # === exceptions from the dunders propagate unchanged ===
 class BoomIter:
     def __iter__(self):

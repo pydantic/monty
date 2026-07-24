@@ -1607,10 +1607,10 @@ impl Value {
                         None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
                         None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
                     },
-                    // Any iterator is consumed until the item is found. Asking
-                    // `is_iterator()` covers the dedicated iterator types rather
-                    // than naming each one here.
-                    value if value.py_type(vm).is_iterator() => self.contains_by_iteration(item, vm),
+                    // Everything else with no `__contains__` of its own — the
+                    // iterators, and any future iterable heap type — is consumed
+                    // by iteration, as CPython falls back to `tp_iter`.
+                    _ if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
                     _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
                 }
             }
