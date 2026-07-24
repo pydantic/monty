@@ -104,6 +104,56 @@ len(result)
     );
 }
 
+/// Cycles through `callable_iterator` / `list_iterator` must be collected even
+/// when the iterator is the last external reference dropped.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_iterator_cycles_rooted_by_the_iterator() {
+    let code = r"
+class Src:
+    def step(self):
+        return 1
+
+roots = []
+for i in range(2000):
+    o = Src()
+    it = iter(o.step, 0)
+    o.it = it         # cycle: instance -> attrs -> callable_iterator -> bound method
+    roots.append(it)  # ... rooted ONLY through the iterator
+
+    a = []
+    li = iter(a)
+    a.append(li)      # cycle: list -> list_iterator
+    roots.append(li)  # ... likewise rooted only through the iterator
+
+# Dropping `roots` decrements every cycle member exactly once, and the only
+# member holding a surviving refcount at that point is the iterator.
+roots = None
+
+# Churn so the collector keeps firing afterwards; the cycles above must be
+# reclaimed by one of these passes.
+for i in range(2000):
+    d = {}
+    d['self'] = d
+
+result = 'done'
+result
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Small interval so a collection fires while the cycles are still rooted,
+    // clearing the `Purple` flags earlier decrements left on the other members.
+    let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(500));
+    let output = ex.run_ref_counts_with_tracker(vec![], tracker).expect("should succeed");
+
+    // 7 survive here; untracked iterators leak the 4000 cycles instead (~9995).
+    assert!(
+        output.heap_count < 20,
+        "GC should collect iterator-rooted cycles: {} heap objects (expected < 20)",
+        output.heap_count
+    );
+}
+
 /// Test that GC properly collects self-referencing list cycles.
 ///
 /// Each iteration's `a.append(a)` produces a self-referencing list; the next

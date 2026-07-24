@@ -171,37 +171,53 @@ impl HeapData {
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
     /// to avoid triggering unnecessary GC cycles.
+    ///
+    /// Matched exhaustively so new variants must choose.
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::List(_)
-                | Self::Tuple(_)
-                | Self::NamedTuple(_)
-                | Self::Dict(_)
-                | Self::DictKeysView(_)
-                | Self::DictItemsView(_)
-                | Self::DictValuesView(_)
-                | Self::Set(_)
-                | Self::FrozenSet(_)
-                | Self::Closure(_)
-                | Self::FunctionDefaults(_)
-                | Self::Cell(_)
-                | Self::Dataclass(_)
-                | Self::Class(_)
-                | Self::Instance(_)
-                | Self::BoundMethod(_)
-                | Self::Iter(_)
-                | Self::Module(_)
-                | Self::Coroutine(_)
-                | Self::GatherFuture(_)
-                | Self::ExternalFuture(_)
-        )
-        // `OpenFile` is deliberately *not* listed here: its single heap
-        // reference (`buffer`) only ever points to `Str` / `Bytes`, neither of
-        // which is GC-tracked, so an `OpenFile` cannot participate in a
-        // reference cycle. Add it back if `OpenFile` ever gains a field that
-        // can hold a container value (e.g. a user-provided callback).
+            | Self::Tuple(_)
+            | Self::NamedTuple(_)
+            | Self::Dict(_)
+            | Self::DictKeysView(_)
+            | Self::DictItemsView(_)
+            | Self::DictValuesView(_)
+            | Self::Set(_)
+            | Self::FrozenSet(_)
+            | Self::Closure(_)
+            | Self::FunctionDefaults(_)
+            | Self::Cell(_)
+            | Self::Dataclass(_)
+            | Self::Class(_)
+            | Self::Instance(_)
+            | Self::BoundMethod(_)
+            | Self::Iter(_)
+            | Self::ListIterator(_)
+            | Self::CallableIterator(_)
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_)
+            | Self::ExternalFuture(_) => true,
+            // Leaf types, plus three whose heap refs can only point at leaves and so
+            // cannot close a cycle: `OpenFile` (→ Str/Bytes), `ReMatch` (→ Str),
+            // `DateTime` (→ TimeZone). Move up if any gains a container-valued field.
+            Self::Str(_)
+            | Self::Bytes(_)
+            | Self::Range(_)
+            | Self::Slice(_)
+            | Self::Exception(_)
+            | Self::LongInt(_)
+            | Self::Path(_)
+            | Self::OpenFile(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_)
+            | Self::ExtFunction(_)
+            | Self::Date(_)
+            | Self::DateTime(_)
+            | Self::TimeDelta(_)
+            | Self::TimeZone(_) => false,
+        }
     }
 
     /// Whether calling a `Ref` to this heap data would succeed at dispatch.
