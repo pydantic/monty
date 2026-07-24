@@ -42,6 +42,13 @@ fn dump_header_rejects_incompatible_data() {
         postcard::Error::DeserializeBadEncoding
     );
 
+    let mut trailing_data = bytes.clone();
+    trailing_data.push(0);
+    assert_eq!(
+        MontyRun::load(&trailing_data).unwrap_err(),
+        postcard::Error::DeserializeBadEncoding
+    );
+
     let mut wrong_kind = bytes;
     wrong_kind[8] = 2;
     assert_eq!(

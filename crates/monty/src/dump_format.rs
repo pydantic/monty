@@ -47,7 +47,12 @@ pub(crate) fn load<T: DeserializeOwned>(bytes: &[u8], kind: DumpKind) -> Result<
     if &header[..MAGIC.len()] != MAGIC || version != VERSION || header[HEADER_LEN - 1] != kind as u8 {
         Err(postcard::Error::DeserializeBadEncoding)
     } else {
-        postcard::from_bytes(&bytes[HEADER_LEN..])
+        let (value, remainder) = postcard::take_from_bytes(&bytes[HEADER_LEN..])?;
+        if remainder.is_empty() {
+            Ok(value)
+        } else {
+            Err(postcard::Error::DeserializeBadEncoding)
+        }
     }
 }
 
