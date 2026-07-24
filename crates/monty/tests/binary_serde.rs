@@ -28,7 +28,7 @@ fn monty_run_dump_load_simple() {
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
-    let result = loaded.run_dft_limits(vec![]).unwrap();
+    let result = loaded.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(3));
 }
 
@@ -46,7 +46,7 @@ fn monty_run_dump_load_with_inputs() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     let result = loaded
-        .run_dft_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
+        .run_no_limits(vec![MontyObject::Int(10), MontyObject::Int(5)])
         .unwrap();
     assert_eq!(result, MontyObject::Int(20));
 }
@@ -60,7 +60,7 @@ fn monty_run_dump_load_preserves_code() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     assert_eq!(loaded.code(), code);
-    let result = loaded.run_dft_limits(vec![]).unwrap();
+    let result = loaded.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(42));
 }
 
@@ -84,7 +84,7 @@ result
     let bytes = runner.dump().unwrap();
     let loaded = MontyRun::load(&bytes).unwrap();
 
-    let result = loaded.run_dft_limits(vec![]).unwrap();
+    let result = loaded.run_no_limits(vec![]).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
     let expected = MontyObject::List(vec![
         MontyObject::Int(0),
@@ -115,11 +115,11 @@ fn monty_run_dump_load_multiple_runs() {
     let loaded = MontyRun::load(&bytes).unwrap();
 
     assert_eq!(
-        loaded.run_dft_limits(vec![MontyObject::Int(5)]).unwrap(),
+        loaded.run_no_limits(vec![MontyObject::Int(5)]).unwrap(),
         MontyObject::Int(10)
     );
     assert_eq!(
-        loaded.run_dft_limits(vec![MontyObject::Int(21)]).unwrap(),
+        loaded.run_no_limits(vec![MontyObject::Int(21)]).unwrap(),
         MontyObject::Int(42)
     );
 }

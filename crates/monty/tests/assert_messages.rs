@@ -13,7 +13,7 @@ use monty_types::{
 /// Runs `code` and returns the exception it raises.
 fn get_err(code: &str) -> MontyException {
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should compile");
-    run.run_dft_limits(vec![]).expect_err("expected an exception")
+    run.run_no_limits(vec![]).expect_err("expected an exception")
 }
 
 /// Runs `code` and returns the failed assert's `AssertionError` message.
@@ -116,7 +116,7 @@ assert 2 == 2, msg()
 len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_dft_limits(vec![]).unwrap();
+    let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(0));
 }
 
@@ -132,7 +132,7 @@ for _ in range(100):
 len(xs)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_dft_limits(vec![]).unwrap();
+    let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
 
@@ -150,7 +150,7 @@ except AssertionError:
 len(calls)
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_dft_limits(vec![]).unwrap();
+    let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::Int(1));
 }
 
@@ -164,7 +164,7 @@ except AssertionError as e:
 r
 ";
     let run = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = run.run_dft_limits(vec![]).unwrap();
+    let result = run.run_no_limits(vec![]).unwrap();
     assert_eq!(result, MontyObject::String("assert 1 == 2".into()));
 }
 
@@ -245,7 +245,7 @@ fn custom_truncation_limit() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10),
     };
     let run = MontyRun::new("assert list(range(200)) == []".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_snapshot!(err.message().unwrap(), @"assert [0, 1, 2, … == []");
 
@@ -254,7 +254,7 @@ fn custom_truncation_limit() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(10_000),
     };
     let run = MontyRun::new("assert list(range(50)) == []".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     let msg = err.message().unwrap();
     assert!(msg.ends_with("48, 49] == []"), "{msg}");
 }
@@ -289,7 +289,7 @@ fn truncation_cuts_on_char_boundaries() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(5),
     };
     let run = MontyRun::new("assert '日本語です' == ''".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_snapshot!(err.message().unwrap(), @"assert '日… == ''");
 }
 
@@ -340,7 +340,7 @@ fn zero_limit_means_off_not_a_zero_length_repr() {
         assert_message_annotations: AssertMessageAnnotations::from_max_bytes(0),
     };
     let run = MontyRun::new("assert 2 == 5".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 }
@@ -385,7 +385,7 @@ fn opt_out_restores_cpython_behavior() {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert 1 == 2".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.exc_type(), ExcType::AssertionError);
     assert_eq!(err.message(), None);
 
@@ -393,7 +393,7 @@ fn opt_out_restores_cpython_behavior() {
         assert_message_annotations: AssertMessageAnnotations::Off,
     };
     let run = MontyRun::new("assert False, 'msg'".to_owned(), "test.py", vec![], options).unwrap();
-    let err = run.run_dft_limits(vec![]).expect_err("assert should fail");
+    let err = run.run_no_limits(vec![]).expect_err("assert should fail");
     assert_eq!(err.message(), Some("msg"));
 }
 

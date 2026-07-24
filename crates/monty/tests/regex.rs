@@ -15,7 +15,7 @@ use monty_types::CompileOptions;
 /// Helper to run Python code and return the string result.
 fn run(code: &str) -> String {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_dft_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
     let s: String = result.as_ref().try_into().unwrap();
     s
 }

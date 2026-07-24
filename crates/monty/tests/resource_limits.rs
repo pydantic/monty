@@ -533,7 +533,7 @@ len(result)
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
     // Standard run should succeed
-    let result = ex.run_dft_limits(vec![]);
+    let result = ex.run_no_limits(vec![]);
     assert!(result.is_ok(), "standard run should succeed");
 }
 

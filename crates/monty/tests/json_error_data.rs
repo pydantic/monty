@@ -11,7 +11,7 @@ use monty_types::{CompileOptions, JsonErrorData, MontyException};
 fn run_exc(code: &str) -> MontyException {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .run_dft_limits(vec![])
+        .run_no_limits(vec![])
         .unwrap_err()
 }
 

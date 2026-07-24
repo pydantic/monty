@@ -26,7 +26,7 @@ use crate::{
 /// Primary interface for running Monty code.
 ///
 /// `MontyRun` supports two execution modes:
-/// - **Simple execution**: Use `run()` or `run_dft_limits()` to run code to completion
+/// - **Simple execution**: Use `run()` or `run_no_limits()` to run code to completion
 /// - **Iterative execution**: Use `start()` to start execution which will pause at external function calls and
 ///   can be resumed later
 ///
@@ -42,7 +42,7 @@ use crate::{
 ///     CompileOptions::default(),
 /// )
 /// .unwrap();
-/// let result = runner.run_dft_limits(vec![MontyObject::Int(41)]).unwrap();
+/// let result = runner.run_no_limits(vec![MontyObject::Int(41)]).unwrap();
 /// assert_eq!(result, MontyObject::Int(42));
 /// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -114,8 +114,9 @@ impl MontyRun {
         self.executor.run(inputs, resource_tracker, print)
     }
 
-    /// Executes the code to completion with default resource limits, printing to stdout/stderr.
-    pub fn run_dft_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
+    /// Executes the code to completion with no resource limits specified (will use the default),
+    /// printing to stdout/stderr.
+    pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
         self.run(inputs, ResourceTracker::default(), PrintWriter::Stdout)
     }
 

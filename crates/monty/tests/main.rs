@@ -6,11 +6,11 @@ use monty_types::{CompileOptions, MontyObject};
 fn repeat_exec() {
     let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let r = ex.run_dft_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, 3);
 
-    let r = ex.run_dft_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, 3);
 }
@@ -19,11 +19,11 @@ fn repeat_exec() {
 fn test_get_interned_string() {
     let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    let r = ex.run_dft_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, "foobar");
 
-    let r = ex.run_dft_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(vec![]).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, "foobar");
 }
@@ -53,7 +53,7 @@ fn dataclass_method_call_in_standard_mode_errors() {
     )
     .unwrap();
 
-    let err = ex.run_dft_limits(vec![point]).unwrap_err();
+    let err = ex.run_no_limits(vec![point]).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("Method call 'sum' not implemented with standard execution"),
@@ -93,7 +93,7 @@ fn subscript_augassign_matmul_reports_not_supported() {
 fn multiline_preview_mixed_indentation_not_dedented() {
     let code = "if True:\n    class C:\n        x = (1 /\n\t0)";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_dft_limits(vec![]).unwrap_err();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 2, in <module>\n        class C:\n            x = (1 /\n    \t0)\n  File \"test.py\", line 3, in C\n            x = (1 /\n    \t0)\nZeroDivisionError: division by zero"
@@ -117,7 +117,7 @@ fn external_function_as_init_raises_not_implemented() {
     )
     .unwrap();
     let err = ex
-        .run_dft_limits(vec![MontyObject::Function {
+        .run_no_limits(vec![MontyObject::Function {
             name: "ext_fn".to_owned(),
             docstring: None,
         }])
@@ -136,7 +136,7 @@ fn external_function_as_init_raises_not_implemented() {
 fn dynamic_type_with_bases_raises_type_error() {
     let code = "type('A', (int,), {})";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_dft_limits(vec![]).unwrap_err();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (int,), {})\n    ~~~~~~~~~~~~~~~~~~~~~\nTypeError: type() bases are not supported"
@@ -153,7 +153,7 @@ fn dynamic_type_with_bases_raises_type_error() {
 fn dynamic_type_with_non_string_key_raises_type_error() {
     let code = "type('A', (), {1: 'one'})";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let err = ex.run_dft_limits(vec![]).unwrap_err();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
     assert_eq!(
         err.to_string(),
         "Traceback (most recent call last):\n  File \"test.py\", line 1, in <module>\n    type('A', (), {1: 'one'})\n    ~~~~~~~~~~~~~~~~~~~~~~~~~\nTypeError: non-string key (int) in the namespace of class 'A'"
@@ -176,7 +176,7 @@ class Evil:
 lst = [Evil(), 1, 2]
 lst";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_dft_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         result,
         MontyObject::List(vec![
@@ -198,7 +198,7 @@ class Evil:
 d = {'k': Evil(), 'a': 1}
 d";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let result = ex.run_dft_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
     assert_eq!(
         result,
         MontyObject::Dict(

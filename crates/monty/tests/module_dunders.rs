@@ -25,7 +25,7 @@ use monty_types::{CompileOptions, DictPairs, ExcType, MontyObject};
 fn eval(code: &str) -> MontyObject {
     MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .run_dft_limits(vec![])
+        .run_no_limits(vec![])
         .unwrap()
 }
 
@@ -57,7 +57,7 @@ fn loader_raises_name_error() {
     // diverge on type — reading it raises `NameError` like any unbound name.
     let err = MontyRun::new("__loader__".to_owned(), "test.py", vec![], CompileOptions::default())
         .unwrap()
-        .run_dft_limits(vec![])
+        .run_no_limits(vec![])
         .expect_err("expected NameError");
     assert_eq!(err.exc_type(), ExcType::NameError);
     assert_eq!(err.message().unwrap(), "name '__loader__' is not defined");

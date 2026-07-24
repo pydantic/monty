@@ -24,7 +24,7 @@ fn run_with_same_callable_inputs(code: &str) -> MontyObject {
     )
     .unwrap();
     runner
-        .run_dft_limits(vec![
+        .run_no_limits(vec![
             MontyObject::Function {
                 name: "foo".to_owned(),
                 docstring: None,
@@ -97,7 +97,7 @@ fn different_named_callables_remain_distinct() {
     )
     .unwrap();
     let result = runner
-        .run_dft_limits(vec![
+        .run_no_limits(vec![
             MontyObject::Function {
                 name: "foo".to_owned(),
                 docstring: None,
@@ -132,7 +132,7 @@ fn inline_callable_exports_as_function_object() {
     )
     .unwrap();
     let result = runner
-        .run_dft_limits(vec![MontyObject::Function {
+        .run_no_limits(vec![MontyObject::Function {
             name: "foo".to_owned(),
             docstring: None,
         }])
@@ -162,7 +162,7 @@ fn callable_export_stable_across_source_mention() {
         CompileOptions::default(),
     )
     .unwrap()
-    .run_dft_limits(func_input())
+    .run_no_limits(func_input())
     .unwrap();
     let r2 = MontyRun::new(
         "foo = None\nx".to_owned(),
@@ -171,7 +171,7 @@ fn callable_export_stable_across_source_mention() {
         CompileOptions::default(),
     )
     .unwrap()
-    .run_dft_limits(func_input())
+    .run_no_limits(func_input())
     .unwrap();
     assert_eq!(r1, r2);
 }

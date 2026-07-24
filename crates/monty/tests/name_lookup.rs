@@ -181,7 +181,7 @@ fn undefined_raises_name_error() {
     );
 }
 
-/// In non-iterative mode (`run_dft_limits`), undefined globals automatically raise `NameError`
+/// In non-iterative mode (`run_no_limits`), undefined globals automatically raise `NameError`
 /// without yielding to the host.
 #[test]
 fn standard_mode_raises_name_error() {
@@ -192,7 +192,7 @@ fn standard_mode_raises_name_error() {
         CompileOptions::default(),
     )
     .unwrap();
-    let err = runner.run_dft_limits(vec![]).unwrap_err();
+    let err = runner.run_no_limits(vec![]).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("NameError: name 'unknown_fn' is not defined"),
@@ -600,6 +600,6 @@ sorted([1], key=lambda x: x+1)
         "
     .to_owned();
     let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
-    let value = runner.run_dft_limits(vec![]).unwrap();
+    let value = runner.run_no_limits(vec![]).unwrap();
     assert_eq!(value, MontyObject::List(vec![MontyObject::Int(1)]));
 }

@@ -12,7 +12,7 @@ fn non_ascii_earlier_line_does_not_shift_column() {
     // `undefined_name`; the correct column is 1 (start of line 2).
     let code = "x = 'é'\nundefined_name".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
-    let err = run.run_dft_limits(vec![]).expect_err("should raise NameError");
+    let err = run.run_no_limits(vec![]).expect_err("should raise NameError");
     assert_eq!(err.exc_type(), ExcType::NameError);
     let frame = err.traceback().last().expect("traceback has at least one frame");
 
@@ -27,7 +27,7 @@ fn non_ascii_char_column_location() {
     // the nameerror should report on column 7, even though the 'é' is two UTF-8 bytes
     let code = "'é' + undefined_name".to_string();
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("should parse");
-    let err = run.run_dft_limits(vec![]).expect_err("should raise NameError");
+    let err = run.run_no_limits(vec![]).expect_err("should raise NameError");
     assert_eq!(err.exc_type(), ExcType::NameError);
     let frame = err.traceback().last().expect("traceback has at least one frame");
 

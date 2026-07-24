@@ -497,7 +497,7 @@ fn deeply_nested_boolean_or_exceed_limit() {
 /// Helper to run code and get the exception from a runtime error.
 fn run_and_get_err(code: &str) -> MontyException {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).expect("should parse");
-    runner.run_dft_limits(vec![]).expect_err("expected runtime error")
+    runner.run_no_limits(vec![]).expect_err("expected runtime error")
 }
 
 #[test]
@@ -590,7 +590,7 @@ fn long_source_line_does_not_overflow_column() {
     let code = format!("x = \"{}\"\nassert len(x) == 65530", "a".repeat(65530));
     let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
         .expect("long line should parse without panicking");
-    let result = run.run_dft_limits(vec![]);
+    let result = run.run_no_limits(vec![]);
     assert!(result.is_ok(), "long line should run: {result:?}");
 }
 

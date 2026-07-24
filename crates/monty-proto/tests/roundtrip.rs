@@ -203,7 +203,7 @@ fn repr_and_cycle_round_trip() {
         CompileOptions::default(),
     )
     .unwrap();
-    let cyclic = run.run_dft_limits(vec![]).unwrap();
+    let cyclic = run.run_no_limits(vec![]).unwrap();
     assert_value_round_trip(&cyclic);
     assert!(matches!(&cyclic, MontyObject::List(items) if matches!(items[0], MontyObject::Cycle(_, _))));
 }
