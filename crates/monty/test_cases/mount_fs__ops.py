@@ -180,17 +180,22 @@ assert sorted(listing) == ['one.txt', 'sub', 'two.txt']
 # empty directory
 assert os.listdir(root / 'os_dir' / 'sub') == []
 
-# os.listdir errors surface the host exception
+# os.listdir errors surface the host exception. Message text is asserted
+# only off-Windows: Windows CPython uses WinError wording ([WinError 3] /
+# [WinError 267] / ...), while Monty keeps the POSIX messages on every host.
+posix_messages = sys.platform != 'win32'
 try:
     os.listdir(root / 'os_dir' / 'missing')
     assert False, 'expected FileNotFoundError'
 except FileNotFoundError as e:
-    assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'missing'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'missing'}'"
 try:
     os.listdir(root / 'os_dir' / 'one.txt')
     assert False, 'expected NotADirectoryError'
 except NotADirectoryError as e:
-    assert str(e) == f"[Errno 20] Not a directory: '{root / 'os_dir' / 'one.txt'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 20] Not a directory: '{root / 'os_dir' / 'one.txt'}'"
 
 # os.stat — same stat_result as Path.stat(), defaulted kwargs accepted
 st = os.stat(root / 'readonly.txt')
@@ -201,14 +206,16 @@ try:
     os.stat(root / 'os_dir' / 'missing')
     assert False, 'expected FileNotFoundError'
 except FileNotFoundError as e:
-    assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'missing'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'missing'}'"
 
 # os.mkdir on an existing directory
 try:
     os.mkdir(root / 'os_dir')
     assert False, 'expected FileExistsError'
 except FileExistsError as e:
-    assert str(e) == f"[Errno 17] File exists: '{root / 'os_dir'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 17] File exists: '{root / 'os_dir'}'"
 
 # os.makedirs
 os.makedirs(root / 'os_deep' / 'x' / 'y')
@@ -218,7 +225,8 @@ try:
     os.makedirs(root / 'os_deep' / 'x' / 'y')
     assert False, 'expected FileExistsError'
 except FileExistsError as e:
-    assert str(e) == f"[Errno 17] File exists: '{root / 'os_deep' / 'x' / 'y'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 17] File exists: '{root / 'os_deep' / 'x' / 'y'}'"
 
 # os.remove / os.unlink
 os.remove(root / 'os_dir' / 'one.txt')
@@ -229,7 +237,8 @@ try:
     os.remove(root / 'os_dir' / 'one.txt')
     assert False, 'expected FileNotFoundError'
 except FileNotFoundError as e:
-    assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'one.txt'}'"
+    if posix_messages:
+        assert str(e) == f"[Errno 2] No such file or directory: '{root / 'os_dir' / 'one.txt'}'"
 
 # os.rmdir
 os.rmdir(root / 'os_dir' / 'sub')

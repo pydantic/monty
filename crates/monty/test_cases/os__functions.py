@@ -2,23 +2,30 @@
 # raise before any OS access. Filesystem behavior is covered by
 # mount_fs__ops.py; getenv/environ by import__os.py / os__environ.py.
 import os
+import sys
 from pathlib import Path
 
 # === constants ===
-assert os.sep == '/'
-assert os.altsep is None
-assert os.extsep == '.'
-assert os.curdir == '.'
-assert os.pardir == '..'
-assert os.linesep == '\n'
-assert os.name == 'posix'
-assert os.devnull == '/dev/null'
+# Monty always presents the POSIX values regardless of host OS
+# (sys.platform == 'monty'); Windows CPython differs (sep='\\',
+# linesep='\r\n', name='nt', ...), so skip the asserts there.
+if sys.platform != 'win32':
+    assert os.sep == '/'
+    assert os.altsep is None
+    assert os.extsep == '.'
+    assert os.curdir == '.'
+    assert os.pardir == '..'
+    assert os.linesep == '\n'
+    assert os.name == 'posix'
+    assert os.devnull == '/dev/null'
+    # str(Path('/x/y')) is '\\x\\y' on Windows CPython, so this stays guarded.
+    assert os.fspath(Path('/x/y')) == '/x/y'
 
 # === fspath ===
 assert os.fspath('abc') == 'abc'
 assert os.fspath('') == ''
 assert os.fspath(b'abc') == b'abc'
-assert os.fspath(Path('/x/y')) == '/x/y'
+assert os.fspath(Path('abc')) == 'abc'
 assert os.fspath(path='kw') == 'kw'
 
 try:
