@@ -708,6 +708,20 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Creates the fd converter's OverflowError for fds above C `int` range:
+    /// `fd is greater than maximum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_maximum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is greater than maximum").into()
+    }
+
+    /// Creates the fd converter's OverflowError for fds below C `int` range:
+    /// `fd is less than minimum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_minimum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is less than minimum").into()
+    }
+
     /// Creates the NotImplementedError CPython raises when an `os` argument is
     /// unsupported on the platform (`argument_unavailable_error`):
     /// `{func}: {arg} unavailable on this platform`, or just

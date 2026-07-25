@@ -17,6 +17,7 @@
 //! platforms without them — Monty never supports fd-relative paths.
 
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, ResourceError};
+use num_bigint::Sign;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -164,10 +165,11 @@ struct ListdirArgs {
 
 /// Implementation of `os.listdir(path=None)`.
 ///
-/// Reuses the `Iterdir` OS call (host returns full child paths) and arms
-/// [`PendingOsEffect::ListdirNames`] so the resume reduces them to bare entry
-/// names. `None` maps to `'.'` like CPython; Monty has no working directory,
-/// so hosts typically reject the relative default.
+/// Reuses the `Iterdir` OS call (host returns full child paths) with a
+/// [`PendingOsEffect::ListdirNames`] — armed at dispatch, not here — so the
+/// resume reduces them to bare entry names. `None` maps to `'.'` like
+/// CPython; Monty has no working directory, so hosts typically reject the
+/// relative default.
 fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let ListdirArgs { path } = ListdirArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
@@ -182,8 +184,10 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
             vm,
         )?
     };
-    vm.pending_os_effect = Some(PendingOsEffect::ListdirNames);
-    Ok(CallResult::OsCall(OsFunctionCall::Iterdir(path)))
+    Ok(CallResult::OsCallWithEffect {
+        call: OsFunctionCall::Iterdir(path),
+        effect: PendingOsEffect::ListdirNames,
+    })
 }
 
 /// Reduces a host `Iterdir` result (list of virtual child paths) to the list
@@ -515,22 +519,52 @@ fn check_dir_fd(value: &Value, vm: &VM<'_>) -> RunResult<()> {
 }
 
 /// Type-checks a `dir_fd`-shaped value like CPython's `dir_fd_converter`
-/// (`argument should be integer or None, not {type}`), returning whether a
-/// (necessarily unsupported) fd was actually supplied.
+/// (`argument should be integer or None, not {type}`; out-of-C-int-range ints
+/// raise the fd `OverflowError`), returning whether a (necessarily
+/// unsupported) fd was actually supplied.
 fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
-    match value.py_type_heap(vm.heap) {
-        Type::NoneType => Ok(false),
-        Type::Int | Type::Bool => Ok(true),
-        other => Err(ExcType::type_error_dir_fd(&other.name(vm.heap, vm.interns))),
+    match value {
+        Value::None => Ok(false),
+        Value::Bool(_) => Ok(true),
+        Value::Int(fd) => match i32::try_from(*fd) {
+            Ok(_) => Ok(true),
+            Err(_) if *fd > 0 => Err(ExcType::overflow_fd_maximum()),
+            Err(_) => Err(ExcType::overflow_fd_minimum()),
+        },
+        _ => match value.py_type_heap(vm.heap) {
+            // Big ints (`LongInt`) are outside i64, so far outside C int.
+            Type::Int if is_negative_big_int(value, vm) => Err(ExcType::overflow_fd_minimum()),
+            Type::Int => Err(ExcType::overflow_fd_maximum()),
+            other => Err(ExcType::type_error_dir_fd(&other.name(vm.heap, vm.interns))),
+        },
     }
 }
 
-/// Validates a `mode` argument as int-like, raising CPython's
-/// `'{type}' object cannot be interpreted as an integer`. The value itself is
-/// ignored — Monty does not model POSIX permission bits.
+/// Sign of an int-typed value that is not a plain `Value::Int` (i.e. a big
+/// int) — distinguishes the two fd `OverflowError` messages.
+fn is_negative_big_int(value: &Value, vm: &VM<'_>) -> bool {
+    match value {
+        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::LongInt(li) => li.is_negative(),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Validates a `mode` argument as an int fitting C `int`, raising CPython's
+/// `'{type}' object cannot be interpreted as an integer` / the C-int
+/// `OverflowError`. The value itself is ignored — Monty does not model POSIX
+/// permission bits.
 fn check_mode(value: &Value, vm: &VM<'_>) -> RunResult<()> {
-    match value.py_type_heap(vm.heap) {
-        Type::Int | Type::Bool => Ok(()),
-        other => Err(ExcType::type_error_not_integer(&other.name(vm.heap, vm.interns))),
+    match value {
+        Value::Bool(_) => Ok(()),
+        Value::Int(mode) => i32::try_from(*mode).map(|_| ()).map_err(|_| ExcType::overflow_c_int()),
+        _ => match value.py_type_heap(vm.heap) {
+            // Big ints (`LongInt`) are outside i64, so far outside C int.
+            Type::Int => Err(ExcType::overflow_c_int()),
+            other => Err(ExcType::type_error_not_integer(&other.name(vm.heap, vm.interns))),
+        },
     }
 }

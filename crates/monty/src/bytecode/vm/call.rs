@@ -20,6 +20,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
+    os_dispatch::PendingOsEffect,
     types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };
@@ -59,23 +60,19 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
-    /// OS call whose result must be stored into a heap [`OpenFile`](crate::types::OpenFile)'s
-    /// buffer rather than pushed onto the operand stack.
+    /// OS call whose result must be post-processed on resume via a
+    /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
     ///
-    /// Used by `read(N)` / `readline()` / `readlines()` / `seek()` on the first
-    /// operation that needs the full file content. The host services the OS
-    /// call (always `ReadText` or `ReadBytes` against the file referenced by
-    /// `file_id`); on resume the VM stores the returned content into
-    /// `OpenFile::buffer` and then consumes the file's `pending_read`
-    /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
-    /// the call's return value.
-    ///
-    /// The OS-call payload is a [`OsFunctionCall::ReadText`] /
-    /// [`OsFunctionCall::ReadBytes`] (the only legal variants here) carrying
-    /// the file's virtual path; the per-call slice spec lives on the
-    /// `OpenFile` itself (in `pending_read`), so this variant only needs to
-    /// carry the typed call plus the file id used to look up the buffer slot.
-    OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
+    /// Used by buffered file reads (`BufferStore`), buffered writes
+    /// (`WritePosition`), and `os.listdir` (`ListdirNames`). Carrying the
+    /// effect *in* the result — armed on the VM only at dispatch — guarantees
+    /// a call that is rejected and dropped without dispatch (e.g. inside a
+    /// synchronous nested-call context, see `unsupported_call_result`) cannot
+    /// leave a stale effect behind to corrupt the next OS call's resume.
+    OsCallWithEffect {
+        call: OsFunctionCall,
+        effect: PendingOsEffect,
+    },
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
@@ -87,12 +84,17 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::FramePushed => {}
-            Self::OsCallStoreBuffer { call, file_id } => {
+            Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
-                // Single pin (see `inc_ref_for_pending_oscall`): release one ref
-                // if the call is discarded before dispatch routes it to a
-                // `pending_os_effect`.
-                heap.heap_mut().dec_ref(file_id);
+                match effect {
+                    // Single pin (see `inc_ref_for_pending_oscall`): release
+                    // one ref if the call is discarded before dispatch arms
+                    // the effect on `pending_os_effect`.
+                    PendingOsEffect::BufferStore { file_id } | PendingOsEffect::WritePosition { file_id, .. } => {
+                        heap.heap_mut().dec_ref(file_id);
+                    }
+                    PendingOsEffect::ListdirNames => {}
+                }
             }
         }
     }
@@ -426,7 +428,7 @@ impl VM<'_> {
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 function_call.name()
             )),
-            CallResult::OsCallStoreBuffer { call, .. } => ExcType::not_implemented(format!(
+            CallResult::OsCallWithEffect { call, .. } => ExcType::not_implemented(format!(
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 call.name()
             )),

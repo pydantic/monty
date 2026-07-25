@@ -513,7 +513,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     ///
     /// If the buffer is already loaded, computes the slice synchronously.
     /// Otherwise records the spec on the file and yields a
-    /// [`CallResult::OsCallStoreBuffer`] so the host loads the full content
+    /// [`CallResult::OsCallWithEffect`] so the host loads the full content
     /// and the resume hook completes the operation.
     fn read_with_spec(&mut self, self_id: HeapId, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
         let (binary, buffer_loaded) = {
@@ -548,7 +548,10 @@ impl<'h> HeapRead<'h, OpenFile> {
             OsFunctionCall::ReadText(path)
         };
         inc_ref_for_pending_oscall(vm, self_id);
-        Ok(CallResult::OsCallStoreBuffer { call, file_id: self_id })
+        Ok(CallResult::OsCallWithEffect {
+            call,
+            effect: PendingOsEffect::BufferStore { file_id: self_id },
+        })
     }
 
     /// Implements `file.write(data)` as a one-shot OS write or append.
@@ -606,12 +609,14 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         inc_ref_for_pending_oscall(vm, self_id);
-        vm.pending_os_effect = Some(PendingOsEffect::WritePosition {
+        // The effect travels with the call and is armed at dispatch, so a
+        // call rejected before dispatch cannot leave stale write state.
+        let effect = PendingOsEffect::WritePosition {
             file_id: self_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
-        });
-        Ok(CallResult::OsCall(call))
+        };
+        Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -710,11 +715,12 @@ impl OpenFile {
 ///
 /// The buffered read/write OS calls carry only the file's path, never a
 /// `Value::Ref` to the file object, so there is no argument ref to release at
-/// the host boundary. The single pin is owned by the VM's `pending_os_effect`
-/// slot and released by exactly one site per path: [`apply_buffer_store`] /
-/// [`apply_write_position`] (success), `resume_with_exception` (host raised),
-/// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before
-/// dispatch).
+/// the host boundary. The single pin travels in the returned
+/// `CallResult::OsCallWithEffect` until dispatch arms it on the VM's
+/// `pending_os_effect` slot, and is released by exactly one site per path:
+/// [`apply_buffer_store`] / [`apply_write_position`] (success),
+/// `resume_with_exception` (host raised), `VM::drop` (abandoned), or
+/// `CallResult`'s drop (call discarded before dispatch).
 fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
     vm.heap.inc_ref(file_id);
 }
@@ -778,7 +784,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId
 /// `readlines()` / `seek()`) should return.
 ///
 /// Called by the VM resume path when the paused OS call was emitted via
-/// [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer).
+/// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
 /// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming

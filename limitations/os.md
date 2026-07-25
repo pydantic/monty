@@ -28,7 +28,13 @@ whether each call is permitted.
 
 - **No file descriptors.** Paths must be `str` or `pathlib.Path`. `bytes`
   paths and integer fds raise the path-converter `TypeError` (whose wording
-  still lists `bytes`/`integer` for message parity with CPython).
+  still lists `bytes`/`integer` for message parity with CPython). The
+  `os.listdir` wording always includes `integer` — POSIX CPython's phrasing —
+  even though Windows CPython omits it (no fd-based listdir there).
+- **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
+  accepts only `str`, `bytes` (fspath only), and `pathlib.Path` — a
+  user-defined class implementing `__fspath__` raises `TypeError` instead of
+  having its method called.
 - **`dir_fd` keywords** (`dir_fd`, `src_dir_fd`, `dst_dir_fd`) are parsed
   for signature parity but any non-`None` value raises the
   `NotImplementedError` CPython uses on platforms without them

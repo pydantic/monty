@@ -662,15 +662,18 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         // Same pivot as `C`, but named: `_PyArg_UnpackKeywords` says "exactly"
         // when every positional param is required (`os.stat`), "at most" when
         // some have defaults (`os.mkdir`), and falls back to the total-count
-        // wording once the overflow exceeds positional + kw-only slots.
+        // wording once the overflow exceeds positional + kw-only slots. The
+        // positional wordings count only positionals in "(M given)"
+        // (`stat('.', 1, dir_fd=None)` reports 2, not 3); the total-count
+        // fallback counts everything — both verified against CPython 3.14.
         ErrorFamily::CNamed { positional_pivot: true } => {
             let total = n_pos + n_kw;
             if total > spec.params.len() {
                 ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total)
             } else if spec.n_required_positional == spec.n_positional {
-                ExcType::type_error_named_exactly_positional(spec.func_name, max, total)
+                ExcType::type_error_named_exactly_positional(spec.func_name, max, n_pos)
             } else {
-                ExcType::type_error_named_at_most_positional(spec.func_name, max, total)
+                ExcType::type_error_named_at_most_positional(spec.func_name, max, n_pos)
             }
         }
         ErrorFamily::Clinic => ExcType::type_error_at_most(spec.func_name, max, n_pos + n_kw),

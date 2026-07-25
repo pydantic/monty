@@ -173,12 +173,12 @@ macro_rules! handle_call_result {
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall { function_call, call_id });
             }
-            Ok(CallResult::OsCallStoreBuffer { call, file_id }) => {
+            Ok(CallResult::OsCallWithEffect { call, effect }) => {
                 let call_id = $self.allocate_call_id();
-                // Record the pending-buffer-store hook for this call so the
-                // matching resume routes the OS result into the file's buffer
-                // instead of pushing it onto the operand stack.
-                $self.pending_os_effect = Some(PendingOsEffect::BufferStore { file_id });
+                // Arm the resume effect only here, at dispatch — a rejected
+                // and dropped `CallResult` must never leave a stale effect
+                // (see `CallResult::OsCallWithEffect`).
+                $self.pending_os_effect = Some(effect);
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {

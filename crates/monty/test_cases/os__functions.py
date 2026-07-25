@@ -54,7 +54,12 @@ try:
     os.listdir(1.5)
     assert False, 'expected TypeError'
 except TypeError as e:
-    assert str(e) == 'listdir: path should be string, bytes, os.PathLike, integer or None, not float'
+    # Windows CPython has no fd-based listdir, so its converter message omits
+    # 'integer'; Monty always uses the POSIX wording.
+    if sys.platform == 'win32':
+        assert str(e) == 'listdir: path should be string, bytes, os.PathLike or None, not float'
+    else:
+        assert str(e) == 'listdir: path should be string, bytes, os.PathLike, integer or None, not float'
 try:
     os.listdir('.', '.')
     assert False, 'expected TypeError'
@@ -103,6 +108,22 @@ try:
 except TypeError as e:
     assert str(e) == 'stat() takes exactly 1 positional argument (2 given)'
 try:
+    # the "(N given)" figure counts positionals only, not keywords
+    os.stat('.', 1, dir_fd=None)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'stat() takes exactly 1 positional argument (2 given)'
+try:
+    os.stat('.', dir_fd=2**100)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is greater than maximum'
+try:
+    os.stat('.', dir_fd=-(2**100))
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is less than minimum'
+try:
     os.stat('.', 1, 2, 3)
     assert False, 'expected TypeError'
 except TypeError as e:
@@ -129,6 +150,17 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'str' object cannot be interpreted as an integer"
+try:
+    # mode is converted through C int before any filesystem access
+    os.mkdir('zz-should-not-exist', 2**31)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int'
+try:
+    os.mkdir('zz-should-not-exist', 2**100)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int'
 try:
     os.mkdir('a', 1, 2)
     assert False, 'expected TypeError'
@@ -166,6 +198,11 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "'float' object cannot be interpreted as an integer"
+try:
+    os.makedirs('zz-should-not-exist', 2**100)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'Python int too large to convert to C int'
 try:
     os.makedirs('a', wrong=1)
     assert False, 'expected TypeError'
@@ -235,6 +272,16 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'rename() takes exactly 2 positional arguments (3 given)'
+try:
+    os.rename('a', 'b', 'c', src_dir_fd=None)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'rename() takes exactly 2 positional arguments (3 given)'
+try:
+    os.rename('/no-a', '/no-b', src_dir_fd=2**100)
+    assert False, 'expected OverflowError'
+except OverflowError as e:
+    assert str(e) == 'fd is greater than maximum'
 try:
     os.rename('a', 'b', dst='c')
     assert False, 'expected TypeError'

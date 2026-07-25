@@ -727,3 +727,39 @@ fn os_mkdir_dir_fd_not_implemented() {
         "NotImplementedError: dir_fd unavailable on this platform"
     );
 }
+
+#[test]
+fn os_listdir_rejected_in_sync_context_leaves_no_stale_effect() {
+    // Regression: `map()` evaluates its function in a synchronous context
+    // that cannot suspend, so the listdir OsCall is rejected and dropped
+    // undispatched. The `ListdirNames` effect must travel with the dropped
+    // call — if it leaked onto the VM, the next OS call's result (getenv
+    // here) would be mangled by the name reduction.
+    let code = r"
+import os
+try:
+    list(map(os.listdir, ['/mnt']))
+except NotImplementedError:
+    pass
+os.getenv('PROBE')
+";
+    let (func, _, result) = run_oscall_with_result(code, MontyObject::String("value".to_owned()));
+    assert_eq!(func, "os.getenv");
+    assert_eq!(result, MontyObject::String("value".to_owned()));
+}
+
+#[test]
+fn os_mode_and_dir_fd_overflow() {
+    assert_eq!(
+        run_to_error("import os\nos.mkdir('/d', 2**31)"),
+        "OverflowError: Python int too large to convert to C int"
+    );
+    assert_eq!(
+        run_to_error("import os\nos.stat('.', dir_fd=2**100)"),
+        "OverflowError: fd is greater than maximum"
+    );
+    assert_eq!(
+        run_to_error("import os\nos.stat('.', dir_fd=-(2**100))"),
+        "OverflowError: fd is less than minimum"
+    );
+}
