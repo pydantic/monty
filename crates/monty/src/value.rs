@@ -993,7 +993,7 @@ impl<'h> PyTrait<'h> for Value {
                 }
                 _ => Ok(None),
             },
-            // LongInt / LongInt
+            // LongInt / LongInt, or Path concatenation with a heap str/Path operand
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
                 (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
                     if li2.is_zero() {
@@ -1004,7 +1004,7 @@ impl<'h> PyTrait<'h> for Value {
                         Ok(Some(Self::Float(a_f64 / b_f64)))
                     }
                 }
-                _ => Ok(None),
+                _ => path::path_div(self, other, vm.heap, interns),
             },
             // LongInt / Float
             (Self::Ref(id), Self::Float(b)) => {
@@ -1089,15 +1089,8 @@ impl<'h> PyTrait<'h> for Value {
                     Err(ExcType::zero_division().into())
                 }
             }
-            _ => {
-                // Check for Path / (str or Path) - path concatenation
-                if let Self::Ref(id) = self
-                    && matches!(vm.heap.get(*id), HeapData::Path(_))
-                {
-                    return path::path_div(*id, other, vm.heap, interns);
-                }
-                Ok(None)
-            }
+            // Path / str and str / Path (path concatenation), otherwise unsupported
+            _ => path::path_div(self, other, vm.heap, interns),
         }
     }
 
