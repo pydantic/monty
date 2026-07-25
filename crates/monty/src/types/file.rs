@@ -77,6 +77,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    os_dispatch::PendingOsEffect,
     types::str::StringRepr,
     value::{EitherStr, Value},
 };
@@ -106,29 +107,6 @@ pub(crate) enum ReadSpec {
     /// bounds and resolve `SEEK_END`. After the load, `compute_slice` updates
     /// `position`/`eof` and returns the new position as an int.
     Seek { offset: i64, whence: i64 },
-}
-
-/// File-specific work to perform when a paused OS call resumes.
-///
-/// This generalizes the original buffered-read hook: both buffered reads and
-/// writes need to update [`OpenFile`] state only after the host reports a
-/// successful OS operation. Keeping them in one enum avoids adding another VM
-/// hook while preserving retry-safe exception behavior.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingFileEffect {
-    /// Store a full-file read result into the file buffer, then compute the
-    /// pending read/seek slice.
-    BufferStore { file_id: HeapId },
-    /// Advance the file's logical position by the successful write result.
-    WritePosition {
-        /// File whose position is updated.
-        file_id: HeapId,
-        /// Position before the write was dispatched, used to restore state if
-        /// the host raises before returning a count.
-        previous_position: u64,
-        /// Known file length before dispatch, restored on host exception.
-        previous_length: u64,
-    },
 }
 
 pub use monty_types::FileMode;
@@ -628,7 +606,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         inc_ref_for_pending_oscall(vm, self_id);
-        vm.pending_file_effect = Some(PendingFileEffect::WritePosition {
+        vm.pending_os_effect = Some(PendingOsEffect::WritePosition {
             file_id: self_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
@@ -732,7 +710,7 @@ impl OpenFile {
 ///
 /// The buffered read/write OS calls carry only the file's path, never a
 /// `Value::Ref` to the file object, so there is no argument ref to release at
-/// the host boundary. The single pin is owned by the VM's `pending_file_effect`
+/// the host boundary. The single pin is owned by the VM's `pending_os_effect`
 /// slot and released by exactly one site per path: [`apply_buffer_store`] /
 /// [`apply_write_position`] (success), `resume_with_exception` (host raised),
 /// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before

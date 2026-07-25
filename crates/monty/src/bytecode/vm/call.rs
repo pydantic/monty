@@ -91,7 +91,7 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
                 call.drop_with(heap);
                 // Single pin (see `inc_ref_for_pending_oscall`): release one ref
                 // if the call is discarded before dispatch routes it to a
-                // `pending_file_effect`.
+                // `pending_os_effect`.
                 heap.heap_mut().dec_ref(file_id);
             }
         }

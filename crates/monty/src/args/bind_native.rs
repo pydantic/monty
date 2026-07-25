@@ -374,7 +374,12 @@ pub(crate) enum ErrorFamily {
     /// Like [`ErrorFamily::C`] but the C source embeds the function name
     /// (`:name` in the format string) — errors say `{name}() …`, and the
     /// unknown-kwarg error uses the named Python wording.
-    CNamed,
+    ///
+    /// `positional_pivot` mirrors [`ErrorFamily::C`]'s: computed by the derive
+    /// (any `kw_only` field present) and switches the overflow wording to
+    /// `… exactly/at most N positional argument(s) …`, pivoting back to the
+    /// total count once the overflow exceeds all slots (e.g. `os.stat`).
+    CNamed { positional_pivot: bool },
     /// `PyArg_UnpackTuple` (`style = unpack`): any keyword argument is
     /// rejected first with `{name}() takes no keyword arguments` (CPython's
     /// `_PyArg_NoKeywords` / `METH_FASTCALL` dispatch), then a fixed
@@ -387,13 +392,13 @@ pub(crate) enum ErrorFamily {
 impl ErrorFamily {
     /// C families raise unknown-kwarg after every missing/conversion error.
     fn defers_unknown_kwarg(self) -> bool {
-        matches!(self, Self::C { .. } | Self::CNamed)
+        matches!(self, Self::C { .. } | Self::CNamed { .. })
     }
 
     /// Non-C families aggregate all missing required names into one error at
     /// the end of [`bind`]; C families report per-param via [`Bound::require`].
     fn aggregates_missing(self) -> bool {
-        !matches!(self, Self::C { .. } | Self::CNamed)
+        !matches!(self, Self::C { .. } | Self::CNamed { .. })
     }
 }
 
@@ -508,10 +513,10 @@ impl<const N: usize> Bound<N> {
             ErrorFamily::C { .. } if i < self.spec.n_positional => {
                 ExcType::type_error_c_missing_required(param.name, i + 1)
             }
-            ErrorFamily::CNamed if i < self.spec.n_positional => {
+            ErrorFamily::CNamed { .. } if i < self.spec.n_positional => {
                 ExcType::type_error_c_missing_required_named(self.spec.func_name, param.name, i + 1)
             }
-            ErrorFamily::C { .. } | ErrorFamily::CNamed => {
+            ErrorFamily::C { .. } | ErrorFamily::CNamed { .. } => {
                 ExcType::type_error_missing_kwonly_with_names(self.spec.func_name, &[param.name])
             }
             // Aggregating families: bind() already raised; a required slot the
@@ -587,7 +592,7 @@ fn duplicate_error(spec: &ParamSpec, idx: usize, param: &Param) -> DuplicateOutc
             param.name,
             idx + 1,
         )),
-        ErrorFamily::CNamed => DuplicateOutcome::Defer(named_conflict()),
+        ErrorFamily::CNamed { .. } => DuplicateOutcome::Defer(named_conflict()),
         ErrorFamily::Clinic => DuplicateOutcome::Raise(named_conflict()),
         ErrorFamily::Def | ErrorFamily::Unpack => {
             DuplicateOutcome::Raise(ExcType::type_error_duplicate_arg(spec.func_name, param.name))
@@ -651,7 +656,23 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         ErrorFamily::C { positional_pivot: true } => {
             ExcType::type_error_c_at_most_positional_or_total(max, spec.params.len(), n_pos + n_kw)
         }
-        ErrorFamily::CNamed => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
+        ErrorFamily::CNamed {
+            positional_pivot: false,
+        } => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
+        // Same pivot as `C`, but named: `_PyArg_UnpackKeywords` says "exactly"
+        // when every positional param is required (`os.stat`), "at most" when
+        // some have defaults (`os.mkdir`), and falls back to the total-count
+        // wording once the overflow exceeds positional + kw-only slots.
+        ErrorFamily::CNamed { positional_pivot: true } => {
+            let total = n_pos + n_kw;
+            if total > spec.params.len() {
+                ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total)
+            } else if spec.n_required_positional == spec.n_positional {
+                ExcType::type_error_named_exactly_positional(spec.func_name, max, total)
+            } else {
+                ExcType::type_error_named_at_most_positional(spec.func_name, max, total)
+            }
+        }
         ErrorFamily::Clinic => ExcType::type_error_at_most(spec.func_name, max, n_pos + n_kw),
     }
 }

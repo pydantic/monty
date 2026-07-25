@@ -646,6 +646,82 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Named variant of the exact-positional overflow used by clinic functions
+    /// whose positional params are all required but which carry keyword-only
+    /// slots (e.g. `os.stat`): `{name}() takes exactly {max} positional
+    /// argument{s} ({actual} given)`.
+    #[must_use]
+    fn type_error_named_exactly_positional(name: &str, max: usize, actual: usize) -> RunError {
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes exactly {max} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Named at-most-positional overflow for clinic functions with defaulted
+    /// positionals plus keyword-only slots (e.g. `os.mkdir`):
+    /// `{name}() takes at most {max} positional argument{s} ({actual} given)`.
+    #[must_use]
+    fn type_error_named_at_most_positional(name: &str, max: usize, actual: usize) -> RunError {
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes at most {max} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError matching the `os` module's `path_t` converter:
+    /// `{func}: {arg} should be {accepted}, not {type}` — `accepted` is the
+    /// per-function accepted-types phrase (e.g. `string, bytes or os.PathLike`).
+    #[must_use]
+    fn type_error_os_path(func: &str, arg: &str, accepted: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{func}: {arg} should be {accepted}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
+    /// functions that call `fspath` internally (e.g. `os.makedirs`):
+    /// `expected str, bytes or os.PathLike object, not {type}`
+    #[must_use]
+    fn type_error_fspath(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("expected str, bytes or os.PathLike object, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `dir_fd` converter TypeError:
+    /// `argument should be integer or None, not {type}`
+    #[must_use]
+    fn type_error_dir_fd(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument should be integer or None, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the NotImplementedError CPython raises when an `os` argument is
+    /// unsupported on the platform (`argument_unavailable_error`):
+    /// `{func}: {arg} unavailable on this platform`, or just
+    /// `{arg} unavailable on this platform` when `func` is `None`.
+    /// Monty raises it for `dir_fd`/`follow_symlinks`, which it never supports.
+    #[must_use]
+    fn not_implemented_os_arg(func: Option<&str>, arg: &str) -> RunError {
+        let msg = match func {
+            Some(func) => format!("{func}: {arg} unavailable on this platform"),
+            None => format!("{arg} unavailable on this platform"),
+        };
+        SimpleException::new_msg(ExcType::NotImplementedError, msg).into()
+    }
+
     /// Creates a TypeError for a missing required argument without a position,
     /// as raised by hand-written vectorcall fast paths like `enumerate`:
     /// `{name}() missing required argument '{arg_name}'`

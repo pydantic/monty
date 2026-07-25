@@ -7,7 +7,8 @@
 //! yields [`FrameExit::OsCall`](crate::bytecode::FrameExit::OsCall) so the
 //! host decides whether to permit it. The interpreter itself never performs
 //! I/O. This module keeps the `pathlib.Path` method dispatcher that builds
-//! the calls from VM values.
+//! the calls from VM values, plus [`PendingOsEffect`] — the VM-side hook that
+//! post-processes an OS-call result on resume.
 //!
 //! # Adding a new OS call
 //!
@@ -26,7 +27,7 @@ use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
     exception_private::{ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropWithContext, Heap, HeapData},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     value::Value,
 };
@@ -37,6 +38,35 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
     fn drop_with(self, _heap: &mut C) {
         drop(self);
     }
+}
+
+/// Work the VM must perform on the result of a paused OS call when it
+/// resumes, instead of pushing the raw host value onto the operand stack.
+///
+/// One `Option` slot on the VM holds the in-flight effect (at most one OS
+/// call is in flight per task). Keeping every variant in one enum avoids
+/// adding another VM hook while preserving retry-safe exception behavior:
+/// `resume_with_exception` clears/rolls back the pending state so user code
+/// that catches the host exception can retry.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PendingOsEffect {
+    /// Store a full-file read result into the file buffer, then compute the
+    /// pending read/seek slice (see `types/file.rs`).
+    BufferStore { file_id: HeapId },
+    /// Advance the file's logical position by the successful write result.
+    WritePosition {
+        /// File whose position is updated.
+        file_id: HeapId,
+        /// Position before the write was dispatched, used to restore state if
+        /// the host raises before returning a count.
+        previous_position: u64,
+        /// Known file length before dispatch, restored on host exception.
+        previous_length: u64,
+    },
+    /// `os.listdir`: reduce the host's `Iterdir` result (a list of child
+    /// paths) to the list of bare entry names before conversion. Holds no
+    /// heap references, so exception/drop cleanup is a no-op.
+    ListdirNames,
 }
 
 // =============================================================================
@@ -244,8 +274,9 @@ fn arg_or_missing_data(method: &'static str, args: ArgValues, heap: &mut Heap) -
 }
 
 /// Owned `String` if `value` is a `str` or `Path`, else `None`. Caller drops
-/// the source value afterwards.
-fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
+/// the source value afterwards. Also used by the `os` module's path-taking
+/// functions (`modules/os.rs`).
+pub(crate) fn value_to_owned_string(value: &Value, heap: &Heap, interns: &Interns) -> Option<String> {
     match value {
         Value::InternString(id) => Some(interns.get_str(*id).to_owned()),
         Value::Ref(id) => match heap.get(*id) {

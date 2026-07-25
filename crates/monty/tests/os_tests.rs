@@ -494,3 +494,236 @@ import os
     assert_eq!(func, "os.environ");
     assert_eq!(result, MontyObject::Bool(true));
 }
+
+// =============================================================================
+// os module filesystem wrappers
+// =============================================================================
+
+/// Runs code expected to raise before any OS call and returns the final
+/// `"ExcType: message"` line of the resulting exception (dropping the traceback).
+fn run_to_error(code: &str) -> String {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    match runner.start(vec![], ResourceTracker::default(), PrintWriter::Stdout) {
+        Err(exc) => exc.to_string().lines().last().unwrap_or_default().to_owned(),
+        Ok(progress) => panic!("expected error, got {progress:?}"),
+    }
+}
+
+#[test]
+fn os_listdir_yields_iterdir_and_strips_names() {
+    let (func, args, result) = run_oscall_with_result(
+        "import os\nos.listdir('/mnt/data')",
+        MontyObject::List(vec![
+            MontyObject::Path("/mnt/data/b.txt".to_owned()),
+            MontyObject::Path("/mnt/data/a.txt".to_owned()),
+            MontyObject::Path("/mnt/data/sub".to_owned()),
+        ]),
+    );
+    // os.listdir reuses the Path.iterdir OS call — hosts see that name.
+    assert_eq!(func, "Path.iterdir");
+    assert_eq!(args, vec![MontyObject::Path("/mnt/data".to_owned())]);
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::String("b.txt".to_owned()),
+            MontyObject::String("a.txt".to_owned()),
+            MontyObject::String("sub".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn os_listdir_default_path_is_dot() {
+    let (func, args, result) = run_oscall_with_result("import os\nos.listdir()", MontyObject::List(vec![]));
+    assert_eq!(func, "Path.iterdir");
+    assert_eq!(args, vec![MontyObject::Path(".".to_owned())]);
+    assert_eq!(result, MontyObject::List(vec![]));
+}
+
+#[test]
+fn os_listdir_accepts_host_strings() {
+    // Hosts serving the `Path.iterdir` callback directly may return plain
+    // strings instead of paths — names are stripped the same way.
+    let (_, _, result) = run_oscall_with_result(
+        "import os\nos.listdir('/mnt')",
+        MontyObject::List(vec![
+            MontyObject::String("/mnt/x.txt".to_owned()),
+            MontyObject::String("plain".to_owned()),
+        ]),
+    );
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::String("x.txt".to_owned()),
+            MontyObject::String("plain".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn os_listdir_rejects_bad_host_result() {
+    let runner = MontyRun::new(
+        "import os\nos.listdir('/mnt')".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OsCall");
+    };
+    let err = call
+        .resume(MontyObject::List(vec![MontyObject::Int(3)]), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string().lines().last().unwrap_or_default(),
+        "RuntimeError: invalid return type: os.listdir requires the host to return a list of paths, got int"
+    );
+}
+
+#[test]
+fn os_stat_yields_stat_call() {
+    let (func, args) = run_to_oscall("import os\nos.stat('/tmp/file.txt')");
+    assert_eq!(func, "Path.stat");
+    assert_eq!(args, vec![MontyObject::Path("/tmp/file.txt".to_owned())]);
+}
+
+#[test]
+fn os_mkdir_yields_mkdir_call() {
+    let runner = MontyRun::new(
+        "import os\nos.mkdir('/mnt/d', 0o700)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OsCall");
+    };
+    let OsFunctionCall::Mkdir(mkdir) = &call.function_call else {
+        panic!("expected Mkdir, got {:?}", call.function_call);
+    };
+    assert_eq!(mkdir.path.as_str(), "/mnt/d");
+    assert!(!mkdir.parents);
+    assert!(!mkdir.exist_ok);
+    let _ = call.resume(MontyObject::None, PrintWriter::Stdout);
+}
+
+#[test]
+fn os_makedirs_yields_mkdir_call_with_parents() {
+    let runner = MontyRun::new(
+        "import os\nos.makedirs('/mnt/a/b', exist_ok=True)".to_owned(),
+        "test.py",
+        vec![],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let RunProgress::OsCall(call) = progress else {
+        panic!("expected OsCall");
+    };
+    let OsFunctionCall::Mkdir(mkdir) = &call.function_call else {
+        panic!("expected Mkdir, got {:?}", call.function_call);
+    };
+    assert_eq!(mkdir.path.as_str(), "/mnt/a/b");
+    assert!(mkdir.parents);
+    assert!(mkdir.exist_ok);
+    let _ = call.resume(MontyObject::None, PrintWriter::Stdout);
+}
+
+#[test]
+fn os_remove_and_unlink_yield_unlink_call() {
+    let (func, args) = run_to_oscall("import os\nos.remove('/mnt/f.txt')");
+    assert_eq!(func, "Path.unlink");
+    assert_eq!(args, vec![MontyObject::Path("/mnt/f.txt".to_owned())]);
+
+    let (func, args) = run_to_oscall("import os\nos.unlink('/mnt/g.txt')");
+    assert_eq!(func, "Path.unlink");
+    assert_eq!(args, vec![MontyObject::Path("/mnt/g.txt".to_owned())]);
+}
+
+#[test]
+fn os_rmdir_yields_rmdir_call() {
+    let (func, args) = run_to_oscall("import os\nos.rmdir('/mnt/d')");
+    assert_eq!(func, "Path.rmdir");
+    assert_eq!(args, vec![MontyObject::Path("/mnt/d".to_owned())]);
+}
+
+#[test]
+fn os_rename_and_replace_yield_rename_call() {
+    let (func, args) = run_to_oscall("import os\nos.rename('/mnt/a', '/mnt/b')");
+    assert_eq!(func, "Path.rename");
+    assert_eq!(
+        args,
+        vec![
+            MontyObject::Path("/mnt/a".to_owned()),
+            MontyObject::Path("/mnt/b".to_owned())
+        ]
+    );
+
+    let (func, args) = run_to_oscall("import os\nos.replace('/mnt/a', '/mnt/b')");
+    assert_eq!(func, "Path.rename");
+    assert_eq!(
+        args,
+        vec![
+            MontyObject::Path("/mnt/a".to_owned()),
+            MontyObject::Path("/mnt/b".to_owned())
+        ]
+    );
+}
+
+// dir_fd / follow_symlinks are parsed for signature parity but never
+// supported — Linux CPython accepts them, so these stay out of the dual-run
+// test_cases and are pinned here instead (see limitations/os.md).
+
+#[test]
+fn os_stat_dir_fd_not_implemented() {
+    assert_eq!(
+        run_to_error("import os\nos.stat('/x', dir_fd=3)"),
+        "NotImplementedError: dir_fd unavailable on this platform"
+    );
+}
+
+#[test]
+fn os_stat_dir_fd_type_error() {
+    assert_eq!(
+        run_to_error("import os\nos.stat('/x', dir_fd='s')"),
+        "TypeError: argument should be integer or None, not str"
+    );
+}
+
+#[test]
+fn os_stat_follow_symlinks_not_implemented() {
+    assert_eq!(
+        run_to_error("import os\nos.stat('/x', follow_symlinks=False)"),
+        "NotImplementedError: stat: follow_symlinks unavailable on this platform"
+    );
+}
+
+#[test]
+fn os_rename_dir_fd_not_implemented() {
+    assert_eq!(
+        run_to_error("import os\nos.rename('/a', '/b', src_dir_fd=1)"),
+        "NotImplementedError: rename: src_dir_fd and dst_dir_fd unavailable on this platform"
+    );
+    assert_eq!(
+        run_to_error("import os\nos.replace('/a', '/b', dst_dir_fd=1)"),
+        "NotImplementedError: replace: src_dir_fd and dst_dir_fd unavailable on this platform"
+    );
+}
+
+#[test]
+fn os_mkdir_dir_fd_not_implemented() {
+    assert_eq!(
+        run_to_error("import os\nos.mkdir('/d', 0o777, dir_fd=7)"),
+        "NotImplementedError: dir_fd unavailable on this platform"
+    );
+}
