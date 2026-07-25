@@ -34,7 +34,7 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    modules::{StandardLib, json::JsonStringCache, re::RePatternCache, registry},
     object_bridge::MontyObjectExt,
     parse::CodeRange,
     types::{
@@ -1794,8 +1794,17 @@ impl<'h> VM<'h> {
                 }
                 // Module Operations
                 Opcode::LoadModule => {
-                    let module_id = cached_frame.fetch_u8();
-                    try_catch_sync!(self, cached_frame, self.load_module(module_id));
+                    // Operand is a u16 const-pool index at an InternString holding
+                    // the module name (written by compile_import/compile_import_from).
+                    let const_idx = cached_frame.fetch_u16();
+                    // As with `RaiseImportError` below, a non-InternString constant is
+                    // only possible via a corrupt snapshot; degrade to a catchable
+                    // error rather than panicking.
+                    let name_id = match cached_frame.code.constants().get(const_idx) {
+                        Value::InternString(id) => Ok(*id),
+                        _ => Err(ExcType::module_not_found_error("<unknown>")),
+                    };
+                    try_catch_sync!(self, cached_frame, name_id.and_then(|id| self.load_module(id)));
                 }
                 Opcode::RaiseImportError => {
                     // Fetch the module name from the constant pool and raise ModuleNotFoundError
@@ -1827,12 +1836,20 @@ impl<'h> VM<'h> {
         }
     }
 
-    /// Loads a built-in module and pushes it onto the stack.
-    fn load_module(&mut self, module_id: u8) -> RunResult<()> {
-        let module = StandardLib::from_repr(module_id).expect("unknown module id");
-
-        // Create the module on the heap using pre-interned strings
-        let heap_id = module.create(self)?;
+    /// Loads a built-in module by its interned name and pushes it onto the stack.
+    ///
+    /// Consults the open module registry first, then the `StandardLib` enum.
+    /// The compiler only emits `LoadModule` for names one of those accepts, so
+    /// the final error path is effectively unreachable but kept in step with the
+    /// `ModuleNotFoundError` that `RaiseImportError` raises for unknown names.
+    fn load_module(&mut self, name_id: StringId) -> RunResult<()> {
+        let heap_id = if let Some(descriptor) = registry::lookup(name_id, self.interns) {
+            registry::create_module(descriptor, self)?
+        } else if let Some(module) = StandardLib::from_string_id(name_id) {
+            module.create(self)?
+        } else {
+            return Err(ExcType::module_not_found_error(self.interns.get_str(name_id)));
+        };
         self.push(Value::Ref(heap_id));
         Ok(())
     }

@@ -98,7 +98,8 @@ impl<'h> HeapRead<'h, Module> {
     /// Calls an attribute as a function on this module.
     ///
     /// Modules don't have methods - they have callable attributes. This looks up
-    /// the attribute and calls it if it's a `ModuleFunction`.
+    /// the attribute and calls it via `vm.call_function`, which dispatches any
+    /// callable value (builtin, closed-`StandardLib`, or open-registry function).
     ///
     /// Returns `CallResult` because module functions may need OS operations
     /// (e.g., `os.getenv()`) that require host involvement.

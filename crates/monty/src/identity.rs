@@ -13,7 +13,7 @@ use crate::{
     builtins::Builtins,
     bytecode::VM,
     heap::{Heap, HeapData},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, registry::ModuleFuncId},
     types::{LongInt, Property},
     value::{Marker, Value},
 };
@@ -51,6 +51,8 @@ pub(crate) enum Identity<'a> {
     Builtin(Builtins),
     /// Identity of a standard-library function.
     ModuleFunction(ModuleFunctions),
+    /// Identity of a function from the open module registry.
+    RegistryFunction(ModuleFuncId),
     /// Identity of a sandbox-defined function.
     DefFunction(usize),
     /// Name-based identity retained for host-supplied callables.
@@ -78,6 +80,7 @@ impl<'a> Identity<'a> {
             Value::InternLongInt(id) => Self::InternLongInt(id.index()),
             Value::Builtin(builtin) => Self::Builtin(*builtin),
             Value::ModuleFunction(function) => Self::ModuleFunction(*function),
+            Value::RegistryFunction(id) => Self::RegistryFunction(*id),
             Value::DefFunction(id) => Self::DefFunction(id.index()),
             Value::ExtFunction(name) => Self::ExtFunction(vm.interns.get_str(*name)),
             Value::Marker(marker) => Self::Marker(*marker),
@@ -119,6 +122,7 @@ impl<'a> Identity<'a> {
             | Self::Heap(index) => u128::try_from(*index).expect("usize fits in u128"),
             Self::Builtin(value) => fixed_serde_payload(value),
             Self::ModuleFunction(value) => fixed_serde_payload(value),
+            Self::RegistryFunction(value) => fixed_serde_payload(value),
             Self::ExtFunction(name) if name.len() <= MAX_FIXED_BYTES => bytes_payload(name.as_bytes()),
             Self::ExtFunction(_) => return None,
             Self::Marker(value) => fixed_serde_payload(value),
@@ -146,6 +150,7 @@ impl<'a> Identity<'a> {
             Self::Marker(_) => 14,
             Self::Property(_) => 15,
             Self::Heap(_) => 16,
+            Self::RegistryFunction(_) => 17,
         }
     }
 }

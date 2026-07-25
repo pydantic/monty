@@ -30,7 +30,7 @@ use crate::{
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{Interns, StringId},
-    modules::StandardLib,
+    modules::{StandardLib, registry},
     name_map::NameMap,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
@@ -972,10 +972,14 @@ impl<'a> Compiler<'a> {
         let position = binding.position;
         self.code.set_location(position, None);
 
-        // Look up the module by name
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
+        // A module is known if it is in the open registry or the StandardLib
+        // enum. Both are static, so the compiler needs no registry borrow.
+        let known = registry::is_registered(self.interns.get_str(module_name))
+            || StandardLib::from_string_id(module_name).is_some();
+        if known {
+            // Known module - emit LoadModule carrying the module name (const-pool id).
+            let name_const = self.code.add_const(Value::InternString(module_name))?;
+            self.code.emit_u16(Opcode::LoadModule, name_const)?;
             // Store to the binding (respects Local/Global/Cell scope)
             self.compile_store(binding)?;
         } else {
@@ -1001,10 +1005,14 @@ impl<'a> Compiler<'a> {
     ) -> Result<(), CompileError> {
         self.code.set_location(position, None);
 
-        // Look up the module
-        if let Some(builtin_module) = StandardLib::from_string_id(module_name) {
-            // Known module - emit LoadModule
-            self.code.emit_u8(Opcode::LoadModule, builtin_module as u8)?;
+        // A module is known if it is in the open registry or the StandardLib
+        // enum. Both are static, so the compiler needs no registry borrow.
+        let known = registry::is_registered(self.interns.get_str(module_name))
+            || StandardLib::from_string_id(module_name).is_some();
+        if known {
+            // Known module - emit LoadModule carrying the module name (const-pool id).
+            let name_const = self.code.add_const(Value::InternString(module_name))?;
+            self.code.emit_u16(Opcode::LoadModule, name_const)?;
 
             // For each name to import
             for (i, (import_name, binding)) in names.iter().enumerate() {
