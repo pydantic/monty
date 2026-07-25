@@ -670,10 +670,9 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
             let total = n_pos + n_kw;
             if total > spec.params.len() {
                 ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total)
-            } else if spec.n_required_positional == spec.n_positional {
-                ExcType::type_error_named_exactly_positional(spec.func_name, max, n_pos)
             } else {
-                ExcType::type_error_named_at_most_positional(spec.func_name, max, n_pos)
+                let exact = spec.n_required_positional == spec.n_positional;
+                ExcType::type_error_named_positional(spec.func_name, max, n_pos, exact)
             }
         }
         ErrorFamily::Clinic => ExcType::type_error_at_most(spec.func_name, max, n_pos + n_kw),

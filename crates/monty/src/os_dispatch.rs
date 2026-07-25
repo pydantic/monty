@@ -19,14 +19,17 @@
 //! conversions, then wire the new variant into the fs/ dispatcher and any
 //! host backends.
 
+use std::mem;
+
 use monty_types::{
-    ExcType, MkdirCallArgs, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ExcType, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
+    RenameCallArgs,
 };
 
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
-    exception_private::{ExcTypeExt, RunResult},
+    exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings},
     value::Value,
@@ -43,11 +46,11 @@ impl<C: ContainsHeap> DropWithContext<C> for OsFunctionCall {
 /// Work the VM must perform on the result of a paused OS call when it
 /// resumes, instead of pushing the raw host value onto the operand stack.
 ///
-/// One `Option` slot on the VM holds the in-flight effect (at most one OS
-/// call is in flight per task). Keeping every variant in one enum avoids
-/// adding another VM hook while preserving retry-safe exception behavior:
-/// `resume_with_exception` clears/rolls back the pending state so user code
-/// that catches the host exception can retry.
+/// Travels in [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult)
+/// (which owns the arming/cleanup contract) and is held in the VM's single
+/// `pending_os_effect` slot while the call is in flight — at most one OS call
+/// is in flight per task. `resume_with_exception` clears/rolls back the
+/// pending state so user code that catches the host exception can retry.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(crate) enum PendingOsEffect {
     /// Store a full-file read result into the file buffer, then compute the
@@ -67,6 +70,52 @@ pub(crate) enum PendingOsEffect {
     /// paths) to the list of bare entry names before conversion. Holds no
     /// heap references, so exception/drop cleanup is a no-op.
     ListdirNames,
+}
+
+impl PendingOsEffect {
+    /// The heap entry this effect pins across the host yield, if any — the
+    /// single place that knows which variants carry a refcount, so drop and
+    /// abandon paths release it with `if let Some(id) = effect.pinned_file()`.
+    pub(crate) fn pinned_file(self) -> Option<HeapId> {
+        match self {
+            Self::BufferStore { file_id } | Self::WritePosition { file_id, .. } => Some(file_id),
+            Self::ListdirNames => None,
+        }
+    }
+}
+
+/// Reduces a host `Iterdir` result (list of virtual child paths) to the list
+/// of bare entry names `os.listdir` returns — the resume half of
+/// [`PendingOsEffect::ListdirNames`].
+///
+/// Runs on the raw [`MontyObject`] before heap conversion (see `VM::resume`),
+/// so it needs no refcount handling; entries are renamed in place with no new
+/// allocations. Virtual paths are always POSIX, so the name is the substring
+/// after the last `/`. Hosts answering the `Path.iterdir` callback themselves
+/// may return `str` entries instead of paths — both work.
+pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
+    let invalid = |type_name: &str| -> RunError {
+        SimpleException::new_msg(
+            ExcType::RuntimeError,
+            format!("invalid return type: os.listdir requires the host to return a list of paths, got {type_name}"),
+        )
+        .into()
+    };
+    let MontyObject::List(mut items) = obj else {
+        return Err(invalid(obj.type_name()));
+    };
+    for item in &mut items {
+        match item {
+            MontyObject::Path(path) | MontyObject::String(path) => {
+                if let Some(sep) = path.rfind('/') {
+                    path.drain(..=sep);
+                }
+                *item = MontyObject::String(mem::take(path));
+            }
+            other => return Err(invalid(other.type_name())),
+        }
+    }
+    Ok(MontyObject::List(items))
 }
 
 // =============================================================================

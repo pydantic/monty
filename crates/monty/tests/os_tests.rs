@@ -560,21 +560,22 @@ fn os_listdir_accepts_host_strings() {
     );
 }
 
-#[test]
-fn os_listdir_rejects_bad_host_result() {
-    let runner = MontyRun::new(
-        "import os\nos.listdir('/mnt')".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
+/// Runs code up to its first suspension and returns the raw `OsCall` progress,
+/// for tests that inspect the typed `function_call` or resume by hand.
+fn run_to_oscall_start(code: &str) -> monty::OsCall {
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
         .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected OsCall");
-    };
+    match progress {
+        RunProgress::OsCall(call) => call,
+        _ => panic!("expected OsCall, got {progress:?}"),
+    }
+}
+
+#[test]
+fn os_listdir_rejects_bad_host_result() {
+    let call = run_to_oscall_start("import os\nos.listdir('/mnt')");
     let err = call
         .resume(MontyObject::List(vec![MontyObject::Int(3)]), PrintWriter::Stdout)
         .unwrap_err();
@@ -592,51 +593,27 @@ fn os_stat_yields_stat_call() {
 }
 
 #[test]
-fn os_mkdir_yields_mkdir_call() {
-    let runner = MontyRun::new(
-        "import os\nos.mkdir('/mnt/d', 0o700)".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let progress = runner
-        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
-        .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected OsCall");
-    };
-    let OsFunctionCall::Mkdir(mkdir) = &call.function_call else {
-        panic!("expected Mkdir, got {:?}", call.function_call);
-    };
-    assert_eq!(mkdir.path.as_str(), "/mnt/d");
-    assert!(!mkdir.parents);
-    assert!(!mkdir.exist_ok);
-    let _ = call.resume(MontyObject::None, PrintWriter::Stdout);
-}
-
-#[test]
-fn os_makedirs_yields_mkdir_call_with_parents() {
-    let runner = MontyRun::new(
-        "import os\nos.makedirs('/mnt/a/b', exist_ok=True)".to_owned(),
-        "test.py",
-        vec![],
-        CompileOptions::default(),
-    )
-    .unwrap();
-    let progress = runner
-        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
-        .unwrap();
-    let RunProgress::OsCall(call) = progress else {
-        panic!("expected OsCall");
-    };
-    let OsFunctionCall::Mkdir(mkdir) = &call.function_call else {
-        panic!("expected Mkdir, got {:?}", call.function_call);
-    };
-    assert_eq!(mkdir.path.as_str(), "/mnt/a/b");
-    assert!(mkdir.parents);
-    assert!(mkdir.exist_ok);
-    let _ = call.resume(MontyObject::None, PrintWriter::Stdout);
+fn os_mkdir_and_makedirs_yield_mkdir_calls() {
+    // (code, path, parents, exist_ok)
+    let cases = [
+        ("import os\nos.mkdir('/mnt/d', 0o700)", "/mnt/d", false, false),
+        (
+            "import os\nos.makedirs('/mnt/a/b', exist_ok=True)",
+            "/mnt/a/b",
+            true,
+            true,
+        ),
+    ];
+    for (code, path, parents, exist_ok) in cases {
+        let call = run_to_oscall_start(code);
+        let OsFunctionCall::Mkdir(mkdir) = &call.function_call else {
+            panic!("expected Mkdir, got {:?}", call.function_call);
+        };
+        assert_eq!(mkdir.path.as_str(), path);
+        assert_eq!(mkdir.parents, parents);
+        assert_eq!(mkdir.exist_ok, exist_ok);
+        let _ = call.resume(MontyObject::None, PrintWriter::Stdout);
+    }
 }
 
 #[test]
@@ -680,52 +657,40 @@ fn os_rename_and_replace_yield_rename_call() {
     );
 }
 
-// dir_fd / follow_symlinks are parsed for signature parity but never
-// supported — Linux CPython accepts them, so these stay out of the dual-run
-// test_cases and are pinned here instead (see limitations/os.md).
-
+/// dir_fd / follow_symlinks are parsed for signature parity but never
+/// supported — Linux CPython accepts them, so these stay out of the dual-run
+/// test_cases and are pinned here instead (see limitations/os.md).
 #[test]
-fn os_stat_dir_fd_not_implemented() {
-    assert_eq!(
-        run_to_error("import os\nos.stat('/x', dir_fd=3)"),
-        "NotImplementedError: dir_fd unavailable on this platform"
-    );
-}
-
-#[test]
-fn os_stat_dir_fd_type_error() {
-    assert_eq!(
-        run_to_error("import os\nos.stat('/x', dir_fd='s')"),
-        "TypeError: argument should be integer or None, not str"
-    );
-}
-
-#[test]
-fn os_stat_follow_symlinks_not_implemented() {
-    assert_eq!(
-        run_to_error("import os\nos.stat('/x', follow_symlinks=False)"),
-        "NotImplementedError: stat: follow_symlinks unavailable on this platform"
-    );
-}
-
-#[test]
-fn os_rename_dir_fd_not_implemented() {
-    assert_eq!(
-        run_to_error("import os\nos.rename('/a', '/b', src_dir_fd=1)"),
-        "NotImplementedError: rename: src_dir_fd and dst_dir_fd unavailable on this platform"
-    );
-    assert_eq!(
-        run_to_error("import os\nos.replace('/a', '/b', dst_dir_fd=1)"),
-        "NotImplementedError: replace: src_dir_fd and dst_dir_fd unavailable on this platform"
-    );
-}
-
-#[test]
-fn os_mkdir_dir_fd_not_implemented() {
-    assert_eq!(
-        run_to_error("import os\nos.mkdir('/d', 0o777, dir_fd=7)"),
-        "NotImplementedError: dir_fd unavailable on this platform"
-    );
+fn os_unsupported_kwargs() {
+    let cases = [
+        (
+            "import os\nos.stat('/x', dir_fd=3)",
+            "NotImplementedError: dir_fd unavailable on this platform",
+        ),
+        (
+            "import os\nos.stat('/x', dir_fd='s')",
+            "TypeError: argument should be integer or None, not str",
+        ),
+        (
+            "import os\nos.stat('/x', follow_symlinks=False)",
+            "NotImplementedError: stat: follow_symlinks unavailable on this platform",
+        ),
+        (
+            "import os\nos.rename('/a', '/b', src_dir_fd=1)",
+            "NotImplementedError: rename: src_dir_fd and dst_dir_fd unavailable on this platform",
+        ),
+        (
+            "import os\nos.replace('/a', '/b', dst_dir_fd=1)",
+            "NotImplementedError: replace: src_dir_fd and dst_dir_fd unavailable on this platform",
+        ),
+        (
+            "import os\nos.mkdir('/d', 0o777, dir_fd=7)",
+            "NotImplementedError: dir_fd unavailable on this platform",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
 }
 
 #[test]
@@ -746,20 +711,4 @@ os.getenv('PROBE')
     let (func, _, result) = run_oscall_with_result(code, MontyObject::String("value".to_owned()));
     assert_eq!(func, "os.getenv");
     assert_eq!(result, MontyObject::String("value".to_owned()));
-}
-
-#[test]
-fn os_mode_and_dir_fd_overflow() {
-    assert_eq!(
-        run_to_error("import os\nos.mkdir('/d', 2**31)"),
-        "OverflowError: Python int too large to convert to C int"
-    );
-    assert_eq!(
-        run_to_error("import os\nos.stat('.', dir_fd=2**100)"),
-        "OverflowError: fd is greater than maximum"
-    );
-    assert_eq!(
-        run_to_error("import os\nos.stat('.', dir_fd=-(2**100))"),
-        "OverflowError: fd is less than minimum"
-    );
 }

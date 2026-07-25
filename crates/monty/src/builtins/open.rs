@@ -237,8 +237,5 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result
 
 /// Creates the path type error used by `open()`.
 fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
-    ExcType::type_error(format!(
-        "expected str, bytes or os.PathLike object, not {}",
-        value.py_type_name(vm)
-    ))
+    ExcType::type_error_fspath(&value.py_type_name(vm))
 }

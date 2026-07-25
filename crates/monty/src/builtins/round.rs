@@ -1,13 +1,12 @@
 //! Implementation of the round() builtin function.
 
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int},
+    args::{ArgValues, FromArgs, is_long_int, long_int_is_negative},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
     types::LongInt,
     value::Value,
 };
@@ -127,16 +126,6 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             )
             .into())
         }
-    }
-}
-
-/// True when a LongInt-valued `ndigits` (interned or heap-allocated) is
-/// negative — decides which i64 extreme [`builtin_round`] clamps it to.
-fn long_int_is_negative(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
-        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
-        _ => false,
     }
 }
 

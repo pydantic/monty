@@ -34,9 +34,9 @@ use crate::{
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, os::listdir_names, re::RePatternCache},
+    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
-    os_dispatch::PendingOsEffect,
+    os_dispatch::{PendingOsEffect, listdir_names},
     parse::CodeRange,
     types::{
         Dict, LongInt, PyTrait,
@@ -1872,9 +1872,8 @@ impl<'h> VM<'h> {
             let result = match effect {
                 PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
                 PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
-                // Handled above, before conversion; unreachable here because the
-                // slot was cleared, but pushing the value through is harmless.
-                PendingOsEffect::ListdirNames => Ok(value),
+                // Cleared above, before conversion.
+                PendingOsEffect::ListdirNames => unreachable!("ListdirNames is handled before heap conversion"),
             };
             match result {
                 Ok(value) => {
@@ -2397,13 +2396,8 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
-        if let Some(effect) = self.pending_os_effect.take() {
-            match effect {
-                PendingOsEffect::BufferStore { file_id } | PendingOsEffect::WritePosition { file_id, .. } => {
-                    self.heap.dec_ref(file_id);
-                }
-                PendingOsEffect::ListdirNames => {}
-            }
+        if let Some(file_id) = self.pending_os_effect.take().and_then(PendingOsEffect::pinned_file) {
+            self.heap.dec_ref(file_id);
         }
         self.exception_stack.drain(..).drop_with(self.heap);
         self.cleanup_current_task();

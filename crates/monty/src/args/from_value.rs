@@ -17,6 +17,8 @@
 
 use std::borrow::Cow;
 
+use num_bigint::Sign;
+
 use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -243,6 +245,17 @@ pub(crate) fn is_long_int(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::InternLongInt(_) => true,
         Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(_)),
+        _ => false,
+    }
+}
+
+/// True when a `LongInt`-valued int (interned or heap-allocated) is negative —
+/// lets fixed-width consumers pick the right overflow direction/message
+/// (`round`'s i64 clamp, `os`'s fd converter).
+pub(crate) fn long_int_is_negative(value: &Value, vm: &VM<'_>) -> bool {
+    match value {
+        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
         _ => false,
     }
 }

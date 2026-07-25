@@ -86,14 +86,11 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             Self::FramePushed => {}
             Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
-                match effect {
-                    // Single pin (see `inc_ref_for_pending_oscall`): release
-                    // one ref if the call is discarded before dispatch arms
-                    // the effect on `pending_os_effect`.
-                    PendingOsEffect::BufferStore { file_id } | PendingOsEffect::WritePosition { file_id, .. } => {
-                        heap.heap_mut().dec_ref(file_id);
-                    }
-                    PendingOsEffect::ListdirNames => {}
+                // Single pin (see `inc_ref_for_pending_oscall`): release one
+                // ref if the call is discarded before dispatch arms the
+                // effect on `pending_os_effect`.
+                if let Some(file_id) = effect.pinned_file() {
+                    heap.heap_mut().dec_ref(file_id);
                 }
             }
         }

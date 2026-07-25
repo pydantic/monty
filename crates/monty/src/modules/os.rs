@@ -10,26 +10,25 @@
 //! [`OsFunctionCall`] (the same variants `pathlib.Path` methods use) for the
 //! host to permit or reject. `os.listdir` reuses the `Iterdir` call and
 //! reduces the returned child paths to bare names via
-//! [`PendingOsEffect::ListdirNames`] — see [`listdir_names`].
+//! [`PendingOsEffect::ListdirNames`] (see `os_dispatch::listdir_names`).
 //!
 //! `dir_fd` / `follow_symlinks` keyword arguments are parsed for signature
 //! parity but rejected with the `NotImplementedError` CPython raises on
 //! platforms without them — Monty never supports fd-relative paths.
 
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, ResourceError};
-use num_bigint::Sign;
 
 use crate::{
-    args::{ArgValues, FromArgs},
+    args::{ArgValues, FromArgs, LaxBool, long_int_is_negative},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{HeapData, HeapId},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingOsEffect, value_to_owned_string},
-    types::{Module, Property, PyTrait, Type, property::ZeroArgOsProperty, str::allocate_string},
+    types::{Module, Property, Type, property::ZeroArgOsProperty, str::allocate_string},
     value::Value,
 };
 
@@ -62,35 +61,30 @@ pub(crate) enum OsFunctions {
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
 pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
-    let mut module = Module::new(StaticStrings::Os);
-
-    // Callables — each dispatches through `ModuleFunctions::Os`.
-    let functions = [
-        (StaticStrings::Getenv, OsFunctions::Getenv),
-        (StaticStrings::Listdir, OsFunctions::Listdir),
-        (StaticStrings::StatMethod, OsFunctions::Stat),
-        (StaticStrings::Mkdir, OsFunctions::Mkdir),
-        (StaticStrings::Makedirs, OsFunctions::Makedirs),
-        (StaticStrings::Remove, OsFunctions::Remove),
-        (StaticStrings::Unlink, OsFunctions::Unlink),
-        (StaticStrings::Rmdir, OsFunctions::Rmdir),
-        (StaticStrings::Rename, OsFunctions::Rename),
-        (StaticStrings::Replace, OsFunctions::Replace),
-        (StaticStrings::OsFspath, OsFunctions::Fspath),
-    ];
-    for (attr, function) in functions {
-        module.set_attr(attr, Value::ModuleFunction(ModuleFunctions::Os(function)), vm);
+    /// Shorthand for the function-attribute entries in the table below.
+    fn function(f: OsFunctions) -> Value {
+        Value::ModuleFunction(ModuleFunctions::Os(f))
     }
 
-    // os.environ - property that returns the entire environment as a dict
-    module.set_attr(
-        StaticStrings::Environ,
-        Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
-        vm,
-    );
-
-    // POSIX path constants — the sandbox path model is POSIX on every host.
-    let constants = [
+    let attrs = [
+        // Callables — each dispatches through `ModuleFunctions::Os`.
+        (StaticStrings::Getenv, function(OsFunctions::Getenv)),
+        (StaticStrings::Listdir, function(OsFunctions::Listdir)),
+        (StaticStrings::StatMethod, function(OsFunctions::Stat)),
+        (StaticStrings::Mkdir, function(OsFunctions::Mkdir)),
+        (StaticStrings::Makedirs, function(OsFunctions::Makedirs)),
+        (StaticStrings::Remove, function(OsFunctions::Remove)),
+        (StaticStrings::Unlink, function(OsFunctions::Unlink)),
+        (StaticStrings::Rmdir, function(OsFunctions::Rmdir)),
+        (StaticStrings::Rename, function(OsFunctions::Rename)),
+        (StaticStrings::Replace, function(OsFunctions::Replace)),
+        (StaticStrings::OsFspath, function(OsFunctions::Fspath)),
+        // os.environ — property that yields the host environment as a dict.
+        (
+            StaticStrings::Environ,
+            Value::Property(Property::Os(ZeroArgOsProperty::GetEnviron)),
+        ),
+        // POSIX path constants — the sandbox path model is POSIX on every host.
         (StaticStrings::Sep, Value::InternString(StringId::from_ascii(b'/'))),
         (StaticStrings::Altsep, Value::None),
         (StaticStrings::Extsep, Value::InternString(StringId::from_ascii(b'.'))),
@@ -100,10 +94,11 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
         (StaticStrings::Name, StaticStrings::Posix.into()),
         (StaticStrings::Devnull, StaticStrings::DevNullString.into()),
     ];
-    for (attr, value) in constants {
+
+    let mut module = Module::new(StaticStrings::Os);
+    for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
-
     vm.heap.allocate(HeapData::Module(module))
 }
 
@@ -190,48 +185,17 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     })
 }
 
-/// Reduces a host `Iterdir` result (list of virtual child paths) to the list
-/// of bare entry names `os.listdir` returns.
-///
-/// Runs on the raw [`MontyObject`] before heap conversion (see `VM::resume`),
-/// so it needs no refcount handling. Virtual paths are always POSIX, so the
-/// name is the substring after the last `/`. Hosts answering the `Path.iterdir`
-/// callback themselves may return `str` entries instead of paths — both work.
-pub(crate) fn listdir_names(obj: MontyObject) -> Result<MontyObject, RunError> {
-    let invalid = |type_name: &str| -> RunError {
-        SimpleException::new(
-            ExcType::RuntimeError,
-            Some(format!(
-                "invalid return type: os.listdir requires the host to return a list of paths, got {type_name}"
-            )),
-        )
-        .into()
-    };
-    match obj {
-        MontyObject::List(items) => items
-            .into_iter()
-            .map(|item| match item {
-                MontyObject::Path(path) | MontyObject::String(path) => {
-                    let name = path.rsplit('/').next().unwrap_or(&path);
-                    Ok(MontyObject::String(name.to_owned()))
-                }
-                other => Err(invalid(other.type_name())),
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map(MontyObject::List),
-        other => Err(invalid(other.type_name())),
-    }
-}
-
 /// `os.stat(path, *, dir_fd=None, follow_symlinks=True)` argument shape.
+/// `follow_symlinks` uses [`LaxBool`] — CPython truth-tests it, so any value
+/// is accepted.
 #[derive(FromArgs)]
 #[from_args(name = "stat", style = c_named)]
 struct StatArgs {
     path: Value,
     #[from_args(kw_only, default = Value::None)]
     dir_fd: Value,
-    #[from_args(kw_only, default = Value::Bool(true))]
-    follow_symlinks: Value,
+    #[from_args(kw_only, default = LaxBool::new(true))]
+    follow_symlinks: LaxBool,
 }
 
 /// Implementation of `os.stat(path)` — yields the same `Stat` OS call as
@@ -244,10 +208,9 @@ fn stat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     } = StatArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     defer_drop!(dir_fd, vm);
-    defer_drop!(follow_symlinks, vm);
     let path = extract_os_path(path, "stat", "path", "string, bytes, os.PathLike or integer", vm)?;
     check_dir_fd(dir_fd, vm)?;
-    if follow_symlinks.py_bool(vm) {
+    if follow_symlinks.bool() {
         Ok(CallResult::OsCall(OsFunctionCall::Stat(path)))
     } else {
         Err(ExcType::not_implemented_os_arg(Some("stat"), "follow_symlinks"))
@@ -284,15 +247,16 @@ fn mkdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 }
 
 /// `os.makedirs(name, mode=0o777, exist_ok=False)` argument shape — a pure
-/// Python `def` in CPython, hence `style = def`.
+/// Python `def` in CPython, hence `style = def`. `exist_ok` uses [`LaxBool`]
+/// (truth-tested, never type-checked) like the sibling `PathMkdirArgs`.
 #[derive(FromArgs)]
 #[from_args(name = "makedirs", style = def)]
 struct MakedirsArgs {
     name: Value,
     #[from_args(default = Value::Int(0o777))]
     mode: Value,
-    #[from_args(default = Value::Bool(false))]
-    exist_ok: Value,
+    #[from_args(default = LaxBool::new(false))]
+    exist_ok: LaxBool,
 }
 
 /// Implementation of `os.makedirs(name, mode=0o777, exist_ok=False)` —
@@ -301,16 +265,14 @@ fn makedirs(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let MakedirsArgs { name, mode, exist_ok } = MakedirsArgs::from_args(args, vm)?;
     defer_drop!(name, vm);
     defer_drop!(mode, vm);
-    defer_drop!(exist_ok, vm);
     // CPython's `makedirs` body starts with `path.split(name)`, whose
     // `fspath` call produces this wording (not the `mkdir` converter's).
-    let path = extract_fspath_str(name, vm)?;
+    let path = extract_path(name, vm, ExcType::type_error_fspath)?;
     check_mode(mode, vm)?;
-    let exist_ok = exist_ok.py_bool(vm);
     Ok(CallResult::OsCall(OsFunctionCall::Mkdir(MkdirCallArgs {
         path,
         parents: true,
-        exist_ok,
+        exist_ok: exist_ok.bool(),
     })))
 }
 
@@ -327,7 +289,7 @@ struct RemoveArgs {
 /// `Path.unlink()`.
 fn remove(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let RemoveArgs { path, dir_fd } = RemoveArgs::from_args(args, vm)?;
-    single_path_unlink(path, dir_fd, "remove", vm)
+    single_path_call(path, dir_fd, "remove", OsFunctionCall::Unlink, vm)
 }
 
 /// `os.unlink(path, *, dir_fd=None)` argument shape.
@@ -343,16 +305,23 @@ struct UnlinkArgs {
 /// name in error messages.
 fn unlink(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let UnlinkArgs { path, dir_fd } = UnlinkArgs::from_args(args, vm)?;
-    single_path_unlink(path, dir_fd, "unlink", vm)
+    single_path_call(path, dir_fd, "unlink", OsFunctionCall::Unlink, vm)
 }
 
-/// Shared body of [`remove`] / [`unlink`]: validate and build the `Unlink` call.
-fn single_path_unlink(path: Value, dir_fd: Value, func: &'static str, vm: &mut VM<'_>) -> RunResult<CallResult> {
+/// Shared body of [`remove`] / [`unlink`] / [`rmdir`]: validate the path and
+/// `dir_fd`, then build the OS call via `make_call`.
+fn single_path_call(
+    path: Value,
+    dir_fd: Value,
+    func: &'static str,
+    make_call: impl FnOnce(MontyPath) -> OsFunctionCall,
+    vm: &mut VM<'_>,
+) -> RunResult<CallResult> {
     defer_drop!(path, vm);
     defer_drop!(dir_fd, vm);
     let path = extract_os_path(path, func, "path", "string, bytes or os.PathLike", vm)?;
     check_dir_fd(dir_fd, vm)?;
-    Ok(CallResult::OsCall(OsFunctionCall::Unlink(path)))
+    Ok(CallResult::OsCall(make_call(path)))
 }
 
 /// `os.rmdir(path, *, dir_fd=None)` argument shape.
@@ -368,11 +337,7 @@ struct RmdirArgs {
 /// `Path.rmdir()`.
 fn rmdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let RmdirArgs { path, dir_fd } = RmdirArgs::from_args(args, vm)?;
-    defer_drop!(path, vm);
-    defer_drop!(dir_fd, vm);
-    let path = extract_os_path(path, "rmdir", "path", "string, bytes or os.PathLike", vm)?;
-    check_dir_fd(dir_fd, vm)?;
-    Ok(CallResult::OsCall(OsFunctionCall::Rmdir(path)))
+    single_path_call(path, dir_fd, "rmdir", OsFunctionCall::Rmdir, vm)
 }
 
 /// `os.rename(src, dst, *, src_dir_fd=None, dst_dir_fd=None)` argument shape.
@@ -439,8 +404,9 @@ fn rename_like(
     defer_drop!(dst_dir_fd, vm);
     let src = extract_os_path(src, func, "src", "string, bytes or os.PathLike", vm)?;
     let dst = extract_os_path(dst, func, "dst", "string, bytes or os.PathLike", vm)?;
-    let fd_specified = dir_fd_specified(src_dir_fd, vm)? | dir_fd_specified(dst_dir_fd, vm)?;
-    if fd_specified {
+    // Non-short-circuiting `|`: both fds are type-checked before either is
+    // rejected as unsupported, matching CPython's converter ordering.
+    if dir_fd_specified(src_dir_fd, vm)? | dir_fd_specified(dst_dir_fd, vm)? {
         Err(ExcType::not_implemented_os_arg(Some(func), "src_dir_fd and dst_dir_fd"))
     } else {
         Ok(CallResult::OsCall(OsFunctionCall::Rename(RenameCallArgs { src, dst })))
@@ -485,24 +451,16 @@ fn extract_os_path(
     accepted: &'static str,
     vm: &VM<'_>,
 ) -> RunResult<MontyPath> {
-    value_to_owned_string(value, vm.heap, vm.interns).map_or_else(
-        || {
-            let type_name = value.py_type_name_heap(vm.heap, vm.interns);
-            Err(ExcType::type_error_os_path(func, arg, accepted, &type_name))
-        },
-        |path| Ok(MontyPath::new(path)),
-    )
+    extract_path(value, vm, |type_name| {
+        ExcType::type_error_os_path(func, arg, accepted, type_name)
+    })
 }
 
-/// Extracts a path with `os.fspath`'s wording
-/// (`expected str, bytes or os.PathLike object, not {type}`) — used by the
-/// pure-Python-style functions (`makedirs`) that route through `fspath`.
-fn extract_fspath_str(value: &Value, vm: &VM<'_>) -> RunResult<MontyPath> {
+/// Core `str`/`Path` → [`MontyPath`] extraction; `type_error` supplies the
+/// per-callsite wording (the `path_t` converter's or `os.fspath`'s).
+fn extract_path(value: &Value, vm: &VM<'_>, type_error: impl FnOnce(&str) -> RunError) -> RunResult<MontyPath> {
     value_to_owned_string(value, vm.heap, vm.interns).map_or_else(
-        || {
-            let type_name = value.py_type_name_heap(vm.heap, vm.interns);
-            Err(ExcType::type_error_fspath(&type_name))
-        },
+        || Err(type_error(&value.py_type_name_heap(vm.heap, vm.interns))),
         |path| Ok(MontyPath::new(path)),
     )
 }
@@ -533,23 +491,10 @@ fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
         },
         _ => match value.py_type_heap(vm.heap) {
             // Big ints (`LongInt`) are outside i64, so far outside C int.
-            Type::Int if is_negative_big_int(value, vm) => Err(ExcType::overflow_fd_minimum()),
+            Type::Int if long_int_is_negative(value, vm) => Err(ExcType::overflow_fd_minimum()),
             Type::Int => Err(ExcType::overflow_fd_maximum()),
             other => Err(ExcType::type_error_dir_fd(&other.name(vm.heap, vm.interns))),
         },
-    }
-}
-
-/// Sign of an int-typed value that is not a plain `Value::Int` (i.e. a big
-/// int) — distinguishes the two fd `OverflowError` messages.
-fn is_negative_big_int(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
-        Value::Ref(id) => match vm.heap.get(*id) {
-            HeapData::LongInt(li) => li.is_negative(),
-            _ => false,
-        },
-        _ => false,
     }
 }
 

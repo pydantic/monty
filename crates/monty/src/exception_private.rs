@@ -646,29 +646,17 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Named variant of the exact-positional overflow used by clinic functions
-    /// whose positional params are all required but which carry keyword-only
-    /// slots (e.g. `os.stat`): `{name}() takes exactly {max} positional
-    /// argument{s} ({actual} given)`.
+    /// Named positional-overflow wording used by clinic functions with
+    /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
+    /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
+    /// "exactly" when every positional param is required.
     #[must_use]
-    fn type_error_named_exactly_positional(name: &str, max: usize, actual: usize) -> RunError {
+    fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
+        let qualifier = if exact { "exactly" } else { "at most" };
         let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{name}() takes exactly {max} positional argument{plural} ({actual} given)"),
-        )
-        .into()
-    }
-
-    /// Named at-most-positional overflow for clinic functions with defaulted
-    /// positionals plus keyword-only slots (e.g. `os.mkdir`):
-    /// `{name}() takes at most {max} positional argument{s} ({actual} given)`.
-    #[must_use]
-    fn type_error_named_at_most_positional(name: &str, max: usize, actual: usize) -> RunError {
-        let plural = if max == 1 { "" } else { "s" };
-        SimpleException::new_msg(
-            ExcType::TypeError,
-            format!("{name}() takes at most {max} positional argument{plural} ({actual} given)"),
+            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)"),
         )
         .into()
     }
@@ -733,7 +721,7 @@ pub(crate) trait ExcTypeExt: Sized {
             Some(func) => format!("{func}: {arg} unavailable on this platform"),
             None => format!("{arg} unavailable on this platform"),
         };
-        SimpleException::new_msg(ExcType::NotImplementedError, msg).into()
+        Self::not_implemented(msg).into()
     }
 
     /// Creates a TypeError for a missing required argument without a position,
