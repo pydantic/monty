@@ -570,16 +570,18 @@ impl<'h> HeapRead<'h, OpenFile> {
             return Err(err);
         }
         let (path, append, binary) = {
-            let file = self.get_mut(vm.heap);
+            let file = self.get(vm.heap);
             if !file.mode.writable() {
                 let message = if file.mode.is_binary() { "write" } else { "not writable" };
                 data.drop_with(vm);
                 return Err(unsupported_operation(message));
             }
+            // `first_write_done` is flipped in `apply_write_position`, only once
+            // the host confirms the write — a rejected or host-failed write must
+            // not turn the next write into an append.
             let append = file.mode.is_append() || file.first_write_done;
             let binary = file.mode.is_binary();
             let path = file.path().to_owned();
-            file.first_write_done = true;
             (path, append, binary)
         };
 
@@ -904,6 +906,10 @@ pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'
     f.position = new_position;
     f.file_length = f.file_length.max(new_position);
     f.eof = new_position >= f.file_length;
+    // The write is confirmed — subsequent writes append. Deliberately not set
+    // at dispatch time so a rejected or host-failed write leaves the file in
+    // its pre-call state (see `OpenFile::write`).
+    f.first_write_done = true;
     drop(file);
 
     Ok(result_guard.into_inner())
