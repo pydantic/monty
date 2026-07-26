@@ -59,6 +59,7 @@ unpacking form matches CPython exactly.
 - AST nesting is capped at 200 levels (30 in debug builds); exceeding it raises `SyntaxError: Source is too deeply nested`.
 - The budget is shared across every nesting-producing construct (parens, calls, subscripts, attribute chains, operators, comprehensions, control-flow blocks, `with`, etc.), including the synthetic nesting from a flat multi-item `with` — see with.md.
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`, `too many statically nested blocks`, …).
+- Class-body annotations count against the budget even though they are stringized rather than evaluated (see typing.md), as do class-variable values and method parameter defaults — all three are walked before being parsed. CPython imposes no comparable limit on a stringized annotation.
 
 ## Imports
 
