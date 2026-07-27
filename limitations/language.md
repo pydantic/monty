@@ -13,10 +13,11 @@ any code runs.
   class-body statements other than `def`, a simple `name [: T] = <expr>`
   assignment, `pass`, or a docstring. There is no inheritance and no general
   dunder protocol. See [classes.md](classes.md).
-- **Decorators** (`@deco`) — supported on classes, taking any callable in scope,
-  evaluated in the enclosing scope and applied bottom-up. Rejected at parse time
-  on functions and methods, so `@classmethod`, `@staticmethod`, `@property` and
-  any decorator on a `def` are unavailable. See [classes.md](classes.md).
+- **Decorators** (`@deco`) — supported on classes and on top-level or nested
+  `def`/`async def`, taking any callable in scope, evaluated in the enclosing
+  scope and applied bottom-up. Rejected at parse time on **methods**, so
+  `@classmethod`, `@staticmethod`, `@property` and any decorator on a `def`
+  inside a class body are unavailable. See [classes.md](classes.md).
 - **`async with` statements** — not yet supported
 - **`yield` / `yield from` expressions** — no generator functions. Generator
   *expressions* (`(x for x in ...)`) parse but currently materialize to a
@@ -58,6 +59,7 @@ unpacking form matches CPython exactly.
 - AST nesting is capped at 200 levels (30 in debug builds); exceeding it raises `SyntaxError: Source is too deeply nested`.
 - The budget is shared across every nesting-producing construct (parens, calls, subscripts, attribute chains, operators, comprehensions, control-flow blocks, `with`, etc.), including the synthetic nesting from a flat multi-item `with` — see with.md.
 - The message differs from CPython, which uses construct-specific wording (`too many nested parentheses`, `too many statically nested blocks`, …).
+- Class-body annotations count against the budget even though they are stringized rather than evaluated (see typing.md), as do class-variable values and method parameter defaults — all three are walked before being parsed. CPython imposes no comparable limit on a stringized annotation.
 
 ## Imports
 
@@ -67,6 +69,30 @@ unpacking form matches CPython exactly.
   relative import with no known parent package"` — there is no package
   system.
 - `__import__` is not defined.
+
+## `__future__` imports
+
+`from __future__ import ...` is a compiler directive, not a real import: it
+binds nothing and is accepted as a no-op. Of CPython's ten features, eight
+became mandatory in Python 3.7 or earlier and so are inert there too, and
+`annotations` is a no-op here because Monty already stringizes annotations
+(see [typing.md](typing.md)). Divergences:
+
+- **`barry_as_FLUFL`** (PEP 401) raises `NotImplementedError: "The monty
+  syntax parser does not yet support the 'barry_as_FLUFL' future feature"`.
+  CPython accepts it, making `<>` the inequality operator and `!=` a
+  `SyntaxError`; Monty parses neither differently, so the import is rejected
+  rather than silently ignored.
+- **Aliasing is rejected.** `from __future__ import annotations as ann` raises
+  `NotImplementedError: "The monty syntax parser does not yet support aliasing
+  a \`__future__\` feature"`. CPython binds `ann` to a `__future__._Feature`
+  object; a no-op would bind nothing and surface as a `NameError` far from the
+  import, so it is rejected at the import instead.
+- **Position is not enforced.** CPython requires `__future__` imports to
+  precede all other statements (`SyntaxError: "from __future__ imports must
+  occur at the beginning of the file"`); Monty accepts them anywhere.
+- `import __future__` (as opposed to `from __future__ import ...`) raises
+  `ModuleNotFoundError` — there is no `__future__` module object.
 
 ## Module-level dunder variables
 
@@ -107,6 +133,19 @@ exposing `None` would diverge on type — and a real loader is neither available
 nor safe to surface in the sandbox. `__file__` is omitted so no host path can
 leak into the sandbox.
 
+## Function objects
+
+A function exposes **no** attributes: `__name__`, `__doc__`, `__qualname__` and
+`__module__` all raise `AttributeError: 'function' object has no attribute
+'<name>'`, and new ones cannot be set — `fn.tag = True` raises `AttributeError:
+'function' object has no attribute 'tag' and no __dict__ for setting new
+attributes`. CPython supports all of these.
+
+This is the ceiling on what a decorator can do: it can call, wrap, store or
+replace the function it receives, but cannot ask the function about itself, so
+`functools.wraps`-style metadata copying, registries keyed by `fn.__name__`, and
+attribute tagging for later discovery all have no equivalent.
+
 ## Ordering comparisons
 
 `<`, `<=`, `>`, `>=` on operands with no defined ordering raise
@@ -133,8 +172,8 @@ give `False` on both.
 
 ## What *does* work
 
-- Functions (`def`, `async def`), nested functions, closures (but not
-  decorators — see above).
+- Functions (`def`, `async def`), nested functions, closures, and decorators on
+  them (but not on methods — see above).
 - List / dict / set comprehensions (generator comprehensions degrade to
   lists — see above).
 - `try` / `except` / `else` / `finally`, `raise ... from ...`.

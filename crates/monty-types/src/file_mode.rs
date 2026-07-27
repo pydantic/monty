@@ -152,20 +152,13 @@ impl FileMode {
 /// text or binary form. Exclusive creation (`x`) is rejected for now because
 /// it needs a dedicated mount-table operation to be race-free.
 ///
-/// The `Err` payload is a CPython-matched message — empty input, an unknown
-/// mode character, duplicated `b`/`t`/`+`, conflicting binary+text flags, or
-/// more than one of the `r`/`w`/`a` actions.
+/// The `Err` payload is a CPython-matched message — an unknown mode
+/// character, duplicated `b`/`t`/`+`, conflicting binary+text flags, more
+/// than one of the `r`/`w`/`a` actions, or none at all (`''`, `'b'`, `'t'`).
 impl FromStr for FileMode {
     type Err = Cow<'static, str>;
 
     fn from_str(mode: &str) -> Result<Self, Self::Err> {
-        if mode.is_empty() {
-            // CPython's empty-mode error message, mirrored verbatim. Note: the
-            // duplicate-action message is different (lowercase, no `... and at most one
-            // plus` suffix) — see the `'r' | 'w' | 'a'` arm.
-            return Err("Must have exactly one of create/read/write/append mode and at most one plus".into());
-        }
-
         let mut action = None;
         let mut binary = false;
         let mut text = false;
@@ -174,6 +167,8 @@ impl FromStr for FileMode {
             match ch {
                 'r' | 'w' | 'a' => {
                     if action.replace(ch).is_some() {
+                        // CPython's duplicate-action message differs from the missing-action
+                        // one below (lowercase, no `... and at most one plus` suffix).
                         return Err("must have exactly one of create/read/write/append mode".into());
                     }
                 }

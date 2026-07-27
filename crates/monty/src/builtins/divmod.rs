@@ -1,6 +1,5 @@
 //! Implementation of the divmod() builtin function.
 
-use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use smallvec::smallvec;
@@ -20,7 +19,7 @@ use crate::{
 ///
 /// Returns a tuple (quotient, remainder) from integer division.
 /// Equivalent to (a // b, a % b).
-pub fn builtin_divmod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_divmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (a, b) = args.get_two_args("divmod", vm.heap)?;
     let a = super::round::normalize_bool_to_int(a);
     let b = super::round::normalize_bool_to_int(b);

@@ -287,11 +287,10 @@ message StackFrame {
 // "unlimited" except recursion depth, which defaults to monty's standard
 // limit (1000) when absent.
 message ResourceLimits {
-  optional uint64 max_allocations = 1;
-  optional uint64 max_duration_micros = 2;
-  optional uint64 max_memory_bytes = 3;
-  optional uint64 gc_interval = 4;
-  optional uint64 max_recursion_depth = 5;
+  optional uint64 max_duration_micros = 1;
+  optional uint64 max_memory_bytes = 2;
+  optional uint64 gc_interval = 3;
+  optional uint64 max_recursion_depth = 4;
 }
 
 // ============================================================================

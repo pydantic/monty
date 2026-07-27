@@ -3,7 +3,19 @@
 
 use std::borrow::Cow;
 
-use crate::exceptions::MontyException;
+use crate::{
+    exceptions::{ExcType, MontyException},
+    resource::ResourceError,
+};
+
+/// Default cap for [`PrintWriter::CollectString`] / [`PrintWriter::CollectStreams`]
+/// and the matching Python collectors.
+///
+/// Host-side print buffers sit outside [`crate::ResourceLimits::max_memory`];
+/// without a cap, a print loop can OOM the host while sandbox limits stay green.
+/// Pass `max_bytes: None` to opt out on trusted hosts.
+pub const DEFAULT_MAX_PRINT_COLLECT_BYTES: usize = 10 * 1024 * 1024;
+
 /// Identifies the output stream for a single print fragment.
 ///
 /// Today the `print()` builtin only writes to `Stdout`. The `Stderr` variant is
@@ -29,10 +41,13 @@ pub enum PrintStream {
 /// - `Stdout` — writes to standard output (the default behavior).
 /// - `CollectString` — accumulates output into a target `String` for programmatic access.
 ///   No stream labels are preserved; every fragment is appended in the order it was emitted.
+///   The `Option<usize>` is an optional byte cap (`None` = unlimited); constructors
+///   [`collect_string`](Self::collect_string) / default Python collectors use
+///   [`DEFAULT_MAX_PRINT_COLLECT_BYTES`].
 /// - `CollectStreams` — accumulates output as `(stream, text)` pairs, merging consecutive
 ///   same-stream fragments into one tuple. Each write to the same stream extends the
 ///   trailing entry rather than producing a new one; a new tuple is only pushed when
-///   the stream changes.
+///   the stream changes. Same optional byte cap as `CollectString`.
 /// - `Callback` — delegates to a user-provided [`PrintWriterCallback`] implementation.
 pub enum PrintWriter<'a> {
     /// Silently discard all output.
@@ -40,7 +55,10 @@ pub enum PrintWriter<'a> {
     /// Write to standard output.
     Stdout,
     /// Collect all output into a single `String`, in emit order, with no stream labels.
-    CollectString(&'a mut String),
+    ///
+    /// Second field: max collected bytes (`None` = unlimited). Exceeding raises
+    /// `MemoryError` with the same message as [`ResourceError::Memory`].
+    CollectString(&'a mut String, Option<usize>),
     /// Collect all output as `(stream, text)` tuples.
     ///
     /// The builtin `print()` implementation calls `stdout_write` for each argument
@@ -51,12 +69,24 @@ pub enum PrintWriter<'a> {
     /// `print()` only writes to stdout), a single `print(a, b)` call produces one
     /// `(Stdout, "a b\n")` entry — and consecutive prints with `end=''` likewise
     /// merge into a single trailing entry.
-    CollectStreams(&'a mut Vec<(PrintStream, String)>),
+    ///
+    /// Second field: max collected bytes across all tuples (`None` = unlimited).
+    CollectStreams(&'a mut Vec<(PrintStream, String)>, Option<usize>),
     /// Delegate to a custom callback.
     Callback(&'a mut dyn PrintWriterCallback),
 }
 
 impl PrintWriter<'_> {
+    /// Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap.
+    pub fn collect_string(buf: &mut String) -> PrintWriter<'_> {
+        PrintWriter::CollectString(buf, Some(DEFAULT_MAX_PRINT_COLLECT_BYTES))
+    }
+
+    /// Collect into `buf` with the default [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap.
+    pub fn collect_streams(buf: &mut Vec<(PrintStream, String)>) -> PrintWriter<'_> {
+        PrintWriter::CollectStreams(buf, Some(DEFAULT_MAX_PRINT_COLLECT_BYTES))
+    }
+
     /// Creates a new `PrintWriter` that reborrows the same underlying target.
     ///
     /// This is useful in iterative execution (`start`/`resume` loops) where each
@@ -67,8 +97,8 @@ impl PrintWriter<'_> {
         match self {
             Self::Disabled => PrintWriter::Disabled,
             Self::Stdout => PrintWriter::Stdout,
-            Self::CollectString(buf) => PrintWriter::CollectString(buf),
-            Self::CollectStreams(buf) => PrintWriter::CollectStreams(buf),
+            Self::CollectString(buf, max) => PrintWriter::CollectString(buf, *max),
+            Self::CollectStreams(buf, max) => PrintWriter::CollectStreams(buf, *max),
             Self::Callback(cb) => PrintWriter::Callback(&mut **cb),
         }
     }
@@ -85,14 +115,12 @@ impl PrintWriter<'_> {
                 print!("{output}");
                 Ok(())
             }
-            Self::CollectString(buf) => {
+            Self::CollectString(buf, max_bytes) => {
+                check_print_collect_limit(buf.len(), output.len(), *max_bytes)?;
                 buf.push_str(&output);
                 Ok(())
             }
-            Self::CollectStreams(buf) => {
-                append_streams_str(buf, PrintStream::Stdout, &output);
-                Ok(())
-            }
+            Self::CollectStreams(buf, max_bytes) => append_streams_str(buf, PrintStream::Stdout, &output, *max_bytes),
             Self::Callback(cb) => cb.stdout_write(output),
         }
     }
@@ -108,35 +136,75 @@ impl PrintWriter<'_> {
                 print!("{end}");
                 Ok(())
             }
-            Self::CollectString(buf) => {
+            Self::CollectString(buf, max_bytes) => {
+                check_print_collect_limit(buf.len(), end.len_utf8(), *max_bytes)?;
                 buf.push(end);
                 Ok(())
             }
-            Self::CollectStreams(buf) => {
-                append_streams_char(buf, PrintStream::Stdout, end);
-                Ok(())
-            }
+            Self::CollectStreams(buf, max_bytes) => append_streams_char(buf, PrintStream::Stdout, end, *max_bytes),
             Self::Callback(cb) => cb.stdout_push(end),
         }
     }
 }
 
+/// Rejects a collect-buffer growth that would exceed `max_bytes`.
+///
+/// `None` means unlimited. On overflow, returns the same `MemoryError` message
+/// as [`ResourceError::Memory`] so hosts see one familiar limit string.
+pub fn check_print_collect_limit(
+    current_len: usize,
+    add: usize,
+    max_bytes: Option<usize>,
+) -> Result<(), MontyException> {
+    let Some(limit) = max_bytes else {
+        return Ok(());
+    };
+    let used = current_len.saturating_add(add);
+    if used > limit {
+        Err(MontyException::new(
+            ExcType::MemoryError,
+            Some(ResourceError::Memory { limit, used }.to_string()),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Total UTF-8 bytes across all collect-streams tuples.
+fn streams_byte_len(buf: &[(PrintStream, String)]) -> usize {
+    buf.iter().map(|(_, s)| s.len()).sum()
+}
+
 /// Appends a string fragment to the collect-streams buffer, merging into the
 /// trailing tuple when the stream matches.
-fn append_streams_str(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, text: &str) {
+fn append_streams_str(
+    buf: &mut Vec<(PrintStream, String)>,
+    stream: PrintStream,
+    text: &str,
+    max_bytes: Option<usize>,
+) -> Result<(), MontyException> {
+    check_print_collect_limit(streams_byte_len(buf), text.len(), max_bytes)?;
     match buf.last_mut() {
         Some((s, existing)) if *s == stream => existing.push_str(text),
         _ => buf.push((stream, text.to_owned())),
     }
+    Ok(())
 }
 
 /// Appends a single character to the collect-streams buffer, merging into the
 /// trailing tuple when the stream matches.
-fn append_streams_char(buf: &mut Vec<(PrintStream, String)>, stream: PrintStream, ch: char) {
+fn append_streams_char(
+    buf: &mut Vec<(PrintStream, String)>,
+    stream: PrintStream,
+    ch: char,
+    max_bytes: Option<usize>,
+) -> Result<(), MontyException> {
+    check_print_collect_limit(streams_byte_len(buf), ch.len_utf8(), max_bytes)?;
     match buf.last_mut() {
         Some((s, existing)) if *s == stream => existing.push(ch),
         _ => buf.push((stream, String::from(ch))),
     }
+    Ok(())
 }
 
 /// Trait for custom output handling from the `print()` builtin function.

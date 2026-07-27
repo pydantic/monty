@@ -15,7 +15,6 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxAllocations: 100,
     maxDurationSecs: 5.0,
     maxMemory: 1024,
     gcInterval: 10,
@@ -59,26 +58,6 @@ recurse(5)
 })
 
 // =============================================================================
-// Allocation limit tests
-// =============================================================================
-
-test('allocation limit', async () => {
-  // Use a more aggressive allocation pattern
-  const code = `
-result = []
-for i in range(10000):
-    result.append([i])
-len(result)
-`
-  const error = await t.throwsAsync(() => run(code, { limits: { maxAllocations: 5 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: allocation limit exceeded: 6 > 5')
-})
-
-test('allocation limit accepts values above u32 max', async () => {
-  t.is(await run('1 + 1', { limits: { maxAllocations: 2 ** 33 } }), 2)
-})
-
-// =============================================================================
 // Memory limit tests
 // =============================================================================
 
@@ -90,12 +69,8 @@ for i in range(1000):
 len(result)
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 100 } }), isRuntimeError)
-  t.is(
-    error.message,
-    kind === 'browser'
-      ? 'MemoryError: memory limit exceeded: 180 bytes > 100 bytes'
-      : 'MemoryError: memory limit exceeded: 120 bytes > 100 bytes',
-  )
+  const allocated = kind === 'browser' ? 156 : 180
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 100 bytes`)
 })
 
 test('memory limit accepts values above u32 max', async () => {

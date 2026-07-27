@@ -3,7 +3,7 @@ use std::{
     fmt::{self, Display, Write},
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, ResourceTracker, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
 use smallvec::smallvec;
 
 use crate::{
@@ -37,7 +37,7 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 pub(crate) trait ExcTypeExt: Sized {
     /// Creates an exception instance from an exception type and arguments,
     /// handling constructor calls like `ValueError('message')`.
-    fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value>;
+    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>;
 
     /// Creates an AttributeError for when an attribute is not found (GET operation).
     ///
@@ -170,15 +170,12 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a TypeError for unhashable types used as set elements.
-    ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
+    /// Creates a TypeError for an unhashable value used as a set element.
     #[must_use]
-    fn type_error_unhashable_set_element(type_: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
+            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
         )
         .into()
     }
@@ -189,7 +186,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
-    fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
+    fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
@@ -950,24 +947,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not reversible")).into()
     }
 
-    /// Creates a RuntimeError for an over-deep iterator delegation chain.
-    ///
-    /// Monty-specific (CPython builds no delegation chain at all) — see
-    /// `limitations/builtins.md`.
-    #[must_use]
-    fn runtime_error_iter_delegation_too_deep() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegation nested too deeply").into()
-    }
-
-    /// Creates a RuntimeError for a delegating iterator pointing at a non-iterator.
-    ///
-    /// Unreachable from Python; only a malformed snapshot can produce it. Raised
-    /// rather than panicking so untrusted snapshot data cannot abort the process.
-    #[must_use]
-    fn runtime_error_iter_delegation_invalid() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegates to a non-iterator").into()
-    }
-
     /// Creates a RuntimeError for set mutation during iteration.
     ///
     /// Matches CPython's format: `RuntimeError: Set changed size during iteration`
@@ -1335,6 +1314,28 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_exponent_too_large() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into()
+    }
+
+    /// Creates an OverflowError when an integer cannot be represented as a float.
+    #[must_use]
+    fn overflow_int_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates a ValueError for a zero modulus passed to `pow`.
+    #[must_use]
+    fn value_error_pow_modulus_zero() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into()
+    }
+
+    /// Creates a ValueError for a negative exponent passed to modular `pow`.
+    #[must_use]
+    fn value_error_pow_negative_exponent() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "pow() 2nd argument cannot be negative when 3rd argument specified",
+        )
+        .into()
     }
 
     /// Creates a ZeroDivisionError for divmod by zero (both integer and float).
@@ -1726,7 +1727,7 @@ impl ExcTypeExt for ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
@@ -1856,7 +1857,7 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Exception(self.get(vm.heap).exc_type)
     }
 }
@@ -1874,14 +1875,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    pub(crate) fn with_frame(self, frame: RawStackFrame) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(frame),
-            hide_caret: false,
-        }
-    }
-
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,
@@ -1896,7 +1889,7 @@ impl<'h> HeapRead<'h, SimpleException> {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
             .static_string()

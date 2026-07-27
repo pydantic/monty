@@ -34,16 +34,20 @@ pub enum NameScope {
     /// The namespace slot contains `Value::Ref(cell_id)` pointing to a `HeapData::Cell`.
     /// Access requires dereferencing through the cell.
     Cell,
-    /// Comprehension target stored in the frame's anonymous comp-var region.
+    /// Comprehension target stored in isolated operand-stack storage.
     ///
-    /// Inlined list/set/dict comprehensions allocate their loop variables in a
-    /// fixed-size frame-local region that sits between the regular locals and
-    /// operand-stack growth. The slot index in `opt_namespace_id` is
-    /// interpreted as a comp-var slot index (separate namespace from locals
-    /// or globals). The region is initialized to `Value::Undefined` on frame
-    /// entry and drained on frame exit, so comprehension targets never leak
-    /// into the enclosing scope. See `limitations/comprehensions.md` for details.
+    /// The namespace ID is a comprehension-local slot ID. The compiler stores
+    /// uncaptured targets directly and gives captured targets a stable cell.
     CompVar,
+}
+
+/// Identifies where an enclosing scope stores a cell captured by a callable.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum CaptureSource {
+    /// Cell reference stored in an ordinary enclosing-frame namespace slot.
+    Namespace(NamespaceId),
+    /// Cell reference stored in an active comprehension's stable stack slot.
+    CompVar(u16),
 }
 
 /// An identifier (variable or function name) with source location and scope information.
@@ -294,6 +298,8 @@ pub enum Expr {
     ListComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Set comprehension: `{elt for target in iter if cond...}`
     ///
@@ -302,6 +308,8 @@ pub enum Expr {
     SetComp {
         elt: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Dict comprehension: `{key: value for target in iter if cond...}`
     ///
@@ -312,6 +320,8 @@ pub enum Expr {
         key: Box<ExprLoc>,
         value: Box<ExprLoc>,
         generators: Vec<Comprehension>,
+        /// Lexical target slots captured by callables in this comprehension.
+        captured_slots: Vec<u16>,
     },
     /// Raw lambda expression from the parser, before preparation.
     ///
@@ -636,7 +646,20 @@ pub enum Node<F> {
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
-    FunctionDef(F),
+    /// Function definition (e.g. `def foo(): ...`).
+    ///
+    /// Decorators live on the statement rather than inside `F` because `F` is
+    /// also a class body and a method, neither of which can carry them — and
+    /// because a decorator is part of the `def` statement, not of the function
+    /// object it produces. Mirrors [`Node::ClassDef`].
+    FunctionDef {
+        /// The function itself: signature and body, riding the `F` =
+        /// Raw→Prepared pipeline.
+        def: F,
+        /// In source order; evaluated in the enclosing scope and applied
+        /// bottom-up (`foo = deco(foo)`), like CPython.
+        decorators: Vec<ExprLoc>,
+    },
     /// Class definition (e.g. `class Foo: ...`).
     ///
     /// Modelled on CPython's class-body code object: the class body is a
@@ -750,12 +773,11 @@ pub struct PreparedFunctionDef {
     pub body: Vec<Node<Self>>,
     /// Number of local variable slots needed in the namespace.
     pub namespace_size: usize,
-    /// Enclosing namespace slots for variables captured from enclosing scopes.
+    /// Enclosing locations for variables captured from enclosing scopes.
     ///
-    /// At definition time the enclosing frame looks up the cell `HeapId` from
-    /// its own namespace at each slot and bundles them into the `Closure`.
-    /// Parallel (same index/order) to [`Self::free_var_slots`].
-    pub free_var_enclosing_slots: Vec<NamespaceId>,
+    /// At definition time each source supplies a cell `HeapId` to bundle into
+    /// the `Closure`. Parallel (same index/order) to [`Self::free_var_slots`].
+    pub free_var_enclosing_slots: Vec<CaptureSource>,
     /// This function's own namespace slots that receive the captured free-var
     /// cells, parallel to [`Self::free_var_enclosing_slots`]: cell `i` (gathered
     /// from `free_var_enclosing_slots[i]` in the enclosing frame) is installed

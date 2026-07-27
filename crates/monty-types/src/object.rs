@@ -781,6 +781,25 @@ pub enum MontyType {
     RePattern,
     #[strum(serialize = "re.Match")]
     ReMatch,
+    // Serialized enum variants are append-only to preserve postcard discriminants.
+    #[strum(serialize = "tuple_iterator")]
+    TupleIterator,
+    #[strum(serialize = "str_ascii_iterator")]
+    StrAsciiIterator,
+    #[strum(serialize = "str_iterator")]
+    StrIterator,
+    #[strum(serialize = "bytes_iterator")]
+    BytesIterator,
+    #[strum(serialize = "range_iterator")]
+    RangeIterator,
+    #[strum(serialize = "dict_keyiterator")]
+    DictKeyIterator,
+    #[strum(serialize = "dict_itemiterator")]
+    DictItemIterator,
+    #[strum(serialize = "dict_valueiterator")]
+    DictValueIterator,
+    #[strum(serialize = "set_iterator")]
+    SetIterator,
 }
 
 impl fmt::Display for MontyType {
@@ -974,7 +993,7 @@ impl Error for ConversionError {}
 ///
 /// This can occur when:
 /// - A `MontyObject` variant (like `Repr`) is only valid as an output, not an input
-/// - A resource limit (memory, allocations) is exceeded during conversion
+/// - A resource limit is exceeded during conversion
 #[derive(Debug, Clone)]
 pub enum InvalidInputError {
     /// The input type is not valid for conversion to a runtime Value.

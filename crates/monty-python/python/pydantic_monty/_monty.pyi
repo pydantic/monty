@@ -47,18 +47,27 @@ NOT_HANDLED = object()
 
 @final
 class CollectStreams:
-    """Collect printed output as `(stream, text)` tuples."""
+    """Collect printed output as `(stream, text)` tuples.
 
-    def __new__(cls) -> CollectStreams: ...
+    Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
+    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    The cap includes a fixed per-entry overhead (many tiny fragments).
+    """
+
+    def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectStreams: ...
     @property
     def output(self) -> list[tuple[Literal['stdout', 'stderr'], str]]:
         """Collected output so far."""
 
 @final
 class CollectString:
-    """Collect printed output as one concatenated string."""
+    """Collect printed output as one concatenated string.
 
-    def __new__(cls) -> CollectString: ...
+    Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
+    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    """
+
+    def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectString: ...
     @property
     def output(self) -> str:
         """Collected output so far."""

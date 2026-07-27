@@ -8,10 +8,10 @@
 use monty::{MontyRepl, ReplProgress};
 use monty_proto::{
     FrameReader, MONTY_VERSION, WireObject, pb,
-    worker::{Child, HandleOutcome, dispatch_frame},
+    worker::{Child, DUMP_VERSION, HandleOutcome, dispatch_frame},
     write_frame,
 };
-use monty_types::{CompileOptions, LimitedTracker, MontyObject, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
@@ -162,6 +162,26 @@ fn shutdown_request_reports_shutdown() {
     );
 }
 
+/// Dumps from the generic-iterator format are explicitly rejected.
+#[test]
+fn load_rejects_old_dump_version() {
+    let mut child = Child::new();
+    create_repl(&mut child);
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
+        state: 5u16.to_le_bytes().to_vec(),
+    }));
+    let (bytes, outcome) = dispatch_frame(&mut child, &request);
+    assert_eq!(outcome, HandleOutcome::Continue);
+    let (_, event) = split_turn(&bytes);
+    let pb::child_event::Kind::Error(error) = event else {
+        panic!("expected an Error event, got {event:?}");
+    };
+    assert_eq!(
+        error.exception.unwrap().message.unwrap(),
+        "protocol violation: unsupported dump version 5 (expected 6)"
+    );
+}
+
 /// A forged suspended dump whose call arguments nest deeper than the wire
 /// depth bound must be rejected at `Load` with a protocol violation — not
 /// re-announced as an event the parent cannot decode.
@@ -170,11 +190,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
     // suspend in-process (no wire depth bound) at `f(x)` with x nested 100
     // lists deep — over the ~48 wire bound, shallow enough that postcard's
     // recursive deserialize doesn't overflow the test stack
-    let repl = MontyRepl::new(
-        "main.py",
-        LimitedTracker::new(ResourceLimits::new()),
-        CompileOptions::default(),
-    );
+    let repl = MontyRepl::new("main.py", ResourceTracker::default(), CompileOptions::default());
     let code = "x = []\nfor _ in range(100):\n    x = [x]\nf(x)";
     let progress = repl
         .feed_start(code, vec![], PrintWriter::Stdout)
@@ -187,7 +203,7 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
 
     // Assemble the dump envelope the way `Dump` does: [version u16 LE]
     // [tag u8 = 1 (suspended)][script_name str][type_check u8 = 0][payload].
-    let mut state = 5u16.to_le_bytes().to_vec();
+    let mut state = DUMP_VERSION.to_le_bytes().to_vec();
     state.push(1);
     let script_name = b"main.py";
     state.extend_from_slice(&u32::try_from(script_name.len()).unwrap().to_le_bytes());
