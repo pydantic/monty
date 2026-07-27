@@ -1,0 +1,27 @@
+crates/monty-server/src/lib.rs
+  s_ad954fca2eb54b::t_bddd5f430f0918 231-232,235-238,241,243-251
+crates/monty-server/README.md
+  s_ad954fca2eb54b::t_49162afef1b8c5 70,164
+crates/monty-server/Dockerfile
+  s_ad954fca2eb54b::t_49162afef1b8c5 81
+crates/monty-server/src/health.rs
+  s_ad954fca2eb54b::t_0f8e08a2a625b2 35-38
+crates/monty-server/src/main.rs
+  s_ad954fca2eb54b::t_49162afef1b8c5 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1438423def3764f2d48cb397f1531d6f1cf9174f",
+  "prompts": {},
+  "sessions": {
+    "s_ad954fca2eb54b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "155e7484-ec4f-4f62-b16c-6e00f77abb21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
