@@ -165,12 +165,15 @@ try:
 except TypeError:
     pass
 
-# A namedtuple class owns its heap-ref default values, so both the refcount
-# teardown and the cycle-collection child walk must descend into a
-# NamedTupleClass — otherwise the default leaks when the class is freed.
-# `nt_default` is shared between its own binding and the class's default slot.
+# A namedtuple class owns its heap-ref default values, so its refcount-teardown
+# walk must descend into a NamedTupleClass. Build the class holding a clone of
+# `nt_default`, then drop the only class binding: freeing the class must release
+# that clone, leaving `nt_default` at just its own binding. A teardown walker
+# that skips the class's defaults would leak the clone, keeping `nt_default` at 2
+# and tripping the strict accounting check.
 nt_default = [7, 8]
-NtDefaults = namedtuple('NtDefaults', ['a'], defaults=[nt_default])
+nt_class = namedtuple('NtClass', ['a'], defaults=[nt_default])
+nt_class = None  # drop the sole class reference, triggering its teardown
 
 Box
-# ref-counts={'Box': 9, 'BadName': 2, 'dd': 1, 'item': 2, 'c1': 1, 'c2': 1, 'total': 1, 'shared': 2, 'dq': 1, 'maxlen_src': 1, 'index_stop': 1, 'index_dq': 1, 'pop_key': 3, 'pop_l': 1, 'pop_r': 1, 'first_key': 3, 'first_l': 1, 'first_r': 1, 'and_key': 3, 'and_l': 1, 'and_r': 1, 'neg_key': 2, 'neg_src': 1, 'cmp_tail_count': 5, 'cmp_le_l': 1, 'cmp_le_r': 1, 'cmp_err_l': 1, 'cmp_err_r': 1, 'bad_field': 1, 'tail_field': 1, 'unhashable_key': 1, 'nt_default': 2, 'NtDefaults': 1}
+# ref-counts={'Box': 9, 'BadName': 2, 'dd': 1, 'item': 2, 'c1': 1, 'c2': 1, 'total': 1, 'shared': 2, 'dq': 1, 'maxlen_src': 1, 'index_stop': 1, 'index_dq': 1, 'pop_key': 3, 'pop_l': 1, 'pop_r': 1, 'first_key': 3, 'first_l': 1, 'first_r': 1, 'and_key': 3, 'and_l': 1, 'and_r': 1, 'neg_key': 2, 'neg_src': 1, 'cmp_tail_count': 5, 'cmp_le_l': 1, 'cmp_le_r': 1, 'cmp_err_l': 1, 'cmp_err_r': 1, 'bad_field': 1, 'tail_field': 1, 'unhashable_key': 1, 'nt_default': 1}
