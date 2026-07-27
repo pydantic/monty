@@ -1,7 +1,5 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use monty_types::ResourceTracker;
-
 use super::{Dict, LazyHeapSet, PyTrait, Type};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -73,31 +71,26 @@ impl<'h> HeapRead<'h, Instance> {
 
     /// Sets an instance attribute, returning the previous value (if any) for the
     /// caller to drop. Takes ownership of both `name` and `value`.
-    pub fn set_attr(
-        &mut self,
-        name: Value,
-        value: Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
-    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Instance(self.get(vm.heap).class)
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Identity equality, resolved by `Value::py_eq_impl` before reaching here.
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Instances hash by identity (CPython's default for objects without `__hash__`).
         Ok(Some(identity_hash(self_id)))
     }
@@ -109,12 +102,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     /// because it needs the instance's `HeapId` to pass `self`, which this method
     /// does not receive. This produces a best-effort default and is essentially
     /// never reached.
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let class_id = self.get(vm.heap).class;
         Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
     }
@@ -122,7 +110,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -167,7 +155,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         ))
     }
 
-    fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
         // CPython names `__exit__` in the protocol TypeError, so that is the
         // dunder the `BeforeWith` gate checks; a class with `__exit__` but no
         // `__enter__` passes the gate and gets the "missed __enter__ method"
@@ -181,7 +169,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         }
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(enter) = class_member(class_id, "__enter__", vm) else {
             return Err(ExcType::type_error_not_context_manager(
@@ -197,12 +185,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         call_member_bound(enter, self_id, ArgValues::Empty, vm)
     }
 
-    fn py_exit(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        exc: Option<HeapId>,
-    ) -> RunResult<CallResult> {
+    fn py_exit(&mut self, self_id: HeapId, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
         let class_id = self.get(vm.heap).class;
         let Some(exit) = class_member(class_id, "__exit__", vm) else {
             // Defensive tripwire — unreachable via `with`. `py_is_context_manager`
@@ -256,31 +239,26 @@ impl HeapItem for Instance {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         // Monty has no dedicated `method` type; bound methods report `function`.
         Type::Function
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, self_id: HeapId, _vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Bound methods hash by identity, consistent with their identity-only
         // equality (CPython hashes by `(instance, func)` — see limitations/classes.md).
         Ok(Some(identity_hash(self_id)))
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(write!(f, "<bound method>")?)
     }
 }
@@ -304,11 +282,7 @@ impl HeapItem for BoundMethod {
 /// attribute raises `AttributeError` with the real class name. Takes `self_id`
 /// (available at the `Value` level) because binding a method needs the instance's
 /// `HeapId`.
-pub(crate) fn instance_getattr(
-    self_id: HeapId,
-    attr: &EitherStr,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<CallResult> {
+pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
 
     // 1. Instance dict.
@@ -352,7 +326,7 @@ pub(crate) fn instance_getattr(
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
-pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
     match instance_call_str_dunder(self_id, "__repr__", vm)? {
         Some(s) => Ok(s),
         None => Ok(allocate_string(default_repr(self_id, vm), vm.heap)?),
@@ -361,7 +335,7 @@ pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracke
 
 /// Produces `str(instance)`, dispatching to a user `__str__` if defined, else
 /// falling back to `repr` (which itself falls back to the default).
-pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
     match instance_call_str_dunder(self_id, "__str__", vm)? {
         Some(s) => Ok(s),
         None => instance_repr(self_id, vm),
@@ -378,11 +352,7 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker
 /// re-enters the VM on the *Rust* stack; `evaluate_function`'s re-entry guard
 /// bounds it with a catchable `RecursionError` — lower than CPython's depth for
 /// deep-but-finite chains, a documented divergence (`limitations/classes.md`).
-fn instance_call_str_dunder(
-    self_id: HeapId,
-    dunder: &'static str,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Option<Value>> {
+fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     let class_id = instance_class(self_id, vm);
     let Some(func) = class_member(class_id, dunder, vm) else {
         return Ok(None);
@@ -413,7 +383,7 @@ fn instance_call_str_dunder(
 }
 
 /// The default `repr` for an instance with no user `__repr__`.
-fn default_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> String {
+fn default_repr(self_id: HeapId, vm: &mut VM<'_>) -> String {
     let class_id = instance_class(self_id, vm);
     format!(
         "<{} object at 0x{:x}>",
@@ -423,7 +393,7 @@ fn default_repr(self_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> Strin
 }
 
 /// Returns the `HeapId` of `self_id`'s class object.
-fn instance_class(self_id: HeapId, vm: &VM<'_, impl ResourceTracker>) -> HeapId {
+fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
     match vm.heap.get(self_id) {
         HeapData::Instance(inst) => inst.class,
         _ => unreachable!("instance_class called on non-instance heap value"),
@@ -431,7 +401,7 @@ fn instance_class(self_id: HeapId, vm: &VM<'_, impl ResourceTracker>) -> HeapId 
 }
 
 /// Looks up a member in a class namespace and clones it out, or `None` if absent.
-fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>) -> Option<Value> {
+fn class_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> Option<Value> {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => class
             .namespace()
@@ -453,11 +423,7 @@ fn class_member(class_id: HeapId, name: &str, vm: &VM<'_, impl ResourceTracker>)
 /// If `class_id` does not refer to a `Class` heap entry — every producer of a
 /// class id (`Instance.class`, class values) guarantees it does, so this is a
 /// programmer-error tripwire.
-pub(crate) fn class_name<'i>(
-    class_id: HeapId,
-    heap: &Heap<impl ResourceTracker>,
-    interns: &'i Interns,
-) -> Cow<'i, str> {
+pub(crate) fn class_name<'i>(class_id: HeapId, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
     match heap.get(class_id) {
         HeapData::Class(class) => match class.name() {
             EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
@@ -472,12 +438,7 @@ pub(crate) fn class_name<'i>(
 /// other callable value is called as-is. Shared by `py_call_attr` and the
 /// context-manager hooks (`py_enter`/`py_exit`) so dunder invocation and
 /// ordinary method calls dispatch identically.
-fn call_member_bound(
-    member: &Value,
-    self_id: HeapId,
-    args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<CallResult> {
+fn call_member_bound(member: &Value, self_id: HeapId, args: ArgValues, vm: &mut VM<'_>) -> RunResult<CallResult> {
     if is_method_value(member, vm) {
         vm.heap.inc_ref(self_id);
         vm.call_function(member, args.prepend(Value::Ref(self_id)))
@@ -489,7 +450,7 @@ fn call_member_bound(
 /// Whether a value is a user-defined function (so it should bind `self` when
 /// accessed as a method). Class variables that are not functions are returned
 /// unbound.
-fn is_method_value(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+fn is_method_value(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::DefFunction(_) => true,
         Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::Closure(_) | HeapData::FunctionDefaults(_)),

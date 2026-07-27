@@ -10,8 +10,6 @@
 
 use std::cmp::Ordering;
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs, LaxBool},
     bytecode::VM,
@@ -41,7 +39,7 @@ struct ListSortArgs {
 /// builtin — sharing here is what makes unknown-kwarg errors uniformly
 /// read `sort() got an unexpected keyword argument 'X'` (matching
 /// CPython, whose `sorted` delegates to `list.sort` internally).
-pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_>) -> RunResult<()> {
     let ListSortArgs { key, reverse } = ListSortArgs::from_args(args, vm)?;
     let key_fn = match key {
         Some(v) if matches!(v, Value::None) => {
@@ -55,12 +53,7 @@ pub fn parse_and_sort(items: &mut [Value], args: ArgValues, vm: &mut VM<'_, impl
 }
 
 /// Sorts a vector of values, with optional key function.
-pub fn sort_values(
-    values: &mut [Value],
-    key_fn: Option<&Value>,
-    reverse: bool,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<()> {
+pub fn sort_values(values: &mut [Value], key_fn: Option<&Value>, reverse: bool, vm: &mut VM<'_>) -> RunResult<()> {
     if let Some(f) = key_fn {
         // Sort by key function: compute all the keys, sort an index buffer, then
         // rearrange the original values in-place according to the sorted indices.
@@ -96,12 +89,7 @@ pub fn sort_values(
 ///
 /// The `values` slice is typically either the items themselves (no key function)
 /// or the pre-computed key values.
-pub fn sort_indices(
-    indices: &mut [usize],
-    values: &[Value],
-    reverse: bool,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<(), RunError> {
+pub fn sort_indices(indices: &mut [usize], values: &[Value], reverse: bool, vm: &mut VM<'_>) -> Result<(), RunError> {
     let mut sort_result: RunResult<()> = Ok(());
     indices.sort_by(|&a, &b| compare_values(&values[a], &values[b], reverse, &mut sort_result, vm));
     sort_result
@@ -137,13 +125,7 @@ pub fn apply_permutation<T>(items: &mut [T], indices: &mut [usize]) {
 }
 
 /// Helper for the sort functions which compares two values, handling any exceptions and timeouts.
-fn compare_values(
-    a: &Value,
-    b: &Value,
-    reverse: bool,
-    sort_result: &mut RunResult<()>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Ordering {
+fn compare_values(a: &Value, b: &Value, reverse: bool, sort_result: &mut RunResult<()>, vm: &mut VM<'_>) -> Ordering {
     if sort_result.is_err() {
         // short-circuit if we've already encountered an error in a previous comparison
         return Ordering::Equal;

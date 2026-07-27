@@ -90,7 +90,7 @@ Calling and consuming — sketch; see `unicodedata.rs` for the real body (note
 `defer_drop!` for fields that hold heap refs):
 
 ```rust
-fn call_normalize(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn call_normalize(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let NormalizeArgs { form, unistr } = NormalizeArgs::from_args(args, vm)?;
     defer_drop!(unistr, vm);
     let normalized = form.apply(unistr.as_str(vm)); // sketch — do the work here

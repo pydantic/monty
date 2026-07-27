@@ -15,8 +15,6 @@
 //! change both; coverage lives in `test_cases/function__arity_defaults.py`
 //! and `test_cases/args__macro_errors.py`.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgPosIter, ArgValues},
     bytecode::VM,
@@ -216,7 +214,7 @@ impl Signature {
         &self,
         args: ArgValues,
         defaults: &[Value],
-        vm: &mut VM<'_, impl ResourceTracker>,
+        vm: &mut VM<'_>,
         func_name: Identifier,
         namespace: &mut Vec<Value>,
     ) -> RunResult<()> {

@@ -1,6 +1,5 @@
 //! Implementation of the hex() builtin function.
 
-use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::Signed;
 
@@ -18,7 +17,7 @@ use crate::{
 ///
 /// Converts an integer to a lowercase hexadecimal string prefixed with '0x'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hex(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("hex", vm.heap)?;
     defer_drop!(value, vm);
     let heap = &mut *vm.heap;

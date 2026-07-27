@@ -6,7 +6,7 @@ use std::{
     ops::Deref,
 };
 
-use monty_types::{ExcType, ResourceError, ResourceTracker};
+use monty_types::{ExcType, ResourceError};
 
 use crate::{
     args::ArgValues,
@@ -166,37 +166,53 @@ impl HeapData {
     ///
     /// This optimization allows programs that allocate many leaf objects (like strings)
     /// to avoid triggering unnecessary GC cycles.
+    ///
+    /// Matched exhaustively so new variants must choose.
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::List(_)
-                | Self::Tuple(_)
-                | Self::NamedTuple(_)
-                | Self::Dict(_)
-                | Self::DictKeysView(_)
-                | Self::DictItemsView(_)
-                | Self::DictValuesView(_)
-                | Self::Set(_)
-                | Self::FrozenSet(_)
-                | Self::Closure(_)
-                | Self::FunctionDefaults(_)
-                | Self::Cell(_)
-                | Self::Dataclass(_)
-                | Self::Class(_)
-                | Self::Instance(_)
-                | Self::BoundMethod(_)
-                | Self::Iter(_)
-                | Self::Module(_)
-                | Self::Coroutine(_)
-                | Self::GatherFuture(_)
-                | Self::ExternalFuture(_)
-        )
-        // `OpenFile` is deliberately *not* listed here: its single heap
-        // reference (`buffer`) only ever points to `Str` / `Bytes`, neither of
-        // which is GC-tracked, so an `OpenFile` cannot participate in a
-        // reference cycle. Add it back if `OpenFile` ever gains a field that
-        // can hold a container value (e.g. a user-provided callback).
+            | Self::Tuple(_)
+            | Self::NamedTuple(_)
+            | Self::Dict(_)
+            | Self::DictKeysView(_)
+            | Self::DictItemsView(_)
+            | Self::DictValuesView(_)
+            | Self::Set(_)
+            | Self::FrozenSet(_)
+            | Self::Closure(_)
+            | Self::FunctionDefaults(_)
+            | Self::Cell(_)
+            | Self::Dataclass(_)
+            | Self::Class(_)
+            | Self::Instance(_)
+            | Self::BoundMethod(_)
+            | Self::Iter(_)
+            | Self::ListIterator(_)
+            | Self::CallableIterator(_)
+            | Self::Module(_)
+            | Self::Coroutine(_)
+            | Self::GatherFuture(_)
+            | Self::ExternalFuture(_) => true,
+            // Leaf types, plus three whose heap refs can only point at leaves and so
+            // cannot close a cycle: `OpenFile` (→ Str/Bytes), `ReMatch` (→ Str),
+            // `DateTime` (→ TimeZone). Move up if any gains a container-valued field.
+            Self::Str(_)
+            | Self::Bytes(_)
+            | Self::Range(_)
+            | Self::Slice(_)
+            | Self::Exception(_)
+            | Self::LongInt(_)
+            | Self::Path(_)
+            | Self::OpenFile(_)
+            | Self::RePattern(_)
+            | Self::ReMatch(_)
+            | Self::ExtFunction(_)
+            | Self::Date(_)
+            | Self::DateTime(_)
+            | Self::TimeDelta(_)
+            | Self::TimeZone(_) => false,
+        }
     }
 
     /// Whether calling a `Ref` to this heap data would succeed at dispatch.
@@ -519,7 +535,7 @@ macro_rules! heap_read_output_py_trait_forward {
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_bool(vm),
@@ -540,112 +556,102 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_radd_impl(other, vm), else Ok(None))
     }
 
-    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rsub_impl(other, vm), else Ok(None))
     }
 
-    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_mul_impl(other, vm), else Ok(None))
     }
 
-    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rmul_impl(other, vm), else Ok(None))
     }
 
-    fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_matmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_matmul_impl(other, vm), else Ok(None))
     }
 
-    fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rmatmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rmatmul_impl(other, vm), else Ok(None))
     }
 
-    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_truediv_impl(other, vm), else Ok(None))
     }
 
-    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rtruediv_impl(other, vm), else Ok(None))
     }
 
-    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_floordiv_impl(other, vm), else Ok(None))
     }
 
-    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rfloordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rfloordiv_impl(other, vm), else Ok(None))
     }
 
-    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rmod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rmod_impl(other, vm), else Ok(None))
     }
 
-    fn py_pow_impl(
-        &self,
-        other: &Value,
-        modulus: Option<&Value>,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_pow_impl(other, modulus, vm), else Ok(None))
     }
 
-    fn py_rpow_impl(
-        &self,
-        other: &Value,
-        modulus: Option<&Value>,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<Option<Value>> {
+    fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm), else Ok(None))
     }
 
-    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm), else Ok(None))
     }
 
-    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_ror_impl(other, vm), else Ok(None))
     }
 
-    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_xor_impl(other, vm), else Ok(None))
     }
 
-    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rxor_impl(other, vm), else Ok(None))
     }
 
-    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_lshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_lshift_impl(other, vm), else Ok(None))
     }
 
-    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rlshift_impl(other, vm), else Ok(None))
     }
 
-    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rshift_impl(other, vm), else Ok(None))
     }
 
-    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rrshift_impl(other, vm), else Ok(None))
     }
 
     fn py_call_attr(
         &mut self,
         self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> Result<CallResult, RunError> {
@@ -664,11 +670,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         }
     }
 
-    fn py_is_iterable(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
         heap_read_output_py_trait_forward!(self, |value| value.py_is_iterable(vm), else false)
     }
 
-    fn py_is_context_manager(&self, vm: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
         // Only types that implement the protocol return true; everything else
         // inherits the default `false`. The `with` statement gates `py_enter`
         // / `py_exit` on this check, so a real context manager whose
@@ -677,7 +683,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_is_context_manager(vm), else false)
     }
 
-    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CallResult> {
+    fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
         // Only types that override the trait default need explicit arms; all
         // others fall through to the catch-all `AttributeError`, matching how
         // `py_call_attr` is structured.
@@ -688,12 +694,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_exit(
-        &mut self,
-        self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        exc: Option<HeapId>,
-    ) -> RunResult<CallResult> {
+    fn py_exit(&mut self, self_id: HeapId, vm: &mut VM<'h>, exc: Option<HeapId>) -> RunResult<CallResult> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_exit(self_id, vm, exc),
@@ -701,7 +702,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, vm: &VM<'h>) -> Type {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_type(vm),
@@ -718,11 +719,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         heap_read_output_py_trait_forward!(self, |value| value.py_len(vm), else None)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_eq_impl(other, vm),
@@ -754,7 +755,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     }
 
     /// Dispatches hashing to per-type `PyTrait` implementations where possible.
-    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_hash(self_id, vm),
@@ -783,12 +784,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_repr_fmt(f, vm, heap_ids),
@@ -823,7 +819,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_str(vm),
@@ -836,28 +832,23 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm), else Ok(None))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm), else Ok(None))
     }
 
-    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_mod_impl(other, vm), else Ok(None))
     }
 
-    fn py_iadd_impl(
-        &mut self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        self_id: Option<HeapId>,
-    ) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> Result<bool, ResourceError> {
         heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm, self_id), else Ok(false))
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getitem(key, vm),
@@ -865,7 +856,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<()> {
+    fn py_setitem(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
         heap_read_output_py_trait_forward!(
             self,
             |item| item.py_setitem(key, value, vm),
@@ -879,7 +870,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_getattr(attr, vm),
@@ -893,7 +884,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_iter(self_id, vm),
@@ -907,7 +898,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(
             self,
             |value| value.py_next(vm),

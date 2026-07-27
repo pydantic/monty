@@ -7,7 +7,7 @@
 //! Other asyncio functions (`create_task`, `sleep`, `wait`, etc.) are not implemented.
 //! The host acts as the event loop - Monty yields control when tasks are blocked.
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -40,7 +40,7 @@ pub(crate) enum AsyncioFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Asyncio);
 
     module.set_attr(
@@ -56,11 +56,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 
     vm.heap.allocate(HeapData::Module(module))
 }
-pub(super) fn call(
-    vm: &mut VM<'_, impl ResourceTracker>,
-    functions: AsyncioFunctions,
-    args: ArgValues,
-) -> RunResult<CallResult> {
+pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
         AsyncioFunctions::Gather => gather(vm, args).map(CallResult::Value),
         AsyncioFunctions::Run => run(vm.heap, args),
@@ -74,7 +70,7 @@ pub(super) fn call(
 ///
 /// Returns `CallResult::AwaitValue` so the VM executes `exec_get_awaitable` on
 /// the value, which handles validation that it's actually a coroutine/awaitable.
-fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+fn run(heap: &mut Heap, args: ArgValues) -> RunResult<CallResult> {
     let coroutine = args.get_one_arg("asyncio.run", heap)?;
     Ok(CallResult::AwaitValue(coroutine))
 }
@@ -99,7 +95,7 @@ fn run(heap: &mut Heap<impl ResourceTracker>, args: ArgValues) -> RunResult<Call
 ///
 /// # Errors
 /// Returns `TypeError` if any argument is not awaitable.
-pub(crate) fn gather(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // TODO: support keyword arguments (e.g. return_exceptions); for now any
     // kwarg is rejected up front by the macro's `kwargs_not_supported_yet`
     // flag with a `NotImplementedError: gather() does not yet support keyword

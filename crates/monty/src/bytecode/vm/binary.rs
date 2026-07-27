@@ -1,7 +1,5 @@
 //! Binary and in-place operation helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     defer_drop,
@@ -11,7 +9,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))

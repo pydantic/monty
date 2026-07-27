@@ -3,7 +3,7 @@ use std::{
     fmt::{self, Display, Write},
 };
 
-use monty_types::{ExcData, JsonErrorData, MontyException, ResourceTracker, StackFrame, UnicodeErrorData};
+use monty_types::{ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData};
 use smallvec::smallvec;
 
 use crate::{
@@ -37,7 +37,7 @@ pub use monty_types::{ExcType, unicode_decode_error_msg};
 pub(crate) trait ExcTypeExt: Sized {
     /// Creates an exception instance from an exception type and arguments,
     /// handling constructor calls like `ValueError('message')`.
-    fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value>;
+    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>;
 
     /// Creates an AttributeError for when an attribute is not found (GET operation).
     ///
@@ -186,7 +186,7 @@ pub(crate) trait ExcTypeExt: Sized {
     /// If the key's string conversion fails (e.g. huge LongInt exceeding
     /// `INT_MAX_STR_DIGITS`), falls back to the type name so that a
     /// `KeyError` is always raised rather than a spurious `ValueError`.
-    fn key_error(key: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunError {
+    fn key_error(key: &Value, vm: &mut VM<'_>) -> RunError {
         let key_str = match key.py_str(vm) {
             Ok(key_value) => {
                 // `key_value` is a heap `str` `Value`; extract its text and drop it.
@@ -1723,7 +1723,7 @@ impl ExcTypeExt for ExcType {
     ///
     /// The `interns` parameter provides access to interned string content.
     /// Returns a heap-allocated exception value.
-    fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         defer_drop!(args, vm);
         let exc = match args {
             ArgValues::Empty => Ok(SimpleException::new_none(self)),
@@ -1853,7 +1853,7 @@ impl SimpleException {
 }
 
 impl<'h> HeapRead<'h, SimpleException> {
-    pub(crate) fn py_type(&self, vm: &VM<'h, impl ResourceTracker>) -> Type {
+    pub(crate) fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Exception(self.get(vm.heap).exc_type)
     }
 }
@@ -1871,14 +1871,6 @@ impl SimpleException {
         f.write_char(')')
     }
 
-    pub(crate) fn with_frame(self, frame: RawStackFrame) -> ExceptionRaise {
-        ExceptionRaise {
-            exc: self,
-            frame: Some(frame),
-            hide_caret: false,
-        }
-    }
-
     pub(crate) fn with_position(self, position: CodeRange) -> ExceptionRaise {
         ExceptionRaise {
             exc: self,
@@ -1893,7 +1885,7 @@ impl<'h> HeapRead<'h, SimpleException> {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID
         let is_args = attr
             .static_string()

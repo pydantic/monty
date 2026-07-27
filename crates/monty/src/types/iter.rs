@@ -54,7 +54,7 @@ impl MontyIter {
     /// - `iter(iterable)` - Returns an iterator for the iterable. If the argument is
     ///   already an iterator, returns the same object.
     /// - `iter(callable, sentinel)` - builds a [`CallableIterator`].
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let IterArgs { object, sentinel } = IterArgs::from_args(args, vm)?;
 
         if let Some(sentinel) = sentinel {
@@ -80,7 +80,7 @@ impl MontyIter {
     /// Returns an error if the value is not iterable.
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
-    pub fn new(mut value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Self> {
+    pub fn new(mut value: Value, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Value::Ref(list_id) = value {
             let list_iterator = match vm.heap.read(list_id) {
                 HeapReadOutput::List(list) => Some(list.py_iter(Some(list_id), vm)?),
@@ -147,7 +147,7 @@ impl MontyIter {
     /// For concrete iterables, returns their exact remaining count.
     ///
     /// Opaque iterators may provide a type-specific hint; otherwise this returns zero.
-    pub fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
+    pub fn size_hint(&self, heap: &Heap) -> usize {
         let len = match &self.iter_value {
             IterValue::Range { len, .. } | IterValue::IterStr { len, .. } | IterValue::InternBytes { len, .. } => *len,
             IterValue::HeapRef { len, .. } => *len,
@@ -192,7 +192,7 @@ struct IterArgs {
 pub(crate) fn checked_preallocation_hint(
     hint: usize,
     elem_size: usize,
-    tracker: &impl ResourceTracker,
+    tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
     /// Upper bound on the number of slots reserved from an untrusted hint.
     const MAX_PREALLOCATION_HINT: usize = 65_536;
@@ -215,16 +215,16 @@ pub(crate) fn checked_preallocation_hint(
 /// policy used by [`checked_preallocation_hint`].
 ///
 /// [`next`]: Iterator::next
-struct HeapedMontyIter<'this, 'h, T: ResourceTracker, I: CollectIter<'h>> {
+struct HeapedMontyIter<'this, 'h, I: CollectIter<'h>> {
     /// The underlying iterator being drained.
     iter: &'this mut I,
     /// VM handle, needed both to advance `iter` and to reach the tracker.
-    vm: &'this mut VM<'h, T>,
+    vm: &'this mut VM<'h>,
     /// Count of elements yielded so far; drives the running size estimate.
     yielded: usize,
 }
 
-impl<'h, T: ResourceTracker, I: CollectIter<'h>> Iterator for HeapedMontyIter<'_, 'h, T, I> {
+impl<'h, I: CollectIter<'h>> Iterator for HeapedMontyIter<'_, 'h, I> {
     type Item = RunResult<Value>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -259,18 +259,18 @@ impl<'h, T: ResourceTracker, I: CollectIter<'h>> Iterator for HeapedMontyIter<'_
 /// Interface used to drain a retained Python iterator through Rust's `collect()`.
 trait CollectIter<'h> {
     /// Advances the iterator by one item.
-    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>>;
+    fn next_value(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>>;
 
     /// Returns an internal remaining-length hint when available.
-    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize;
+    fn remaining(&self, vm: &VM<'h>) -> usize;
 }
 
 impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
-    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn next_value(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_next(vm)
     }
 
-    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize {
+    fn remaining(&self, vm: &VM<'h>) -> usize {
         self.iter_size_hint(vm)
     }
 }
@@ -280,7 +280,7 @@ impl<'h> HeapRead<'h, MontyIter> {
     ///
     /// Bytecode callers are checked by the VM dispatch loop; Rust-side loops
     /// enter through [`ValueRead::py_next`], which performs the timeout check.
-    pub(crate) fn advance(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub(crate) fn advance(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if let IterValue::Opaque { heap_id } = &self.get(vm.heap).iter_value {
             return advance_opaque(*heap_id, vm);
         }
@@ -349,7 +349,7 @@ impl<'h> HeapRead<'h, MontyIter> {
 /// For the sites that need all items at once (sequence unpacking, `*` literal
 /// unpack). The input remains owned by the caller; the temporary Python iterator
 /// retains it for as long as necessary.
-pub fn collect_iterable(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+pub fn collect_iterable(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = value.py_iter(vm)?;
     collect_python_iterator(iterator, vm)
 }
@@ -357,19 +357,13 @@ pub fn collect_iterable(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) ->
 /// Collects every item yielded by an owned iterable into a `T`.
 ///
 /// Releases the original value after entering the Python iteration protocol.
-pub(crate) fn collect_owned_iterable<T: FromIterator<Value>>(
-    value: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<T> {
+pub(crate) fn collect_owned_iterable<T: FromIterator<Value>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
     let iterator = value.into_py_iter(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
 /// Drains an owned Python iterator with incremental native-allocation checks.
-fn collect_python_iterator<T: FromIterator<Value>>(
-    iterator: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<T> {
+fn collect_python_iterator<T: FromIterator<Value>>(iterator: Value, vm: &mut VM<'_>) -> RunResult<T> {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     HeapedMontyIter {
@@ -385,11 +379,7 @@ fn collect_python_iterator<T: FromIterator<Value>>(
 /// Sequence unpacking only needs to know whether there is one item too many, and
 /// CPython stops consuming there. Draining instead would over-consume a shared
 /// iterator and change the error message.
-pub fn collect_iterable_bounded(
-    value: &Value,
-    limit: usize,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Vec<Value>> {
+pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = value.py_iter(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
@@ -444,7 +434,7 @@ impl OpaqueError {
 ///
 /// The walk is iterative and bounded because restored snapshot data is untrusted.
 /// Its result is always safe to dispatch without another opaque hop.
-fn flatten_opaque(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<HeapId, OpaqueError> {
+fn flatten_opaque(start: HeapId, heap: &Heap) -> Result<HeapId, OpaqueError> {
     let mut current = start;
     for _ in 0..MAX_OPAQUE_DEPTH {
         match heap.get(current) {
@@ -460,7 +450,7 @@ fn flatten_opaque(start: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<He
 }
 
 /// Resolves a direct opaque target, rejecting nested links from malformed snapshots.
-fn opaque_target(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<OpaqueTarget, OpaqueError> {
+fn opaque_target(heap_id: HeapId, heap: &Heap) -> Result<OpaqueTarget, OpaqueError> {
     match heap.get(heap_id) {
         HeapData::Iter(inner) if matches!(inner.iter_value, IterValue::Opaque { .. }) => Err(OpaqueError::TooDeep),
         HeapData::Iter(_) => Ok(OpaqueTarget::Iter(heap_id)),
@@ -470,7 +460,7 @@ fn opaque_target(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Result<O
 }
 
 /// Advances a direct opaque target without recursive iterator dispatch.
-fn advance_opaque(heap_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+fn advance_opaque(heap_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     match opaque_target(heap_id, vm.heap).map_err(OpaqueError::into_exception)? {
         OpaqueTarget::Iter(heap_id) => {
             let HeapReadOutput::Iter(mut iter) = vm.heap.read(heap_id) else {
@@ -487,12 +477,7 @@ fn advance_opaque(heap_id: HeapId, vm: &mut VM<'_, impl ResourceTracker>) -> Run
 /// Gets an item from a heap-allocated container at the given index.
 ///
 /// Returns an error if a dict or set changed size during iteration.
-fn get_heap_item(
-    vm: &VM<'_, impl ResourceTracker>,
-    heap_id: HeapId,
-    index: usize,
-    expected_len: Option<usize>,
-) -> RunResult<Value> {
+fn get_heap_item(vm: &VM<'_>, heap_id: HeapId, index: usize, expected_len: Option<usize>) -> RunResult<Value> {
     match vm.heap.get(heap_id) {
         HeapData::Tuple(tuple) => Ok(tuple.as_slice()[index].clone_with_heap(vm)),
         HeapData::NamedTuple(namedtuple) => Ok(namedtuple.as_vec()[index].clone_with_heap(vm)),
@@ -573,11 +558,7 @@ fn get_heap_item(
 ///
 /// # Errors
 /// Returns `StopIteration` if exhausted with no default, or propagates errors from iteration.
-pub fn iterator_next(
-    iter_value: &Value,
-    default: Option<Value>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Value> {
+pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut default_guard = DropGuard::new(default, vm);
     let vm = default_guard.ctx();
 
@@ -643,7 +624,7 @@ enum IterValue {
 }
 
 impl IterValue {
-    fn new(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Self>> {
+    fn new(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         match value {
             Value::InternString(string_id) => Ok(Some(Self::from_str(vm.interns.get_str(*string_id)))),
             Value::InternBytes(bytes_id) => Ok(Some(Self::from_intern_bytes(*bytes_id, vm.interns))),
@@ -683,7 +664,7 @@ impl IterValue {
     }
 
     /// Creates an iterator value from heap data.
-    fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> RunResult<Option<Self>> {
+    fn from_heap_data(heap_id: HeapId, heap: &Heap) -> RunResult<Option<Self>> {
         let iter_value = match heap.get(heap_id) {
             // Tuple/NamedTuple/Bytes/FrozenSet: captured len, no mutation check
             HeapData::Tuple(tuple) => Some(Self::HeapRef {
@@ -764,38 +745,33 @@ impl HeapItem for MontyIter {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, MontyIter> {
-    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
 
-    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _: &VM<'h>) -> Type {
         Type::Iterator
     }
 
-    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        _vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, _vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(f.write_str("<iterator>")?)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let self_id = self_id.expect("heap values have an id");
         vm.heap.inc_ref(self_id);
         Ok(Value::Ref(self_id))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.advance(vm)
     }
 }

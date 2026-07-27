@@ -292,6 +292,24 @@ try:
 except ValueError as exc:
     assert str(exc) == "invalid mode: 'z'", f'unexpected unknown mode message: {exc}'
 
+# A `b`/`t` flag alone supplies no r/w/a action and must be rejected, not
+# silently treated as a read.
+try:
+    open(root / 'hello.txt', 'b')
+    assert False, 'expected action-less binary mode to fail'
+except ValueError as exc:
+    assert str(exc) == 'Must have exactly one of create/read/write/append mode and at most one plus', (
+        f'unexpected action-less mode message: {exc}'
+    )
+
+try:
+    open(root / 'hello.txt', 't')
+    assert False, 'expected action-less text mode to fail'
+except ValueError as exc:
+    assert str(exc) == 'Must have exactly one of create/read/write/append mode and at most one plus', (
+        f'unexpected action-less mode message: {exc}'
+    )
+
 # === Sized read ===
 # Set up a multi-line text fixture for the rest of these tests.
 (root / 'sized.txt').write_text('hello world')

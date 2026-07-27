@@ -636,7 +636,20 @@ pub enum Node<F> {
         body: Vec<Self>,
         or_else: Vec<Self>,
     },
-    FunctionDef(F),
+    /// Function definition (e.g. `def foo(): ...`).
+    ///
+    /// Decorators live on the statement rather than inside `F` because `F` is
+    /// also a class body and a method, neither of which can carry them — and
+    /// because a decorator is part of the `def` statement, not of the function
+    /// object it produces. Mirrors [`Node::ClassDef`].
+    FunctionDef {
+        /// The function itself: signature and body, riding the `F` =
+        /// Raw→Prepared pipeline.
+        def: F,
+        /// In source order; evaluated in the enclosing scope and applied
+        /// bottom-up (`foo = deco(foo)`), like CPython.
+        decorators: Vec<ExprLoc>,
+    },
     /// Class definition (e.g. `class Foo: ...`).
     ///
     /// Modelled on CPython's class-body code object: the class body is a

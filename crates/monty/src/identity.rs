@@ -4,7 +4,7 @@
 //! must distinguish every identity category. Compact identities remain inline
 //! Python integers; only encodings outside `i64` require a heap `LongInt`.
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 use num_bigint::{BigInt, Sign};
 use serde::Serialize;
 use smallvec::SmallVec;
@@ -65,7 +65,7 @@ pub(crate) enum Identity<'a> {
 
 impl<'a> Identity<'a> {
     /// Builds the structural identity used by both `is` and `id()`.
-    pub(crate) fn new(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> Self {
+    pub(crate) fn new(value: &Value, vm: &'a VM<'_>) -> Self {
         match value {
             Value::Undefined => Self::Undefined,
             Value::Ellipsis => Self::Ellipsis,
@@ -95,7 +95,7 @@ impl<'a> Identity<'a> {
     ///
     /// Results fitting `i64` remain immediate. Wider fixed identities and long
     /// external-function names allocate a heap `LongInt` for the returned value.
-    pub(crate) fn into_value(self, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+    pub(crate) fn into_value(self, heap: &Heap) -> Result<Value, ResourceError> {
         if let Some(encoded) = self.fixed_encoding() {
             u128_into_value(encoded, heap)
         } else if let Self::ExtFunction(name) = self {
@@ -186,7 +186,7 @@ fn compact_float_bits(bits: u64) -> u64 {
 }
 
 /// Encodes an arbitrary external-function name into its necessarily wide identity.
-fn encode_long_name(name: &str, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn encode_long_name(name: &str, heap: &Heap) -> Result<Value, ResourceError> {
     let mut bytes = SmallVec::<[u8; 32]>::with_capacity(name.len() + 1);
     bytes.push(1);
     bytes.extend_from_slice(name.as_bytes());
@@ -196,7 +196,7 @@ fn encode_long_name(name: &str, heap: &Heap<impl ResourceTracker>) -> Result<Val
 }
 
 /// Allocates a wide identity integer without repeating the known-failing `i64` check.
-fn allocate_identity_int(encoded: BigInt, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn allocate_identity_int(encoded: BigInt, heap: &Heap) -> Result<Value, ResourceError> {
     let id = heap.allocate(HeapData::LongInt(LongInt::new(encoded)))?;
     Ok(Value::Ref(id))
 }

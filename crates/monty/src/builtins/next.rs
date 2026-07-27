@@ -1,7 +1,5 @@
 //! Implementation of the next() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -32,7 +30,7 @@ struct NextArgs {
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
-pub fn builtin_next(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_next(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let NextArgs { iterator, default } = NextArgs::from_args(args, vm)?;
     defer_drop!(iterator, vm);
     iterator_next(iterator, default, vm)

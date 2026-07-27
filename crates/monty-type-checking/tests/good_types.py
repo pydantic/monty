@@ -589,3 +589,16 @@ assert_type(tz, datetime.timezone)
 
 assert_type(json.loads('null'), Any)
 assert_type(json.dumps(None), str)
+
+# === iter() / next() ===
+# Asserts only that these resolve and check. Precise element inference through
+# `Iterable[_T]` is a pre-existing gap in the trimmed stub — `sorted([1, 2])`
+# is `list[Unknown]` too — so element types are deliberately not asserted here.
+it = iter([1, 2, 3])
+next(it)
+next(it, 0)
+list(it)
+for _x in iter([1, 2, 3]):
+    pass
+# two-argument iter(callable, sentinel)
+list(iter(lambda: 0, 0))

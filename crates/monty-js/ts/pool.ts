@@ -68,7 +68,6 @@ export interface CheckoutOptions {
 
 /** Sandbox resource limits. Omitted fields mean "unlimited". */
 export interface ResourceLimits {
-  maxAllocations?: number
   maxDurationSecs?: number
   maxMemory?: number
   gcInterval?: number
