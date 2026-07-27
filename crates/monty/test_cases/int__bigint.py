@@ -276,6 +276,38 @@ assert pow_result == pow_2_100
 pow_bigger_2 = bigger * bigger
 pow_result2 = pow(bigger, 2)
 assert pow_result2 == pow_bigger_2
+assert bigger**-bigger == 0.0
+assert (-1) ** bigger == 1
+try:
+    0**-bigger
+    assert False, 'zero to a negative LongInt power should fail'
+except ZeroDivisionError as e:
+    assert str(e) == 'zero to a negative power'
+try:
+    pow(bigger, 3, 0)
+    assert False, 'zero modulus with a LongInt base should fail'
+except ValueError as e:
+    assert str(e) == 'pow() 3rd argument cannot be 0'
+
+# Mixed immediate and heap-backed numeric operands
+assert bigger + 0.5 == 9.223372036854776e18
+assert 0.5 + bigger == 9.223372036854776e18
+assert bigger - 0.5 == 9.223372036854776e18
+assert 0.5 - bigger == -9.223372036854776e18
+assert bigger * 0.5 == 4.611686018427388e18
+assert 0.5 * bigger == 4.611686018427388e18
+assert bigger + True == bigger + 1
+assert True + bigger == bigger + 1
+assert bigger - True == MAX_I64
+assert True - bigger == -MAX_I64
+assert bigger * True == bigger
+assert True * bigger == bigger
+assert bigger * False == 0
+assert False * bigger == 0
+
+# Reflected shifts by heap-backed integer counts
+assert False << bigger == 0
+assert True >> bigger == 0
 
 dm = divmod(bigger, 1000)
 dm_quot = dm[0]

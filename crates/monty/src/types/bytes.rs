@@ -238,7 +238,9 @@ struct BytesInitArgs {
 
 /// Concatenates two byte strings into a tracked heap value.
 pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value, ResourceError> {
-    let mut result = Vec::with_capacity(lhs.len() + rhs.len());
+    let result_len = lhs.len().saturating_add(rhs.len());
+    check_repeat_size(result_len, 1, heap.tracker())?;
+    let mut result = Vec::with_capacity(result_len);
     result.extend_from_slice(lhs);
     result.extend_from_slice(rhs);
     Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))?))

@@ -164,6 +164,27 @@ except TypeError as e:
         'supported items difference materializes the view'
     )
 
+# Intersection checks the other iterable before hashing any live item values.
+assert unhashable_values.items() & [] == set()
+assert [] & unhashable_values.items() == set()
+for expression in (lambda: unhashable_values.items() & 1, lambda: 1 & unhashable_values.items()):
+    try:
+        expression()
+        assert False, 'items intersection should reject non-iterables first'
+    except TypeError as e:
+        assert str(e) == "'int' object is not iterable"
+
+# The other set-like operators materialize the items view first.
+for expression in (
+    lambda: unhashable_values.items() | 1,
+    lambda: unhashable_values.items() ^ 1,
+):
+    try:
+        expression()
+        assert False, 'items operation should reject unhashable values'
+    except TypeError as e:
+        assert str(e) == "cannot use 'tuple' as a set element (unhashable type: 'list')"
+
 # === dict_keys & iterable ===
 d = {'a': 1, 'b': 2, 'c': 3}
 assert d.keys() & {'b', 'c', 'x'} == {'b', 'c'}

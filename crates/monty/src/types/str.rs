@@ -194,15 +194,15 @@ pub fn allocate_string(s: impl AsRef<str> + Into<Box<str>>, heap: &Heap) -> Resu
 /// formatted date). For inputs of unknown length, use [`allocate_string`].
 ///
 /// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
+pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Result<Value, ResourceError> {
+    let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
+    Ok(Value::Ref(heap_id))
+}
+
 /// Repeats a string after validating the allocation against resource limits.
 pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
     check_repeat_size(value.len(), count, heap.tracker())?;
     allocate_string(value.repeat(count), heap)
-}
-
-pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Result<Value, ResourceError> {
-    let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
-    Ok(Value::Ref(heap_id))
 }
 
 /// Allocates a single character as a string value.
@@ -227,7 +227,9 @@ pub fn allocate_char(c: char, heap: &Heap) -> Result<Value, ResourceError> {
 /// result size is bounded by two already-tracked inputs, so a plain `String`
 /// is fine per the `StringBuilder` rule.
 pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value, ResourceError> {
-    let mut concat = String::with_capacity(a.len() + b.len());
+    let result_len = a.len().saturating_add(b.len());
+    check_repeat_size(result_len, 1, heap.tracker())?;
+    let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
     allocate_string(concat, heap)

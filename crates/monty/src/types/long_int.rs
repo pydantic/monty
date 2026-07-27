@@ -9,6 +9,7 @@
 //! having freestanding functions scattered across the codebase.
 
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     fmt::{self, Display, Write},
     mem,
@@ -19,7 +20,7 @@ use std::{
 use monty_types::ResourceError;
 use num_bigint::BigInt;
 use num_integer::Integer;
-use num_traits::{FromPrimitive, Signed, ToPrimitive, Zero};
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 
 use crate::{
     bytecode::VM,
@@ -162,13 +163,6 @@ impl LongInt {
     /// result is the ordering of `self` relative to `f`.
     pub fn partial_cmp_f64(&self, f: f64) -> Option<Ordering> {
         bigint_cmp_f64(&self.0, f)
-    }
-
-    /// Tries to convert to u32.
-    ///
-    /// Returns `Some(u32)` if the value fits, `None` otherwise.
-    pub fn to_u32(&self) -> Option<u32> {
-        self.0.to_u32()
     }
 
     /// Tries to convert to usize.
@@ -420,10 +414,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     }
 
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let lhs = self.get(vm.heap).inner();
+        let lhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(rhs) => lhs + rhs,
-            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs + rhs.inner(),
+            Value::Int(rhs) => lhs.inner() + rhs,
+            Value::Bool(rhs) => lhs.inner() + i64::from(*rhs),
+            Value::Float(rhs) => return Ok(Some(Value::Float(long_int_to_f64(lhs) + rhs))),
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs.inner() + rhs.inner(),
             _ => return Ok(None),
         };
         Ok(Some(LongInt::new(result).into_value(vm.heap)?))
@@ -434,20 +430,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let lhs = self.get(vm.heap).inner();
+        let lhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(rhs) => lhs - rhs,
-            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs - rhs.inner(),
+            Value::Int(rhs) => lhs.inner() - rhs,
+            Value::Bool(rhs) => lhs.inner() - i64::from(*rhs),
+            Value::Float(rhs) => return Ok(Some(Value::Float(long_int_to_f64(lhs) - rhs))),
+            Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => lhs.inner() - rhs.inner(),
             _ => return Ok(None),
         };
         Ok(Some(LongInt::new(result).into_value(vm.heap)?))
     }
 
     fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let rhs = self.get(vm.heap).inner();
+        let rhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(lhs) => BigInt::from(*lhs) - rhs,
-            Value::Ref(id) if let HeapData::LongInt(lhs) = vm.heap.get(*id) => lhs.inner() - rhs,
+            Value::Int(lhs) => BigInt::from(*lhs) - rhs.inner(),
+            Value::Bool(lhs) => BigInt::from(*lhs) - rhs.inner(),
+            Value::Float(lhs) => return Ok(Some(Value::Float(lhs - long_int_to_f64(rhs)))),
+            Value::Ref(id) if let HeapData::LongInt(lhs) = vm.heap.get(*id) => lhs.inner() - rhs.inner(),
             _ => return Ok(None),
         };
         Ok(Some(LongInt::new(result).into_value(vm.heap)?))
@@ -456,8 +456,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap).inner();
         let result = match other {
-            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(rhs) => lhs.mod_floor(&BigInt::from(*rhs)),
+            Value::Bool(true) => BigInt::ZERO,
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
                 if rhs.is_zero() {
                     return Err(ExcType::zero_division().into());
@@ -476,6 +477,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }
         let result = match other {
             Value::Int(lhs) => BigInt::from(*lhs).mod_floor(rhs.inner()),
+            Value::Bool(lhs) => BigInt::from(*lhs).mod_floor(rhs.inner()),
             Value::Ref(id) if let HeapData::LongInt(lhs) = vm.heap.get(*id) => lhs.inner().mod_floor(rhs.inner()),
             _ => return Ok(None),
         };
@@ -489,6 +491,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
                 check_mult_size(lhs.bits(), i64_bits(*rhs), vm.heap.tracker())?;
                 Some(LongInt::new(lhs.inner() * rhs).into_value(vm.heap)?)
             }
+            Value::Bool(rhs) => Some(if *rhs {
+                LongInt::new(lhs.inner().clone()).into_value(vm.heap)?
+            } else {
+                Value::Int(0)
+            }),
+            Value::Float(rhs) => Some(Value::Float(long_int_to_f64(lhs) * rhs)),
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
                 check_mult_size(lhs.bits(), rhs.bits(), vm.heap.tracker())?;
                 Some(LongInt::new(lhs.inner() * rhs.inner()).into_value(vm.heap)?)
@@ -505,19 +513,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let rhs = match other {
-            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(rhs) => *rhs as f64,
+            Value::Bool(true) => 1.0,
             Value::Float(0.0) => return Err(ExcType::zero_division().into()),
             Value::Float(rhs) => *rhs,
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
                 if rhs.is_zero() {
                     return Err(ExcType::zero_division().into());
                 }
-                rhs.to_f64().unwrap_or(f64::INFINITY)
+                long_int_to_f64(rhs)
             }
             _ => return Ok(None),
         };
-        Ok(Some(Value::Float(lhs.to_f64().unwrap_or(f64::INFINITY) / rhs)))
+        Ok(Some(Value::Float(long_int_to_f64(lhs) / rhs)))
     }
 
     fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -527,20 +536,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }
         let lhs = match other {
             Value::Int(lhs) => *lhs as f64,
+            Value::Bool(lhs) => f64::from(*lhs),
             Value::Float(lhs) => *lhs,
             _ => return Ok(None),
         };
-        Ok(Some(Value::Float(lhs / rhs.to_f64().unwrap_or(f64::INFINITY))))
+        Ok(Some(Value::Float(lhs / long_int_to_f64(rhs))))
     }
 
     fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
-            Value::Int(0) => return Err(ExcType::zero_division().into()),
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
             Value::Int(rhs) => {
                 check_div_size(lhs.bits(), vm.heap.tracker())?;
                 lhs.inner().div_floor(&BigInt::from(*rhs))
             }
+            Value::Bool(true) => lhs.inner().clone(),
             Value::Ref(id) if let HeapData::LongInt(rhs) = vm.heap.get(*id) => {
                 if rhs.is_zero() {
                     return Err(ExcType::zero_division().into());
@@ -558,62 +569,33 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         if rhs.is_zero() {
             return Err(ExcType::zero_division().into());
         }
-        let Value::Int(lhs) = other else {
-            return Ok(None);
+        let lhs = match other {
+            Value::Int(lhs) => *lhs,
+            Value::Bool(lhs) => i64::from(*lhs),
+            _ => return Ok(None),
         };
-        check_div_size(i64_bits(*lhs), vm.heap.tracker())?;
-        let result = BigInt::from(*lhs).div_floor(rhs.inner());
+        check_div_size(i64_bits(lhs), vm.heap.tracker())?;
+        let result = BigInt::from(lhs).div_floor(rhs.inner());
         Ok(Some(LongInt::new(result).into_value(vm.heap)?))
     }
 
     fn py_pow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        if modulus.is_some() {
-            return Ok(None);
-        }
-        let Value::Int(exp) = other else {
-            return Ok(None);
-        };
         let base = self.get(vm.heap);
-        if base.is_zero() && *exp < 0 {
-            Err(ExcType::zero_negative_power())
-        } else if *exp >= 0 {
-            #[expect(clippy::cast_sign_loss)]
-            let exp = *exp as u64;
-            check_pow_size(base.bits(), exp, vm.heap.tracker())?;
-            let result = bigint_pow(base.inner().clone(), exp);
-            Ok(Some(LongInt::new(result).into_value(vm.heap)?))
+        if let Some(modulus) = modulus {
+            modular_pow(base.inner(), other, modulus, vm.heap)
         } else {
-            Ok(Some(Value::Float(
-                base.to_f64().map_or(0.0, |base| base.powf(*exp as f64)),
-            )))
+            long_int_pow(base, other, vm.heap)
         }
     }
 
     fn py_rpow_impl(&self, other: &Value, modulus: Option<&Value>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if modulus.is_some() {
-            return Ok(None);
-        }
-        let Value::Int(base) = other else {
-            return Ok(None);
-        };
-        let exp = self.get(vm.heap);
-        if *base == 0 && exp.is_negative() {
-            Err(ExcType::zero_negative_power())
-        } else if exp.is_negative() {
-            Ok(Some(Value::Float(
-                exp.to_f64().map_or(0.0, |exp| (*base as f64).powf(exp)),
-            )))
-        } else if exp.is_zero() || *base == 1 {
-            Ok(Some(Value::Int(1)))
-        } else if *base == 0 {
-            Ok(Some(Value::Int(0)))
-        } else if *base == -1 {
-            Ok(Some(Value::Int(if (exp.inner() % 2i32).is_zero() { 1 } else { -1 })))
-        } else if let Some(exp) = exp.to_u32() {
-            check_pow_size(i64_bits(*base), u64::from(exp), vm.heap.tracker())?;
-            Ok(Some(LongInt::new(BigInt::from(*base).pow(exp)).into_value(vm.heap)?))
+            Ok(None)
         } else {
-            Err(ExcType::overflow_exponent_too_large())
+            let Some(base) = integer_value(other, vm.heap) else {
+                return Ok(None);
+            };
+            long_int_pow_value(base.as_ref(), self.get(vm.heap).inner(), vm.heap)
         }
     }
 
@@ -651,14 +633,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     }
 
     fn py_rlshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Value::Int(lhs) = other else {
-            return Ok(None);
+        let lhs = match other {
+            Value::Int(lhs) => *lhs,
+            Value::Bool(lhs) => i64::from(*lhs),
+            _ => return Ok(None),
         };
         let shift = self.get(vm.heap);
         if shift.is_negative() {
             Err(ExcType::value_error_negative_shift_count())
         } else if let Some(shift) = shift.inner().to_u64() {
-            Ok(Some(LongInt::left_shift_i64(*lhs, shift, vm)?))
+            Ok(Some(LongInt::left_shift_i64(lhs, shift, vm)?))
         } else {
             Err(ExcType::overflow_c_ssize_t())
         }
@@ -674,8 +658,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     }
 
     fn py_rrshift_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        let Value::Int(lhs) = other else {
-            return Ok(None);
+        let lhs = match other {
+            Value::Int(lhs) => *lhs,
+            Value::Bool(lhs) => i64::from(*lhs),
+            _ => return Ok(None),
         };
         let shift = self.get(vm.heap);
         if shift.is_negative() {
@@ -685,7 +671,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
                 .inner()
                 .to_u32()
                 .filter(|shift| *shift < 64)
-                .map_or_else(|| if *lhs < 0 { -1 } else { 0 }, |shift| lhs >> shift);
+                .map_or_else(|| if lhs < 0 { -1 } else { 0 }, |shift| lhs >> shift);
             Ok(Some(Value::Int(result)))
         }
     }
@@ -708,6 +694,93 @@ impl<'h> HeapRead<'h, LongInt> {
         let result = operation(self.get(vm.heap).inner().clone(), rhs);
         Ok(Some(LongInt::new(result).into_value(vm.heap)?))
     }
+}
+
+/// Performs modular exponentiation for integer values of any storage representation.
+pub(crate) fn modular_pow(base: &BigInt, exponent: &Value, modulus: &Value, heap: &Heap) -> RunResult<Option<Value>> {
+    let Some(exponent) = integer_value(exponent, heap) else {
+        return Ok(None);
+    };
+    let Some(modulus) = integer_value(modulus, heap) else {
+        return Ok(None);
+    };
+    if modulus.is_zero() {
+        return Err(ExcType::value_error_pow_modulus_zero());
+    }
+    if exponent.is_negative() {
+        return Err(ExcType::value_error_pow_negative_exponent());
+    }
+
+    let modulus_abs = modulus.abs();
+    let mut result = base.modpow(exponent.as_ref(), &modulus_abs);
+    if modulus.is_negative() && !result.is_zero() {
+        result -= modulus_abs;
+    }
+    Ok(Some(LongInt::new(result).into_value(heap)?))
+}
+
+/// Raises a long integer to another integer value.
+fn long_int_pow(base: &LongInt, exponent: &Value, heap: &Heap) -> RunResult<Option<Value>> {
+    if let Value::Float(exponent) = exponent {
+        if base.is_zero() && *exponent < 0.0 {
+            return Err(ExcType::zero_negative_power());
+        }
+        return Ok(Some(Value::Float(long_int_to_f64(base).powf(*exponent))));
+    }
+    let Some(exponent) = integer_value(exponent, heap) else {
+        return Ok(None);
+    };
+    long_int_pow_value(base.inner(), exponent.as_ref(), heap)
+}
+
+/// Raises one arbitrary-precision integer to another.
+fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResult<Option<Value>> {
+    if base.is_zero() && exponent.is_negative() {
+        Err(ExcType::zero_negative_power())
+    } else if exponent.is_negative() {
+        Ok(Some(Value::Float(
+            exponent
+                .to_f64()
+                .map_or(0.0, |exponent| bigint_to_f64(base).powf(exponent)),
+        )))
+    } else if exponent.is_zero() || base.is_one() {
+        Ok(Some(Value::Int(1)))
+    } else if base.is_zero() {
+        Ok(Some(Value::Int(0)))
+    } else if *base == BigInt::from(-1) {
+        Ok(Some(Value::Int(if (exponent % 2i32).is_zero() { 1 } else { -1 })))
+    } else if let Some(exponent) = exponent.to_u64() {
+        check_pow_size(base.bits(), exponent, heap.tracker())?;
+        Ok(Some(LongInt::new(bigint_pow(base.clone(), exponent)).into_value(heap)?))
+    } else {
+        Err(ExcType::overflow_exponent_too_large())
+    }
+}
+
+/// Borrows or promotes an integer value into its arbitrary-precision representation.
+fn integer_value<'a>(value: &'a Value, heap: &'a Heap) -> Option<Cow<'a, BigInt>> {
+    match value {
+        Value::Int(value) => Some(Cow::Owned(BigInt::from(*value))),
+        Value::Bool(value) => Some(Cow::Owned(BigInt::from(*value))),
+        Value::Ref(id) if let HeapData::LongInt(value) = heap.get(*id) => Some(Cow::Borrowed(value.inner())),
+        _ => None,
+    }
+}
+
+/// Converts a long integer to float, preserving its sign on overflow.
+fn long_int_to_f64(value: &LongInt) -> f64 {
+    bigint_to_f64(value.inner())
+}
+
+/// Converts an arbitrary-precision integer to float, preserving its sign on overflow.
+fn bigint_to_f64(value: &BigInt) -> f64 {
+    value.to_f64().unwrap_or_else(|| {
+        if value.is_negative() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        }
+    })
 }
 
 /// Raises a `BigInt` to a `u64` exponent without truncating the exponent.

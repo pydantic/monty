@@ -103,6 +103,23 @@ impl<'h> HeapRead<'h, DictKeysView> {
         Ok(result_guard.into_inner())
     }
 
+    /// Intersects live keys with an arbitrary iterable without materializing the view.
+    fn intersection(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(other, vm);
+        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        let dict = self.dict(vm);
+        for key in other.iter() {
+            if dict.contains_key(key, vm)? {
+                result.add(key.clone_with_heap(vm), vm)?;
+            }
+        }
+        let (result, vm) = result_guard.into_parts();
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+    }
+
     /// Implements `dict_keys.isdisjoint(iterable)` with CPython's iterable semantics.
     pub(crate) fn isdisjoint_from_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
@@ -159,7 +176,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_and)
+        self.intersection(other, vm)
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -175,7 +192,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     }
 
     fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_and)
+        self.intersection(other, vm)
     }
 
     fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -290,6 +307,37 @@ impl<'h> HeapRead<'h, DictItemsView> {
         Ok(result_guard.into_inner())
     }
 
+    /// Intersects live items with an arbitrary iterable without hashing view items.
+    fn intersection(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(other, vm);
+        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        for candidate in other.iter() {
+            if self.contains_item(candidate, vm)? {
+                result.add(candidate.clone_with_heap(vm), vm)?;
+            }
+        }
+        let (result, vm) = result_guard.into_parts();
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+    }
+
+    /// Tests item membership by equality, avoiding a hash of the view's values.
+    fn contains_item(&self, candidate: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let dict = self.dict(vm);
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+            defer_drop!(item, vm);
+            if candidate.py_eq(item, vm)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Implements `dict_items.isdisjoint(iterable)` with CPython's iterable semantics.
     pub(crate) fn isdisjoint_from_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
@@ -340,7 +388,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     }
 
     fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_and)
+        self.intersection(other, vm)
     }
 
     fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -356,7 +404,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     }
 
     fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        dict_view_rbinary_op_value(other, self.to_set(vm)?, vm, apply_dict_view_and)
+        self.intersection(other, vm)
     }
 
     fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -620,20 +668,6 @@ fn dict_view_rbinary_op_value(
     let result = operation(lhs_set, rhs_set, vm)?;
     let result_id = vm.heap.allocate(HeapData::Set(result))?;
     Ok(Some(Value::Ref(result_id)))
-}
-
-/// Computes dictionary-view intersection.
-fn apply_dict_view_and(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
-    let capacity = Set::preallocation_capacity(lhs.len().min(rhs.len()), vm.heap.tracker())?;
-    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
-    let (result, vm) = result_guard.as_parts_mut();
-    let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
-    for value in smaller.iter() {
-        if vm.heap.protect(larger).contains(value, vm)? {
-            result.add(value.clone_with_heap(vm), vm)?;
-        }
-    }
-    Ok(result_guard.into_inner())
 }
 
 /// Computes dictionary-view union.

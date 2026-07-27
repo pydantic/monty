@@ -63,8 +63,9 @@ mechanism beyond dataclass field inheritance.
   dataclass / namedtuple as the second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — three-argument form requires all integers and
-  rejects negative exponents with `ValueError`. Exponents greater than
-  `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
+  rejects negative exponents with `ValueError` instead of computing a modular
+  inverse. Non-modular exponents whose result cannot be materialized raise
+  `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are

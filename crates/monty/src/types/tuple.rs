@@ -427,10 +427,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         let Some(count) = repeat_count(other, vm)? else {
             return Ok(None);
         };
-        if count == 0 {
+        let value = self.get(vm.heap);
+        if count == 0 || value.as_slice().is_empty() {
             return Ok(Some(vm.heap.get_empty_tuple()));
         }
-        let value = self.get(vm.heap);
         check_repeat_size(
             value.as_slice().len().saturating_mul(mem::size_of::<Value>()),
             count,

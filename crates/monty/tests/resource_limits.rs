@@ -784,6 +784,31 @@ recurse(1000)
     );
 }
 
+/// String and bytes concatenation must be rejected before building an untracked buffer.
+#[test]
+fn sequence_concatenation_prechecks_memory_limit() {
+    for code in ["part = 'x' * 400000\npart + part", "part = b'x' * 400000\npart + part"] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_memory(700_000);
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    }
+}
+
+/// A boolean shifted by a heap-backed count must reach integer size validation.
+#[test]
+fn bool_lshift_longint_respects_memory_limit() {
+    let code = "True << (2 ** 63)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(1_000_000);
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
 // === BigInt large result pre-check tests ===
 // These tests verify that operations that would produce very large BigInt results
 // are rejected before the computation begins, preventing DoS attacks.
