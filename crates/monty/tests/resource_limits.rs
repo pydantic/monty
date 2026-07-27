@@ -1565,6 +1565,19 @@ fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
 }
 
+/// Test that a bounded `deque * n` repetition respects the time limit mid-build.
+///
+/// `repeat_deque` clones into a Rust-side loop that polls `check_time()`. Beyond
+/// enforcing the limit, a timeout must release the clones built so far — the
+/// heap-ref element makes a leak observable (it panics under memory-model-checks).
+#[test]
+fn timeout_in_bounded_deque_repeat() {
+    assert_timeout_in_builtin(
+        "from collections import deque\ndeque([[1]], maxlen=10**9) * 10**9",
+        "deque(maxlen=10**9) * 10**9",
+    );
+}
+
 /// Test that `sorted(range(huge))` respects the time limit.
 ///
 /// `sorted()` first collects items via `for_next()`, then sorts. The collection

@@ -505,7 +505,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         let Some(count) = repeat_count(other, vm)? else {
             return Ok(None);
         };
-        let result = repeat_deque(self.get(vm.heap), count, vm)?;
+        // Snapshot the source items and `maxlen` so the build below holds no heap
+        // borrow — a timeout mid-build can then release the clones with `&mut vm`.
+        let source: Vec<Value> = self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect();
+        let maxlen = self.get(vm.heap).maxlen();
+        let result = repeat_deque(source, maxlen, count, vm)?;
         Ok(Some(result))
     }
 
@@ -980,9 +984,11 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -
 /// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
 /// shortcut and materializes the full product (may hit resource limits, like
 /// CPython's `MemoryError`).
-fn repeat_deque(deque: &Deque, count: usize, vm: &VM<'_>) -> RunResult<Value> {
-    let len = deque.len();
-    let result = if let Some(max) = deque.maxlen() {
+fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+    let len = source.len();
+    // `source` is an owned copy of the deque's items; release it on every exit.
+    defer_drop!(source, vm);
+    let result = if let Some(max) = maxlen {
         // `kept` is attacker-controlled (a huge `maxlen`), so pre-check that many
         // `Value` slots against the tracker and poll the time limit while building
         // — else the suffix could allocate/spin before the final `allocate` checks.
@@ -992,33 +998,35 @@ fn repeat_deque(deque: &Deque, count: usize, vm: &VM<'_>) -> RunResult<Value> {
         // guard, and reserving an attacker-sized capacity would itself abort.
         let mut result = Vec::new();
         if kept > 0 {
-            // `len*count` is a multiple of `len`, so dropping the leading
-            // items down to `kept` survivors starts at this offset.
             let start = (len - kept % len) % len;
             for i in 0..kept {
-                let v = deque.get((start + i % len) % len).expect("index within deque");
-                result.push(v.clone_with_heap(vm.heap));
-                // Poll once per notional copy of the deque, matching the
-                // unbounded branch's cadence.
-                if i % len == 0 {
-                    vm.heap.check_time()?;
+                result.push(source[(start + i % len) % len].clone_with_heap(vm.heap));
+                // Poll once per notional copy; on a timeout, release the clones
+                // built so far rather than leaking them through the plain `Drop`.
+                if i % len == 0
+                    && let Err(e) = vm.heap.check_time()
+                {
+                    result.drop_with(vm);
+                    return Err(e.into());
                 }
             }
         }
         result
     } else {
-        // Unbounded: materialize the full product.
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
         let mut result = Vec::with_capacity(len * count);
         for _ in 0..count {
-            result.extend(deque.iter().map(|v| v.clone_with_heap(vm.heap)));
-            vm.heap.check_time()?;
+            result.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));
+            if let Err(e) = vm.heap.check_time() {
+                result.drop_with(vm);
+                return Err(e.into());
+            }
         }
         result
     };
     // We already trimmed to at most `maxlen`, so `Deque::new` evicts nothing and
     // no refcounts need releasing — `debug_assert` guards that invariant.
-    let (new_deque, evicted) = Deque::new(result, deque.maxlen());
+    let (new_deque, evicted) = Deque::new(result, maxlen);
     debug_assert!(evicted.is_empty(), "repeat_deque built more than maxlen items");
     Ok(Value::Ref(vm.heap.allocate(HeapData::Deque(new_deque))?))
 }
