@@ -25,7 +25,10 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{instance_contains, instance_getattr, instance_repr_fmt, instance_str, instance_user_eq},
+        instance::{
+            instance_contains, instance_dataclass_eq, instance_getattr, instance_repr_fmt, instance_str,
+            instance_user_eq,
+        },
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
@@ -303,6 +306,10 @@ impl<'h> PyTrait<'h> for Value {
                     // The `self is other` shortcut opening CPython's synthesized
                     // dataclass `__eq__`, so it precedes field-wise comparison.
                     Ok(Some(true))
+                } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
+                    // Field-wise dataclass equality, likewise `HeapId`-dependent:
+                    // its fields are read as `self.field` is.
+                    Ok(Some(result))
                 } else {
                     vm.heap.read(*id).py_eq_impl(other, vm)
                 }

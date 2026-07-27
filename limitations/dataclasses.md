@@ -51,6 +51,13 @@ default_factory`), and so is a non-default field after a defaulted one
   instance of a class that sets `__hash__ = None` or defines `__eq__`. The
   divergences in how `__eq__`/`__hash__` themselves behave are in
   [classes.md](classes.md).
+- **A function-valued default renders as `<bound method>` in `repr`.** The
+  synthesized `__repr__`/`__eq__` read fields as `self.field` does, so a field
+  left unset by a class-body `__init__` falls back to the class attribute and a
+  function there binds as a method — matching CPython, except that Monty renders
+  every bound method as the bare `<bound method>` (see
+  [classes.md](classes.md)). Equality is unaffected: each read binds afresh, so
+  two such instances are unequal in both.
 - **A class-body `__setattr__` never runs for the synthesized `__init__`**,
   which writes fields straight into the instance `__dict__`. This is the
   general never-dispatched attribute hook documented in

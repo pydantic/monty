@@ -86,16 +86,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         None
     }
 
-    /// Instances compare by identity, *except* dataclasses, which get CPython's
-    /// field-wise `__eq__` (see `modules::dataclasses`). A user-defined `__eq__`
-    /// is never dispatched — see `limitations/classes.md`.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let class_id = self.get(vm.heap).class();
-        match dataclasses::dataclass_fields(class_id, vm) {
-            // `None` leaves `Value::py_eq_impl` to fall back to identity.
-            None => Ok(None),
-            Some(field_names) => dataclasses::dataclass_eq(self, &field_names, other, vm),
-        }
+    /// Always `NotImplemented` (`Ok(None)`), leaving the caller on identity.
+    ///
+    /// Every real instance comparison — a user `__eq__`, the synthesized
+    /// dataclass one — needs the instance's `HeapId` to dispatch, which this
+    /// signature does not carry, so both happen at the `Value` level in
+    /// [`Value::py_eq_impl`](crate::value::Value).
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
     }
 
     /// Hashes an instance, following CPython's precedence.
@@ -120,20 +118,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         }
     }
 
-    /// `repr` for an instance.
+    /// The best-effort `<ClassName object>` default, never the real `repr`.
     ///
-    /// For a **dataclass** with no user `__repr__` this delegates to the
-    /// synthesized `ClassName(f1=v1, ...)` form; this method IS reached for
-    /// dataclasses (via [`instance_repr`] and nested `repr`). For a plain class it
-    /// produces the best-effort `<ClassName object>` default — real `repr`/`str`
-    /// dispatch (user `__repr__`/`__str__`) happens at the `Value` level in
-    /// [`instance_repr`], which needs the `HeapId` to pass `self`.
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+    /// Every form that distinguishes instances — a user `__repr__`/`__str__`, the
+    /// synthesized dataclass one — needs the `HeapId` to pass `self`, so all of
+    /// it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt` routes every
+    /// instance through. This impl is only the floor under a heap-level `repr`
+    /// reached without a `Value`.
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let class_id = self.get(vm.heap).class();
-        match dataclasses::dataclass_fields(class_id, vm) {
-            None => Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?),
-            Some(field_names) => dataclasses::dataclass_repr_fmt(self, &field_names, f, vm, heap_ids),
-        }
+        Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
     }
 
     fn py_call_attr(
@@ -375,43 +369,56 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
+    // 1-2. Instance dict, then the class namespace (binding a method).
+    if let Some(value) = instance_attr(self_id, attr_str, vm)? {
+        Ok(CallResult::Value(value))
+    } else {
+        let class_id = instance_class(self_id, vm);
+        if attr_str == "__class__" {
+            // 3. `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
+            // Checked after the dict/namespace lookups so an explicit member of the
+            // same name wins, mirroring the `__name__` handling on class objects.
+            vm.heap.inc_ref(class_id);
+            Ok(CallResult::Value(Value::Ref(class_id)))
+        } else {
+            Err(ExcType::attribute_error(
+                class_name(class_id, vm.heap, vm.interns),
+                attr_str,
+            ))
+        }
+    }
+}
 
-    // 1. Instance dict.
+/// The instance-dict-then-class-namespace half of [`instance_getattr`]: `None`
+/// when neither binds `attr`, leaving the `__class__` case and the
+/// `AttributeError` to the caller.
+///
+/// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
+/// exactly as `self.field` does — including binding a function-valued class
+/// member as a [`BoundMethod`], which is why this needs `self_id` and can
+/// allocate (and so returns `RunResult`).
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
             .get(vm.heap)
             .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
+            .get_by_str(attr, vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap))
     {
-        return Ok(CallResult::Value(value));
+        return Ok(Some(value));
     }
-
-    // 2. Class namespace: bind methods, return class variables as-is.
     let class_id = instance_class(self_id, vm);
-    if let Some(member) = class_member(class_id, attr_str, vm) {
-        if is_method_value(&member, vm) {
+    match class_member(class_id, attr, vm) {
+        // A class variable is returned as-is; a function binds `self`.
+        Some(member) if is_method_value(&member, vm) => {
             vm.heap.inc_ref(self_id);
             let bound = BoundMethod {
                 instance: Value::Ref(self_id),
                 func: member,
             };
-            let id = vm.heap.allocate(HeapData::BoundMethod(bound))?;
-            Ok(CallResult::Value(Value::Ref(id)))
-        } else {
-            Ok(CallResult::Value(member))
+            Ok(Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))?)))
         }
-    } else if attr_str == "__class__" {
-        // 3. `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
-        // Checked after the dict/namespace lookups so an explicit member of the
-        // same name wins, mirroring the `__name__` handling on class objects.
-        vm.heap.inc_ref(class_id);
-        Ok(CallResult::Value(Value::Ref(class_id)))
-    } else {
-        Err(ExcType::attribute_error(
-            class_name(class_id, vm.heap, vm.interns),
-            attr_str,
-        ))
+        member => Ok(member),
     }
 }
 
@@ -442,16 +449,14 @@ pub(crate) fn instance_repr_fmt(
         return Ok(f.write_str(s.to_str(vm)?)?);
     }
     let class_id = instance_class(self_id, vm);
-    if dataclasses::dataclass_fields(class_id, vm).is_some() {
-        heap_ids.insert(self_id);
-        let result = match vm.heap.read(self_id) {
-            HeapReadOutput::Instance(inst) => inst.py_repr_fmt(f, vm, heap_ids),
-            _ => Ok(()),
-        };
-        heap_ids.remove(&self_id);
-        result
-    } else {
-        Ok(f.write_str(&default_repr(self_id, vm))?)
+    match dataclasses::dataclass_fields(class_id, vm) {
+        Some(field_names) => {
+            heap_ids.insert(self_id);
+            let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
+            heap_ids.remove(&self_id);
+            result
+        }
+        None => Ok(f.write_str(&default_repr(self_id, vm))?),
     }
 }
 
@@ -646,6 +651,23 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
             Ok(Some(result.py_bool(vm)))
         }
         None => Ok(None),
+    }
+}
+
+/// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
+/// `Ok(None)` when `self_id` is not one, which leaves the caller on identity.
+///
+/// Lives here rather than in `HeapRead<Instance>::py_eq_impl` because the fields
+/// are read as `self.field` is — see [`instance_attr`] — which needs the
+/// instance's `HeapId`.
+pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+    if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
+        return Ok(None);
+    }
+    let class_id = instance_class(self_id, vm);
+    match dataclasses::dataclass_fields(class_id, vm) {
+        None => Ok(None),
+        Some(field_names) => dataclasses::dataclass_eq(self_id, &field_names, other, vm),
     }
 }
 

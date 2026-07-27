@@ -175,3 +175,25 @@ assert repr(Defaulted(1)) == 'Defaulted(a=1, b=99)'
 assigned = Defaulted(1)
 assigned.b = 2
 assert assigned != Defaulted(1)
+
+
+# === A function-valued default binds as a method, exactly as `self.x` does ===
+# Reading it off the class goes through the descriptor protocol, so each
+# instance sees its *own* bound method and two of them compare unequal.
+def on_event(self: object) -> int:
+    return 1
+
+
+@dataclass
+class Hooked:
+    a: int
+    hook: object = on_event
+
+    def __init__(self, a: int) -> None:
+        self.a = a
+
+
+assert Hooked(1) != Hooked(1)
+hooked = Hooked(1)
+assert hooked == hooked
+assert repr(Hooked(1)) == repr(Hooked(1)), 'the rendering is stable, whatever a bound method renders as'

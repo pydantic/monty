@@ -17,13 +17,13 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput, HeapReader},
-    intern::{Interns, StaticStrings, StringId},
+    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput, HeapReader},
+    intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        DataclassField, DataclassMeta, Instance, LazyHeapSet, Module,
+        DataclassField, DataclassMeta, LazyHeapSet, Module,
         dataclass::write_dataclass_repr,
-        instance::{class_defines, class_name},
+        instance::{class_defines, class_name, instance_attr},
     },
     value::Value,
 };
@@ -519,24 +519,32 @@ fn bind_dataclass_fields(
 /// `==` *operator* rather than container equality (so a field whose `__eq__`
 /// always returns `False` makes two dataclasses unequal even when it is the
 /// same object on both sides).
-pub(crate) fn dataclass_eq<'h>(
-    instance: &HeapRead<'h, Instance>,
+pub(crate) fn dataclass_eq(
+    self_id: HeapId,
     field_names: &[StringId],
     other: &Value,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'_>,
 ) -> RunResult<Option<bool>> {
-    let class_id = instance.get(vm.heap).class();
+    let class_id = instance_class(self_id, vm);
     // Only the same dataclass type can be equal; otherwise NotImplemented.
-    let Some(HeapReadOutput::Instance(other_inst)) = other.read_heap(vm) else {
+    let Value::Ref(other_id) = other else {
         return Ok(None);
     };
-    if other_inst.get(vm.heap).class() != class_id {
+    let other_id = *other_id;
+    if !matches!(vm.heap.get(other_id), HeapData::Instance(inst) if inst.class() == class_id) {
         return Ok(None);
     }
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        let a = field_value(instance, class_id, &field_name, vm.heap, vm.interns);
-        let b = field_value(&other_inst, class_id, &field_name, vm.heap, vm.interns);
+        let a = instance_attr(self_id, &field_name, vm)?;
+        // A failure here (binding a method can allocate) must not strand `a`.
+        let b = match instance_attr(other_id, &field_name, vm) {
+            Ok(b) => b,
+            Err(e) => {
+                a.drop_with(vm);
+                return Err(e);
+            }
+        };
         match (a, b) {
             (Some(a), Some(b)) => {
                 defer_drop!(a, vm);
@@ -565,68 +573,51 @@ pub(crate) fn dataclass_eq<'h>(
 /// Synthesized `__repr__`: `ClassName(f1=v1, ...)`. Formatting is shared with
 /// the host-supplied `Dataclass` via [`write_dataclass_repr`] so the two cannot
 /// drift.
-pub(crate) fn dataclass_repr_fmt<'h>(
-    instance: &HeapRead<'h, Instance>,
+pub(crate) fn dataclass_repr_fmt(
+    self_id: HeapId,
     field_names: &[StringId],
     f: &mut impl Write,
-    vm: &mut VM<'h>,
+    vm: &mut VM<'_>,
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
-    let class_id = instance.get(vm.heap).class();
+    let class_id = instance_class(self_id, vm);
     let name = class_name(class_id, vm.heap, vm.interns).to_string();
     // CPython's generated `__repr__` reads each field as an attribute, so one
-    // that resolves nowhere raises. Checked up front so no partial repr is
-    // emitted (the whole string is built before returning in CPython too).
+    // that resolves nowhere raises. Every field is resolved before anything is
+    // written, so such a class emits no partial repr (CPython builds the whole
+    // f-string before returning too).
+    let mut values: Vec<Value> = Vec::with_capacity(field_names.len());
     for name_id in field_names {
-        let field_name = vm.interns.get_str(*name_id);
-        if field_slot(instance, class_id, field_name, vm.heap, vm.interns).is_none() {
-            return Err(ExcType::attribute_error(&name, field_name));
+        let field_name = vm.interns.get_str(*name_id).to_owned();
+        match instance_attr(self_id, &field_name, vm) {
+            Ok(Some(value)) => values.push(value),
+            Ok(None) => {
+                values.drop_with(vm);
+                return Err(ExcType::attribute_error(&name, &field_name));
+            }
+            Err(e) => {
+                values.drop_with(vm);
+                return Err(e);
+            }
         }
     }
+    defer_drop!(values, vm);
     write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, heap, interns| {
         let field_name = interns.get_str(field_names[i]).to_owned();
-        let value = field_value(instance, class_id, &field_name, heap, interns);
-        (field_name, value)
+        (field_name, Some(values[i].clone_with_heap(heap)))
     })
 }
 
-/// Reads a field the way the generated methods' attribute access does: the
-/// instance `__dict__` first, then the class namespace.
+/// Returns the `HeapId` of a dataclass instance's class object.
 ///
-/// The class fallback is what makes a defaulted field readable on an instance
-/// whose (class-body) `__init__` never assigned it — the default lives on as a
-/// class attribute, exactly as CPython's `self.x` finds it. `None` means neither
-/// binds the name, which callers report as `AttributeError`.
-///
-/// Returns an owned clone; use [`field_slot`] for a presence check that takes no
-/// reference.
-fn field_value<'h>(
-    instance: &HeapRead<'h, Instance>,
-    class_id: HeapId,
-    name: &str,
-    heap: &HeapReader<'h>,
-    interns: &Interns,
-) -> Option<Value> {
-    field_slot(instance, class_id, name, heap, interns).map(|v| v.clone_with_heap(heap))
-}
-
-/// Borrowing form of [`field_value`], for callers that only need to know whether
-/// the field resolves at all.
-fn field_slot<'v, 'h>(
-    instance: &HeapRead<'h, Instance>,
-    class_id: HeapId,
-    name: &str,
-    heap: &'v HeapReader<'h>,
-    interns: &Interns,
-) -> Option<&'v Value> {
-    instance
-        .get(heap)
-        .attrs()
-        .get_by_str(name, heap, interns)
-        .or_else(|| match heap.get(class_id) {
-            HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
-            _ => None,
-        })
+/// # Panics
+/// If `self_id` is not an `Instance` — every caller reaches this having already
+/// established that (it is how the dataclass dispatch was chosen).
+fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
+    match vm.heap.get(self_id) {
+        HeapData::Instance(inst) => inst.class(),
+        _ => unreachable!("dataclass dispatch on a non-instance"),
+    }
 }
 
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an
