@@ -240,3 +240,27 @@ d";
         )
     );
 }
+
+#[test]
+fn output_deque_mutated_by_nested_repr() {
+    let code = "\
+from collections import deque
+
+class Evil:
+    def __repr__(self):
+        d.clear()
+        return 'evil'
+
+d = deque([Evil(), 1, 2])
+d";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let result = ex.run_no_limits(vec![]).unwrap();
+    assert_eq!(
+        result,
+        MontyObject::List(vec![
+            MontyObject::Repr("evil".to_owned()),
+            MontyObject::Int(1),
+            MontyObject::Int(2),
+        ])
+    );
+}

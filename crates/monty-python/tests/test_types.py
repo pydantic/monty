@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import datetime
 import pathlib
 import re
@@ -132,11 +133,13 @@ def test_type_object_output(monty_run: RunMonty):
     code = """
 import datetime, re
 from pathlib import Path
+from collections import deque
 [
     int, str, type, type(None), type(...), type(iter([])), type(iter(lambda: 0, 0)),
     type(Path('/x')), Path,
     datetime.datetime, datetime.date, datetime.timedelta, datetime.timezone,
     type(re.compile('a')), type(re.match('a', 'a')),
+    type(deque()),
 ]
 """
     # Type objects have no `__eq__` override, so `==` compares them by identity.
@@ -156,6 +159,8 @@ from pathlib import Path
         datetime.timezone,
         re.Pattern,
         re.Match,
+        # deque lives in `collections`, not `builtins` — resolves via its own arm.
+        collections.deque,
     ]
 
 
@@ -180,6 +185,7 @@ def test_type_object_input_roundtrip(monty_run: RunMonty):
         pathlib.PosixPath,
         re.Pattern,
         re.Match,
+        collections.deque,
     ]
     for ty in types:
         # The pathlib family all collapses to a single Monty path type, which

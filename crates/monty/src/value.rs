@@ -20,7 +20,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::ModuleFunctions,
+    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
@@ -30,6 +30,7 @@ use crate::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
         },
+        namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
         str::{
             allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
@@ -123,6 +124,10 @@ impl<'h> ValueRead<'h, '_> {
         match self {
             Self::Heap {
                 value: HeapReadOutput::ListIterator(iter),
+                ..
+            } => iter.get(vm.heap).size_hint(vm.heap),
+            Self::Heap {
+                value: HeapReadOutput::DequeIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
@@ -387,7 +392,24 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+                // A namedtuple orders like the tuple it subclasses, including
+                // against a plain tuple in either direction. Both sides are
+                // cloned first because the comparison needs `&mut VM`, which
+                // cannot coexist with two live `HeapRead`s.
+                (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
+                (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
+                (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }
@@ -478,6 +500,9 @@ impl<'h> PyTrait<'h> for Value {
                         HeapData::List(_) => Ok(f.write_str("[...]")?),
                         HeapData::Tuple(_) => Ok(f.write_str("(...)")?),
                         HeapData::Dict(_) => Ok(f.write_str("{...}")?),
+                        // A deque prints its items inside list-shaped brackets
+                        // (`deque([...])`), so the placeholder is a list's.
+                        HeapData::Deque(_) => Ok(f.write_str("[...]")?),
                         // Other types don't typically have cycles, but handle gracefully
                         _ => Ok(f.write_str("...")?),
                     }
@@ -1171,7 +1196,28 @@ impl<'h> PyTrait<'h> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            Self::Ref(id) => vm.heap.read(*id).py_getitem(key, vm),
+            Self::Ref(id) => {
+                // A defaultdict/Counter miss is not a plain `KeyError`: a
+                // defaultdict inserts `factory()` (mutating the dict, so it can't
+                // use the immutable `PyTrait::py_getitem`), and a Counter yields
+                // `0` without inserting.
+                if let HeapData::Dict(d) = vm.heap.get(*id) {
+                    let (is_defaultdict, is_counter) = (d.is_defaultdict(), d.is_counter());
+                    if is_defaultdict || is_counter {
+                        let id = *id;
+                        let found = match vm.heap.read(id) {
+                            HeapReadOutput::Dict(dict) => dict.dict_get(key, vm)?,
+                            _ => unreachable!("defaultdict/Counter is a dict"),
+                        };
+                        return match found {
+                            Some(value) => Ok(value),
+                            None if is_defaultdict => defaultdict_missing(id, key, vm),
+                            None => Ok(Self::Int(0)),
+                        };
+                    }
+                }
+                vm.heap.read(*id).py_getitem(key, vm)
+            }
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1305,7 +1351,8 @@ impl Value {
     /// captured before `drop_with` cleanup and formatted after.
     #[must_use]
     pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.py_type(vm).name(vm.heap, vm.interns)
+        self.namedtuple_class_name(vm.heap, vm.interns)
+            .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
     }
 
     /// [`py_type_name`](Self::py_type_name) for contexts without a `&VM` —
@@ -1313,7 +1360,29 @@ impl Value {
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
     pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.py_type_heap(heap).name(heap, interns)
+        self.namedtuple_class_name(heap, interns)
+            .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
+    }
+
+    /// Class name of a named tuple, if this value is one.
+    ///
+    /// Named tuples keep their class name in the heap entry rather than in
+    /// [`Type`], which carries no identity for them. Error messages therefore
+    /// have to reach for it here to name the class (`'P'`) rather than the
+    /// generic `'namedtuple'`, matching CPython — including for structseqs,
+    /// whose stored name is already the qualified `sys.version_info`.
+    #[must_use]
+    fn namedtuple_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
+        if let Self::Ref(heap_id) = self
+            && let HeapData::NamedTuple(nt) = heap.get(*heap_id)
+        {
+            Some(match nt.name_either() {
+                EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+                EitherStr::Heap(s) => Cow::Owned(s.clone()),
+            })
+        } else {
+            None
+        }
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1636,10 +1705,20 @@ impl Value {
                     instance.set_attr(Self::attr_name_value(name, vm)?, value, vm)?
                 }
                 HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
+                // `defaultdict.default_factory = ...`; every other dict attribute
+                // raises the generic no-setattr error inside this method.
+                HeapReadOutput::Dict(mut dict) => dict.set_default_factory_attr(name, value, vm)?,
                 other => {
-                    let type_name = other.py_type(vm).name(vm.heap, vm.interns);
+                    let type_ = other.py_type(vm);
+                    let type_name = type_.name(vm.heap, vm.interns);
                     value.drop_with(vm);
-                    return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)));
+                    // `deque.maxlen` exists but is read-only, which CPython reports
+                    // differently from an attribute that isn't there at all.
+                    return if type_ == Type::Deque && name.static_string() == Some(StaticStrings::Maxlen) {
+                        Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
+                    } else {
+                        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+                    };
                 }
             };
             old_value.drop_with(vm);

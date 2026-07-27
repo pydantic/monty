@@ -178,6 +178,12 @@ impl<'h> HeapRead<'h, Tuple> {
     }
 
     /// Clones all items from this tuple with proper refcount management.
+    /// Clones every item into a plain `Vec`, for the namedtuple orderings in
+    /// [`cmp_item_seqs`](crate::types::namedtuple::cmp_item_seqs).
+    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
+        self.clone_all_items(vm).into_vec()
+    }
+
     fn clone_all_items(&self, vm: &mut VM<'h>) -> TupleVec {
         let len = self.get(vm.heap).items.len();
         let mut result = TupleVec::with_capacity(len);

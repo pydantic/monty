@@ -35,7 +35,7 @@ use crate::{
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
-    modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
+    modules::{StandardLib, collections::counter::counter_unary_op, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
     os_dispatch::{PendingOsEffect, listdir_names},
     parse::CodeRange,
@@ -1192,6 +1192,14 @@ impl<'h> VM<'h> {
                                     Err(e) => catch_sync!(self, cached_frame, e),
                                 }
                             }
+                            HeapData::Dict(d) if d.is_counter() => {
+                                let result = counter_unary_op(id, true, self);
+                                value.drop_with(self);
+                                match result {
+                                    Ok(v) => self.push(v),
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
+                            }
                             _ => {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with(self);
@@ -1215,6 +1223,13 @@ impl<'h> VM<'h> {
                             if matches!(self.heap.get(id), HeapData::LongInt(_)) {
                                 // LongInt - return as-is (value already has correct refcount)
                                 self.push(value);
+                            } else if matches!(self.heap.get(id), HeapData::Dict(d) if d.is_counter()) {
+                                let result = counter_unary_op(id, false, self);
+                                value.drop_with(self);
+                                match result {
+                                    Ok(v) => self.push(v),
+                                    Err(e) => catch_sync!(self, cached_frame, e),
+                                }
                             } else {
                                 let value_type = value.py_type_name(self);
                                 value.drop_with(self);
@@ -1256,19 +1271,22 @@ impl<'h> VM<'h> {
                         }
                     }
                 }
-                // In-place Operations - route through exception handling
+                // In-place Operations - route through exception handling.
+                // `+=`/`-=`/`&=`/`|=` first try a true in-place `Counter` op
+                // (mutating the left operand); everything else — and the
+                // non-Counter fallback — reuses the binary implementation, since
+                // Monty's other types have no distinct in-place form.
                 Opcode::InplaceAdd => try_catch_sync!(self, cached_frame, self.inplace_add()),
-                // Other in-place ops use the same logic as binary ops for now
-                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.binary_sub()),
+                Opcode::InplaceSub => try_catch_sync!(self, cached_frame, self.inplace_sub()),
                 Opcode::InplaceMul => try_catch_sync!(self, cached_frame, self.binary_mult()),
                 Opcode::InplaceDiv => try_catch_sync!(self, cached_frame, self.binary_div()),
                 Opcode::InplaceFloorDiv => try_catch_sync!(self, cached_frame, self.binary_floordiv()),
                 Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 Opcode::InplaceAnd => {
-                    try_catch_sync!(self, cached_frame, self.binary_and());
+                    try_catch_sync!(self, cached_frame, self.inplace_and());
                 }
-                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_or()),
+                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.inplace_or()),
                 Opcode::InplaceXor => {
                     try_catch_sync!(self, cached_frame, self.binary_xor());
                 }

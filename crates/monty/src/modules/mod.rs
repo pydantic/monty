@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod collections;
 pub(crate) mod dataclasses;
 pub(crate) mod datetime;
 #[cfg(feature = "test-hooks")]
@@ -60,6 +61,9 @@ pub(crate) enum StandardLib {
     Itertools,
     /// The `dataclasses` module providing `@dataclass` and helpers.
     Dataclasses,
+    /// The `collections` module providing container datatypes: `deque`,
+    /// `namedtuple`, `defaultdict`, and `Counter`.
+    Collections,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -87,6 +91,7 @@ impl StandardLib {
             StaticStrings::Unicodedata => Some(Self::Unicodedata),
             StaticStrings::Itertools => Some(Self::Itertools),
             StaticStrings::Dataclasses => Some(Self::Dataclasses),
+            StaticStrings::Collections => Some(Self::Collections),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -114,6 +119,7 @@ impl StandardLib {
             Self::Unicodedata => unicodedata::create_module(vm),
             Self::Itertools => itertools::create_module(vm),
             Self::Dataclasses => dataclasses::create_module(vm),
+            Self::Collections => collections::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }
@@ -124,6 +130,7 @@ impl StandardLib {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
     Os(os::OsFunctions),
@@ -148,6 +155,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
@@ -171,6 +179,7 @@ impl ModuleFunctions {
     pub fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
+            Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
             Self::Os(functions) => os::call(vm, functions, args),

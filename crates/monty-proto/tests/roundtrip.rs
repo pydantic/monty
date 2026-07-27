@@ -148,6 +148,8 @@ fn exception_and_type_values_round_trip() {
     });
     assert_value_round_trip(&MontyObject::Type(MontyType::Int));
     assert_value_round_trip(&MontyObject::Type(MontyType::DateTime));
+    // Qualified name (`collections.deque`) must survive the wire round-trip.
+    assert_value_round_trip(&MontyObject::Type(MontyType::Deque));
     assert_value_round_trip(&MontyObject::Type(MontyType::Exception(ExcType::KeyError)));
     assert_value_round_trip(&MontyObject::Type(MontyType::Instance("Foo".to_owned())));
     let builtin = MontyObject::builtin_function_from_name("len").expect("len is a builtin");

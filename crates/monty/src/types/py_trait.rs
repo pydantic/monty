@@ -401,6 +401,10 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported,
     /// or `Err(ResourceError)` if allocation fails.
+    ///
+    /// A container whose `+=` is `extend` (e.g. `deque`) needs to raise from the
+    /// iterator protocol, which this signature cannot express, so those types are
+    /// special-cased in the VM (`try_inplace_deque`) rather than here.
     fn py_iadd_impl(
         &mut self,
         _other: &Value,

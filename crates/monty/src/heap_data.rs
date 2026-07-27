@@ -18,11 +18,12 @@ use crate::{
     intern::FunctionId,
     modules::dataclasses::DataclassField,
     types::{
-        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, ItertoolsIter, LazyHeapSet,
-        List, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, Range, RangeIterator, ReMatch, RePattern, Set,
-        SetIterator, Slice, Str, StringIterator, Tuple, TupleIterator, Type, callable_iterator::CallableIterator, date,
-        datetime, list::ListIterator, str::allocate_string, timedelta, timezone,
+        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
+        DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
+        ItertoolsIter, LazyHeapSet, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, PyTrait, Range,
+        RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, Tuple, TupleIterator, Type,
+        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator,
+        str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -37,8 +38,12 @@ pub(crate) enum HeapData {
     Str(Str),
     Bytes(Bytes),
     List(List),
+    /// `collections.deque` — a double-ended queue with an optional `maxlen`.
+    Deque(Deque),
     Tuple(Tuple),
     NamedTuple(NamedTuple),
+    /// A `collections.namedtuple` class object (the callable that builds instances).
+    NamedTupleClass(NamedTupleClass),
     Dict(Dict),
     DictKeysView(DictKeysView),
     DictItemsView(DictItemsView),
@@ -90,6 +95,8 @@ pub(crate) enum HeapData {
     DataclassField(DataclassField),
     /// `list_iterator` object.
     ListIterator(ListIterator),
+    /// `_collections._deque_iterator` object.
+    DequeIterator(DequeIterator),
     /// `tuple_iterator` object.
     TupleIterator(TupleIterator),
     /// `str_ascii_iterator` or `str_iterator` object.
@@ -191,8 +198,13 @@ impl HeapData {
         match self {
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::List(_)
+            | Self::Deque(_)
             | Self::Tuple(_)
             | Self::NamedTuple(_)
+            // A namedtuple class owns its `defaults`, which may be heap refs
+            // (e.g. `namedtuple('C', ['a'], defaults=[[]])`), so it can sit on
+            // a cycle just like `Class`.
+            | Self::NamedTupleClass(_)
             | Self::Dict(_)
             | Self::DictKeysView(_)
             | Self::DictItemsView(_)
@@ -208,6 +220,9 @@ impl HeapData {
             | Self::BoundMethod(_)
             | Self::DataclassField(_)
             | Self::ListIterator(_)
+            // A deque iterator owns a reference to its deque (a container), so it
+            // can close a cycle exactly like `ListIterator`.
+            | Self::DequeIterator(_)
             | Self::TupleIterator(_)
             | Self::DictKeyIterator(_)
             | Self::DictItemIterator(_)
@@ -264,7 +279,10 @@ impl HeapData {
             Self::Str(_) => Type::Str,
             Self::Bytes(_) => Type::Bytes,
             Self::List(_) => Type::List,
+            Self::Deque(_) => Type::Deque,
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
+            // A namedtuple class object's type is `type`, like any class.
+            Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
@@ -294,6 +312,7 @@ impl HeapData {
             Self::TimeDelta(_) => Type::TimeDelta,
             Self::TimeZone(_) => Type::TimeZone,
             Self::ListIterator(_) => Type::ListIterator,
+            Self::DequeIterator(_) => Type::DequeIterator,
             Self::TupleIterator(_) => Type::TupleIterator,
             Self::StringIterator(iter) => iter.py_type(),
             Self::BytesIterator(_) => Type::BytesIterator,
@@ -312,8 +331,10 @@ impl HeapData {
             Self::Str(s) => s.py_estimate_size(),
             Self::Bytes(b) => b.py_estimate_size(),
             Self::List(l) => l.py_estimate_size(),
+            Self::Deque(d) => d.py_estimate_size(),
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
+            Self::NamedTupleClass(class) => class.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
             Self::DictKeysView(view) => view.py_estimate_size(),
             Self::DictItemsView(view) => view.py_estimate_size(),
@@ -346,6 +367,7 @@ impl HeapData {
             Self::TimeDelta(d) => d.py_estimate_size(),
             Self::TimeZone(d) => d.py_estimate_size(),
             Self::ListIterator(d) => d.py_estimate_size(),
+            Self::DequeIterator(d) => d.py_estimate_size(),
             Self::TupleIterator(d) => d.py_estimate_size(),
             Self::StringIterator(d) => d.py_estimate_size(),
             Self::BytesIterator(d) => d.py_estimate_size(),
@@ -539,7 +561,9 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Str($value) => $body,
             Self::Bytes($value) => $body,
             Self::List($value) => $body,
+            Self::Deque($value) => $body,
             Self::ListIterator($value) => $body,
+            Self::DequeIterator($value) => $body,
             Self::TupleIterator($value) => $body,
             Self::StringIterator($value) => $body,
             Self::BytesIterator($value) => $body,
@@ -552,6 +576,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Itertools($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
+            Self::NamedTupleClass($value) => $body,
             Self::Dict($value) => $body,
             Self::DictKeysView($value) => $body,
             Self::DictItemsView($value) => $body,
@@ -959,7 +984,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Str(value) => value.py_iter(self_id, vm),
             Self::Bytes(value) => value.py_iter(self_id, vm),
             Self::List(value) => value.py_iter(self_id, vm),
+            Self::Deque(value) => value.py_iter(self_id, vm),
             Self::ListIterator(value) => value.py_iter(self_id, vm),
+            Self::DequeIterator(value) => value.py_iter(self_id, vm),
             Self::TupleIterator(value) => value.py_iter(self_id, vm),
             Self::StringIterator(value) => value.py_iter(self_id, vm),
             Self::BytesIterator(value) => value.py_iter(self_id, vm),
@@ -993,7 +1020,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(value) => value.py_iter(self_id, vm),
             Self::TimeDelta(value) => value.py_iter(self_id, vm),
             Self::TimeZone(value) => value.py_iter(self_id, vm),
-            Self::Closure(_)
+            // A namedtuple *class* is a callable, not an iterable.
+            Self::NamedTupleClass(_)
+            | Self::Closure(_)
             | Self::FunctionDefaults(_)
             | Self::ExtFunction(_)
             | Self::Cell(_)
@@ -1014,6 +1043,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Bytes(value) => value.py_next(self_id, vm),
             Self::List(value) => value.py_next(self_id, vm),
             Self::ListIterator(value) => value.py_next(self_id, vm),
+            Self::DequeIterator(value) => value.py_next(self_id, vm),
             Self::TupleIterator(value) => value.py_next(self_id, vm),
             Self::StringIterator(value) => value.py_next(self_id, vm),
             Self::BytesIterator(value) => value.py_next(self_id, vm),

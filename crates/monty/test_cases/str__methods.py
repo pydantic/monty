@@ -468,6 +468,11 @@ assert '123hello'.isidentifier() == False
 assert 'hello world'.isidentifier() == False
 assert 'hello-world'.isidentifier() == False
 assert 'class'.isidentifier() == True  # isidentifier doesn't check keywords
+# Full Unicode XID: accented letters and combining marks count, not just ASCII.
+assert 'café'.isidentifier() == True
+assert 'á'.isidentifier() == True  # base letter + combining acute accent
+assert 'Ω'.isidentifier() == True
+assert '3'.isidentifier() == False
 
 # istitle()
 assert 'Hello World'.istitle() == True

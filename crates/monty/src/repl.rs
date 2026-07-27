@@ -18,8 +18,7 @@ use crate::{
     defer_drop,
     dump_format::{DumpKind, dump, load},
     exception_private::{ExcTypeExt, RunError},
-    heap::{DropWithContext, Heap, HeapReader},
-    heap_data::HeapData,
+    heap::{DropWithContext, Heap, HeapData, HeapReader},
     intern::{InternerBuilder, Interns},
     name_map::NameMap,
     object_bridge::MontyObjectExt,
@@ -1165,11 +1164,15 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<ArgValues, Mo
 /// Whether a session global should be surfaced as a "function" by
 /// [`function_names`](MontyRepl::function_names) / [`has_function`](MontyRepl::has_function).
 ///
-/// Deliberately narrower than [`Value::is_callable`]: it omits `Class` and
-/// `BoundMethod`, which are not what a host means by "a function it can invoke".
+/// Deliberately narrower than [`Value::is_callable`]: it keeps only plain
+/// function-like values and omits `Class`, `NamedTupleClass`, and `BoundMethod`,
+/// which are callable but not what a host means by "a function it can invoke".
 fn is_callable(value: &Value, heap: &Heap) -> bool {
     match value {
-        Value::DefFunction(_) | Value::Builtin(_) | Value::ModuleFunction(_) => true,
+        // Inline callables are all plain functions.
+        Value::Builtin(_) | Value::ModuleFunction(_) | Value::DefFunction(_) => true,
+        // Of the heap callables keep only the function-like ones; a `Class`,
+        // `NamedTupleClass`, or `BoundMethod` is callable but is not a function.
         Value::Ref(id) => matches!(
             heap.get(*id),
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)

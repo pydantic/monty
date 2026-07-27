@@ -6,6 +6,7 @@ use std::{cell::Cell, fmt::Write, mem, ops};
 /// operations like length and equality comparison.
 use monty_types::ResourceError;
 pub use monty_types::{StringRepr, string_repr_fmt};
+use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
 use super::{Bytes, CmpOrder, PyTrait};
@@ -1972,37 +1973,19 @@ struct EncodeArgs {
 /// Returns True if the string is a valid Python identifier according to
 /// the language definition (starts with letter or underscore, followed by
 /// letters, digits, or underscores). Empty strings return False.
-fn str_isidentifier(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    let mut chars = s.chars();
-
-    // First character must be a letter (Unicode) or underscore
-    let first = chars.next().unwrap();
-    if !is_xid_start(first) && first != '_' {
-        return false;
-    }
-
-    // Remaining characters must be letters, digits (Unicode), or underscores
-    chars.all(is_xid_continue)
-}
-
-/// Checks if a character is valid at the start of an identifier (XID_Start).
 ///
-/// This is a simplified implementation that covers ASCII and common Unicode letters.
-/// Python uses the full Unicode XID_Start property.
-fn is_xid_start(c: char) -> bool {
-    c.is_alphabetic()
-}
-
-/// Checks if a character is valid in the continuation of an identifier (XID_Continue).
+/// Note this matches `str.isidentifier()`, which accepts keywords (`'def'`
+/// is an identifier); callers needing the keyword distinction (e.g.
+/// `collections.namedtuple`) must combine this with a separate keyword check.
 ///
-/// This is a simplified implementation that covers ASCII and common Unicode.
-/// Python uses the full Unicode XID_Continue property.
-fn is_xid_continue(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+/// Uses ruff's `is_identifier` — the full Unicode `XID_Start`/`XID_Continue`
+/// tables, so combining marks and other non-ASCII identifier characters are
+/// accepted like CPython (a bare `is_alphanumeric` check would reject them).
+/// `is_identifier` rejects keywords, but every keyword is XID-valid, so OR-ing
+/// the keyword check back in reconstructs `str.isidentifier()`'s "keywords are
+/// identifiers" behaviour exactly.
+pub(crate) fn str_isidentifier(s: &str) -> bool {
+    is_identifier(s) || is_keyword(s)
 }
 
 /// Implements Python's `str.istitle()` predicate.

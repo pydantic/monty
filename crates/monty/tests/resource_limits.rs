@@ -289,6 +289,91 @@ fn limited_tracker_roundtrip_preserves_memory_limit() {
 }
 
 #[test]
+fn counter_elements_huge_count_is_bounded() {
+    // `Counter.elements()` must pre-check the total against the memory limit, so a
+    // huge count can't build an untracked, multi-exabyte Rust Vec. Regression for
+    // the missing `check_repeat_size` guard in `counter_elements`.
+    let code = r"
+from collections import Counter
+c = Counter()
+c['a'] = 10**18
+c.elements()
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "elements() with a 10**18 count should exceed the memory limit"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn bounded_deque_appends_do_not_leak_the_memory_counter() {
+    // A `maxlen` deque evicts as it appends, so its size never grows past the
+    // bound. `append` charges the tracker for the new slot, so the eviction on
+    // the same call must hand that charge back — otherwise the counter climbs
+    // without bound and a 3-element ring buffer eventually raises MemoryError,
+    // which would break the headline use case for `maxlen`.
+    //
+    // Note this is specifically about *automatic* eviction. Explicit removal
+    // (`pop`, `remove`, ...) does not shrink the counter for any container in
+    // Monty, which is pre-existing repo-wide behaviour and out of scope here.
+    let code = r"
+from collections import deque
+d = deque(maxlen=3)
+for i in range(200000):
+    d.append(i)
+len(d)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(2_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert_eq!(
+        result.expect("a 3-element bounded deque must not exhaust a 2 MB budget"),
+        MontyObject::Int(3),
+    );
+}
+
+#[test]
+fn namedtuple_field_names_are_charged_to_the_tracker() {
+    // Every namedtuple instance deep-clones its class's `field_names`, which for
+    // factory-made classes are owned `EitherStr::Heap` strings. Sizing them as
+    // `len * size_of::<StringId>()` charges ~8 bytes for what is really an
+    // arbitrarily long string, so a program could hold gigabytes of field-name
+    // copies while the tracker believed it was using kilobytes.
+    //
+    // 20 fields x ~20 KB x 200 instances is ~80 MB of real field-name data,
+    // which must not fit inside a 10 MB budget.
+    let code = r"
+from collections import namedtuple
+names = ['f' + 'x' * 20000 + str(i) for i in range(20)]
+C = namedtuple('C', names)
+rows = []
+for _ in range(200):
+    rows.append(C._make(list(range(20))))
+len(rows)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "200 instances holding ~80 MB of cloned field names should exceed the 10 MB memory limit"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
 fn time_limit_exceeded() {
     // Create a long-running loop using for + range (while isn't implemented yet)
     // Use a very large range to ensure it runs long enough to hit the time limit
@@ -2586,4 +2671,26 @@ fn dataclass_decoration_releases_fields_on_memory_limit() {
             assert_eq!(exc.exc_type(), ExcType::MemoryError, "slack={slack}: {exc}");
         }
     }
+}
+
+#[test]
+fn namedtuple_repetition_is_bounded() {
+    // Repeating a named tuple materializes a fresh plain tuple, so it is an
+    // amplification path in exactly the way `tuple * n` is: the result must be
+    // pre-checked against the memory limit rather than built and charged after.
+    let code = r"
+from collections import namedtuple
+P = namedtuple('P', 'a b c')
+P(1, 2, 3) * 10**9
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "repeating a namedtuple 10**9 times should exceed the memory limit"
+    );
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
 }

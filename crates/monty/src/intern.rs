@@ -834,6 +834,85 @@ pub enum StaticStrings {
     /// name -> `Field` mapping that drives every synthesized dunder.
     #[strum(serialize = "__dataclass_fields__")]
     DataclassFields,
+
+    // ==========================
+    // collections module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import collections`.
+    Collections,
+    /// The `collections.deque` type.
+    Deque,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `deque.maxlen` attribute (also a constructor keyword argument).
+    Maxlen,
+    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
+    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
+    /// capitalized `typing.Iterable`.
+    #[strum(serialize = "iterable")]
+    IterableArg,
+    /// The `collections.namedtuple` factory function.
+    Namedtuple,
+    /// The `collections.defaultdict` factory function.
+    Defaultdict,
+    /// The `collections.Counter` type/factory.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `Counter.most_common()` method.
+    #[strum(serialize = "most_common")]
+    MostCommon,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `Counter.total()` method.
+    Total,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `namedtuple(typename=...)` keyword argument.
+    Typename,
+    /// `namedtuple(field_names=...)` keyword argument.
+    #[strum(serialize = "field_names")]
+    FieldNames,
+    /// `NamedTuple._fields` — tuple of field names.
+    #[strum(serialize = "_fields")]
+    UnderFields,
+    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
+    #[strum(serialize = "_field_defaults")]
+    UnderFieldDefaults,
+    /// `NamedTuple._make(iterable)` classmethod.
+    #[strum(serialize = "_make")]
+    UnderMake,
+    /// `NamedTuple._replace(**kwargs)` method.
+    #[strum(serialize = "_replace")]
+    UnderReplace,
+    /// `NamedTuple._asdict()` method.
+    #[strum(serialize = "_asdict")]
+    UnderAsdict,
+    /// `namedtuple(..., defaults=...)` keyword argument.
+    Defaults,
+    /// `namedtuple(..., module=...)` keyword argument.
+    #[strum(serialize = "module")]
+    ModuleKwarg,
+    /// `defaultdict.default_factory` attribute.
+    #[strum(serialize = "default_factory")]
+    DefaultFactory,
+    /// `defaultdict.__missing__` method.
+    #[strum(serialize = "__missing__")]
+    DunderMissing,
+    /// `__module__` — the defining module name, exposed on namedtuple classes.
+    #[strum(serialize = "__module__")]
+    DunderModule,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
+    #[strum(serialize = "__qualname__")]
+    DunderQualname,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

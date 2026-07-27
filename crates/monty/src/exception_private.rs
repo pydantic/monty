@@ -1392,7 +1392,11 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
     fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+            // CPython hardcodes the bare "deque" here even though tp_name is the
+            // qualified "collections.deque", so this can't share the branch below.
+            format!("can only concatenate deque (not \"{rhs_name}\") to deque")
+        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -1839,6 +1843,120 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::ValueError,
             format!("Out of range float values are not JSON compliant: {value}"),
+        )
+        .into()
+    }
+
+    /// `AttributeError: attribute 'X' of 'Y' objects is not writable`.
+    ///
+    /// CPython distinguishes a read-only C-level attribute (`deque.maxlen`) from an
+    /// attribute that simply does not exist, which gets
+    /// [`attribute_error_no_setattr`](ExcType::attribute_error_no_setattr) instead.
+    #[must_use]
+    fn attribute_error_not_writable(attr_name: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("attribute '{attr_name}' of '{type_}' objects is not writable"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for slice indices that are not integers, where `None`
+    /// is *not* accepted either.
+    ///
+    /// Used by `index()`-style bounds (`deque.index`), which — unlike real slicing —
+    /// treat an explicit `None` as a bad argument rather than "use the default".
+    /// Matches CPython's format: `TypeError: slice indices must be integers or have an __index__ method`
+    #[must_use]
+    fn type_error_slice_indices_no_none() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "slice indices must be integers or have an __index__ method",
+        )
+        .into()
+    }
+
+    /// `RuntimeError: deque mutated during iteration`.
+    ///
+    /// Monty tracks a per-deque mutation counter, mirroring CPython's internal
+    /// state, so any structural change during iteration invalidates the iterator
+    /// — including `rotate()` and a length-preserving `append()`/`popleft()` pair,
+    /// which a bare length check would miss.
+    #[must_use]
+    fn runtime_error_deque_mutated() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "deque mutated during iteration").into()
+    }
+
+    /// `IndexError: deque index out of range` — indexing or assigning out of bounds.
+    #[must_use]
+    fn index_error_deque_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque index out of range").into()
+    }
+
+    /// `IndexError: pop from an empty deque` — shared by `pop()` and `popleft()`.
+    #[must_use]
+    fn index_error_pop_from_empty_deque() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "pop from an empty deque").into()
+    }
+
+    /// `IndexError: deque already at its maximum size` — `insert()` into a full deque.
+    #[must_use]
+    fn index_error_deque_full() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque already at its maximum size").into()
+    }
+
+    /// `ValueError: deque.remove(x): x not in deque`.
+    #[must_use]
+    fn value_error_deque_remove() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "deque.remove(x): x not in deque").into()
+    }
+
+    /// `ValueError: deque.index(x): x not in deque`.
+    #[must_use]
+    fn value_error_deque_index() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "deque.index(x): x not in deque").into()
+    }
+
+    /// `ValueError: maxlen must be non-negative`.
+    #[must_use]
+    fn value_error_maxlen_negative() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "maxlen must be non-negative").into()
+    }
+
+    /// `TypeError: an integer is required` — a non-integer `maxlen`.
+    #[must_use]
+    fn type_error_integer_required() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "an integer is required").into()
+    }
+
+    /// `TypeError: 'X' object cannot be interpreted as an integer`.
+    #[must_use]
+    fn type_error_not_an_integer(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// `TypeError: sequence index must be integer, not 'X'` — deque indexing with a
+    /// slice or other non-integer key.
+    #[must_use]
+    fn type_error_sequence_index(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("sequence index must be integer, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: deque() takes at most 2 arguments (N given)` — CPython's own
+    /// wording, which no `FromArgs` style reproduces.
+    #[must_use]
+    fn type_error_deque_too_many_args(given: usize) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("deque() takes at most 2 arguments ({given} given)"),
         )
         .into()
     }

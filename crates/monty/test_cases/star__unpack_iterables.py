@@ -5,8 +5,11 @@
 # assertions pin the wider set, across every syntactic form that unpacks.
 
 import sys
+from collections import Counter, defaultdict, deque, namedtuple
 
 d = {'a': 1, 'b': 2}
+
+P = namedtuple('P', 'x y')
 
 # === List and tuple literals ===
 assert [*range(3)] == [0, 1, 2]
@@ -22,10 +25,24 @@ assert (*range(3),) == (0, 1, 2)
 assert [*sys.version_info][:2] == [3, 14]
 assert len([*sys.version_info]) == 5
 
+# === collections types ===
+# A deque and a namedtuple instance are ordinary iterables here; the `collections`
+# module landed after the allowlist these assertions replaced, so both were
+# rejected after a `*` while `list()` accepted them.
+assert [*deque([1, 2, 3])] == [1, 2, 3]
+assert (*deque([1, 2]),) == (1, 2)
+assert [*P(1, 2)] == [1, 2]
+assert (*P(1, 2),) == (1, 2)
+# defaultdict and Counter unpack as the dicts they subclass — their keys.
+assert [*Counter('aab')] == ['a', 'b']
+assert [*defaultdict(int, {'a': 1})] == ['a']
+
 # === Set literals ===
 assert {*range(3)} == {0, 1, 2}
 assert {*b'ab'} == {97, 98}
 assert {*d.keys()} == {'a', 'b'}
+assert {*deque([1, 2])} == {1, 2}
+assert {*P(1, 2)} == {1, 2}
 
 # === Iterators, including the two-argument `iter()` form ===
 assert [*iter([1, 2])] == [1, 2]
@@ -53,6 +70,7 @@ def add3(a, b, c):
 
 assert add3(*range(3)) == 3
 assert add3(*b'\x01\x02\x03') == 6
+assert add3(*deque([1, 2, 3])) == 6
 
 # === Sequence unpacking (assignment targets) ===
 x, y, z = range(3)
@@ -61,6 +79,12 @@ assert (x, y, z) == (0, 1, 2)
 first, *rest = range(4)
 assert first == 0
 assert rest == [1, 2, 3]
+
+dq1, dq2 = deque([1, 2])
+assert (dq1, dq2) == (1, 2)
+
+nt1, *ntrest = P(1, 2)
+assert (nt1, ntrest) == (1, [2])
 
 *init, last = b'ab'
 assert init == [97]
@@ -371,6 +395,13 @@ def probe_values() -> list[object]:
         iter([1, 2]),
         iter(probe_step, 3),
         sys.version_info,
+        deque([1, 2]),
+        P(1, 2),
+        # The namedtuple *class* is a callable, not a sequence — it must land on
+        # the non-iterable side alongside `len` below.
+        P,
+        Counter('aab'),
+        defaultdict(int, {'a': 1}),
         1,
         2**70,
         1.5,

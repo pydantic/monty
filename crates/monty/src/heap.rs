@@ -4,6 +4,7 @@ use std::{
     cell::{Cell, UnsafeCell},
     collections::BTreeMap,
     fmt,
+    iter::once,
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
@@ -26,11 +27,12 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     modules::dataclasses::DataclassField,
     types::{
-        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, ItertoolsIter, List,
-        LongInt, Module, NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice,
-        Str, StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
-        list::ListIterator, timedelta, timezone,
+        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
+        DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
+        ItertoolsIter, List, LongInt, Module, NamedTuple, NamedTupleClass, OpenFile, Path, Range, RangeIterator,
+        ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator, TimeZone, Tuple, TupleIterator,
+        callable_iterator::CallableIterator, date, datetime, deque::DequeIterator, list::ListIterator, timedelta,
+        timezone,
     },
     value::Value,
 };
@@ -216,8 +218,10 @@ pub enum HeapReadOutput<'a> {
     Str(HeapRead<'a, Str>),
     Bytes(HeapRead<'a, Bytes>),
     List(HeapRead<'a, List>),
+    Deque(HeapRead<'a, Deque>),
     Tuple(HeapRead<'a, Tuple>),
     NamedTuple(HeapRead<'a, NamedTuple>),
+    NamedTupleClass(HeapRead<'a, NamedTupleClass>),
     Dict(HeapRead<'a, Dict>),
     DictItemsView(HeapRead<'a, DictItemsView>),
     DictKeysView(HeapRead<'a, DictKeysView>),
@@ -237,6 +241,7 @@ pub enum HeapReadOutput<'a> {
     BoundMethod(HeapRead<'a, BoundMethod>),
     DataclassField(HeapRead<'a, DataclassField>),
     ListIterator(HeapRead<'a, ListIterator>),
+    DequeIterator(HeapRead<'a, DequeIterator>),
     TupleIterator(HeapRead<'a, TupleIterator>),
     StringIterator(HeapRead<'a, StringIterator>),
     BytesIterator(HeapRead<'a, BytesIterator>),
@@ -608,8 +613,10 @@ impl<'a> HeapPtr<'a> {
             HeapData::Str(s) => HeapReadOutput::Str(heap_read(base, s, readers)),
             HeapData::Bytes(bytes) => HeapReadOutput::Bytes(heap_read(base, bytes, readers)),
             HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
+            HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(base, deque, readers)),
             HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
             HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple, readers)),
+            HeapData::NamedTupleClass(class) => HeapReadOutput::NamedTupleClass(heap_read(base, class, readers)),
             HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
             HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v, readers)),
             HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v, readers)),
@@ -633,6 +640,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(base, field, readers)),
             HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
+            HeapData::DequeIterator(iter) => HeapReadOutput::DequeIterator(heap_read(base, iter, readers)),
             HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(base, iter, readers)),
             HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(base, iter, readers)),
             HeapData::BytesIterator(iter) => HeapReadOutput::BytesIterator(heap_read(base, iter, readers)),
@@ -1566,6 +1574,18 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        // MUST report exactly the same ids as `Deque::py_dec_ref_ids` — reporting
+        // fewer leaks, reporting more is a use-after-free.
+        HeapData::Deque(deque) => {
+            if !deque.contains_refs() {
+                return;
+            }
+            for value in deque.iter() {
+                if let Value::Ref(id) = value {
+                    on_child(*id);
+                }
+            }
+        }
         HeapData::Tuple(tuple) => {
             // Skip iteration if no refs - GC optimization for tuples of primitives
             if !tuple.contains_refs() {
@@ -1578,6 +1598,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::NamedTuple(nt) => {
+            // Report the owned reference to the class object (factory instances
+            // only) before the `contains_refs` early-out — that flag is computed
+            // from `items` alone, so an all-primitive instance like `Point(1, 2)`
+            // still has a live class edge. MUST report exactly the same ids as
+            // `NamedTuple::py_dec_ref_ids`.
+            if let Some(class_id) = nt.class_id() {
+                on_child(class_id);
+            }
             // Skip iteration if no refs - GC optimization for namedtuples of primitives
             if !nt.contains_refs() {
                 return;
@@ -1588,7 +1616,26 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        // A namedtuple *class* owns its default values and its `__module__`.
+        // MUST report the same ids as `NamedTupleClass::py_dec_ref_ids`.
+        HeapData::NamedTupleClass(class) => {
+            if !class.contains_refs() {
+                return;
+            }
+            for value in class.defaults().iter().chain(once(class.module())) {
+                if let Value::Ref(id) = value {
+                    on_child(*id);
+                }
+            }
+        }
         HeapData::Dict(dict) => {
+            // Report the default_factory (a defaultdict with a heap-ref factory,
+            // e.g. a lambda) before the `has_refs` early-out. MUST report exactly
+            // the same ids as `Dict::py_dec_ref_ids`: reporting fewer leaks,
+            // reporting more is a use-after-free.
+            if let Some(Value::Ref(id)) = dict.default_factory() {
+                on_child(*id);
+            }
             // Skip iteration if no refs - major GC optimization for dicts of primitives
             if !dict.has_refs() {
                 return;
@@ -1704,6 +1751,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
             }
         }
         HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::DequeIterator(iter) => on_child(iter.deque_id()),
         HeapData::TupleIterator(iter) => on_child(iter.source_id()),
         HeapData::StringIterator(iter) => {
             if let Some(id) = iter.source_id() {
@@ -1817,8 +1865,10 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Str(s) => s.py_dec_ref_ids(stack),
         HeapData::Bytes(b) => b.py_dec_ref_ids(stack),
         HeapData::List(l) => l.py_dec_ref_ids(stack),
+        HeapData::Deque(d) => d.py_dec_ref_ids(stack),
         HeapData::Tuple(t) => t.py_dec_ref_ids(stack),
         HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+        HeapData::NamedTupleClass(class) => class.py_dec_ref_ids(stack),
         HeapData::Dict(d) => d.py_dec_ref_ids(stack),
         HeapData::DictKeysView(view) => view.py_dec_ref_ids(stack),
         HeapData::DictItemsView(view) => view.py_dec_ref_ids(stack),
@@ -1846,6 +1896,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
         HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DequeIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::StringIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::BytesIterator(iter) => iter.py_dec_ref_ids(stack),

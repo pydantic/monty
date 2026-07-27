@@ -22,7 +22,10 @@ use crate::{
     intern::{FunctionId, StaticStrings, StringId},
     modules::dataclasses,
     os_dispatch::PendingOsEffect,
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    types::{
+        Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
+        str::call_str_method,
+    },
     value::{EitherStr, Value},
 };
 
@@ -511,6 +514,10 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            // Calling a namedtuple class constructs a `NamedTuple` instance.
+            HeapData::NamedTupleClass(_) => {
+                return construct_namedtuple(heap_id, self, args).map(CallResult::Value);
+            }
             HeapData::BoundMethod(bm) => {
                 let instance = bm.instance.clone_with_heap(self);
                 let func = bm.func.clone_with_heap(self);

@@ -5,6 +5,8 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
+    heap::HeapData,
+    modules::collections::counter::{CounterCmp, counter_compare},
     types::{CmpOrder, PyTrait},
     value::Value,
 };
@@ -32,6 +34,12 @@ impl VM<'_> {
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        // Two Counters compare as multisets rather than by ordering. Hooked in
+        // here rather than at the opcode so the fused-assert path, which calls
+        // `cmp_values` directly, gets the same semantics.
+        if let Some(result) = self.counter_compare_op(lhs, rhs, op)? {
+            return Ok(result);
+        }
         match lhs.py_cmp(rhs, self)? {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),
@@ -47,6 +55,34 @@ impl VM<'_> {
                 let right_type = rhs.py_type_name(self);
                 Err(ExcType::type_error_ordering(op.as_str(), &left_type, &right_type))
             }
+        }
+    }
+
+    /// Handles a multiset comparison when both operands are Counters.
+    ///
+    /// Any other operand pair returns `None` so the caller falls through to the
+    /// ordinary ordering path — CPython's `Counter.__lt__` returns
+    /// `NotImplemented` for a non-Counter, which is why `Counter(a=1) < {'a': 2}`
+    /// ends as a `TypeError` rather than a dict comparison.
+    fn counter_compare_op(&mut self, lhs: &Value, rhs: &Value, op: CmpOperator) -> RunResult<Option<bool>> {
+        let cmp = match op {
+            CmpOperator::Lt => CounterCmp::Lt,
+            CmpOperator::LtE => CounterCmp::Le,
+            CmpOperator::Gt => CounterCmp::Gt,
+            CmpOperator::GtE => CounterCmp::Ge,
+            // Only reached from `cmp_ordering`, which handles ordering operators.
+            _ => return Ok(None),
+        };
+        let (Value::Ref(l), Value::Ref(r)) = (lhs, rhs) else {
+            return Ok(None);
+        };
+        let (l, r) = (*l, *r);
+        let both_counters = matches!(self.heap.get(l), HeapData::Dict(d) if d.is_counter())
+            && matches!(self.heap.get(r), HeapData::Dict(d) if d.is_counter());
+        if both_counters {
+            Ok(Some(counter_compare(l, r, cmp, self)?))
+        } else {
+            Ok(None)
         }
     }
 

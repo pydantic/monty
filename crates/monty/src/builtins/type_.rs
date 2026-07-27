@@ -63,6 +63,15 @@ fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
         let class_id = inst.class();
         vm.heap.inc_ref(class_id);
         Value::Ref(class_id)
+    } else if let Value::Ref(id) = &value
+        && let HeapData::NamedTuple(nt) = vm.heap.get(*id)
+        && let Some(class_id) = nt.class_id()
+    {
+        // A factory-made namedtuple's type is its class object, so
+        // `type(p) is Point` holds by identity (self-describing internal named
+        // tuples like `sys.version_info` have no class and fall through).
+        vm.heap.inc_ref(class_id);
+        Value::Ref(class_id)
     } else {
         Value::Builtin(Builtins::Type(value.py_type(vm)))
     }

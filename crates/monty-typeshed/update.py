@@ -331,10 +331,15 @@ def main() -> int:
             raise ValueError(f'{file_path} not found in typeshed')
     print(f'Copied {len(COPY_FILES)} stdlib typeshed files')
 
-    # copy pyi files from CUSTOM_DIR into STDLIB_DIR
+    # Copy Monty's narrowed stubs from CUSTOM_DIR over the upstream copies,
+    # preserving subdirectories so package stubs (e.g. collections/__init__.pyi)
+    # land inside their package rather than flattening onto the stdlib root.
+    # `rglob` (not `glob`) is required for nested packages.
     custom_count = 0
-    for file in CUSTOM_DIR.glob('*.pyi'):
-        shutil.copy2(file, STDLIB_DIR)
+    for file in CUSTOM_DIR.rglob('*.pyi'):
+        dest_file = STDLIB_DIR / file.relative_to(CUSTOM_DIR)
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(file, dest_file)
         custom_count += 1
     print(f'Copied {custom_count} custom typeshed files')
 

@@ -17,6 +17,10 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    modules::collections::{
+        counter::{counter_elements, counter_most_common, counter_order, counter_total, counter_update_method},
+        defaultdict::defaultdict_missing,
+    },
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };
@@ -67,6 +71,38 @@ pub(crate) struct Dict {
     /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
     /// Only transitions from false to true (never back) since tracking removals would be O(n).
     contains_refs: bool,
+    /// Whether this is a plain `dict` or a `collections.defaultdict` (and its
+    /// factory). A defaultdict reuses all of `Dict`'s behaviour and only
+    /// diverges on missing-key access, `type`/`repr`, and the
+    /// `default_factory` attribute.
+    kind: DictKind,
+}
+
+/// Distinguishes a plain `dict` from a `collections.defaultdict` or `Counter`.
+///
+/// The real solution is inheritance, as CPython does it: both are genuine
+/// `dict` subclasses there (`class Counter(dict)`; `defaultdict`'s C struct
+/// embeds a `PyDictObject` and adds a `default_factory`), so they get the dict
+/// surface *and* their own type identity. Monty has no inheritance and derives
+/// type from the `HeapData` variant, so kinds approximate the reuse half only —
+/// hence the `type(x) is Counter` divergence in `limitations/collections.md`.
+/// Workable in the meantime; revisit once inheritance exists.
+///
+/// The `Default(Some(_))` factory is a heap reference the dict owns — released
+/// in [`Dict::py_dec_ref_ids`] / `DropWithContext` and reported to the cycle
+/// collector alongside the entries, so those two paths MUST stay in sync.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DictKind {
+    /// A plain `dict`.
+    #[default]
+    Plain,
+    /// A `collections.defaultdict`; the optional `default_factory` is invoked
+    /// on a missing-key access. `None` means missing keys raise `KeyError`.
+    Default(Option<Value>),
+    /// A `collections.Counter`; a missing-key access returns `0` (without
+    /// inserting), and it adds `most_common`/`elements`/arithmetic on top of
+    /// the dict surface.
+    Counter,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -89,6 +125,105 @@ impl Dict {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
             contains_refs: false,
+            kind: DictKind::Plain,
+        }
+    }
+
+    /// Marks this dict as a `defaultdict` with the given factory (a callable or
+    /// `None`), taking ownership of the factory reference. Called once at
+    /// construction; the factory joins the dict's `contains_refs` accounting.
+    pub fn make_defaultdict(&mut self, factory: Option<Value>) {
+        if matches!(factory, Some(Value::Ref(_))) {
+            self.contains_refs = true;
+        }
+        self.kind = DictKind::Default(factory);
+    }
+
+    /// Returns whether this dict is a `defaultdict`.
+    #[must_use]
+    pub fn is_defaultdict(&self) -> bool {
+        matches!(self.kind, DictKind::Default(_))
+    }
+
+    /// Marks this dict as a `collections.Counter`.
+    pub fn make_counter(&mut self) {
+        self.kind = DictKind::Counter;
+    }
+
+    /// Returns whether this dict is a `Counter`.
+    #[must_use]
+    pub fn is_counter(&self) -> bool {
+        matches!(self.kind, DictKind::Counter)
+    }
+
+    /// Clones this dict's kind for a derived dict, taking a counted reference to
+    /// a `defaultdict` factory.
+    ///
+    /// Exhaustive over [`DictKind`] on purpose: every operation that builds a
+    /// *new* dict from an existing one (`copy`, and any future `|` / slice-like
+    /// derivation) must carry the tag across, and a hand-written `if
+    /// is_defaultdict()` chain silently degrades a `Counter` to a plain dict.
+    #[must_use]
+    pub fn cloned_kind(&self, heap: &impl ContainsHeap) -> DictKind {
+        match &self.kind {
+            DictKind::Plain => DictKind::Plain,
+            DictKind::Default(factory) => DictKind::Default(factory.as_ref().map(|f| f.clone_with_heap(heap))),
+            DictKind::Counter => DictKind::Counter,
+        }
+    }
+
+    /// Adopts a kind produced by [`cloned_kind`], taking ownership of any
+    /// factory reference it carries.
+    pub fn set_kind(&mut self, kind: DictKind) {
+        if matches!(kind, DictKind::Default(Some(Value::Ref(_)))) {
+            self.contains_refs = true;
+        }
+        self.kind = kind;
+    }
+
+    /// Returns the Python type for this dict's kind (`dict`, `defaultdict`, or
+    /// `Counter`).
+    #[must_use]
+    pub fn kind_type(&self) -> Type {
+        match self.kind {
+            DictKind::Plain => Type::Dict,
+            DictKind::Default(_) => Type::DefaultDict,
+            DictKind::Counter => Type::Counter,
+        }
+    }
+
+    /// Clones every entry's value, for the `Counter` orderings that must compare
+    /// counts through the VM (see [`counter_order`]).
+    #[must_use]
+    pub fn cloned_values(&self, heap: &impl ContainsHeap) -> Vec<Value> {
+        self.entries.iter().map(|e| e.value.clone_with_heap(heap)).collect()
+    }
+
+    /// Returns the `default_factory` callable, or `None` for a plain dict or a
+    /// factory-less defaultdict.
+    #[must_use]
+    pub fn default_factory(&self) -> Option<&Value> {
+        match &self.kind {
+            DictKind::Default(factory) => factory.as_ref(),
+            DictKind::Plain | DictKind::Counter => None,
+        }
+    }
+
+    /// Replaces the `default_factory` (the `d.default_factory = ...` setter),
+    /// returning the previous factory for the caller to drop. Only valid on a
+    /// defaultdict.
+    pub fn replace_default_factory(&mut self, factory: Option<Value>) -> Option<Value> {
+        if matches!(factory, Some(Value::Ref(_))) {
+            self.contains_refs = true;
+        }
+        // The `default_factory =` setter only calls this on an existing
+        // defaultdict; the other arms are defensive.
+        match &mut self.kind {
+            DictKind::Default(slot) => mem::replace(slot, factory),
+            DictKind::Plain | DictKind::Counter => {
+                self.kind = DictKind::Default(factory);
+                None
+            }
         }
     }
 
@@ -230,6 +365,51 @@ impl<'h> HeapRead<'h, Dict> {
             defer_drop!(other_value, vm);
             if !value.py_eq(other_value, vm)? {
                 return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Multiset equality between two Counters.
+    ///
+    /// CPython compares over the union of both key sets with a missing key
+    /// reading as `0`, so a zero count is indistinguishable from an absent one
+    /// (`Counter(a=1, b=0) == Counter(a=1)`).
+    ///
+    /// Applies ONLY between two Counters: against anything else
+    /// `Counter.__eq__` returns `NotImplemented` and the comparison falls back
+    /// to [`eq_dict`](Self::eq_dict), where a zero count *is* a real entry — so
+    /// `Counter(a=1, b=0) == {'a': 1}` stays `False`.
+    pub(crate) fn eq_counter(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<bool> {
+        // Every count in `self` must match the other side's, missing reading as 0.
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let other_value = other.dict_get(key, vm)?;
+            let eq = match &other_value {
+                Some(other_value) => value.py_eq(other_value, vm),
+                None => value.py_eq(&Value::Int(0), vm),
+            };
+            if let Some(other_value) = other_value {
+                other_value.drop_with(vm);
+            }
+            if !eq? {
+                return Ok(false);
+            }
+        }
+
+        // Keys only in `other` were not visited above, and must themselves be 0.
+        let other_iter = other.iter(vm)?;
+        defer_drop_mut!(other_iter, vm);
+        while let Some((key, value)) = other_iter.next(vm)? {
+            match self.dict_get(key, vm)? {
+                // Already compared in the first pass.
+                Some(existing) => existing.drop_with(vm),
+                None => {
+                    if !value.py_eq(&Value::Int(0), vm)? {
+                        return Ok(false);
+                    }
+                }
             }
         }
         Ok(true)
@@ -800,45 +980,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for DictIter<'_, 'h> {
     }
 }
 
-/// `PyTrait` implementation for `HeapRead<'h, Dict>`.
-///
-/// All methods access the dict data through short-lived borrows from the heap via
-/// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
-/// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
-impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
-    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
-        true
-    }
-
-    /// `in` on a dict tests its *keys*, matching CPython.
-    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        self.contains_key(item, vm).map(Some)
-    }
-
-    fn py_type(&self, _vm: &VM<'h>) -> Type {
-        Type::Dict
-    }
-
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
-        DictKeyIterator::allocate(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
-    }
-
-    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
-    }
-
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match other.read_heap(vm) {
-            Some(HeapReadOutput::Dict(other)) => Ok(Some(self.eq_dict(&other, vm)?)),
-            _ => Ok(None),
-        }
-    }
-
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        !self.get(vm.heap).is_empty()
-    }
-
-    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+impl<'h> HeapRead<'h, Dict> {
+    /// Writes the plain `{k: v, ...}` mapping repr — the body shared by `dict`
+    /// and the `defaultdict(<factory>, <body>)` wrapper.
+    fn write_map_repr(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         if self.get(vm.heap).is_empty() {
             return Ok(f.write_str("{}")?);
         }
@@ -880,6 +1025,160 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Ok(())
     }
 
+    /// Writes the `{k: v, ...}` body for a Counter repr, ordered by count
+    /// descending (`most_common` order) rather than insertion order.
+    fn write_counter_map_repr(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        let Ok(mut guard) = vm.recursion_guard() else {
+            return Ok(f.write_str("{...}")?);
+        };
+        let vm = &mut *guard;
+
+        let counts = self.get(vm.heap).cloned_values(vm.heap);
+        let order = counter_order(counts, vm)?;
+        f.write_char('{')?;
+        for (n, &i) in order.iter().enumerate() {
+            if n > 0 {
+                f.write_str(", ")?;
+            }
+            let key = self
+                .get(vm.heap)
+                .key_at(i)
+                .expect("index in range")
+                .clone_with_heap(vm.heap);
+            defer_drop!(key, vm);
+            key.py_repr_fmt(f, vm, heap_ids)?;
+            f.write_str(": ")?;
+            let value = self
+                .get(vm.heap)
+                .value_at(i)
+                .expect("index in range")
+                .clone_with_heap(vm.heap);
+            defer_drop!(value, vm);
+            value.py_repr_fmt(f, vm, heap_ids)?;
+        }
+        f.write_char('}')?;
+        Ok(())
+    }
+
+    /// Handles dict attribute assignment. Only `defaultdict.default_factory` is
+    /// settable, and it accepts *any* value (see the note below); it returns the
+    /// previous factory for the caller to drop. Every other attribute — and any
+    /// attribute on a plain dict — raises the generic no-setattr
+    /// `AttributeError`. Consumes `value`.
+    pub(crate) fn set_default_factory_attr(
+        &mut self,
+        attr: &EitherStr,
+        value: Value,
+        vm: &mut VM<'h>,
+    ) -> RunResult<Option<Value>> {
+        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+            // Deliberately unvalidated: CPython's setter is a plain member
+            // assignment, so a non-callable is stored and only raises
+            // `'int' object is not callable` when a missing key finally calls it.
+            // (The *constructor* does check — see `modules::collections::defaultdict`.)
+            if matches!(value, Value::None) {
+                Ok(self.get_mut(vm.heap).replace_default_factory(None))
+            } else {
+                Ok(self.get_mut(vm.heap).replace_default_factory(Some(value)))
+            }
+        } else {
+            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+            value.drop_with(vm);
+            Err(ExcType::attribute_error_no_setattr(&type_name, attr.as_str(vm.interns)))
+        }
+    }
+}
+
+/// `PyTrait` implementation for `HeapRead<'h, Dict>`.
+///
+/// All methods access the dict data through short-lived borrows from the heap via
+/// `self.get(vm.heap)`, and mutation methods use `self.get_mut(vm.heap)`. This avoids
+/// taking the dict out of the heap, enabling self-referential operations like `d.update(d)`.
+impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    /// `in` on a dict tests its *keys*, matching CPython.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains_key(item, vm).map(Some)
+    }
+
+    fn py_type(&self, vm: &VM<'h>) -> Type {
+        self.get(vm.heap).kind_type()
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        DictKeyIterator::allocate(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        Some(self.get(vm.heap).len())
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Dict(other)) => {
+                // Two Counters compare as multisets (zero counts ignored); any
+                // other pairing is plain dict equality.
+                let both_counters = self.get(vm.heap).is_counter() && other.get(vm.heap).is_counter();
+                if both_counters {
+                    Ok(Some(self.eq_counter(&other, vm)?))
+                } else {
+                    Ok(Some(self.eq_dict(&other, vm)?))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
+        !self.get(vm.heap).is_empty()
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
+        // A defaultdict renders as `defaultdict(<factory repr>, <dict repr>)`.
+        if self.get(vm.heap).is_defaultdict() {
+            f.write_str("defaultdict(")?;
+            let factory = self.get(vm.heap).default_factory().map(|v| v.clone_with_heap(vm.heap));
+            match factory {
+                Some(factory) => {
+                    defer_drop!(factory, vm);
+                    factory.py_repr_fmt(f, vm, heap_ids)?;
+                }
+                None => f.write_str("None")?,
+            }
+            f.write_str(", ")?;
+            self.write_map_repr(f, vm, heap_ids)?;
+            return Ok(f.write_char(')')?);
+        }
+        // A Counter renders as `Counter({<items in most-common order>})`, or
+        // `Counter()` when empty.
+        if self.get(vm.heap).is_counter() {
+            if self.get(vm.heap).is_empty() {
+                return Ok(f.write_str("Counter()")?);
+            }
+            f.write_str("Counter(")?;
+            self.write_counter_map_repr(f, vm, heap_ids)?;
+            return Ok(f.write_char(')')?);
+        }
+        self.write_map_repr(f, vm, heap_ids)
+    }
+
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
+        // A defaultdict exposes `default_factory`; every other attribute (and all
+        // attributes on a plain dict) falls through to the caller's generic error.
+        if self.get(vm.heap).is_defaultdict() && attr.static_string() == Some(StaticStrings::DefaultFactory) {
+            let factory = self
+                .get(vm.heap)
+                .default_factory()
+                .map_or(Value::None, |v| v.clone_with_heap(vm.heap));
+            Ok(Some(CallResult::Value(factory)))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self.dict_get(key, vm)? {
             Some(value) => Ok(value),
@@ -903,11 +1202,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let Some(method) = attr.static_string() else {
+            let type_name = self.py_type(vm).name(vm.heap, vm.interns);
             args.drop_with(vm);
-            return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+            return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
         };
 
         let value = match method {
+            // Counter-only methods (a plain dict falls through to AttributeError).
+            StaticStrings::MostCommon if self.get(vm.heap).is_counter() => counter_most_common(self_id, args, vm),
+            StaticStrings::Elements if self.get(vm.heap).is_counter() => counter_elements(self_id, args, vm),
+            StaticStrings::Total if self.get(vm.heap).is_counter() => {
+                args.check_zero_args("total", vm.heap)?;
+                counter_total(self_id, vm)
+            }
+            StaticStrings::Subtract if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, true, vm),
+            // Counter overrides `update` to add counts, and disables `fromkeys`.
+            StaticStrings::Update if self.get(vm.heap).is_counter() => counter_update_method(self_id, args, false, vm),
+            StaticStrings::Fromkeys if self.get(vm.heap).is_counter() => {
+                args.drop_with(vm);
+                return Err(ExcType::not_implemented(
+                    "Counter.fromkeys() is undefined.  Use Counter(iterable) instead.",
+                )
+                .into());
+            }
             StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
                 let (key, default) = args.get_one_two_args("get", vm.heap)?;
@@ -976,11 +1293,27 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 args.check_zero_args("dict.popitem", vm.heap)?;
                 dict_popitem(self, vm)
             }
-            // fromkeys is a classmethod but also accessible on instances
-            StaticStrings::Fromkeys => dict_fromkeys(args, vm),
+            // fromkeys is a classmethod but also accessible on instances. CPython
+            // builds `cls()`, so a defaultdict receiver yields a defaultdict with
+            // no factory (the zero-arg constructor); Counter is rejected above.
+            StaticStrings::Fromkeys => {
+                let kind = if self.get(vm.heap).is_defaultdict() {
+                    DictKind::Default(None)
+                } else {
+                    DictKind::Plain
+                };
+                dict_fromkeys(args, kind, vm)
+            }
+            // `defaultdict.__missing__(key)` — plain dicts have no such method.
+            StaticStrings::DunderMissing if self.get(vm.heap).is_defaultdict() => {
+                let key = args.get_one_arg("__missing__", vm.heap)?;
+                defer_drop!(key, vm);
+                defaultdict_missing(self_id, key, vm)
+            }
             _ => {
+                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
                 args.drop_with(vm);
-                return Err(ExcType::attribute_error(Type::Dict, attr.as_str(vm.interns)));
+                return Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)));
             }
         };
         value.map(CallResult::Value)
@@ -994,6 +1327,15 @@ impl HeapItem for Dict {
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
+        // a lambda). MUST be reported here and in `for_each_child_id` identically.
+        if let DictKind::Default(Some(factory)) = &mut self.kind
+            && let Value::Ref(id) = factory
+        {
+            stack.push(*id);
+            #[cfg(feature = "memory-model-checks")]
+            factory.dec_ref_forget();
+        }
         // Skip iteration if no refs - major GC optimization for dicts of primitives
         if !self.contains_refs {
             return;
@@ -1016,6 +1358,15 @@ impl HeapItem for Dict {
 impl<C: ContainsHeap> DropWithContext<C> for Dict {
     fn drop_with(self, heap: &mut C) {
         self.entries.drop_with(heap);
+        self.kind.drop_with(heap);
+    }
+}
+
+impl<C: ContainsHeap> DropWithContext<C> for DictKind {
+    fn drop_with(self, heap: &mut C) {
+        if let Self::Default(Some(factory)) = self {
+            factory.drop_with(heap);
+        }
     }
 }
 
@@ -1046,7 +1397,15 @@ fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult<Va
         .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
         .collect();
 
-    let new_dict = Dict::from_pairs(pairs, vm)?;
+    // `copy()` preserves the subclass: a defaultdict keeps its factory, a
+    // Counter stays a Counter. `cloned_kind` clones that factory reference, so
+    // guard it — a `from_pairs` failure (e.g. a key `__eq__` raising) would
+    // otherwise drop `kind` via Rust's `Drop`, leaking the factory refcount.
+    // (`from_pairs` cleans up `pairs` on its own error paths.)
+    let kind = dict.get(vm.heap).cloned_kind(vm.heap);
+    let mut kind_guard = DropGuard::new(kind, vm);
+    let mut new_dict = Dict::from_pairs(pairs, kind_guard.ctx())?;
+    new_dict.set_kind(kind_guard.into_inner());
     let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1230,12 +1589,13 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h>) -> RunResult
 }
 
 // Custom serde implementation for Dict.
-// Serializes entries and contains_refs; rebuilds the indices hash table on deserialize.
+// Serializes entries, contains_refs, and kind; rebuilds the indices hash table on deserialize.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("Dict", 2)?;
+        let mut state = serializer.serialize_struct("Dict", 3)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("contains_refs", &self.contains_refs)?;
+        state.serialize_field("kind", &self.kind)?;
         state.end()
     }
 }
@@ -1246,6 +1606,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
         struct DictFields {
             entries: Vec<DictEntry>,
             contains_refs: bool,
+            kind: DictKind,
         }
         let fields = DictFields::deserialize(deserializer)?;
         // Rebuild the indices hash table from the entries
@@ -1257,6 +1618,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
             indices,
             entries: fields.entries,
             contains_refs: fields.contains_refs,
+            kind: fields.kind,
         })
     }
 }
@@ -1271,8 +1633,10 @@ impl<'de> serde::Deserialize<'de> for Dict {
 /// dict.fromkeys(['a', 'b', 'c'])  # {'a': None, 'b': None, 'c': None}
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
-pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
-    let (iterable, default) = args.get_one_two_args("dict.fromkeys", vm.heap)?;
+pub fn dict_fromkeys(args: ArgValues, kind: DictKind, vm: &mut VM<'_>) -> RunResult<Value> {
+    // CPython names the bare method (`fromkeys expected …`), not `dict.fromkeys`,
+    // for both `dict` and the inherited `defaultdict.fromkeys`.
+    let (iterable, default) = args.get_one_two_args("fromkeys", vm.heap)?;
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
@@ -1292,7 +1656,8 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
         }
     }
 
-    let dict = dict_guard.into_inner();
+    let mut dict = dict_guard.into_inner();
+    dict.set_kind(kind);
     let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
     Ok(Value::Ref(heap_id))
 }
