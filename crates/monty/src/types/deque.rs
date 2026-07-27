@@ -65,19 +65,11 @@ struct IndexArgs {
 /// Python's `collections.deque`: a double-ended queue backed by a [`VecDeque`].
 ///
 /// The distinguishing feature over [`List`](super::List) is `maxlen`: a bounded
-/// deque silently evicts from the *opposite* end when it overflows, which is what
-/// makes it useful as a ring buffer / sliding window. Everything else is
-/// list-like, but note a deque is **not** equal to a list with the same items,
-/// and it is unhashable.
+/// deque evicts from the *opposite* end on overflow (a ring buffer). A deque is
+/// **not** equal to a list with the same items, and is unhashable.
 ///
-/// # Reference counting
-/// Items are stored as owned `Value`s. Callers transfer ownership in (having
-/// already inc-ref'd); anything evicted by `maxlen` is dropped here, so eviction
-/// paths must not leak. See [`HeapItem::py_dec_ref_ids`] for the teardown side.
-///
-/// # GC optimization
-/// `contains_refs` mirrors `List`: when no item is a `Value::Ref`, the child walk
-/// and refcount teardown can skip iteration entirely.
+/// Items are owned `Value`s: callers transfer an already-inc-ref'd reference in,
+/// and anything evicted by `maxlen` is dropped here, so eviction must not leak.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Deque {
     items: VecDeque<Value>,
@@ -85,10 +77,9 @@ pub(crate) struct Deque {
     maxlen: Option<usize>,
     /// True if any item is a `Value::Ref` — lets the GC skip iteration.
     contains_refs: bool,
-    /// Bumped by every *structural* mutation, so a live iterator can tell it has
-    /// been invalidated. Mirrors CPython's `dequeobject.state`: a length check is
-    /// not enough, since `rotate()` and a paired `append()`/`popleft()` leave the
-    /// length untouched. See [`Deque::bump_state`] for what does and doesn't count.
+    /// Structural-mutation counter mirroring CPython's `dequeobject.state`, so a
+    /// live iterator detects invalidation even from length-preserving mutations
+    /// (`rotate()`, a paired `append()`/`popleft()`). See [`Deque::bump_state`].
     state: u64,
 }
 
@@ -188,11 +179,9 @@ impl Deque {
 
         let DequeArgs { iterable, maxlen } = DequeArgs::from_args(args, vm)?;
 
-        // `maxlen` is validated before the iterable is consumed, matching CPython.
-        // Both failing branches must release `iterable`, which is already bound:
-        // a caught error would otherwise pin it for the rest of the run. An
-        // explicit `None` means unbounded; a big int is accepted but overflows to
-        // CPython's `OverflowError` rather than a type error.
+        // `maxlen` is validated before the iterable is consumed (CPython order), so
+        // both failing branches must release the already-bound `iterable`. An
+        // explicit `None` is unbounded; a big int out of range is `OverflowError`.
         let raw_maxlen = if let Value::None = maxlen {
             None
         } else {
@@ -218,9 +207,8 @@ impl Deque {
             }
         };
 
-        // An omitted iterable builds an empty deque; an explicit `None` (or any
-        // other non-iterable) falls through to `collect_owned_iterable`, which
-        // raises CPython's `'NoneType' object is not iterable`.
+        // An omitted iterable is empty; an explicit `None` falls through to
+        // `collect_owned_iterable`, raising `'NoneType' object is not iterable`.
         let items = match iterable {
             None => Vec::new(),
             Some(v) => collect_owned_iterable(v, vm)?,
@@ -247,13 +235,11 @@ fn check_maxlen(n: i64) -> RunResult<usize> {
 
 /// Reads a deque integer argument (`int`, `bool`, or big `int`) as an `i64`.
 ///
-/// A big int (heap `LongInt`) is a real `int`, so it is accepted rather than
-/// rejected as a non-integer; only `InternLongInt` is skipped since it is always
-/// materialised to a heap `LongInt` before reaching a runtime operation. Returns
-/// `None` for a genuinely non-integer value (the caller raises its own type
-/// error), and `Some(Err)` when a big int overflows `i64` — CPython's
-/// `PyNumber_AsSsize_t` failure, whose exception kind the caller supplies
-/// (`OverflowError` for `maxlen`/`rotate`/`insert`, `IndexError` for subscript).
+/// A big `int` is accepted (it is a real int); `None` means genuinely
+/// non-integer (the caller raises its own type error), and `Some(Err)` means a
+/// big int overflowed `i64` — CPython's `PyNumber_AsSsize_t` failure, whose
+/// exception kind the caller supplies (`OverflowError` for maxlen/rotate/insert,
+/// `IndexError` for subscript).
 fn read_ssize(value: &Value, vm: &VM<'_>, overflow: fn() -> RunError) -> Option<RunResult<i64>> {
     match value {
         Value::Int(i) => Some(Ok(*i)),
@@ -278,9 +264,8 @@ impl<'h> HeapRead<'h, Deque> {
         this.bump_state();
         let evicted = evict_front_if_full(this);
         if let Some(value) = evicted {
-            // The deque is at `maxlen`, so this append grew it by nothing —
-            // give back the slot charged above, or a bounded deque would
-            // exhaust the memory limit after enough appends.
+            // Net-zero growth: give back the slot charged above, or a bounded
+            // deque would exhaust the memory limit after enough appends.
             vm.heap.track_shrink(VALUE_SIZE);
             value.drop_with(vm);
         }
@@ -318,15 +303,13 @@ impl<'h> HeapRead<'h, Deque> {
 
     /// Resolves a Python index (negative counts from the right) to a real one.
     fn resolve_index(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<usize> {
-        // A slice (or any non-integer) is rejected with CPython's sequence wording,
-        // which names the offending type rather than the container.
+        // A slice is rejected with CPython's sequence wording (names the type).
         if let Value::Ref(id) = key
             && matches!(vm.heap.get(*id), HeapData::Slice(_))
         {
             return Err(ExcType::type_error_sequence_index("slice"));
         }
-        // A big int is still a valid index: accept it, raising CPython's
-        // index-sized `IndexError` when it can't fit a real index.
+        // A big int is a valid index, raising `IndexError` if it can't fit.
         let index = if let Some(res) = read_ssize(key, vm, ExcType::index_error_int_too_large) {
             res?
         } else {
@@ -433,11 +416,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         if len != other.get(vm.heap).len() {
             return Ok(Some(false));
         }
-        // Charge a recursion level before descending into the items: two
-        // *distinct* cyclic deques (`a.append(a); b.append(b); a == b`) re-enter
-        // here once per level, and would otherwise recurse until the host stack
-        // overflows. `List`/`Tuple` take the same bound from the token their
-        // iterators hold; a deque walks by index, so it charges directly.
+        // Charge a recursion level: two distinct cyclic deques (`a.append(a);
+        // b.append(b); a == b`) re-enter here per level and would otherwise
+        // overflow the host stack. A deque walks by index, so it charges directly.
         let mut depth = vm.recursion_guard()?;
         let vm = &mut *depth;
         for i in 0..len {
@@ -808,10 +789,9 @@ fn rotate<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
     };
     let this = deque.get_mut(vm.heap);
     let len = this.items.len();
-    // CPython bails out for len <= 1 (rotating is a no-op) WITHOUT touching state, so
-    // neither an empty rotate nor a single-item one invalidates an iterator. Above
-    // that it bumps unconditionally — even `rotate(0)`, which is why this is not
-    // guarded on `shift != 0`.
+    // CPython bails for len <= 1 without touching state (no iterator invalidation);
+    // above that it bumps unconditionally — even `rotate(0)`, hence no `shift != 0`
+    // guard.
     if len <= 1 {
         return Ok(Value::None);
     }
@@ -973,14 +953,13 @@ fn bound_arg(value: Option<Value>, default: usize, len: usize, vm: &mut VM<'_>) 
     Ok(usize::try_from(normalized).expect("bound clamped non-negative"))
 }
 
-/// Extends `deque_id` in place by every item of `iterable`, as CPython's
+/// Extends `deque_id` in place by every item of `iterable` — CPython's
 /// `deque.__iadd__` (`+=` *is* `extend`).
 ///
-/// Any iterable works and a non-iterable raises `TypeError` from the iterator
-/// protocol — the reason deque `+=` is driven from the VM rather than the
-/// `py_iadd_impl` trait method (which can only surface a `ResourceError`).
+/// Driven from the VM rather than `py_iadd_impl` so a non-iterable raises the
+/// iterator protocol's `TypeError` (the trait can only surface `ResourceError`).
 /// Items are collected *before* appending so `d += d` extends by the original
-/// items and appending never invalidates the iterator draining the source.
+/// items and never invalidates the source iterator.
 pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
     let items: Vec<Value> = collect_owned_iterable(iterable, vm)?;
     let HeapReadOutput::Deque(mut deque) = vm.heap.read(deque_id) else {
@@ -994,23 +973,19 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -
 
 /// Builds `deque * count`, honoring the deque's `maxlen`.
 ///
-/// A bounded deque keeps only its rightmost `maxlen` items, so `deque([1, 2],
-/// maxlen=2) * 10**9` is `deque([1, 2], maxlen=2)` — CPython never materializes
-/// the full product, and neither must we (two billion `Value`s would OOM the
-/// host well before the maxlen truncation ran). We build only the surviving
-/// suffix: the repeated sequence is periodic with period `len`, so the kept
-/// window of `L = min(len*count, maxlen)` items starts at `(len - L % len) % len`
-/// within the pattern and wraps. An unbounded deque has no such shortcut and
-/// materializes the full product (which may exhaust resource limits, matching
-/// CPython's `MemoryError` on an impossibly large repeat).
+/// A bounded deque keeps only its rightmost `maxlen` items, so we build just the
+/// surviving suffix rather than the full product — `deque([1,2], maxlen=2) *
+/// 10**9` must not materialize two billion `Value`s before truncating. The
+/// pattern is periodic with period `len`, so the kept window of `L = min(len*
+/// count, maxlen)` starts at `(len - L % len) % len`. An unbounded deque has no
+/// shortcut and materializes the full product (may hit resource limits, like
+/// CPython's `MemoryError`).
 fn repeat_deque(deque: &Deque, count: usize, vm: &VM<'_>) -> RunResult<Value> {
     let len = deque.len();
     let result = if let Some(max) = deque.maxlen() {
-        // Bounded: keep only the last `min(len*count, maxlen)` items. `kept` is
-        // still attacker-controlled (a huge `maxlen` like `deque(maxlen=10**9)`),
-        // so pre-check that many `Value` slots against the memory tracker and
-        // poll the time limit while building — otherwise the suffix could
-        // allocate/spin before the final `allocate` ever consults a limit.
+        // `kept` is attacker-controlled (a huge `maxlen`), so pre-check that many
+        // `Value` slots against the tracker and poll the time limit while building
+        // — else the suffix could allocate/spin before the final `allocate` checks.
         let kept = len.saturating_mul(count).min(max);
         check_repeat_size(mem::size_of::<Value>(), kept, vm.heap.tracker())?;
         // `Vec::new()` (not `with_capacity(kept)`): the check above is the real

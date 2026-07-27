@@ -199,10 +199,8 @@ pub(crate) fn counter_update(
     subtract: bool,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
-    // An explicit `None` source is a no-op: CPython skips it before the mapping /
-    // iterable dispatch, so `Counter(None)` and `c.update(None)` leave the counts
-    // untouched (any keyword counts below still apply). `None` holds no heap ref,
-    // so it needs no cleanup.
+    // An explicit `None` source is a no-op (CPython skips it before dispatch), so
+    // `Counter(None)` and `c.update(None)` only apply the keyword counts below.
     if let Some(source) = source
         && !matches!(source, Value::None)
     {
@@ -535,15 +533,9 @@ pub(crate) fn counter_binary_op(l_id: HeapId, r_id: HeapId, op: CounterOp, vm: &
             let r_pairs = counter_snapshot(r_id, vm);
             counter_bump_all(result_id, r_pairs, true, vm)?;
         }
-        // `|` keeps the larger count over the union of keys. CPython walks the
-        // left's keys taking `max(count, other[elem])` (other missing = 0) with
-        // `count < other_count`, then adds the right-only keys as-is; the final
-        // `retain_positive` strips non-positive results (and reports the `> 0`
-        // TypeError for an unorderable right-only key).
+        // `|` keeps the larger count over the union of keys (see `counter_binary_extreme`).
         CounterOp::Or => counter_binary_extreme(result_id, l_id, r_id, ExtremeOp::Max, vm)?,
-        // `&` keeps the smaller count, walking the left's keys with `other[elem]`
-        // (missing = 0). Right-only keys never enter, and `retain_positive` drops
-        // any key whose min fell to `0`.
+        // `&` keeps the smaller count over shared keys (see `counter_binary_extreme`).
         CounterOp::And => counter_binary_extreme(result_id, l_id, r_id, ExtremeOp::Min, vm)?,
     }
     counter_retain_positive(result_id, vm)?;

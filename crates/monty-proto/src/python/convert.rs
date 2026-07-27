@@ -439,8 +439,6 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
     match t {
         MontyType::Date => cached!("datetime", "date"),
         MontyType::DateTime => cached!("datetime", "datetime"),
-        // `deque` lives in `collections`, not `builtins`, so it needs an explicit
-        // arm — the fallback `getattr(builtins, "collections.deque")` would fail.
         MontyType::Deque => cached!("collections", "deque"),
         MontyType::TimeDelta => cached!("datetime", "timedelta"),
         MontyType::TimeZone => cached!("datetime", "timezone"),

@@ -44,8 +44,6 @@ use crate::{
 
 /// Creates the `collections` module and allocates it on the heap.
 ///
-/// Returns a `HeapId` pointing to the newly allocated module.
-///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
@@ -141,7 +139,6 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
     let (mut pos, kwargs) = args.into_parts();
     let factory_arg = (pos.len() > 0).then(|| pos.next().expect("len checked"));
 
-    // The factory must be callable or None.
     let factory = match factory_arg {
         None | Some(Value::None) => None,
         Some(value) if value.is_callable(vm.heap) => Some(value),
@@ -173,7 +170,6 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         }
     };
 
-    // Tag the freshly built dict as a defaultdict with the given factory.
     let Value::Ref(dict_id) = dict_value else {
         unreachable!("Dict::init returns a dict ref");
     };

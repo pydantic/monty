@@ -173,11 +173,9 @@ pub enum Type {
     /// as "Field", the name CPython's `Field.__name__` reports.
     #[strum(serialize = "Field")]
     DataclassField,
-    /// `collections.deque`. The qualified name is what CPython uses for
-    /// `<class '...'>` and in error messages (`unhashable type:
-    /// 'collections.deque'`). It also makes `__name__` qualified, diverging from
-    /// CPython's bare `'deque'` — a pre-existing Monty pattern shared with
-    /// `datetime.datetime` and `re.Pattern`; see `limitations/collections.md`.
+    /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
+    /// the name matches CPython's `repr` and error messages; only `__name__`
+    /// diverges from CPython's bare `'deque'`. See `limitations/collections.md`.
     #[strum(serialize = "collections.deque")]
     Deque,
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
