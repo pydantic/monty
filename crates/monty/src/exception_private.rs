@@ -824,12 +824,50 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
+    /// Creates a TypeError for the right operand of `in` / `not in` supporting
+    /// neither `__contains__` nor iteration.
+    ///
+    /// Matches CPython's format: `TypeError: argument of type '{type}' is not a
+    /// container or iterable`
+    #[must_use]
+    fn type_error_not_container(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument of type '{type_}' is not a container or iterable"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a class opting out of `in` with
+    /// `__contains__ = None`.
+    ///
+    /// Matches CPython's `slot_sq_contains` format: `TypeError: '{type}' object
+    /// is not a container` — deliberately distinct from
+    /// [`type_error_not_container`], which covers a type that never had
+    /// `__contains__` at all.
+    #[must_use]
+    fn type_error_object_not_container(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not a container")).into()
+    }
+
     /// Creates a TypeError when `next()` receives a non-iterator.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not an iterator`
     #[must_use]
     fn type_error_not_iterator(type_: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not an iterator")).into()
+    }
+
+    /// Creates a TypeError for a user `__iter__` returning a non-iterator.
+    ///
+    /// Matches CPython's format: `TypeError: iter() returned non-iterator of type '{type}'`
+    #[must_use]
+    fn type_error_iter_returned_non_iterator(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("iter() returned non-iterator of type '{type_}'"),
+        )
+        .into()
     }
 
     /// Creates a TypeError for non-iterable type in PEP 448 `*value` literal unpack.
@@ -2153,6 +2191,17 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Whether this is a catchable `StopIteration`, i.e. a `__next__` reporting
+    /// exhaustion.
+    ///
+    /// Excluding `UncatchableExc` is defensive — it is only ever built from a
+    /// `ResourceError` — but spelled out so a future uncatchable variant cannot
+    /// read as "the iterator finished", letting sandboxed code absorb its own
+    /// limit breach.
+    pub(crate) fn is_stop_iteration(&self) -> bool {
+        matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
+    }
+
     /// Converts this runtime error to a `MontyException` for the public API.
     ///
     /// Internal errors are converted to `RuntimeError` exceptions with no traceback.

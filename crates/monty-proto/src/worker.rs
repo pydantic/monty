@@ -30,7 +30,7 @@ use super::{
     exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
 
-/// Version tag of the opaque dump envelope produced by `Dump`.
+/// Version tag of the worker-specific dump envelope produced by `Dump`.
 ///
 /// Wire layout: `[DUMP_VERSION u16 LE][tag u8][session meta][postcard
 /// payload]` where tag 0 is a `MontyRepl` (idle session) and tag 1 a
@@ -42,12 +42,10 @@ use super::{
 ///   `[committed_stubs str][has_pending u8][pending_snippet str?]`, where each
 ///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
 ///
-/// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 7 because this format includes both the
-/// serialized `NotImplemented` variants and the concrete built-in iterator
-/// variants. Public so tests and hosts inspecting an envelope can reference
-/// the current version.
-pub const DUMP_VERSION: u16 = 7;
+/// The payload uses monty's independently versioned dump format. This outer
+/// version changes only when the tag or session metadata layout changes.
+/// Public so tests and envelope-inspecting hosts need not hardcode it.
+pub const DUMP_VERSION: u16 = 6;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.

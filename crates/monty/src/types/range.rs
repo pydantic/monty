@@ -362,7 +362,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RangeIterator> {
         Ok(Value::Ref(self_id))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let iter = self.get_mut(vm.heap);
         if iter.remaining == 0 {
             Ok(None)

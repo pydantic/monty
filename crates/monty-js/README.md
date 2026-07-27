@@ -207,6 +207,35 @@ await session.feedRun('import os\nos.getenv("HOME")', {
 })
 ```
 
+Callback-backed virtual files return a `MontyFileHandle` marker from the
+open-time call. Paths are virtual POSIX sandbox paths and `position` defaults
+to zero:
+
+```ts
+import { MontyFileHandle, NOT_HANDLED } from '@pydantic/monty'
+
+const files = new Map([['/data/message.txt', 'hello from the host']])
+await session.feedRun("open('/data/message.txt').read()", {
+  os: (name, args) => {
+    const path = args[0] as string
+    if (name === 'open') {
+      return new MontyFileHandle(path, args[1] as string)
+    }
+    if (name === 'Path.read_text') return files.get(path) ?? NOT_HANDLED
+    return NOT_HANDLED
+  },
+})
+```
+
+`MontyFileHandle` canonicalizes `mode` and exposes the same file metadata as
+the Python host API: `path`, `mode`, `position`, `binary`, `readable`, and
+`writable`. Pass a nonzero initial position with
+`new MontyFileHandle(path, mode, { position: 42 })`.
+
+Returning the handle resolves only `open()` itself. Reads and writes are
+separate OS callbacks whose first argument is the handle's virtual path; the
+host never receives or exposes a live file descriptor.
+
 ## Resource Limits
 
 Enforced inside the worker, configured per session:
@@ -311,6 +340,7 @@ workspace `target/` build (development).
 | `dict`            | `Map` (preserves key types and order)                   |
 | `set`/`frozenset` | `Set`                                                   |
 | datetime types    | marker objects (`{ __monty_type__: 'DateTime', ... }`)  |
+| file handles      | `MontyFileHandle`                                       |
 | dataclasses       | marker objects (`{ __monty_type__: 'Dataclass', ... }`) |
 
 Plain objects are accepted as dict inputs (string keys).

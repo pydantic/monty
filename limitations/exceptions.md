@@ -93,3 +93,12 @@ Monty never emits CPython's `Did you mean: '...'?` suggestions on
 `NameError`/`AttributeError`. Note this divergence is invisible to the test
 suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
 before comparison, so traceback tests cannot catch it.
+
+An exception raised inside a Python callable that native code invokes
+*synchronously* — the `key=`/predicate/function argument of `map`, `filter`,
+`sorted`/`min`/`max`, and a user-defined
+`__iter__`/`__next__`/`__contains__`/`__repr__`/`__str__` — omits the **calling**
+frame from its traceback; the callee frame is present.
+CPython shows both. This is a limitation of the re-entrant call path
+(`evaluate_function`), which does not splice the host call site into the
+traceback. The exception type and message are unaffected.

@@ -1610,7 +1610,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
         Ok(Value::Ref(self_id))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (source_id, index, expected_len, mutable) = {
             let iter = self.get(vm.heap);
             (

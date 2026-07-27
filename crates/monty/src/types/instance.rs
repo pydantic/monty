@@ -167,18 +167,80 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         ))
     }
 
+    fn py_is_iterable(&self, vm: &VM<'h>) -> bool {
+        // CPython also accepts a `__getitem__`-only class here; Monty has no
+        // such fallback, so it reports not-iterable (see limitations/classes.md).
+        class_defines_not_none(self.get(vm.heap).class, "__iter__", vm)
+    }
+
+    fn py_is_iterator(&self, vm: &VM<'h>) -> bool {
+        // Plain existence, not [`class_defines_not_none`]: `__next__ = None` is
+        // not an opt-out in CPython — the class stays an iterator and calling it
+        // raises "'NoneType' object is not callable".
+        class_defines(self.get(vm.heap).class, "__next__", vm)
+    }
+
+    /// Dispatches the class's `__iter__` and returns its result unchanged.
+    ///
+    /// No wrapper is interposed, so a self-iterator satisfies `iter(obj) is obj`
+    /// exactly as in CPython. The result must itself be an iterator, mirroring
+    /// `PyObject_GetIter`'s `PyIter_Check` — raising here rather than deferring
+    /// the failure to the first `next()`.
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        // `py_is_iterable` is the single source of truth for "does this class
+        // iterate", so an opted-out `__iter__ = None` reports not-iterable here
+        // instead of reaching the call and raising "'NoneType' object is not
+        // callable" — CPython's `slot_tp_iter` rejects it the same way.
+        let dispatched = if self.py_is_iterable(vm) {
+            instance_call_dunder_sync(self_id, "__iter__", None, vm)?
+        } else {
+            None
+        };
+        let Some(iterator) = dispatched else {
+            return Err(ExcType::type_error_not_iterable(&class_name(
+                instance_class(self_id, vm),
+                vm.heap,
+                vm.interns,
+            )));
+        };
+        if iterator.py_is_iterator(vm) {
+            Ok(iterator)
+        } else {
+            let err = ExcType::type_error_iter_returned_non_iterator(&iterator.py_type_name(vm));
+            iterator.drop_with(vm);
+            Err(err)
+        }
+    }
+
+    /// Dispatches the class's `__next__`, turning `StopIteration` into exhaustion.
+    ///
+    /// Every other exception propagates, including an `UncatchableExc` from a
+    /// resource limit — see [`RunError::is_stop_iteration`]. No heap borrow is
+    /// held across the call: `__next__` runs Python, which may re-enter this
+    /// same instance through a nested `next()`.
+    fn py_next(&mut self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let self_id = self_id.expect("heap values have an id");
+        // The absent case doubles as the not-an-iterator check, halving the
+        // lookups — this runs for every item of every user iterator.
+        match instance_call_dunder_sync(self_id, "__next__", None, vm) {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => Err(ExcType::type_error_not_iterator(&class_name(
+                instance_class(self_id, vm),
+                vm.heap,
+                vm.interns,
+            ))),
+            Err(e) if e.is_stop_iteration() => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     fn py_is_context_manager(&self, vm: &VM<'h>) -> bool {
         // CPython names `__exit__` in the protocol TypeError, so that is the
         // dunder the `BeforeWith` gate checks; a class with `__exit__` but no
         // `__enter__` passes the gate and gets the "missed __enter__ method"
         // error from `py_enter` instead — matching CPython's check order.
-        // Special-method lookup goes through the class only, never the
-        // instance `__dict__` (CPython looks these up on the type).
-        let class_id = self.get(vm.heap).class;
-        match vm.heap.get(class_id) {
-            HeapData::Class(class) => class.namespace().get_by_str("__exit__", vm.heap, vm.interns).is_some(),
-            _ => false,
-        }
+        class_defines(self.get(vm.heap).class, "__exit__", vm)
     }
 
     fn py_enter(&mut self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<CallResult> {
@@ -384,6 +446,36 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
     }
 }
 
+/// Evaluates `item in instance` through the class's `__contains__`.
+///
+/// `Ok(None)` means the class does not define it, leaving the caller to fall
+/// back to iteration — CPython checks `sq_contains` before `tp_iter`, so a
+/// class defining both is never iterated by `in`. `__contains__ = None` is an
+/// opt-out rather than an absence: it errors here instead of falling back.
+///
+/// The result is coerced with `py_bool`, which reports every instance as truthy
+/// — so a `__contains__` returning a user object with a false `__bool__` /
+/// `__len__` diverges from CPython's `PyObject_IsTrue` (see
+/// `limitations/classes.md`).
+pub(crate) fn instance_contains(self_id: HeapId, item: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+    let class_id = instance_class(self_id, vm);
+    if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
+        return Err(ExcType::type_error_object_not_container(&class_name(
+            class_id, vm.heap, vm.interns,
+        )));
+    }
+    // The callee owns its argument, so the borrowed `item` is cloned;
+    // `instance_call_dunder_sync` drops it again if there is no `__contains__`.
+    let item = item.clone_with_heap(vm.heap);
+    match instance_call_dunder_sync(self_id, "__contains__", Some(item), vm)? {
+        Some(result) => {
+            defer_drop!(result, vm);
+            Ok(Some(result.py_bool(vm)?))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Calls a user-defined string dunder (`__repr__`/`__str__`) on the instance and
 /// validates that it returned a `str`.
 ///
@@ -395,21 +487,9 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
 /// bounds it with a catchable `RecursionError` — lower than CPython's depth for
 /// deep-but-finite chains, a documented divergence (`limitations/classes.md`).
 fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
-    let class_id = instance_class(self_id, vm);
-    let Some(func) = class_member(class_id, dunder, vm) else {
+    let Some(result) = instance_call_dunder_sync(self_id, dunder, None, vm)? else {
         return Ok(None);
     };
-    defer_drop!(func, vm);
-    // Only a plain function binds `self` as a descriptor (CPython's method
-    // lookup protocol, mirrored by `call_member_bound`); an already-bound
-    // method or other callable value is invoked with no extra argument.
-    let args = if is_method_value(func, vm) {
-        vm.heap.inc_ref(self_id);
-        ArgValues::One(Value::Ref(self_id))
-    } else {
-        ArgValues::Empty
-    };
-    let result = vm.evaluate_function(dunder, func, args)?;
     // CPython requires `__repr__`/`__str__` to return a `str`; reject any other
     // type with the same TypeError, dropping the offending return value.
     if result.is_str(vm.heap) {
@@ -421,6 +501,91 @@ fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'
         ));
         result.drop_with(vm);
         Err(exc)
+    }
+}
+
+/// Calls a zero- or one-argument dunder (`__repr__`, `__next__`,
+/// `__contains__`, ...) on the instance, binding `self` for a plain-function
+/// member. `Ok(None)` if the class does not define it — `arg` is dropped here
+/// in that case, so callers hand over ownership unconditionally.
+///
+/// Synchronous: the callee runs inside `evaluate_function` rather than as a
+/// pushed frame, so — unlike `__enter__` via [`call_member_bound`] — it cannot
+/// suspend on an external/OS call. That is forced by the callers' signatures,
+/// which must hand a `Value` straight back; see `limitations/classes.md`.
+fn instance_call_dunder_sync(
+    self_id: HeapId,
+    dunder: &'static str,
+    arg: Option<Value>,
+    vm: &mut VM<'_>,
+) -> RunResult<Option<Value>> {
+    let class_id = instance_class(self_id, vm);
+    let Some(func) = class_member(class_id, dunder, vm) else {
+        arg.drop_with(vm);
+        return Ok(None);
+    };
+    defer_drop!(func, vm);
+    // Only a plain function binds `self` as a descriptor (CPython's method
+    // lookup protocol, mirrored by `call_member_bound`); an already-bound
+    // method or other callable value is invoked without it.
+    let args = if is_method_value(func, vm) {
+        vm.heap.inc_ref(self_id);
+        let this = Value::Ref(self_id);
+        match arg {
+            Some(arg) => ArgValues::Two(this, arg),
+            None => ArgValues::One(this),
+        }
+    } else {
+        match arg {
+            Some(arg) => ArgValues::One(arg),
+            None => ArgValues::Empty,
+        }
+    };
+    vm.evaluate_function(dunder, func, args).map(Some)
+}
+
+/// Whether `self_id` is an instance whose class has an `__iter__` member —
+/// including a `None` one, which opts the class out of iteration.
+///
+/// The distinction is CPython's `tp_iter`-is-non-NULL test, which only the
+/// unpack error message needs (see `unpack_type_error`); everywhere else the
+/// question is [`HeapRead::py_is_iterable`].
+pub(crate) fn instance_defines_iter(self_id: HeapId, vm: &VM<'_>) -> bool {
+    match vm.heap.get(self_id) {
+        HeapData::Instance(inst) => class_defines(inst.class, "__iter__", vm),
+        _ => false,
+    }
+}
+
+/// Whether `class_id`'s namespace defines `dunder`, without cloning it out.
+///
+/// Special-method lookup goes through the class only, never the instance
+/// `__dict__`, matching CPython's lookup for implicit invocations. A slot whose
+/// `None` value opts the class out of the protocol wants
+/// [`class_defines_not_none`] instead.
+fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
+    class_dunder(class_id, dunder, vm).is_some()
+}
+
+/// Whether `class_id` defines `dunder` as something other than `None`.
+///
+/// `__iter__ = None` and `__contains__ = None` are explicit protocol opt-outs:
+/// CPython's `slot_tp_iter` / `slot_sq_contains` reject a `None` member with the
+/// same error as an absent one rather than calling it. This is per-slot, not
+/// general — `__next__ = None` keeps the class an iterator (see
+/// [`HeapRead::py_is_iterator`]), so use [`class_defines`] there.
+fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
+    matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
+}
+
+/// Borrows a dunder out of `class_id`'s namespace, or `None` if absent.
+///
+/// Backs the existence checks above without the `clone_with_heap` that
+/// [`class_member`] pays to hand out an owned value.
+fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
+    match vm.heap.get(class_id) {
+        HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
+        _ => None,
     }
 }
 

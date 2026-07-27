@@ -952,6 +952,10 @@ impl HeapItem for ListIterator {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
+    fn py_is_iterator(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -974,7 +978,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
         Ok(Value::Ref(self_id))
     }
 
-    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let (list_id, index) = {
             let iterator = self.get(vm.heap);
             (iterator.list, iterator.index)

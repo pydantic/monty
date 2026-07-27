@@ -73,7 +73,7 @@ assert q * 3 + r == INT_MIN
 assert q == -3074457345618258603
 assert r == 1
 
-# === CompareModEq patterns ===
+# === Modulo equality patterns ===
 x = INT_MIN
 assert x % -1 == 0
 assert x % 2 == 0

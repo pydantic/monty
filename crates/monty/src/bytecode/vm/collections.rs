@@ -8,7 +8,7 @@ use crate::{
     intern::StringId,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
-        slice::value_to_option_i64,
+        instance::instance_defines_iter, slice::value_to_option_i64,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -109,7 +109,11 @@ impl VM<'_> {
 
         if !iterable.py_is_iterable(this) {
             let type_ = iterable.py_type_name(this);
-            return Err(ExcType::type_error_value_after_star(&type_));
+            return Err(if opts_out_of_iter(iterable, this) {
+                ExcType::type_error_not_iterable(&type_)
+            } else {
+                ExcType::type_error_value_after_star(&type_)
+            });
         }
         let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
 
@@ -469,8 +473,7 @@ impl VM<'_> {
         defer_drop!(value, this);
 
         if !value.py_is_iterable(this) {
-            let type_name = value.py_type_name(this);
-            return Err(unpack_type_error(&type_name));
+            return Err(unpack_type_error(value, this));
         }
         // CPython's `UNPACK_SEQUENCE` special-cases exactly these three, so only
         // they can report a total in the "too many" message. It is deliberately
@@ -530,8 +533,7 @@ impl VM<'_> {
         let min_items = before + after;
 
         if !value.py_is_iterable(this) {
-            let type_name = value.py_type_name(this);
-            return Err(unpack_type_error(&type_name));
+            return Err(unpack_type_error(value, this));
         }
         // Drained in full: a starred target consumes everything, so unlike
         // `unpack_sequence` there is no bound to stop at — and therefore always
@@ -618,11 +620,30 @@ fn unpack_too_many_unknown_error(expected: usize) -> RunError {
     .into()
 }
 
-/// Creates a TypeError for attempting to unpack a non-iterable type.
-fn unpack_type_error(type_name: &str) -> RunError {
-    SimpleException::new_msg(
-        ExcType::TypeError,
-        format!("cannot unpack non-iterable {type_name} object"),
-    )
-    .into()
+/// Creates a TypeError for attempting to unpack a non-iterable value.
+///
+/// Takes the value rather than its name because the wording depends on *why* it
+/// is not iterable — see [`opts_out_of_iter`].
+fn unpack_type_error(value: &Value, vm: &VM<'_>) -> RunError {
+    let type_name = value.py_type_name(vm);
+    if opts_out_of_iter(value, vm) {
+        ExcType::type_error_not_iterable(&type_name)
+    } else {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("cannot unpack non-iterable {type_name} object"),
+        )
+        .into()
+    }
+}
+
+/// Whether a value already known to be non-iterable owes that to `__iter__ =
+/// None`, and so keeps the plain "not iterable" message at an unpacking site.
+///
+/// CPython substitutes site-specific wording ("cannot unpack non-iterable ...",
+/// "Value after * must be an iterable ...") only when the type has no `tp_iter`
+/// slot at all; a class opting out with `__iter__ = None` still fills the slot,
+/// so `slot_tp_iter`'s own error survives.
+fn opts_out_of_iter(value: &Value, vm: &VM<'_>) -> bool {
+    matches!(value, Value::Ref(id) if instance_defines_iter(*id, vm))
 }

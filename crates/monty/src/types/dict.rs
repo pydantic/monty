@@ -1377,7 +1377,7 @@ macro_rules! impl_dict_iterator {
                 Ok(Value::Ref(self_id))
             }
 
-            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+            fn py_next(&mut self, _self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
                 $next(self, vm)
             }
         }

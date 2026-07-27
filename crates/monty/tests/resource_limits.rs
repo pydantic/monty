@@ -2516,3 +2516,34 @@ fn finditer_shares_subject_memory() {
         MontyObject::Int(4000)
     );
 }
+
+/// A resource limit hit *inside* a user `__next__` must terminate the run, not
+/// be mistaken for iterator exhaustion.
+///
+/// `py_next` turns a raised `StopIteration` into `Ok(None)` and propagates
+/// everything else, so the budget breach has to escape the loop. (It does not
+/// exercise `is_stop_iteration`'s `Exc`-only check, which is unreachable while
+/// resource errors are never typed `StopIteration` — see its docstring.)
+#[test]
+fn resource_limit_in_user_next_is_not_exhaustion() {
+    let code = r"
+class Spin:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        x = 0
+        for i in range(100000000):
+            x = x + 1
+        return x
+
+for _v in Spin():
+    pass
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("the time limit must terminate the run");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}

@@ -22,7 +22,7 @@ crate-type = ["cdylib"]
 monty-types = { workspace = true }
 monty-pool = { workspace = true }
 monty-type-checking = { workspace = true }
-napi = { version = "3.8", default-features = false, features = ["napi6", "compat-mode", "tokio_rt"] }
+napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }
