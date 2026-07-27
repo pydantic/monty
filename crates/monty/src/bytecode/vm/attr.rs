@@ -1,7 +1,5 @@
 //! Attribute access helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     bytecode::vm::CallResult,
@@ -11,7 +9,7 @@ use crate::{
     value::EitherStr,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
     /// Returns an AttributeError if the attribute doesn't exist.

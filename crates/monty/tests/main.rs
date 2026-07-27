@@ -83,6 +83,23 @@ fn subscript_augassign_matmul_reports_not_supported() {
     );
 }
 
+/// Multiline traceback previews dedent by the common leading-whitespace
+/// *prefix* of the displayed lines; with mixed tab/space indentation there is
+/// no common prefix, so lines keep their original indentation (matching
+/// CPython) rather than having unrelated whitespace blindly stripped. Kept as
+/// a Rust-side test because CPython adds caret anchors to the `in C` frame
+/// that Monty omits, so the comparative test-case suite cannot cover it.
+#[test]
+fn multiline_preview_mixed_indentation_not_dedented() {
+    let code = "if True:\n    class C:\n        x = (1 /\n\t0)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let err = ex.run_no_limits(vec![]).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 2, in <module>\n        class C:\n            x = (1 /\n    \t0)\n  File \"test.py\", line 3, in C\n            x = (1 /\n    \t0)\nZeroDivisionError: division by zero"
+    );
+}
+
 /// A class whose `__init__` is bound to an external function cannot suspend:
 /// non-plain-function `__init__` runs synchronously via `evaluate_function`,
 /// which cannot yield to the host, so the call raises `NotImplementedError`

@@ -118,7 +118,7 @@ pub enum Opcode {
     StoreCell = 20,
     /// Delete local variable. Operand: u8 slot.
     DeleteLocal = 21,
-    /// Load global in call context: pushes `ExtFunction(name_id)` for undefined names
+    /// Load global in call context: pushes an external function for undefined names
     /// instead of yielding `NameLookup`. Operands: u16 slot, u16 name_id.
     ///
     /// Used when compiling function calls like `foo()` where `foo` is a global.
@@ -547,6 +547,10 @@ pub enum Opcode {
     /// or with `ASSERT_CMP_FLAG` [..., lhs, rhs, msg] -> raises. The message
     /// comes first, with introspected detail appended when available.
     AssertFailed = 119,
+    /// Allocate a closure cell initialized to `Undefined` and push its reference.
+    ///
+    /// Used for captured targets in inlined comprehensions.
+    BuildCell = 120,
 }
 // Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
@@ -642,7 +646,8 @@ impl Opcode {
             | Self::Nop
             | Self::BeforeWith
             | Self::WithExit
-            | Self::WithExceptStart => OperandShape::None,
+            | Self::WithExceptStart
+            | Self::BuildCell => OperandShape::None,
             Self::LoadLocal
             | Self::StoreLocal
             | Self::DeleteLocal
@@ -865,7 +870,7 @@ impl Opcode {
             (Dup, Operand::None) => 1,
             (Dup2, Operand::None) => 2,
             (Rot2 | Rot3, Operand::None) => 0,
-            (LoadNone | LoadTrue | LoadFalse, Operand::None) => 1,
+            (LoadNone | LoadTrue | LoadFalse | BuildCell, Operand::None) => 1,
             (LoadLocal0 | LoadLocal1 | LoadLocal2 | LoadLocal3, Operand::None) => 1,
             (
                 BinaryAdd | BinarySub | BinaryMul | BinaryDiv | BinaryFloorDiv | BinaryMod | BinaryPow | BinaryAnd

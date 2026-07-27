@@ -1,6 +1,6 @@
 //! Implementation of the setattr() builtin function.
 
-use monty_types::{ExcType, ResourceTracker};
+use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
@@ -20,7 +20,7 @@ use crate::{
 /// setattr(obj, 'x', 42)      # Set obj.x = 42
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
-pub fn builtin_setattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_setattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("setattr", vm.heap)?;
     defer_drop!(positional, vm);
 

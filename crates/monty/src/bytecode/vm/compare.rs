@@ -1,7 +1,5 @@
 //! Comparison operation helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     defer_drop,
@@ -11,7 +9,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Evaluates a comparison without consuming its operands.
     /// Shared by `Compare*` opcodes and fused asserts to keep their semantics aligned.
     #[inline]
@@ -19,8 +17,8 @@ impl<T: ResourceTracker> VM<'_, T> {
         match op {
             CmpOperator::Eq => lhs.py_eq(rhs, self),
             CmpOperator::NotEq => Ok(!lhs.py_eq(rhs, self)?),
-            CmpOperator::Is => Ok(lhs.is(rhs, self)),
-            CmpOperator::IsNot => Ok(!lhs.is(rhs, self)),
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
             CmpOperator::In => rhs.py_contains(lhs, self),
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
@@ -72,7 +70,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Defines a specialized entry point for each comparison opcode.
 macro_rules! compare_opcodes {
     ($($name:ident => $op:ident,)*) => {
-        impl<T: ResourceTracker> VM<'_, T> {
+        impl VM<'_> {
             $(
                 pub(super) fn $name(&mut self) -> Result<(), RunError> {
                     self.compare_op::<{ CmpOperator::$op.as_operand() }>()

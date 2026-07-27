@@ -6,7 +6,7 @@
 use ahash::AHashSet;
 use monty_types::{
     DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
-    MontyTimeZone, MontyType, ResourceTracker,
+    MontyTimeZone, MontyType,
 };
 
 use crate::{
@@ -38,19 +38,19 @@ use crate::{
 pub(crate) trait MontyObjectExt: Sized {
     /// Converts a `Value` into a `MontyObject`, properly handling reference
     /// counting: takes ownership of the `Value` and drops it via `drop_with`.
-    fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self;
+    fn new(value: Value, vm: &mut VM<'_>) -> Self;
 
     /// Converts this `MontyObject` into a `Value`, allocating on the heap if
     /// needed. Fails with `InvalidInputError` on output-only variants
     /// (`Repr`, `Cycle`, sandbox class `Type`s) or when a resource limit is hit.
-    fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError>;
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError>;
 
     /// Top-level entry into [`from_value_inner`](Self::from_value_inner),
     /// allocating the visited-set used for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self;
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self;
 
     /// Converts a `Value` to a `MontyObject` with cycle detection via `visited`.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self;
+    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self;
 }
 
 impl MontyObjectExt for MontyObject {
@@ -60,7 +60,7 @@ impl MontyObjectExt for MontyObject {
     /// then properly drops the Value via `drop_with` to maintain reference counting.
     ///
     /// The `interns` parameter is used to look up interned string/bytes content.
-    fn new(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
+    fn new(value: Value, vm: &mut VM<'_>) -> Self {
         let py_obj = Self::from_value(&value, vm);
         value.drop_with(vm);
         py_obj
@@ -75,7 +75,7 @@ impl MontyObjectExt for MontyObject {
     /// # Errors
     /// Returns `InvalidInputError` if called on the `Repr` variant,
     /// as it is only valid as an output from code execution, not as an input.
-    fn to_value(self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Value, InvalidInputError> {
+    fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
             Self::None => Ok(Value::None),
@@ -212,17 +212,7 @@ impl MontyObjectExt for MontyObject {
                 )),
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-            Self::Function { name, .. } => {
-                // Try to intern the function name. If the name is already interned
-                // (common case: the function has the same name as the variable it was
-                // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
-                // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
-                if let Some(string_id) = vm.interns.get_string_id_by_name(&name) {
-                    Ok(Value::ExtFunction(string_id))
-                } else {
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::ExtFunction(name))?))
-                }
-            }
+            Self::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)?),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
@@ -230,7 +220,7 @@ impl MontyObjectExt for MontyObject {
 
     /// Top-level entry into [`from_value_inner`], allocating the visited-set used
     /// for cycle detection.
-    fn from_value(object: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Self {
+    fn from_value(object: &Value, vm: &mut VM<'_>) -> Self {
         let mut visited = AHashSet::new();
         Self::from_value_inner(object, vm, &mut visited)
     }
@@ -248,7 +238,7 @@ impl MontyObjectExt for MontyObject {
     /// even if that `__repr__` mutates the container. Immutable containers
     /// (tuple, namedtuple, frozenset) clone per-item: their length and slots
     /// cannot change mid-iteration.
-    fn from_value_inner(object: &Value, vm: &mut VM<'_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
+    fn from_value_inner(object: &Value, vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
         let Ok(mut guard) = vm.recursion_guard() else {
             return Self::Repr("<deeply nested>".to_owned());
@@ -469,8 +459,8 @@ impl MontyObjectExt for MontyObject {
                             position: file.position(),
                         })
                     }
-                    HeapReadOutput::ExtFunction(name) => Self::Function {
-                        name: name.get(vm.heap).clone(),
+                    HeapReadOutput::ExtFunction(function) => Self::Function {
+                        name: function.get(vm.heap).as_str().to_owned(),
                         docstring: None,
                     },
                     _ => repr_or_error(object, vm),
@@ -483,14 +473,6 @@ impl MontyObjectExt for MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
-            // Inline external function: export under the same shape as the heap
-            // path's `HeapReadOutput::ExtFunction` arm above, so an interned
-            // function name round-trips through Monty as `MontyObject::Function`
-            // regardless of which representation it took (issue #345).
-            Value::ExtFunction(name_id) => Self::Function {
-                name: vm.interns.get_str(*name_id).to_owned(),
-                docstring: None,
-            },
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),
@@ -508,7 +490,7 @@ pub(crate) trait MontyTypeExt: Sized {
 
     fn from_internal_static(ty: Type) -> Self;
 
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self;
+    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self;
 }
 
 impl MontyTypeExt for MontyType {
@@ -623,7 +605,7 @@ impl MontyTypeExt for MontyType {
 
     /// The total mirror of a runtime [`Type`]: `Instance` resolves its class
     /// name via the heap.
-    fn from_internal(ty: Type, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Self {
+    fn from_internal(ty: Type, heap: &Heap, interns: &Interns) -> Self {
         match ty {
             Type::Instance(class_id) => Self::Instance(class_name(class_id, heap, interns).into_owned()),
             other => Self::from_internal_static(other),
@@ -634,10 +616,7 @@ impl MontyTypeExt for MontyType {
 /// Converts a sequence of `MontyObject`s into runtime `Value`s, releasing all
 /// already-converted values if a later conversion fails (invalid nested input
 /// or a resource limit) so no refcounts leak on the error path.
-fn convert_values(
-    items: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<Vec<Value>, InvalidInputError> {
+fn convert_values(items: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<Vec<Value>, InvalidInputError> {
     let mut guard = DropGuard::new(Vec::with_capacity(items.len()), vm);
     let (values, vm) = guard.as_parts_mut();
     for item in items {
@@ -648,10 +627,7 @@ fn convert_values(
 
 /// Converts `(key, value)` `MontyObject` pairs into runtime `Value` pairs with
 /// the same all-paths cleanup guarantee as [`convert_values`].
-fn convert_pairs(
-    map: DictPairs,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> Result<Vec<(Value, Value)>, InvalidInputError> {
+fn convert_pairs(map: DictPairs, vm: &mut VM<'_>) -> Result<Vec<(Value, Value)>, InvalidInputError> {
     let mut guard = DropGuard::new(Vec::with_capacity(map.len()), vm);
     let (pairs, vm) = guard.as_parts_mut();
     for (key_obj, value_obj) in map {
@@ -669,7 +645,7 @@ fn convert_pairs(
 /// or hash.
 fn convert_set(
     items: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
     unhashable_msg: &'static str,
 ) -> Result<Set, InvalidInputError> {
     let mut guard = DropGuard::new(Set::new(), vm);
@@ -687,11 +663,7 @@ fn convert_set(
 /// Taking a `&[Value]` snapshot (cloned and guarded by the caller) is what
 /// keeps [`from_value_inner`](MontyObjectExt::from_value_inner) safe against a
 /// nested `__repr__` mutating the source container mid-iteration.
-fn values_to_objects(
-    children: &[Value],
-    vm: &mut VM<'_, impl ResourceTracker>,
-    visited: &mut AHashSet<HeapId>,
-) -> Vec<MontyObject> {
+fn values_to_objects(children: &[Value], vm: &mut VM<'_>, visited: &mut AHashSet<HeapId>) -> Vec<MontyObject> {
     children
         .iter()
         .map(|child| MontyObject::from_value_inner(child, vm, visited))
@@ -702,7 +674,7 @@ fn values_to_objects(
 /// pair-wise counterpart of [`values_to_objects`].
 fn pairs_to_objects(
     children: &[(Value, Value)],
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
     visited: &mut AHashSet<HeapId>,
 ) -> Vec<(MontyObject, MontyObject)> {
     children
@@ -718,7 +690,7 @@ fn pairs_to_objects(
 
 /// Clones every `(key, value)` pair out of a dict (or dataclass attrs) so
 /// recursive conversion cannot be invalidated by user code mutating it.
-fn snapshot_dict_pairs(dict: &Dict, heap: &Heap<impl ResourceTracker>) -> Vec<(Value, Value)> {
+fn snapshot_dict_pairs(dict: &Dict, heap: &Heap) -> Vec<(Value, Value)> {
     (0..dict.len())
         .map(|i| {
             (
@@ -731,7 +703,7 @@ fn snapshot_dict_pairs(dict: &Dict, heap: &Heap<impl ResourceTracker>) -> Vec<(V
 
 /// Converts a value to its repr string for `MontyObject`, falling back to a
 /// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
-fn repr_or_error(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> MontyObject {
+fn repr_or_error(value: &Value, vm: &mut VM<'_>) -> MontyObject {
     match value.py_repr(vm) {
         Ok(s) => {
             // `py_repr` yields a heap `str` `Value`; extract its text and drop it.

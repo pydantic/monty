@@ -85,6 +85,19 @@ fn json_output_repr() {
 }
 
 #[test]
+fn json_output_builtin_function() {
+    // Builtin functions serialize by their lowercase Python name, matching
+    // the strum `Display`/wire representation.
+    assert_snapshot!(to_json(&eval("print")), @r#"{"BuiltinFunction":"print"}"#);
+}
+
+#[test]
+fn json_deserialize_builtin_function() {
+    let obj: MontyObject = serde_json::from_str(r#"{"BuiltinFunction":"print"}"#).unwrap();
+    assert_eq!(obj, eval("print"));
+}
+
+#[test]
 fn json_output_cycle_list() {
     // Cyclic references become MontyObject::Cycle on serialization.
     assert_snapshot!(

@@ -1,7 +1,5 @@
 //! Implementation of the reversed() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
@@ -26,7 +24,7 @@ struct ReversedArgs {
 ///
 /// Returns a list with elements in reverse order.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_reversed(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ReversedArgs { sequence } = ReversedArgs::from_args(args, vm)?;
 
     // Being iterable is not enough: CPython needs `__reversed__`, or
@@ -55,7 +53,7 @@ pub fn builtin_reversed(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) 
 /// rather than becoming reversible by accident. Sets and iterators are excluded
 /// (no ordering / one-shot), as are user instances — `__reversed__` is not
 /// dispatched, see `limitations/classes.md`.
-fn is_reversible(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
+fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
     match value {
         Value::InternString(_) | Value::InternBytes(_) => true,
         Value::Ref(id) => matches!(

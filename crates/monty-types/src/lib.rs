@@ -20,7 +20,7 @@ pub use crate::{
     },
     file_mode::FileMode,
     format::{FormatFloat, StringRepr, bytes_repr, bytes_repr_fmt, string_repr_fmt, utf8_error_reason},
-    io::{PrintStream, PrintWriter, PrintWriterCallback},
+    io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
     object::{
         ConversionError, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject,
         MontyTimeDelta, MontyTimeZone, MontyType,
@@ -29,10 +29,7 @@ pub use crate::{
         GetenvArgs, MkdirCallArgs, MontyPath, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
         RenameCallArgs, dir_stat, file_stat, stat_result, symlink_stat,
     },
-    resource::{
-        DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, LimitedTracker, NoLimitTracker, ResourceError,
-        ResourceLimits, ResourceTracker,
-    },
+    resource::{DEFAULT_MAX_RECURSION_DEPTH, LARGE_RESULT_THRESHOLD, ResourceError, ResourceLimits, ResourceTracker},
     results::{ExtFunctionResult, NameLookupResult},
     run_options::{AssertMessageAnnotations, CompileOptions},
 };

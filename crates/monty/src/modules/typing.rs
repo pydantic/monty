@@ -7,7 +7,7 @@
 //! These markers exist so code that imports typing constructs works correctly,
 //! though Monty doesn't perform static type checking.
 
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 
 use crate::{
     bytecode::VM,
@@ -24,7 +24,7 @@ use crate::{
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Typing);
 
     // typing.TYPE_CHECKING - always False

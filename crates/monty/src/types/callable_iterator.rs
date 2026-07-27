@@ -7,7 +7,6 @@
 
 use std::mem;
 
-use monty_types::ResourceTracker;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -68,23 +67,23 @@ impl HeapItem for CallableIterator {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, CallableIterator> {
-    fn py_is_iterable(&self, _: &VM<'h, impl ResourceTracker>) -> bool {
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
         true
     }
 
-    fn py_type(&self, _: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _: &VM<'h>) -> Type {
         Type::CallableIterator
     }
 
-    fn py_len(&self, _: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 
-    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let self_id = self_id.expect("heap values have an id");
         vm.heap.inc_ref(self_id);
         Ok(Value::Ref(self_id))
@@ -96,7 +95,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, CallableIterator> {
     /// `callable` re-enters Python and may reach this same iterator through a
     /// nested `next()`, which would alias the `UnsafeCell` if a borrow were held
     /// across it (`iter__reentrant.py` covers exactly that).
-    fn py_next(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         let resolved = {
             let this = self.get(vm.heap);
             if this.done {
@@ -137,7 +136,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, CallableIterator> {
 ///
 /// Takes both values by ownership: the caller has already cloned them out of the
 /// iterator so that no heap borrow is live across the re-entrant call.
-fn callable_next(callable: Value, sentinel: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+fn callable_next(callable: Value, sentinel: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     defer_drop!(callable, vm);
     defer_drop!(sentinel, vm);
     let result = vm.evaluate_function("iter(callable, sentinel)", callable, ArgValues::Empty)?;

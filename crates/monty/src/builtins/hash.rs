@@ -1,7 +1,5 @@
 //! Implementation of the hash() builtin function.
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::VM,
@@ -14,7 +12,7 @@ use crate::{
 ///
 /// Returns the hash value of an object (if it has one).
 /// Raises TypeError for unhashable types like lists and dicts.
-pub fn builtin_hash(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_hash(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("hash", vm.heap)?;
     defer_drop!(value, vm);
     match value.py_hash(vm)? {

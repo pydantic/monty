@@ -2,8 +2,6 @@
 
 use std::mem;
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -60,7 +58,7 @@ impl Module {
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, impl ResourceTracker>) {
+    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_>) {
         let key = Value::InternString(name.into());
         // Unwrap is safe because InternString keys are always hashable
         self.attrs.set(key, value, vm).unwrap();
@@ -83,7 +81,7 @@ impl<'h> HeapRead<'h, Module> {
     /// Returns the attribute value if found, or `None` if the attribute doesn't exist.
     /// For `Property` values, invokes the property getter rather than returning
     /// the Property itself - this implements Python's descriptor protocol.
-    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> Option<CallResult> {
+    pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> Option<CallResult> {
         let value = self
             .get(vm.heap)
             .attrs
@@ -107,7 +105,7 @@ impl<'h> HeapRead<'h, Module> {
     pub fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {

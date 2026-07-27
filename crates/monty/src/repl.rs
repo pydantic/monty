@@ -10,7 +10,6 @@ use ahash::AHashMap;
 use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
 use ruff_python_ast::token::TokenKind;
 use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErrorType, parse_module};
-use serde::de::DeserializeOwned;
 
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -35,8 +34,7 @@ use crate::{
 /// Each `feed()` compiles and executes only the new snippet against the current
 /// state, avoiding the cost and semantic risks of replaying prior code.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct MontyRepl<T: ResourceTracker> {
+pub struct MontyRepl {
     /// Script name used for runtime error messages and REPL identification.
     ///
     /// Incremental `feed()` / `start()` snippets intentionally use internal script names
@@ -63,7 +61,7 @@ pub struct MontyRepl<T: ResourceTracker> {
     #[serde(default)]
     options: CompileOptions,
     /// Persistent heap across snippets.
-    heap: Heap<T>,
+    heap: Heap,
     /// Persistent global variable values across snippets.
     ///
     /// Indexed by `NamespaceId` slots from `global_names`. Between snippet
@@ -72,14 +70,14 @@ pub struct MontyRepl<T: ResourceTracker> {
     globals: Vec<Value>,
 }
 
-impl<T: ResourceTracker> MontyRepl<T> {
+impl MontyRepl {
     /// Creates an empty REPL session with no code parsed or executed.
     ///
     /// All code execution is driven through `feed_run()` or `feed_start()`. This separates
     /// construction from execution, matching the pattern used by `MontyRun::new()`.
     /// The [`CompileOptions`] apply to every snippet fed to the session.
     #[must_use]
-    pub fn new(script_name: &str, resource_tracker: T, options: CompileOptions) -> Self {
+    pub fn new(script_name: &str, resource_tracker: ResourceTracker, options: CompileOptions) -> Self {
         let heap = Heap::new(0, resource_tracker);
 
         Self {
@@ -98,7 +96,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// This is primarily intended for host integrations that need to attach
     /// per-execution state, such as cancellation markers, to an existing REPL.
-    pub fn tracker(&self) -> &T {
+    pub fn tracker(&self) -> &ResourceTracker {
         self.heap.tracker()
     }
 
@@ -106,7 +104,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     ///
     /// REPL hosts use this to install ephemeral execution controls, such as
     /// async cancellation flags, before calling `feed_start()`.
-    pub fn tracker_mut(&mut self) -> &mut T {
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         self.heap.tracker_mut()
     }
 
@@ -132,7 +130,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
         code: &str,
         inputs: Vec<(String, MontyObject)>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
@@ -390,7 +388,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::Serialize> MontyRepl<T> {
+impl MontyRepl {
     /// Serializes the REPL session state to bytes.
     ///
     /// This includes heap + globals + global slot mapping, allowing snapshot/restore
@@ -404,7 +402,7 @@ impl<T: ResourceTracker + serde::Serialize> MontyRepl<T> {
     }
 }
 
-impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
+impl MontyRepl {
     /// Restores a REPL session from bytes produced by `MontyRepl::dump`.
     ///
     /// # Errors
@@ -415,7 +413,7 @@ impl<T: ResourceTracker + DeserializeOwned> MontyRepl<T> {
     }
 }
 
-impl<T: ResourceTracker> Drop for MontyRepl<T> {
+impl Drop for MontyRepl {
     fn drop(&mut self) {
         self.globals.drain(..).drop_with(&mut self.heap);
     }
@@ -432,20 +430,19 @@ impl<T: ResourceTracker> Drop for MontyRepl<T> {
 /// Each variant (except `Complete`) wraps a dedicated struct with only the relevant
 /// resume methods.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub enum ReplProgress<T: ResourceTracker> {
+pub enum ReplProgress {
     /// Execution paused at an external function call or dataclass method call.
-    FunctionCall(ReplFunctionCall<T>),
+    FunctionCall(ReplFunctionCall),
     /// Execution paused for an OS-level operation.
-    OsCall(ReplOsCall<T>),
+    OsCall(ReplOsCall),
     /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ReplResolveFutures<T>),
+    ResolveFutures(ReplResolveFutures),
     /// Execution paused for an unresolved name lookup.
-    NameLookup(ReplNameLookup<T>),
+    NameLookup(ReplNameLookup),
     /// Snippet execution completed with the updated REPL and result value.
     Complete {
         /// Updated REPL session state to continue feeding snippets.
-        repl: MontyRepl<T>,
+        repl: MontyRepl,
         /// Final result produced by the snippet.
         value: MontyObject,
     },
@@ -458,17 +455,17 @@ pub enum ReplProgress<T: ResourceTracker> {
 /// subsequent snippets. Any global mutations that occurred before the exception
 /// remain visible in the returned `repl`.
 #[derive(Debug)]
-pub struct ReplStartError<T: ResourceTracker> {
+pub struct ReplStartError {
     /// REPL session state after the failed snippet — ready for further use.
-    pub repl: MontyRepl<T>,
+    pub repl: MontyRepl,
     /// The Python exception that was raised.
     pub error: MontyException,
 }
 
-impl<T: ResourceTracker> ReplProgress<T> {
+impl ReplProgress {
     /// Consumes the progress and returns the `ReplFunctionCall` struct.
     #[must_use]
-    pub fn into_function_call(self) -> Option<ReplFunctionCall<T>> {
+    pub fn into_function_call(self) -> Option<ReplFunctionCall> {
         match self {
             Self::FunctionCall(call) => Some(call),
             _ => None,
@@ -477,7 +474,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the `ReplResolveFutures` struct.
     #[must_use]
-    pub fn into_resolve_futures(self) -> Option<ReplResolveFutures<T>> {
+    pub fn into_resolve_futures(self) -> Option<ReplResolveFutures> {
         match self {
             Self::ResolveFutures(state) => Some(state),
             _ => None,
@@ -486,7 +483,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the `ReplNameLookup` struct.
     #[must_use]
-    pub fn into_name_lookup(self) -> Option<ReplNameLookup<T>> {
+    pub fn into_name_lookup(self) -> Option<ReplNameLookup> {
         match self {
             Self::NameLookup(lookup) => Some(lookup),
             _ => None,
@@ -495,7 +492,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
 
     /// Consumes the progress and returns the completed REPL and value.
     #[must_use]
-    pub fn into_complete(self) -> Option<(MontyRepl<T>, MontyObject)> {
+    pub fn into_complete(self) -> Option<(MontyRepl, MontyObject)> {
         match self {
             Self::Complete { repl, value } => Some((repl, value)),
             _ => None,
@@ -510,7 +507,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
     /// The REPL state reflects any mutations that occurred before the
     /// snapshot was taken.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         match self {
             Self::FunctionCall(call) => call.into_repl(),
             Self::OsCall(call) => call.into_repl(),
@@ -525,7 +522,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
     /// Lets hosts read resource accounting — e.g. cumulative execution time
     /// for `max_duration` budgeting — at any suspension point without
     /// consuming the progress.
-    pub fn tracker(&self) -> &T {
+    pub fn tracker(&self) -> &ResourceTracker {
         match self {
             Self::FunctionCall(call) => call.snapshot.repl.tracker(),
             Self::OsCall(call) => call.snapshot.repl.tracker(),
@@ -536,7 +533,7 @@ impl<T: ResourceTracker> ReplProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
+impl ReplProgress {
     /// Serializes the REPL execution progress to a versioned binary format.
     ///
     /// # Errors
@@ -546,7 +543,7 @@ impl<T: ResourceTracker + serde::Serialize> ReplProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
+impl ReplProgress {
     /// Deserializes REPL execution progress from a binary format.
     ///
     /// # Errors
@@ -566,8 +563,7 @@ impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
 /// Resume with `resume(result, print)` to provide the return value and continue,
 /// or `resume_pending(print)` to push an `ExternalFuture` for async resolution.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplFunctionCall<T: ResourceTracker> {
+pub struct ReplFunctionCall {
     /// The name of the function or method being called.
     pub function_name: String,
     /// The positional arguments passed to the function.
@@ -579,15 +575,15 @@ pub struct ReplFunctionCall<T: ResourceTracker> {
     /// Whether this is a dataclass method call (first arg is `self`).
     pub method_call: bool,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplFunctionCall<T> {
+impl ReplFunctionCall {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -596,14 +592,14 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(result, print)
     }
 
     /// Resumes execution by pushing an `ExternalFuture` for async resolution.
     ///
     /// Uses `self.call_id` internally — no need to pass it again.
-    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -616,22 +612,21 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
 ///
 /// Resume with `resume(result, print)` to provide the OS call result and continue.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplOsCall<T: ResourceTracker> {
+pub struct ReplOsCall {
     /// Typed OS-call dispatch value (variant + args).
     pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplOsCall<T> {
+impl ReplOsCall {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -640,7 +635,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         self.snapshot.run(result.into(), print)
     }
 
@@ -651,7 +646,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
         self,
         print: PrintWriter<'_>,
         handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
     }
@@ -667,8 +662,7 @@ impl<T: ResourceTracker> ReplOsCall<T> {
 /// value. Call `resume(result, print)` with the appropriate `NameLookupResult`.
 /// The namespace slot and scope are managed internally.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplNameLookup<T: ResourceTracker> {
+pub struct ReplNameLookup {
     /// The name being looked up.
     pub name: String,
     /// The namespace slot where the resolved value should be cached.
@@ -676,15 +670,15 @@ pub struct ReplNameLookup<T: ResourceTracker> {
     /// Whether this is a global slot or a local/function slot.
     is_global: bool,
     /// Internal REPL execution snapshot.
-    snapshot: ReplSnapshot<T>,
+    snapshot: ReplSnapshot,
 }
 
-impl<T: ResourceTracker> ReplNameLookup<T> {
+impl ReplNameLookup {
     /// Extracts the REPL session, discarding the in-flight execution state.
     ///
     /// Restores globals from the VM snapshot so the REPL remains usable.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         self.snapshot.into_repl()
     }
 
@@ -692,11 +686,7 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
     ///
     /// Caches the resolved value in the namespace slot before restoring the VM,
     /// then either pushes the value onto the stack or raises `NameError`.
-    pub fn resume(
-        self,
-        result: NameLookupResult,
-        print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    pub fn resume(self, result: NameLookupResult, print: PrintWriter<'_>) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             name,
             namespace_slot,
@@ -779,10 +769,9 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
 ///
 /// This is the REPL-aware counterpart to `ResolveFutures`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub struct ReplResolveFutures<T: ResourceTracker> {
+pub struct ReplResolveFutures {
     /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl<T>,
+    repl: MontyRepl,
     /// Compiled snippet and intern/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
@@ -791,7 +780,7 @@ pub struct ReplResolveFutures<T: ResourceTracker> {
     pending_call_ids: Vec<u32>,
 }
 
-impl<T: ResourceTracker> ReplResolveFutures<T> {
+impl ReplResolveFutures {
     /// Extracts the REPL session, restoring globals from the suspended VM state.
     ///
     /// As with the other REPL snapshot types, globals live inside the VM
@@ -799,7 +788,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     /// cancelled or abandoned async snippet must put those globals back so
     /// previously defined REPL bindings remain available.
     #[must_use]
-    pub fn into_repl(self) -> MontyRepl<T> {
+    pub fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
         repl
@@ -823,7 +812,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
         self,
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             executor,
@@ -935,23 +924,22 @@ pub fn detect_repl_continuation_mode(source: &str) -> ReplContinuationMode {
 /// This is the REPL-aware counterpart to `Snapshot`. It is `pub(crate)` —
 /// callers interact with the per-variant structs (`ReplFunctionCall`, etc.).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: DeserializeOwned"))]
-pub(crate) struct ReplSnapshot<T: ResourceTracker> {
+pub(crate) struct ReplSnapshot {
     /// Persistent REPL session state while this snippet is suspended.
-    repl: MontyRepl<T>,
+    repl: MontyRepl,
     /// Compiled snippet and intern/function tables for this execution.
     executor: Executor,
     /// VM stack/frame state at suspension.
     vm_state: VMSnapshot,
 }
 
-impl<T: ResourceTracker> ReplSnapshot<T> {
+impl ReplSnapshot {
     /// Extracts the REPL session, restoring globals from the VM snapshot.
     ///
     /// When a snapshot is taken, globals live inside the `VMSnapshot`.
     /// This method creates an empty snapshot from just the globals so the REPL
     /// can be used for further snippets.
-    fn into_repl(self) -> MontyRepl<T> {
+    fn into_repl(self) -> MontyRepl {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
         repl
@@ -962,7 +950,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    ) -> Result<ReplProgress, Box<ReplStartError>> {
         let Self {
             mut repl,
             executor,
@@ -1025,7 +1013,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 fn inject_inputs_into_vm(
     executor: &Executor,
     input_values: Vec<MontyObject>,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> Result<(), MontyException> {
     for (&slot, obj) in executor.input_slots.iter().zip(input_values) {
         let value = obj
@@ -1042,12 +1030,12 @@ fn inject_inputs_into_vm(
 /// This is the REPL equivalent of `build_run_progress`. On completion/error,
 /// compiler metadata is committed to the REPL so subsequent snippets see
 /// updated intern tables and name maps.
-fn build_repl_progress<T: ResourceTracker>(
+fn build_repl_progress(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    mut repl: MontyRepl<T>,
-) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
+    mut repl: MontyRepl,
+) -> Result<ReplProgress, Box<ReplStartError>> {
     macro_rules! new_repl_snapshot {
         () => {
             ReplSnapshot {
@@ -1128,7 +1116,7 @@ fn build_repl_progress<T: ResourceTracker>(
 }
 
 /// Converts `Vec<MontyObject>` to internal `ArgValues` for function calls.
-fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -> Result<ArgValues, MontyException> {
+fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_>) -> Result<ArgValues, MontyException> {
     match args.len() {
         0 => Ok(ArgValues::Empty),
         1 => {
@@ -1179,9 +1167,9 @@ fn convert_args(args: Vec<MontyObject>, vm: &mut VM<'_, impl ResourceTracker>) -
 ///
 /// Deliberately narrower than [`Value::is_callable`]: it omits `Class` and
 /// `BoundMethod`, which are not what a host means by "a function it can invoke".
-fn is_callable(value: &Value, heap: &Heap<impl ResourceTracker>) -> bool {
+fn is_callable(value: &Value, heap: &Heap) -> bool {
     match value {
-        Value::DefFunction(_) | Value::Builtin(_) | Value::ExtFunction(_) | Value::ModuleFunction(_) => true,
+        Value::DefFunction(_) | Value::Builtin(_) | Value::ModuleFunction(_) => true,
         Value::Ref(id) => matches!(
             heap.get(*id),
             HeapData::Closure(_) | HeapData::FunctionDefaults(_) | HeapData::ExtFunction(_)

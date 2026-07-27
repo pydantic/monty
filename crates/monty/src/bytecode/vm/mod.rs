@@ -18,7 +18,7 @@ mod scheduler;
 use std::mem;
 
 pub(crate) use call::CallResult;
-use monty_types::{InvalidInputError, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
+use monty_types::{InvalidInputError, MontyObject, OsFunctionCall, PrintWriter};
 pub(crate) use recursion::{ContainsVM, RecursionToken};
 use scheduler::Scheduler;
 
@@ -32,7 +32,7 @@ use crate::{
     },
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
-    heap_data::{Closure, FunctionDefaults},
+    heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
@@ -634,7 +634,7 @@ pub struct VMSnapshot {
 /// Executes compiled bytecode using a stack-based execution model.
 /// The instruction pointer (IP) lives in each `CallFrame`, not here,
 /// to avoid sync bugs on call/return.
-pub struct VM<'h, T: ResourceTracker> {
+pub struct VM<'h> {
     /// Operand stack — locals and operands interleaved per frame.
     ///
     /// Each function frame's locals occupy `stack[frame.stack_base..frame.stack_base + frame.locals_count]`,
@@ -653,7 +653,7 @@ pub struct VM<'h, T: ResourceTracker> {
     frames: Vec<CallFrame<'h>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'h mut HeapReader<'h, T>,
+    pub(crate) heap: &'h mut HeapReader<'h>,
 
     /// Interned strings/bytes.
     pub(crate) interns: &'h Interns,
@@ -748,11 +748,11 @@ pub struct VM<'h, T: ResourceTracker> {
     pub(crate) assert_repr_max_bytes: u32,
 }
 
-impl<'h, T: ResourceTracker> VM<'h, T> {
+impl<'h> VM<'h> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         globals: Vec<Value>,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
         assert_repr_max_bytes: u32,
@@ -795,7 +795,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'h Code,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: &'h mut HeapReader<'h>,
         interns: &'h Interns,
         print_writer: PrintWriter<'h>,
         assert_repr_max_bytes: u32,
@@ -970,7 +970,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
         loop {
             // Check time limit and trigger GC if needed at each instruction.
-            // For NoLimitTracker, these are inlined no-ops that compile away.
+            // With no limits configured these reduce to a single branch each.
             self.heap.check_time()?;
 
             if self.heap.should_gc() {
@@ -1039,6 +1039,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadNone => self.push(Value::None),
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::BuildCell => {
+                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)))?;
+                    self.push(Value::Ref(cell_id));
+                }
                 Opcode::LoadSmallInt => {
                     let n = cached_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
@@ -2014,7 +2018,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with(&mut *self.heap));
 
-        // Track freed memory for the locals region. Matches the `on_allocate`
+        // Track freed memory for the locals region. Matches the `on_grow`
         // at each frame-entry site (sync function, module, sync coroutine,
         // spawned coroutine).
         if frame.locals_count > 0 {
@@ -2117,11 +2121,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         Ok(())
     }
 
-    /// Loads a global variable in call context, pushing `ExtFunction` for undefined names.
+    /// Loads a global variable in call context, pushing an external function for undefined names.
     ///
     /// Unlike `load_global`, this never yields `NameLookup`. When the variable is undefined,
-    /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
-    /// can yield `FunctionCall` instead. Before doing so it tries the builtin fallback
+    /// it allocates an external function so that the subsequent `CallFunction` opcode can
+    /// yield `FunctionCall` instead. Before doing so it tries the builtin fallback
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
@@ -2142,7 +2146,8 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            self.push(Value::ExtFunction(name_id));
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id))?;
+            self.push(function);
         } else {
             self.push(value);
         }
@@ -2358,12 +2363,11 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
-impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
-    type ResourceTracker = T;
-    fn heap(&self) -> &Heap<T> {
+impl ContainsHeap for VM<'_> {
+    fn heap(&self) -> &Heap {
         self.heap
     }
-    fn heap_mut(&mut self) -> &mut Heap<T> {
+    fn heap_mut(&mut self) -> &mut Heap {
         self.heap
     }
 }
@@ -2374,7 +2378,7 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
 /// string cache — all of which may hold heap references that need their
 /// ref-counts decremented. Fields that were already emptied (e.g. by
 /// `take_globals`) are harmlessly drained as empty.
-impl<T: ResourceTracker> Drop for VM<'_, T> {
+impl Drop for VM<'_> {
     fn drop(&mut self) {
         if let Some(effect) = self.pending_file_effect.take() {
             let file_id = match effect {

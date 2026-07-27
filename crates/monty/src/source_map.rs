@@ -103,13 +103,15 @@ impl<'s> SourceMap<'s> {
         } else {
             vec![self.line_text(start_line_idx), self.line_text(end_line_idx)]
         };
-        // Common leading-whitespace prefix across non-blank displayed lines.
+        // Common leading-whitespace prefix across non-blank displayed lines,
+        // comparing actual characters (not just lengths) so mixed tab/space
+        // indentation never strips mismatched whitespace.
         let dedent = displayed
             .iter()
             .filter(|line| !line.trim().is_empty())
-            .map(|line| line.len() - line.trim_start().len())
-            .min()
-            .unwrap_or(0);
+            .map(|line| &line[..line.len() - line.trim_start().len()])
+            .reduce(|a, b| common_prefix(a, b))
+            .map_or(0, str::len);
         let stripped = |line: &str| line.get(dedent..).unwrap_or("").to_owned();
         if total <= 3 {
             displayed
@@ -169,6 +171,20 @@ impl<'s> SourceMap<'s> {
         let line = &self.source[start..end];
         line.strip_suffix('\r').unwrap_or(line)
     }
+}
+
+/// Returns the longest common prefix of `a` and `b`, always cut on a char
+/// boundary. Used by [`SourceMap::multiline_preview`] to find the shared
+/// indentation of the displayed lines.
+fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
+    let end = a
+        .char_indices()
+        .zip(b.chars())
+        .find(|&((_, ca), cb)| ca != cb)
+        // All zipped chars equal: the shorter string is the common prefix, and
+        // equal chars encode identically so its byte length indexes `a` safely.
+        .map_or(a.len().min(b.len()), |((i, _), _)| i);
+    &a[..end]
 }
 
 /// Crate-internal builders for [`StackFrame`] (which lives in `monty-types`):

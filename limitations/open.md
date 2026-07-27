@@ -37,9 +37,13 @@ further down.
 - Exclusive creation mode (`x`) is rejected with `ValueError: exclusive
   creation mode is not supported`; it would need a dedicated race-free
   mount-table operation.
-- The mode string is normalized to CPython's canonical form
-  (`'rt'` → `'r'`, `'r+b'` → `'rb+'`); the original raw input is not
-  preserved.
+- The mode string is normalized to a canonical form at parse time
+  (`'rt'` → `'r'`, `'br'` → `'rb'`); the original raw input is not
+  preserved, and `file.mode` reports the canonical form. For *text* modes
+  this diverges from CPython, whose `TextIOWrapper` preserves the string
+  as passed: `open(p, 'rt').mode` is `'rt'` in CPython but `'r'` in Monty.
+  Binary modes match, because CPython's buffered classes normalize too
+  (`open(p, 'br').mode` is `'rb'` in both).
 
 ## `open()` arguments
 

@@ -33,8 +33,6 @@
 
 use std::{mem, ptr};
 
-use monty_types::ResourceTracker;
-
 use crate::{
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
@@ -70,7 +68,7 @@ pub(crate) fn bind<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     // `spec` is passed explicitly (despite living in `bound` too) so the
     // inlined fast-path conditions constant-fold against the caller's
@@ -100,7 +98,7 @@ fn bind_slow<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let (pos, kwargs) = args.into_parts();
     let state = IterState {

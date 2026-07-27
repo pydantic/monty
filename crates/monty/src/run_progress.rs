@@ -9,7 +9,6 @@
 use std::mem;
 
 use monty_types::{ExcType, MontyException, MontyObject, OsFunctionCall, PrintWriter, ResourceTracker};
-use serde::de::DeserializeOwned;
 
 use crate::{
     asyncio::CallId,
@@ -30,29 +29,24 @@ use crate::{
 /// Each variant wraps a dedicated struct that owns the execution state and
 /// exposes only the resume methods relevant to that suspension reason.
 ///
-/// # Type Parameters
-/// * `T` — Resource tracker implementation (e.g. `NoLimitTracker` or `LimitedTracker`).
-///
-/// Serialization requires `T: Serialize + Deserialize`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub enum RunProgress<T: ResourceTracker> {
+pub enum RunProgress {
     /// Execution paused at an external function call or dataclass method call.
-    FunctionCall(FunctionCall<T>),
+    FunctionCall(FunctionCall),
     /// Execution paused for an OS-level operation (filesystem, network, etc.).
-    OsCall(OsCall<T>),
+    OsCall(OsCall),
     /// All async tasks are blocked waiting for external futures to resolve.
-    ResolveFutures(ResolveFutures<T>),
+    ResolveFutures(ResolveFutures),
     /// Execution paused for an unresolved name lookup.
-    NameLookup(NameLookup<T>),
+    NameLookup(NameLookup),
     /// Execution completed with a final result.
     Complete(MontyObject),
 }
 
-impl<T: ResourceTracker> RunProgress<T> {
+impl RunProgress {
     /// Consumes the progress and returns the `FunctionCall` struct if this is a function call.
     #[must_use]
-    pub fn into_function_call(self) -> Option<FunctionCall<T>> {
+    pub fn into_function_call(self) -> Option<FunctionCall> {
         match self {
             Self::FunctionCall(call) => Some(call),
             _ => None,
@@ -61,7 +55,7 @@ impl<T: ResourceTracker> RunProgress<T> {
 
     /// Consumes the progress and returns the `OsCall` struct if this is an OS call.
     #[must_use]
-    pub fn into_os_call(self) -> Option<OsCall<T>> {
+    pub fn into_os_call(self) -> Option<OsCall> {
         match self {
             Self::OsCall(call) => Some(call),
             _ => None,
@@ -79,7 +73,7 @@ impl<T: ResourceTracker> RunProgress<T> {
 
     /// Consumes the progress and returns the `ResolveFutures` struct.
     #[must_use]
-    pub fn into_resolve_futures(self) -> Option<ResolveFutures<T>> {
+    pub fn into_resolve_futures(self) -> Option<ResolveFutures> {
         match self {
             Self::ResolveFutures(state) => Some(state),
             _ => None,
@@ -88,7 +82,7 @@ impl<T: ResourceTracker> RunProgress<T> {
 
     /// Consumes the progress and returns the `NameLookup` struct.
     #[must_use]
-    pub fn into_name_lookup(self) -> Option<NameLookup<T>> {
+    pub fn into_name_lookup(self) -> Option<NameLookup> {
         match self {
             Self::NameLookup(lookup) => Some(lookup),
             _ => None,
@@ -96,7 +90,7 @@ impl<T: ResourceTracker> RunProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
+impl RunProgress {
     /// Serializes the execution state to a versioned binary format.
     ///
     /// # Errors
@@ -106,7 +100,7 @@ impl<T: ResourceTracker + serde::Serialize> RunProgress<T> {
     }
 }
 
-impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
+impl RunProgress {
     /// Deserializes execution state from binary format.
     ///
     /// # Errors
@@ -133,8 +127,7 @@ impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
 /// When `method_call` is true, this represents a dataclass method call where the first
 /// positional arg is the dataclass instance (`self`).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct FunctionCall<T: ResourceTracker> {
+pub struct FunctionCall {
     /// The name of the function or method being called.
     pub function_name: String,
     /// The positional arguments passed to the function.
@@ -146,10 +139,10 @@ pub struct FunctionCall<T: ResourceTracker> {
     /// Whether this is a dataclass method call (first arg is `self`).
     pub method_call: bool,
     /// Internal execution snapshot.
-    snapshot: Snapshot<T>,
+    snapshot: Snapshot,
 }
 
-impl<T: ResourceTracker> FunctionCall<T> {
+impl FunctionCall {
     /// Creates a new `FunctionCall` from its parts.
     fn new(
         function_name: String,
@@ -157,7 +150,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
         kwargs: Vec<(MontyObject, MontyObject)>,
         call_id: u32,
         method_call: bool,
-        snapshot: Snapshot<T>,
+        snapshot: Snapshot,
     ) -> Self {
         Self {
             function_name,
@@ -173,8 +166,15 @@ impl<T: ResourceTracker> FunctionCall<T> {
     ///
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
-    pub fn tracker_mut(&mut self) -> &mut T {
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
         self.snapshot.heap.tracker_mut()
+    }
+
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
+    #[must_use]
+    pub fn tracker(&self) -> &ResourceTracker {
+        self.snapshot.heap.tracker()
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -188,7 +188,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         self.snapshot.run(result, print)
     }
 
@@ -203,7 +203,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     ///
     /// # Arguments
     /// * `print` — Writer for print output.
-    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress<T>, MontyException> {
+    pub fn resume_pending(self, print: PrintWriter<'_>) -> Result<RunProgress, MontyException> {
         self.snapshot.run(ExtFunctionResult::Future(self.call_id), print)
     }
 }
@@ -224,19 +224,18 @@ impl<T: ResourceTracker> FunctionCall<T> {
 /// `(positional, keyword)` `MontyObject` view can call [`OsFunctionCall::to_args`]
 /// (the public projection method).
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct OsCall<T: ResourceTracker> {
+pub struct OsCall {
     /// Typed OS-call dispatch value (variant + args).
     pub function_call: OsFunctionCall,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal execution snapshot.
-    snapshot: Snapshot<T>,
+    snapshot: Snapshot,
 }
 
-impl<T: ResourceTracker> OsCall<T> {
+impl OsCall {
     /// Creates a new `OsCall` from its parts.
-    fn new(function_call: OsFunctionCall, call_id: u32, snapshot: Snapshot<T>) -> Self {
+    fn new(function_call: OsFunctionCall, call_id: u32, snapshot: Snapshot) -> Self {
         Self {
             function_call,
             call_id,
@@ -253,7 +252,7 @@ impl<T: ResourceTracker> OsCall<T> {
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         self.snapshot.run(result.into(), print)
     }
 
@@ -267,17 +266,17 @@ impl<T: ResourceTracker> OsCall<T> {
         self,
         print: PrintWriter<'_>,
         handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         let result = handler(self.function_call);
         self.snapshot.run(result, print)
     }
 
-    /// Returns a reference to the resource tracker.
-    ///
-    /// Useful for assertions in tests that need to verify
-    /// memory/allocation accounting between OS-call resumes (e.g. that a
-    /// `read()` correctly counts the file buffer against `max_memory`).
-    pub fn tracker(&self) -> &T {
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended —
+    /// for example verifying that a `read()` counts the file buffer against
+    /// `max_memory` between OS-call resumes.
+    #[must_use]
+    pub fn tracker(&self) -> &ResourceTracker {
         self.snapshot.heap.tracker()
     }
 }
@@ -296,8 +295,7 @@ impl<T: ResourceTracker> OsCall<T> {
 /// The namespace slot and scope are managed internally — the host only needs to
 /// provide the name resolution result.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct NameLookup<T: ResourceTracker> {
+pub struct NameLookup {
     /// The name being looked up.
     pub name: String,
     /// The namespace slot where the resolved value should be cached.
@@ -305,18 +303,25 @@ pub struct NameLookup<T: ResourceTracker> {
     /// Whether this is a global slot or a local/function slot.
     is_global: bool,
     /// Internal execution snapshot.
-    snapshot: Snapshot<T>,
+    snapshot: Snapshot,
 }
 
-impl<T: ResourceTracker> NameLookup<T> {
+impl NameLookup {
     /// Creates a new `NameLookup` from its parts.
-    fn new(name: String, namespace_slot: u16, is_global: bool, snapshot: Snapshot<T>) -> Self {
+    fn new(name: String, namespace_slot: u16, is_global: bool, snapshot: Snapshot) -> Self {
         Self {
             name,
             namespace_slot,
             is_global,
             snapshot,
         }
+    }
+
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
+    #[must_use]
+    pub fn tracker(&self) -> &ResourceTracker {
+        self.snapshot.heap.tracker()
     }
 
     /// Resumes execution after name resolution.
@@ -331,7 +336,7 @@ impl<T: ResourceTracker> NameLookup<T> {
         self,
         result: impl Into<NameLookupResult>,
         print: PrintWriter<'_>,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         let result = result.into();
 
         let Snapshot {
@@ -404,21 +409,20 @@ impl<T: ResourceTracker> NameLookup<T> {
 /// Use `pending_call_ids()` to see which calls are pending, then call
 /// `resume(results, print)` with some or all of the results.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub struct ResolveFutures<T: ResourceTracker> {
+pub struct ResolveFutures {
     /// The executor containing compiled code and interns.
     executor: Executor,
     /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
-    heap: Heap<T>,
+    heap: Heap,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
 }
 
-impl<T: ResourceTracker> ResolveFutures<T> {
+impl ResolveFutures {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap<T>, pending_call_ids: Vec<u32>) -> Self {
+    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap, pending_call_ids: Vec<u32>) -> Self {
         Self {
             executor,
             vm_state,
@@ -431,6 +435,13 @@ impl<T: ResourceTracker> ResolveFutures<T> {
     #[must_use]
     pub fn pending_call_ids(&self) -> &[u32] {
         &self.pending_call_ids
+    }
+
+    /// Returns the resource tracker, letting hosts inspect resource usage
+    /// (e.g. [`ResourceTracker::current_memory`]) while execution is suspended.
+    #[must_use]
+    pub fn tracker(&self) -> &ResourceTracker {
+        self.heap.tracker()
     }
 
     /// Forces a GC cycle against the exact root walk used by the live VM.
@@ -485,7 +496,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
         self,
         results: Vec<(u32, ExtFunctionResult)>,
         print: PrintWriter<'_>,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         let Self {
             executor,
             vm_state,
@@ -539,23 +550,22 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 /// structs (`FunctionCall`, `OsCall`, `NameLookup`). It is not exposed in the
 /// public API.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(bound(serialize = "T: serde::Serialize", deserialize = "T: serde::de::DeserializeOwned"))]
-pub(crate) struct Snapshot<T: ResourceTracker> {
+pub(crate) struct Snapshot {
     /// The executor containing compiled code and interns.
     pub(crate) executor: Executor,
     /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
-    pub(crate) heap: Heap<T>,
+    pub(crate) heap: Heap,
 }
 
-impl<T: ResourceTracker> Snapshot<T> {
+impl Snapshot {
     /// Continues execution with the return value or exception from the external call.
     pub(crate) fn run(
         self,
         result: impl Into<ExtFunctionResult>,
         print: PrintWriter<'_>,
-    ) -> Result<RunProgress<T>, MontyException> {
+    ) -> Result<RunProgress, MontyException> {
         let ext_result = result.into();
 
         let Self {
@@ -662,7 +672,7 @@ impl ConvertedExit {
 ///
 /// All `Value` → `MontyObject` and `StringId` → `String` conversions happen here,
 /// while the VM (and its heap/interns) are still accessible.
-pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_, impl ResourceTracker>) -> ConvertedExit {
+pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_>) -> ConvertedExit {
     match result {
         Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
         Ok(FrameExit::ExternalCall {
@@ -723,10 +733,7 @@ pub(crate) fn convert_frame_exit(result: RunResult<FrameExit>, vm: &mut VM<'_, i
 ///
 /// Consumes the VM. Returns `Some(VMSnapshot)` for suspendable exits, `None` for
 /// completion/error (in which case the VM's `Drop` impl handles cleanup).
-pub(crate) fn check_snapshot_from_converted(
-    converted: &ConvertedExit,
-    vm: VM<'_, impl ResourceTracker>,
-) -> Option<VMSnapshot> {
+pub(crate) fn check_snapshot_from_converted(converted: &ConvertedExit, vm: VM<'_>) -> Option<VMSnapshot> {
     if converted.needs_snapshot() {
         Some(vm.snapshot())
     } else {
@@ -738,12 +745,12 @@ pub(crate) fn check_snapshot_from_converted(
 ///
 /// This runs after the VM has been dropped (releasing the heap borrow),
 /// so the heap can be moved into `Snapshot` structs.
-pub(crate) fn build_run_progress<T: ResourceTracker>(
+pub(crate) fn build_run_progress(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    heap: Heap<T>,
-) -> Result<RunProgress<T>, MontyException> {
+    heap: Heap,
+) -> Result<RunProgress, MontyException> {
     macro_rules! new_snapshot {
         () => {
             Snapshot {
