@@ -1,5 +1,5 @@
-# The two-argument iter(callable, sentinel) form. Tests behaviour, not the
-# iterator's type name (Monty reports `iterator`, a documented divergence).
+# The two-argument iter(callable, sentinel) form.
+assert type(iter(lambda: 1, 1)).__name__ == 'callable_iterator'
 
 # === drive until sentinel ===
 # Calls the callable repeatedly until its result == sentinel; the sentinel

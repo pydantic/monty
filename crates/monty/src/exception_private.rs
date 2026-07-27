@@ -170,15 +170,12 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a TypeError for unhashable types used as set elements.
-    ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
+    /// Creates a TypeError for an unhashable value used as a set element.
     #[must_use]
-    fn type_error_unhashable_set_element(type_: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
+            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
         )
         .into()
     }
@@ -950,24 +947,6 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not reversible")).into()
     }
 
-    /// Creates a RuntimeError for an over-deep iterator delegation chain.
-    ///
-    /// Monty-specific (CPython builds no delegation chain at all) — see
-    /// `limitations/builtins.md`.
-    #[must_use]
-    fn runtime_error_iter_delegation_too_deep() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegation nested too deeply").into()
-    }
-
-    /// Creates a RuntimeError for a delegating iterator pointing at a non-iterator.
-    ///
-    /// Unreachable from Python; only a malformed snapshot can produce it. Raised
-    /// rather than panicking so untrusted snapshot data cannot abort the process.
-    #[must_use]
-    fn runtime_error_iter_delegation_invalid() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegates to a non-iterator").into()
-    }
-
     /// Creates a RuntimeError for set mutation during iteration.
     ///
     /// Matches CPython's format: `RuntimeError: Set changed size during iteration`
@@ -1335,6 +1314,28 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_exponent_too_large() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into()
+    }
+
+    /// Creates an OverflowError when an integer cannot be represented as a float.
+    #[must_use]
+    fn overflow_int_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates a ValueError for a zero modulus passed to `pow`.
+    #[must_use]
+    fn value_error_pow_modulus_zero() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into()
+    }
+
+    /// Creates a ValueError for a negative exponent passed to modular `pow`.
+    #[must_use]
+    fn value_error_pow_negative_exponent() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "pow() 2nd argument cannot be negative when 3rd argument specified",
+        )
+        .into()
     }
 
     /// Creates a ZeroDivisionError for divmod by zero (both integer and float).

@@ -18,10 +18,11 @@ use crate::{
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
-    resource_checks::check_replace_size,
+    resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
+        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_str},
@@ -198,6 +199,12 @@ pub fn allocate_string_no_interning(s: impl Into<Box<str>>, heap: &Heap) -> Resu
     Ok(Value::Ref(heap_id))
 }
 
+/// Repeats a string after validating the allocation against resource limits.
+pub(crate) fn repeat_str(value: &str, count: usize, heap: &Heap) -> Result<Value, ResourceError> {
+    check_repeat_size(value.len(), count, heap.tracker())?;
+    allocate_string(value.repeat(count), heap)
+}
+
 /// Allocates a single character as a string value.
 ///
 /// ASCII characters use pre-interned strings for efficiency.
@@ -220,7 +227,9 @@ pub fn allocate_char(c: char, heap: &Heap) -> Result<Value, ResourceError> {
 /// result size is bounded by two already-tracked inputs, so a plain `String`
 /// is fine per the `StringBuilder` rule.
 pub(crate) fn concat_allocate_str(a: &str, b: &str, heap: &Heap) -> Result<Value, ResourceError> {
-    let mut concat = String::with_capacity(a.len() + b.len());
+    let result_len = a.len().saturating_add(b.len());
+    check_repeat_size(result_len, 1, heap.tracker())?;
+    let mut concat = String::with_capacity(result_len);
     concat.push_str(a);
     concat.push_str(b);
     allocate_string(concat, heap)
@@ -260,6 +269,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        StringIterator::from_heap(
+            self_id.expect("heap values have an id"),
+            self.get(vm.heap).as_str().is_ascii(),
+            vm,
+        )
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
@@ -318,12 +335,24 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h>) -> Result<Option<Value>, ResourceError> {
-        Ok(Some(concat_allocate_str(
-            self.get(vm.heap).as_str(),
-            other.get(vm.heap).as_str(),
-            vm.heap,
-        )?))
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = match other {
+            Value::InternString(id) => vm.interns.get_str(*id),
+            Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
+            _ => return Ok(None),
+        };
+        Ok(Some(concat_allocate_str(self.get(vm.heap).as_str(), other, vm.heap)?))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        Ok(Some(repeat_str(self.get(vm.heap).as_str(), count, vm.heap)?))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
     }
 
     fn py_call_attr(
@@ -2001,4 +2030,130 @@ fn str_istitle(s: &str) -> bool {
     }
 
     has_cased
+}
+
+/// Source representation retained by a string iterator.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum StringIteratorSource {
+    Intern(StringId),
+    Heap(HeapId),
+}
+
+/// Iterator over Unicode code points with CPython's ASCII/non-ASCII type split.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct StringIterator {
+    source: StringIteratorSource,
+    byte_offset: usize,
+    ascii: bool,
+}
+
+impl StringIterator {
+    /// Allocates an iterator over an interned string.
+    pub(crate) fn from_intern(id: StringId, vm: &mut VM<'_>) -> RunResult<Value> {
+        let ascii = vm.interns.get_str(id).is_ascii();
+        Self::allocate(StringIteratorSource::Intern(id), ascii, vm)
+    }
+
+    /// Allocates an iterator retaining a heap string.
+    fn from_heap(id: HeapId, ascii: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+        Self::allocate(StringIteratorSource::Heap(id), ascii, vm)
+    }
+
+    /// Returns the Python-visible iterator type for this string representation.
+    pub(crate) fn py_type(&self) -> Type {
+        if self.ascii {
+            Type::StrAsciiIterator
+        } else {
+            Type::StrIterator
+        }
+    }
+
+    /// Returns a retained heap source, if the string is not interned.
+    pub(crate) fn source_id(&self) -> Option<HeapId> {
+        match self.source {
+            StringIteratorSource::Intern(_) => None,
+            StringIteratorSource::Heap(id) => Some(id),
+        }
+    }
+
+    /// Returns the number of Unicode code points not yet yielded.
+    pub(crate) fn size_hint(&self, vm: &VM<'_>) -> usize {
+        self.as_str(vm).chars().count()
+    }
+
+    /// Borrows the unconsumed string suffix.
+    fn as_str<'a>(&self, vm: &'a VM<'_>) -> &'a str {
+        let string = match self.source {
+            StringIteratorSource::Intern(id) => vm.interns.get_str(id),
+            StringIteratorSource::Heap(id) => match vm.heap.get(id) {
+                HeapData::Str(string) => string.as_str(),
+                _ => unreachable!("string iterator must retain a string"),
+            },
+        };
+        &string[self.byte_offset..]
+    }
+
+    /// Allocates an iterator and retains a heap source when present.
+    fn allocate(source: StringIteratorSource, ascii: bool, vm: &mut VM<'_>) -> RunResult<Value> {
+        let source_id = match source {
+            StringIteratorSource::Heap(id) => Some(id),
+            StringIteratorSource::Intern(_) => None,
+        };
+        let id = vm.heap.allocate(HeapData::StringIterator(Self {
+            source,
+            byte_offset: 0,
+            ascii,
+        }))?;
+        if let Some(source_id) = source_id {
+            vm.heap.inc_ref(source_id);
+        }
+        Ok(Value::Ref(id))
+    }
+}
+
+impl HeapItem for StringIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        if let Some(id) = self.source_id() {
+            stack.push(id);
+        }
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, vm: &VM<'h>) -> Type {
+        self.get(vm.heap).py_type()
+    }
+
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let next = self.get(vm.heap).as_str(vm).chars().next();
+        if let Some(character) = next {
+            let value = allocate_char(character, vm.heap)?;
+            self.get_mut(vm.heap).byte_offset += character.len_utf8();
+            Ok(Some(value))
+        } else {
+            Ok(None)
+        }
+    }
 }

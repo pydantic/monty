@@ -195,6 +195,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Type::Range
     }
 
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        RangeIterator::allocate(*self.get(vm.heap), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
@@ -300,5 +304,75 @@ impl HeapItem for Range {
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Range doesn't contain heap references, nothing to do
+    }
+}
+
+/// Iterator over the arithmetic progression represented by a range.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RangeIterator {
+    next: i64,
+    step: i64,
+    remaining: usize,
+}
+
+impl RangeIterator {
+    /// Allocates independent iteration state copied from `range`.
+    fn allocate(range: Range, vm: &mut VM<'_>) -> RunResult<Value> {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::RangeIterator(Self {
+            next: range.start,
+            step: range.step,
+            remaining: range.len(),
+        }))?))
+    }
+
+    /// Returns the exact number of values not yet yielded.
+    pub(crate) fn size_hint(&self) -> usize {
+        self.remaining
+    }
+}
+
+impl HeapItem for RangeIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _: &mut Vec<HeapId>) {}
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, RangeIterator> {
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h>) -> Type {
+        Type::RangeIterator
+    }
+
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let iter = self.get_mut(vm.heap);
+        if iter.remaining == 0 {
+            Ok(None)
+        } else {
+            let value = iter.next;
+            iter.remaining -= 1;
+            if iter.remaining > 0 {
+                iter.next += iter.step;
+            }
+            Ok(Some(Value::Int(value)))
+        }
     }
 }

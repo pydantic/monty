@@ -63,8 +63,9 @@ mechanism beyond dataclass field inheritance.
   dataclass / namedtuple as the second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — three-argument form requires all integers and
-  rejects negative exponents with `ValueError`. Exponents greater than
-  `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
+  rejects negative exponents with `ValueError` instead of computing a modular
+  inverse. Non-modular exponents whose result cannot be materialized raise
+  `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
@@ -101,15 +102,3 @@ mechanism beyond dataclass field inheritance.
     `PurePosixPath`). A host class Monty does **not** model (e.g. a user-defined
     class) is not preserved as a type — it degrades to a callable, appearing inside
     the sandbox as a `function` rather than a `type`.
-
-- **Iterator delegation** — consuming an existing iterator (`for x in it`,
-  `list(it)`) wraps it in a delegating iterator that shares its position, where
-  CPython iterates it directly. Not observable from Python: `iter(it)` returns
-  `it` unchanged, so no chain deeper than 1 can be built. Two `RuntimeError`s
-  guard malformed snapshot data, which can craft what Python cannot —
-  `iterator delegation nested too deeply` past 1000 links, and
-  `iterator delegates to a non-iterator` for a link pointing elsewhere. CPython
-  has neither.
-- **`reversed(x)`** — the `TypeError` for a non-reversible argument names Monty's
-  single `iterator` type rather than CPython's specific one, e.g.
-  `'iterator' object is not reversible` where CPython says `'list_iterator'`.

@@ -1,6 +1,7 @@
 use std::{cell::Cell, fmt::Write, mem};
 
 use hashbrown::HashTable;
+use monty_types::{ResourceError, ResourceTracker};
 use smallvec::SmallVec;
 
 use super::{PyTrait, iter::checked_preallocation_hint};
@@ -586,6 +587,11 @@ impl Set {
         Self(SetStorage::with_capacity(capacity))
     }
 
+    /// Validates and clamps a capacity before native set preallocation.
+    pub(crate) fn preallocation_capacity(requested: usize, tracker: &ResourceTracker) -> Result<usize, ResourceError> {
+        checked_preallocation_hint(requested, mem::size_of::<SetEntry>(), tracker)
+    }
+
     /// Returns the number of elements in the set.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -875,25 +881,46 @@ impl<'h> HeapRead<'h, FrozenSet> {
     ///
     /// Clones self's storage entries to release the heap borrow before calling
     /// the set operations (which need `&mut VM` for hashing and equality checks).
-    pub(crate) fn binary_op_value(
-        &self,
-        other: &Value,
-        op: SetBinaryOp,
-        vm: &mut VM<'h>,
-    ) -> RunResult<Option<FrozenSet>> {
+    /// Applies set sub when the other value is a set operand.
+    fn sub_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().difference(&other_storage, vm)?)))
+    }
 
-        let result = match op {
-            SetBinaryOp::And => FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => FrozenSet::wrap(self.storage().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => FrozenSet::wrap(self.storage().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => FrozenSet::wrap(self.storage().difference(&other_storage, vm)?),
+    /// Applies set and when the other value is a set operand.
+    fn and_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
         };
-        Ok(Some(result))
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().intersection(&other_storage, vm)?)))
+    }
+
+    /// Applies set or when the other value is a set operand.
+    fn or_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(self.storage().union(&other_storage, vm)?)))
+    }
+
+    /// Applies set xor when the other value is a set operand.
+    fn xor_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<FrozenSet>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(FrozenSet::wrap(
+            self.storage().symmetric_difference(&other_storage, vm)?,
+        )))
     }
 
     /// Set algebra operations for frozenset via HeapRead.
@@ -962,6 +989,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Type::Set
     }
 
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        SetIterator::from_set(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
@@ -979,6 +1010,38 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
 
     fn py_bool(&self, vm: &mut VM<'h>) -> bool {
         !self.get(vm.heap).is_empty()
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.sub_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.and_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.or_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.xor_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::Set(result))?;
+        Ok(Some(Value::Ref(result_id)))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1070,15 +1133,6 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
     }
 }
 
-/// Pure set/frozenset binary operators shared by both concrete container types.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum SetBinaryOp {
-    And,
-    Or,
-    Xor,
-    Sub,
-}
-
 /// Helper methods for set operations with arbitrary iterables.
 impl<'h> HeapRead<'h, Set> {
     /// Implements operator-form set algebra, which only accepts set/frozenset operands.
@@ -1088,20 +1142,44 @@ impl<'h> HeapRead<'h, Set> {
     /// the set-like values CPython accepts here (`set`, `frozenset`,
     /// `dict_keys`, and `dict_items`) so the VM can raise the standard
     /// unsupported-operands `TypeError`.
-    pub(crate) fn binary_op_value(&self, other: &Value, op: SetBinaryOp, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
+    /// Applies set sub when the other value is a set operand.
+    fn sub_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
         let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
             return Ok(None);
         };
         defer_drop!(other_storage, vm);
         let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().difference(&other_storage, vm)?)))
+    }
 
-        let result = match op {
-            SetBinaryOp::And => Set(self.storage().intersection(&other_storage, vm)?),
-            SetBinaryOp::Or => Set(self.storage().union(&other_storage, vm)?),
-            SetBinaryOp::Xor => Set(self.storage().symmetric_difference(&other_storage, vm)?),
-            SetBinaryOp::Sub => Set(self.storage().difference(&other_storage, vm)?),
+    /// Applies set and when the other value is a set operand.
+    fn and_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
         };
-        Ok(Some(result))
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().intersection(&other_storage, vm)?)))
+    }
+
+    /// Applies set or when the other value is a set operand.
+    fn or_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().union(&other_storage, vm)?)))
+    }
+
+    /// Applies set xor when the other value is a set operand.
+    fn xor_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Set>> {
+        let Some(other_storage) = get_storage_from_set_operand(other, vm)? else {
+            return Ok(None);
+        };
+        defer_drop!(other_storage, vm);
+        let other_storage = vm.heap.protect(other_storage);
+        Ok(Some(Set(self.storage().symmetric_difference(&other_storage, vm)?)))
     }
 }
 
@@ -1226,6 +1304,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Type::FrozenSet
     }
 
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        SetIterator::from_frozen_set(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
@@ -1264,6 +1346,38 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
 
     fn py_bool(&self, vm: &mut VM<'h>) -> bool {
         !self.get(vm.heap).is_empty()
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.sub_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.and_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.or_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(result) = self.xor_value(other, vm)? else {
+            return Ok(None);
+        };
+        let result_id = vm.heap.allocate(HeapData::FrozenSet(result))?;
+        Ok(Some(Value::Ref(result_id)))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -1410,9 +1524,156 @@ impl<'de> serde::Deserialize<'de> for FrozenSet {
     }
 }
 
-fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
-    match value.py_hash(vm)? {
-        Some(h) => Ok(h.raw()),
-        None => Err(ExcType::type_error_unhashable_set_element(&value.py_type_name(vm))),
+/// Set-like source retained by a set iterator.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum SetIteratorSource {
+    Set(HeapId),
+    FrozenSet(HeapId),
+}
+
+/// Iterator over set or frozen-set storage.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SetIterator {
+    source: SetIteratorSource,
+    index: usize,
+    expected_len: usize,
+}
+
+impl SetIterator {
+    /// Allocates an iterator retaining a mutable set.
+    fn from_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+        Self::allocate(SetIteratorSource::Set(id), expected_len, vm)
     }
+
+    /// Allocates an iterator retaining a frozen set.
+    fn from_frozen_set(id: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+        Self::allocate(SetIteratorSource::FrozenSet(id), expected_len, vm)
+    }
+
+    /// Returns the retained set-like source id for GC tracing.
+    pub(crate) fn source_id(&self) -> HeapId {
+        match self.source {
+            SetIteratorSource::Set(id) | SetIteratorSource::FrozenSet(id) => id,
+        }
+    }
+
+    /// Returns the captured number of values not yet yielded.
+    pub(crate) fn size_hint(&self) -> usize {
+        self.expected_len.saturating_sub(self.index)
+    }
+
+    /// Allocates an iterator and retains its source.
+    fn allocate(source: SetIteratorSource, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+        let source_id = match source {
+            SetIteratorSource::Set(id) | SetIteratorSource::FrozenSet(id) => id,
+        };
+        let id = vm.heap.allocate(HeapData::SetIterator(Self {
+            source,
+            index: 0,
+            expected_len,
+        }))?;
+        vm.heap.inc_ref(source_id);
+        Ok(Value::Ref(id))
+    }
+}
+
+impl HeapItem for SetIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+        stack.push(self.source_id());
+    }
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, SetIterator> {
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h>) -> Type {
+        Type::SetIterator
+    }
+
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let (source_id, index, expected_len, mutable) = {
+            let iter = self.get(vm.heap);
+            (
+                iter.source_id(),
+                iter.index,
+                iter.expected_len,
+                matches!(iter.source, SetIteratorSource::Set(_)),
+            )
+        };
+        let item = match vm.heap.get(source_id) {
+            HeapData::Set(set) => {
+                if mutable && set.len() != expected_len {
+                    return Err(ExcType::runtime_error_set_changed_size());
+                }
+                set.storage().value_at(index)
+            }
+            HeapData::FrozenSet(set) => set.storage().value_at(index),
+            _ => unreachable!("set iterator must retain set-like storage"),
+        }
+        .map(|value| value.clone_with_heap(vm.heap));
+        if item.is_some() {
+            self.get_mut(vm.heap).index += 1;
+        }
+        Ok(item)
+    }
+}
+
+fn set_element_hash(value: &Value, vm: &mut VM<'_>) -> RunResult<u64> {
+    if let Some(hash) = value.py_hash(vm)? {
+        Ok(hash.raw())
+    } else {
+        let element_type = value.py_type_name(vm).into_owned();
+        let unhashable_type = unhashable_type_name(value, vm)?;
+        Err(ExcType::type_error_unhashable_set_element(
+            &element_type,
+            &unhashable_type,
+        ))
+    }
+}
+
+/// Finds the nested value responsible for a tuple-like element being unhashable.
+fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
+    let Value::Ref(id) = value else {
+        return Ok(value.py_type_name(vm).into_owned());
+    };
+    let len = match vm.heap.get(*id) {
+        HeapData::Tuple(tuple) => tuple.as_slice().len(),
+        HeapData::NamedTuple(namedtuple) => namedtuple.as_vec().len(),
+        _ => return Ok(value.py_type_name(vm).into_owned()),
+    };
+
+    for index in 0..len {
+        let item = match vm.heap.get(*id) {
+            HeapData::Tuple(tuple) => tuple.as_slice()[index].clone_with_heap(vm.heap),
+            HeapData::NamedTuple(namedtuple) => namedtuple.as_vec()[index].clone_with_heap(vm.heap),
+            _ => unreachable!("tuple-like heap value changed type"),
+        };
+        let mut item_guard = DropGuard::new(item, vm);
+        let (item, vm) = item_guard.as_parts_mut();
+        if item.py_hash(vm)?.is_none() {
+            return unhashable_type_name(item, vm);
+        }
+    }
+
+    Ok(value.py_type_name(vm).into_owned())
 }

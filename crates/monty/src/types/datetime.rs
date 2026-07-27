@@ -886,6 +886,31 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(allocate_string(s, vm.heap)?)
     }
 
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        let value = self.get(vm.heap).clone();
+        let other = *other.get(vm.heap);
+        Ok(py_add(&value, &other, vm.heap)?)
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::DateTime(other)) => {
+                let value = self.get(vm.heap).clone();
+                let other = other.get(vm.heap).clone();
+                Ok(py_sub_datetime(&value, &other, vm.heap)?)
+            }
+            Some(HeapReadOutput::TimeDelta(other)) => {
+                let value = self.get(vm.heap).clone();
+                let other = *other.get(vm.heap);
+                Ok(py_sub_timedelta(&value, &other, vm.heap)?)
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,

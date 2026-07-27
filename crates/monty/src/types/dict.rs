@@ -801,6 +801,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         Type::Dict
     }
 
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        DictKeyIterator::allocate(self_id.expect("heap values have an id"), self.get(vm.heap).len(), vm)
+    }
+
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
@@ -1274,3 +1278,186 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_>) -> RunResult<Value> {
     let heap_id = vm.heap.allocate(HeapData::Dict(dict))?;
     Ok(Value::Ref(heap_id))
 }
+
+/// Shared dictionary iterator position and mutation sentinel.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct DictIteratorState {
+    dict: HeapId,
+    index: usize,
+    expected_len: usize,
+}
+
+impl DictIteratorState {
+    /// Validates mutation and returns the next storage index.
+    fn next_index(&mut self, current_len: usize) -> RunResult<Option<usize>> {
+        if self.index >= self.expected_len {
+            Ok(None)
+        } else if current_len != self.expected_len {
+            Err(ExcType::runtime_error_dict_changed_size())
+        } else {
+            let index = self.index;
+            self.index += 1;
+            Ok(Some(index))
+        }
+    }
+
+    /// Returns the captured number of entries not yet yielded.
+    fn size_hint(&self) -> usize {
+        self.expected_len.saturating_sub(self.index)
+    }
+}
+
+/// Iterator yielding dictionary keys.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictKeyIterator(DictIteratorState);
+
+/// Iterator yielding dictionary `(key, value)` tuples.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictItemIterator(DictIteratorState);
+
+/// Iterator yielding dictionary values.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DictValueIterator(DictIteratorState);
+
+macro_rules! impl_dict_iterator {
+    ($ty:ty, $python_type:expr, $heap_variant:path, $next:expr) => {
+        impl $ty {
+            /// Allocates an iterator retaining `dict`.
+            pub(crate) fn allocate(dict: HeapId, expected_len: usize, vm: &mut VM<'_>) -> RunResult<Value> {
+                let id = vm.heap.allocate($heap_variant(Self(DictIteratorState {
+                    dict,
+                    index: 0,
+                    expected_len,
+                })))?;
+                vm.heap.inc_ref(dict);
+                Ok(Value::Ref(id))
+            }
+
+            /// Returns the retained dictionary id for GC tracing.
+            pub(crate) fn source_id(&self) -> HeapId {
+                self.0.dict
+            }
+
+            /// Returns the captured number of entries not yet yielded.
+            pub(crate) fn size_hint(&self) -> usize {
+                self.0.size_hint()
+            }
+        }
+
+        impl HeapItem for $ty {
+            fn py_estimate_size(&self) -> usize {
+                mem::size_of::<Self>()
+            }
+
+            fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
+                stack.push(self.source_id());
+            }
+        }
+
+        impl<'h> PyTrait<'h> for HeapRead<'h, $ty> {
+            fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+                true
+            }
+
+            fn py_type(&self, _: &VM<'h>) -> Type {
+                $python_type
+            }
+
+            fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+                None
+            }
+
+            fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
+                Ok(None)
+            }
+
+            fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+                let self_id = self_id.expect("heap values have an id");
+                vm.heap.inc_ref(self_id);
+                Ok(Value::Ref(self_id))
+            }
+
+            fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+                $next(self, vm)
+            }
+        }
+    };
+}
+
+impl_dict_iterator!(
+    DictKeyIterator,
+    Type::DictKeyIterator,
+    HeapData::DictKeyIterator,
+    |this: &mut HeapRead<'h, DictKeyIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        Ok(Some(
+            dict.key_at(index)
+                .expect("index should be valid")
+                .clone_with_heap(vm.heap),
+        ))
+    }
+);
+
+impl_dict_iterator!(
+    DictItemIterator,
+    Type::DictItemIterator,
+    HeapData::DictItemIterator,
+    |this: &mut HeapRead<'h, DictItemIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        let (key, value) = dict.item_at(index).expect("index should be valid");
+        Ok(Some(allocate_tuple(
+            smallvec![key.clone_with_heap(vm.heap), value.clone_with_heap(vm.heap)],
+            vm.heap,
+        )?))
+    }
+);
+
+impl_dict_iterator!(
+    DictValueIterator,
+    Type::DictValueIterator,
+    HeapData::DictValueIterator,
+    |this: &mut HeapRead<'h, DictValueIterator>, vm: &mut VM<'h>| {
+        let (dict_id, current_len) = {
+            let dict_id = this.get(vm.heap).source_id();
+            let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+                unreachable!("dict iterator must retain a dict")
+            };
+            (dict_id, dict.len())
+        };
+        let Some(index) = this.get_mut(vm.heap).0.next_index(current_len)? else {
+            return Ok(None);
+        };
+        let HeapData::Dict(dict) = vm.heap.get(dict_id) else {
+            unreachable!("dict iterator must retain a dict")
+        };
+        Ok(Some(
+            dict.value_at(index)
+                .expect("index should be valid")
+                .clone_with_heap(vm.heap),
+        ))
+    }
+);

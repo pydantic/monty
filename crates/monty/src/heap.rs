@@ -21,10 +21,11 @@ use crate::{
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, ExtFunction,
-        FrozenSet, Instance, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern,
-        Set, Slice, Str, TimeZone, Tuple, callable_iterator::CallableIterator, date, datetime, list::ListIterator,
-        timedelta, timezone,
+        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
+        NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
+        StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
+        list::ListIterator, timedelta, timezone,
     },
     value::Value,
 };
@@ -225,8 +226,15 @@ pub enum HeapReadOutput<'a> {
     Class(HeapRead<'a, Class>),
     Instance(HeapRead<'a, Instance>),
     BoundMethod(HeapRead<'a, BoundMethod>),
-    Iter(HeapRead<'a, MontyIter>),
     ListIterator(HeapRead<'a, ListIterator>),
+    TupleIterator(HeapRead<'a, TupleIterator>),
+    StringIterator(HeapRead<'a, StringIterator>),
+    BytesIterator(HeapRead<'a, BytesIterator>),
+    RangeIterator(HeapRead<'a, RangeIterator>),
+    DictKeyIterator(HeapRead<'a, DictKeyIterator>),
+    DictItemIterator(HeapRead<'a, DictItemIterator>),
+    DictValueIterator(HeapRead<'a, DictValueIterator>),
+    SetIterator(HeapRead<'a, SetIterator>),
     CallableIterator(HeapRead<'a, CallableIterator>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
@@ -612,8 +620,15 @@ impl<'a> HeapPtr<'a> {
             HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
-            HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
-            HeapData::ListIterator(list_iter) => HeapReadOutput::ListIterator(heap_read(base, list_iter, readers)),
+            HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
+            HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(base, iter, readers)),
+            HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(base, iter, readers)),
+            HeapData::BytesIterator(iter) => HeapReadOutput::BytesIterator(heap_read(base, iter, readers)),
+            HeapData::RangeIterator(iter) => HeapReadOutput::RangeIterator(heap_read(base, iter, readers)),
+            HeapData::DictKeyIterator(iter) => HeapReadOutput::DictKeyIterator(heap_read(base, iter, readers)),
+            HeapData::DictItemIterator(iter) => HeapReadOutput::DictItemIterator(heap_read(base, iter, readers)),
+            HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(base, iter, readers)),
+            HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(base, iter, readers)),
             HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
@@ -1607,13 +1622,23 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
-        HeapData::Iter(iter) => {
-            // Iterator holds a reference to the iterable being iterated
-            if let Value::Ref(id) = iter.value() {
-                on_child(*id);
+        HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::TupleIterator(iter) => on_child(iter.source_id()),
+        HeapData::StringIterator(iter) => {
+            if let Some(id) = iter.source_id() {
+                on_child(id);
             }
         }
-        HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::BytesIterator(iter) => {
+            if let Some(id) = iter.source_id() {
+                on_child(id);
+            }
+        }
+        HeapData::RangeIterator(_) => {}
+        HeapData::DictKeyIterator(iter) => on_child(iter.source_id()),
+        HeapData::DictItemIterator(iter) => on_child(iter.source_id()),
+        HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
+        HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
@@ -1737,8 +1762,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
-        HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::StringIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::BytesIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::RangeIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictKeyIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictItemIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
