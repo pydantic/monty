@@ -17,7 +17,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
-    intern::{StaticStrings, StringId},
+    intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
     types::{
@@ -265,6 +265,12 @@ impl ops::Deref for Str {
 impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    /// Substring search; `in` on a str requires a str on the left.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let container = self.get(vm.heap).as_str();
+        str_contains(container, item, vm.heap, vm.interns).map(Some)
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -2159,5 +2165,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         } else {
             Ok(None)
         }
+    }
+}
+
+/// Helper for substring containment check in strings.
+///
+/// Called by `HeapRead<Str>::py_contains_impl` and, for interned strings, by
+/// `Value::py_contains`. A non-str probe reports its own type, as CPython does.
+pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
+    match item {
+        Value::InternString(item_id) => {
+            let item_str = interns.get_str(*item_id);
+            Ok(container_str.contains(item_str))
+        }
+        Value::Ref(item_heap_id) => {
+            if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
+                Ok(container_str.contains(item_str.as_str()))
+            } else {
+                Err(ExcType::type_error(format!(
+                    "'in <string>' requires string as left operand, not {}",
+                    item.py_type_name_heap(heap, interns)
+                )))
+            }
+        }
+        _ => Err(ExcType::type_error(format!(
+            "'in <string>' requires string as left operand, not {}",
+            item.py_type_name_heap(heap, interns)
+        ))),
     }
 }

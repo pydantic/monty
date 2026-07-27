@@ -797,6 +797,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         true
     }
 
+    /// `in` on a dict tests its *keys*, matching CPython.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains_key(item, vm).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Dict
     }

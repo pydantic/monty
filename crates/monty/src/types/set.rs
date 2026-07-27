@@ -985,6 +985,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         true
     }
 
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains(item, vm).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Set
     }
@@ -1298,6 +1302,10 @@ impl FrozenSet {
 impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains(item, vm).map(Some)
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {

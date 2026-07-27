@@ -166,6 +166,15 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
+    /// One-sided implementation of Python membership (`__contains__`).
+    ///
+    /// `Ok(None)` means the type has no containment logic of its own, so
+    /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
+    /// `self_id` is only needed by types that re-enter the VM (`Instance`).
+    fn py_contains_impl(&self, _self_id: HeapId, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
     /// One-sided Python equality comparison (`self == other` from `self`'s side).
     ///
     /// Mirrors CPython's `__eq__`/`tp_richcompare` protocol: returns

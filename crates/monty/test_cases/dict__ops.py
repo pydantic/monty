@@ -136,3 +136,10 @@ except TypeError as e:
 dup = {'k': [1], 'k': [2]}
 assert dup == {'k': [2]}
 assert len(dup) == 1
+
+# === `in` / `not in` ===
+# `in` on a dict tests its keys, never its values.
+membership = {'a': 1, 'b': 2}
+assert 'a' in membership
+assert 'z' not in membership
+assert 1 not in membership

@@ -205,3 +205,8 @@ try:
     assert False, 'expected TypeError for non-iterable heap closure in set unpack'
 except TypeError:
     pass
+
+# === `in` / `not in` ===
+members = {1, 2, 3}
+assert 2 in members
+assert 9 not in members

@@ -279,6 +279,11 @@ impl ops::Deref for Bytes {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
+    /// One-sided implementation of Python membership (`__contains__`).
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
+    }
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -2269,5 +2274,31 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
         } else {
             Ok(None)
         }
+    }
+}
+
+/// Membership for `item in <bytes>`, shared by heap and interned containers.
+///
+/// CPython accepts a bytes-like probe (substring) or an integer (byte value);
+/// an integer outside `range(0, 256)` is a `ValueError`, anything else a `TypeError`.
+pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    let byte = match item {
+        Value::Int(i) => *i,
+        Value::Bool(b) => i64::from(*b),
+        // A bytes-like probe is a substring test.
+        Value::InternBytes(_) | Value::Ref(_) => {
+            let needle = extract_bytes_only(item, vm)?;
+            return Ok(container.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty());
+        }
+        other => {
+            return Err(ExcType::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                other.py_type_name(vm)
+            )));
+        }
+    };
+    match u8::try_from(byte) {
+        Ok(b) => Ok(container.contains(&b)),
+        Err(_) => Err(ExcType::value_error("byte must be in range(0, 256)")),
     }
 }
