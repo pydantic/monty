@@ -572,21 +572,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     /// Delegates to the types defining their own `in`; the rest keep the trait
     /// default (`None`), leaving `Value::py_contains` to iterate or raise.
     fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        match self {
-            Self::Bytes(b) => b.py_contains_impl(self_id, item, vm),
-            Self::List(l) => l.py_contains_impl(self_id, item, vm),
-            Self::Tuple(t) => t.py_contains_impl(self_id, item, vm),
-            Self::Dict(d) => d.py_contains_impl(self_id, item, vm),
-            Self::DictKeysView(view) => view.py_contains_impl(self_id, item, vm),
-            Self::DictItemsView(view) => view.py_contains_impl(self_id, item, vm),
-            Self::DictValuesView(view) => view.py_contains_impl(self_id, item, vm),
-            Self::Set(s) => s.py_contains_impl(self_id, item, vm),
-            Self::FrozenSet(fs) => fs.py_contains_impl(self_id, item, vm),
-            Self::Str(s) => s.py_contains_impl(self_id, item, vm),
-            Self::Range(r) => r.py_contains_impl(self_id, item, vm),
-            Self::Instance(i) => i.py_contains_impl(self_id, item, vm),
-            _ => Ok(None),
-        }
+        heap_read_output_py_trait_forward!(self, |value| value.py_contains_impl(self_id, item, vm), else Ok(None))
     }
 
     fn py_bool(&self, vm: &mut VM<'h>) -> bool {

@@ -286,15 +286,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         true
     }
 
-    /// Linear search by equality, indexed so a user `__eq__` re-entering the
-    /// VM cannot invalidate the walk.
+    /// Linear search by equality; `TupleIter` owns each yielded item, so a user
+    /// `__eq__` re-entering the VM cannot invalidate the walk.
     fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        let len = self.get(vm.heap).as_slice().len();
-        for i in 0..len {
-            let el = self.clone_item(i, vm);
-            let eq = item.py_eq(&el, vm);
-            el.drop_with(vm);
-            if eq? {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(el) = iter.next(vm)? {
+            if item.py_eq(el, vm)? {
                 return Ok(Some(true));
             }
         }
