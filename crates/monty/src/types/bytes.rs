@@ -2282,9 +2282,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
 /// CPython accepts a bytes-like probe (substring) or an integer (byte value);
 /// an integer outside `range(0, 256)` is a `ValueError`, anything else a `TypeError`.
 pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    // `None` marks an integer probe that cannot be a byte, keeping the range
+    // error in one place. A `LongInt` never fits in a `u8` by construction — it
+    // exists precisely because the value overflowed `i64`.
     let byte = match item {
-        Value::Int(i) => *i,
-        Value::Bool(b) => i64::from(*b),
+        Value::Int(i) => Some(*i),
+        Value::Bool(b) => Some(i64::from(*b)),
+        Value::InternLongInt(_) => None,
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => None,
         // A bytes-like probe is a substring test.
         Value::InternBytes(_) | Value::Ref(_) => {
             let needle = extract_bytes_only(item, vm)?;
@@ -2297,8 +2302,8 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
             )));
         }
     };
-    match u8::try_from(byte) {
-        Ok(b) => Ok(container.contains(&b)),
-        Err(_) => Err(ExcType::value_error("byte must be in range(0, 256)")),
+    match byte.and_then(|b| u8::try_from(b).ok()) {
+        Some(b) => Ok(container.contains(&b)),
+        None => Err(ExcType::value_error("byte must be in range(0, 256)")),
     }
 }

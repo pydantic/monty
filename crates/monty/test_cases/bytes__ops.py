@@ -236,6 +236,23 @@ try:
     assert False, 'expected ValueError for a negative byte'
 except ValueError as exc:
     assert str(exc) == 'byte must be in range(0, 256)'
+# Big integers are integer probes too, so they are out of range rather than TypeErrors.
+try:
+    2**100 in b'abc'
+    assert False, 'expected ValueError for a big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+try:
+    -(2**100) in heap_bytes
+    assert False, 'expected ValueError for a negative big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+big_base = 10
+try:
+    big_base**100 in heap_bytes
+    assert False, 'expected ValueError for a computed big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
 # Anything else is a TypeError -- being iterable does not make a valid probe.
 try:
     'a' in b'abc'
