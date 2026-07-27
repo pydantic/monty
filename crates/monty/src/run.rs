@@ -449,15 +449,13 @@ impl Executor {
     /// Executes the code and returns both the result and reference count data with a custom tracker,
     /// used for testing only.
     ///
-    /// This is used for testing reference counting behavior with a custom tracker. Returns:
-    /// - The execution result (`Exit`)
-    /// - Reference count data as a tuple of:
-    ///   - A map from variable names to their reference counts (only for heap-allocated values)
-    ///   - The number of unique heap value IDs referenced by variables
-    ///   - The total number of live heap values
+    /// This is used for testing reference counting behavior with a custom tracker. Returns
+    /// the execution result plus, in [`RefCountOutput`], a map from variable names to their
+    /// reference counts (heap-allocated values only), any live-but-unreachable heap entries,
+    /// and the total live heap population.
     ///
-    /// For strict matching validation, compare unique_refs_count with heap_entry_count.
-    /// If they're equal, all heap values are accounted for by named variables.
+    /// For strict-matching validation, assert that `unreachable` is empty: every live heap
+    /// object should be reachable from a named variable, so anything left over is a leak.
     ///
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
@@ -466,8 +464,6 @@ impl Executor {
         inputs: Vec<MontyObject>,
         resource_tracker: ResourceTracker,
     ) -> Result<RefCountOutput, MontyException> {
-        use std::collections::HashSet;
-
         let mut heap = Heap::new(self.namespace_size(), resource_tracker);
         let globals = self.empty_globals();
 
@@ -492,7 +488,7 @@ impl Executor {
             // Read refcounts BEFORE converting the return value, because
             // `frame_exit_to_object` drops the return value (decrementing its refcount).
             let mut counts = ahash::AHashMap::new();
-            let mut unique_ids = HashSet::new();
+            let mut roots = Vec::new();
 
             for (namespace_id, name_id) in executor.globals.iter() {
                 let idx = namespace_id.index();
@@ -500,10 +496,17 @@ impl Executor {
                     && let Value::Ref(id) = &globals[idx]
                 {
                     counts.insert(executor.interns.get_str(name_id).to_owned(), vm.heap.get_refcount(*id));
-                    unique_ids.insert(*id);
+                    roots.push(*id);
                 }
             }
-            let unique_refs = unique_ids.len();
+            // Named globals are the only roots: locals are gone once the module frame
+            // exits, so anything still live must hang off a name to not be a leak.
+            let unreachable: Vec<String> = vm
+                .heap
+                .unreachable_entries(roots)
+                .into_iter()
+                .map(|(id, ty)| format!("{} (id {})", ty.name(vm.heap, &executor.interns), id.index()))
+                .collect();
             let heap_count = vm.heap.entry_count();
 
             // Convert return value while VM is still alive (needs access to interns).
@@ -521,7 +524,7 @@ impl Executor {
             Ok(RefCountOutput {
                 py_object,
                 counts,
-                unique_refs,
+                unreachable,
                 heap_count,
                 allocations_since_gc,
             })
@@ -607,7 +610,11 @@ pub(crate) fn frame_exit_to_object(frame_exit_result: RunResult<FrameExit>, vm: 
 pub struct RefCountOutput {
     pub py_object: MontyObject,
     pub counts: ahash::AHashMap<String, usize>,
-    pub unique_refs: usize,
+    /// Live heap entries reachable from no named variable, described as
+    /// `"<type> (id N)"`. Non-empty means the run leaked: a missed `drop_with`
+    /// left an object alive that nothing can reach. Reachability is transitive,
+    /// so objects owned by another object are accounted for by their owner.
+    pub unreachable: Vec<String>,
     pub heap_count: usize,
     /// Number of GC-tracked allocations since the last cycle collection.
     ///

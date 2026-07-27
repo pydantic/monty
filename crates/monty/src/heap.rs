@@ -1,3 +1,5 @@
+#[cfg(feature = "ref-count-return")]
+use std::collections::HashSet;
 use std::{
     cell::{Cell, UnsafeCell},
     collections::BTreeMap,
@@ -16,6 +18,8 @@ use serde::ser::SerializeStruct;
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
+#[cfg(feature = "ref-count-return")]
+use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
@@ -1311,6 +1315,50 @@ impl Heap {
 /// in `HeapId` space because freeing a slot requires consulting the free list,
 /// which is keyed by id.
 impl<'a> HeapReader<'a> {
+    /// Returns live heap entries unreachable from `roots`, with each entry's type
+    /// so callers holding `Interns` can name it ([`Type::name`]).
+    ///
+    /// `run_ref_counts` uses this to prove a test leaked nothing: an entry that
+    /// is alive but reachable from no named variable is a missed `drop_with`.
+    /// The walk is transitive, so an object owned by another object — a class's
+    /// `__annotations__`, a nested list, an instance attribute — is accounted
+    /// for by its owner and need not be bound to a name by the test itself.
+    ///
+    /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
+    /// no colors or refcounts, so it cannot perturb the state under test.
+    #[cfg(feature = "ref-count-return")]
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+        let mut seen: HashSet<HeapId> = HashSet::new();
+        let mut work_stack: Vec<HeapId> = Vec::new();
+        for root in roots {
+            if seen.insert(root) {
+                work_stack.push(root);
+            }
+        }
+
+        // A root's subtree is live by construction, but `try_entry` keeps the
+        // walk total in case a test observes the heap mid-teardown.
+        while let Some(id) = work_stack.pop() {
+            let ptr = self.read_ptr(id);
+            if ptr.try_entry(self).is_none() {
+                continue;
+            }
+            for_each_child_id(ptr.data(self), |child_id| {
+                if seen.insert(child_id) {
+                    work_stack.push(child_id);
+                }
+            });
+        }
+
+        self.entries
+            .iter()
+            // The empty tuple singleton is an internal optimisation that is
+            // always live and never named, so it is not a leak. See `entry_count`.
+            .filter(|(id, _)| *id != EMPTY_TUPLE_ID && !seen.contains(id))
+            .map(|(id, _)| (id, self.read_ptr(id).data(self).py_type()))
+            .collect()
+    }
+
     /// Implementation of [`Heap::collect_cycles`]. Phase 1 (discover Purple
     /// roots and `mark_gray` their subtrees), Phase 2 (`scan`), and Phase 3
     /// (`collect_white`) run sequentially. After `scan` the `HeapPtr` work

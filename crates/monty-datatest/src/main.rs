@@ -1337,18 +1337,17 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
                 let result = ex.run_ref_counts(vec![]);
                 match result {
                     Ok(monty::RefCountOutput {
-                        counts,
-                        unique_refs,
-                        heap_count,
-                        ..
+                        counts, unreachable, ..
                     }) => {
-                        // Strict matching: verify all heap objects are accounted for by variables
-                        if unique_refs != heap_count {
+                        // Strict matching: every live heap object must be reachable from a
+                        // named variable, transitively. Leftovers are leaks — a missed
+                        // `drop_with` — and are named here so the culprit is identifiable.
+                        if !unreachable.is_empty() {
                             return Err(TestFailure {
                                 test_name,
                                 kind: "Strict matching".to_string(),
-                                expected: format!("{heap_count} heap objects"),
-                                actual: format!("{unique_refs} referenced by variables, counts: {counts:?}"),
+                                expected: "no unreachable heap objects".to_string(),
+                                actual: format!("leaked {}: {}", unreachable.len(), unreachable.join(", ")),
                             });
                         }
                         if &counts != expected {
