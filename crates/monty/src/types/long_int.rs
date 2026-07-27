@@ -60,13 +60,11 @@ static INT_MAX_STR_DIGITS_THRESHOLD: OnceLock<BigInt> = OnceLock::new();
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct LongInt(pub BigInt);
 
-/// Converts an `i128` into the compact integer representation.
-pub(crate) fn i128_into_value(value: i128, heap: &Heap) -> Result<Value, ResourceError> {
-    if let Ok(value) = i64::try_from(value) {
-        Ok(Value::Int(value))
-    } else {
-        LongInt::new(BigInt::from(value)).into_value(heap)
-    }
+/// Allocates an `i128` already known not to fit the immediate integer representation.
+pub(crate) fn wide_i128_into_value(value: i128, heap: &Heap) -> Result<Value, ResourceError> {
+    debug_assert!(i64::try_from(value).is_err());
+    let id = heap.allocate(HeapData::LongInt(LongInt::new(BigInt::from(value))))?;
+    Ok(Value::Ref(id))
 }
 
 /// Converts a `u128` into the compact integer representation.
@@ -209,15 +207,25 @@ impl LongInt {
     pub(crate) fn left_shift_i64(value: i64, shift: u64, vm: &mut VM<'_>) -> RunResult<Value> {
         let bits = u64::from(i64::BITS - value.unsigned_abs().leading_zeros());
         check_lshift_size(bits, shift, vm.heap.tracker())?;
-        let input = i128::from(value);
-        if let Ok(shift) = u32::try_from(shift)
-            && shift < i128::BITS
-            && let Some(value) = input.checked_shl(shift)
-            && (value >> shift) == input
+        if value == 0 {
+            Ok(Value::Int(0))
+        } else if let Ok(shift) = u32::try_from(shift)
+            && shift < i64::BITS
+            && let Some(result) = value.checked_shl(shift)
+            && (result >> shift) == value
         {
-            Ok(i128_into_value(value, vm.heap)?)
+            Ok(Value::Int(result))
         } else {
-            Ok(Self::new(BigInt::from(value) << shift).into_value(vm.heap)?)
+            let input = i128::from(value);
+            if let Ok(shift) = u32::try_from(shift)
+                && shift < i128::BITS
+                && let Some(result) = input.checked_shl(shift)
+                && (result >> shift) == input
+            {
+                Ok(wide_i128_into_value(result, vm.heap)?)
+            } else {
+                Ok(Self::new(BigInt::from(value) << shift).into_value(vm.heap)?)
+            }
         }
     }
 }

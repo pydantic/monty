@@ -28,7 +28,7 @@ use crate::{
         instance::{instance_getattr, instance_repr, instance_str},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
-            i128_into_value, repeat_count,
+            repeat_count, wide_i128_into_value,
         },
         slice::slice_collect_iterator,
         str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, string_repr_fmt},
@@ -521,7 +521,13 @@ impl<'h> PyTrait<'h> for Value {
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => Ok(Some(i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)?)),
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_add(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    Ok(Some(wide_i128_into_value(i128::from(*a) + i128::from(*b), vm.heap)?))
+                }
+            }
             (Self::Float(v1), Self::Float(v2)) => Ok(Some(Self::Float(v1 + v2))),
             // Int + Float and Float + Int
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
@@ -562,7 +568,13 @@ impl<'h> PyTrait<'h> for Value {
     fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         match (self, other) {
             // Int - Int with overflow detection
-            (Self::Int(a), Self::Int(b)) => Ok(Some(i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)?)),
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_sub(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    Ok(Some(wide_i128_into_value(i128::from(*a) - i128::from(*b), vm.heap)?))
+                }
+            }
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
             // Int - Float and Float - Int
@@ -585,7 +597,13 @@ impl<'h> PyTrait<'h> for Value {
     /// One-sided implementation of Python `*`.
     fn py_mul_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
         match (self, other) {
-            (Self::Int(a), Self::Int(b)) => Ok(Some(i128_into_value(i128::from(*a) * i128::from(*b), vm.heap)?)),
+            (Self::Int(a), Self::Int(b)) => {
+                if let Some(result) = a.checked_mul(*b) {
+                    Ok(Some(Self::Int(result)))
+                } else {
+                    Ok(Some(wide_i128_into_value(i128::from(*a) * i128::from(*b), vm.heap)?))
+                }
+            }
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 * b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a * *b as f64))),
@@ -712,7 +730,7 @@ impl<'h> PyTrait<'h> for Value {
                 } else if let Some((d, _)) = floor_divmod(*a, *b) {
                     Ok(Some(Self::Int(d)))
                 } else {
-                    Ok(Some(i128_into_value(
+                    Ok(Some(wide_i128_into_value(
                         i128::from(*a).div_euclid(i128::from(*b)),
                         vm.heap,
                     )?))
@@ -864,7 +882,7 @@ impl<'h> PyTrait<'h> for Value {
                             if let Some(result) = base.checked_pow(exp_u32) {
                                 Ok(Some(Self::Int(result)))
                             } else if let Some(result) = i128::from(*base).checked_pow(exp_u32) {
-                                Ok(Some(i128_into_value(result, vm.heap)?))
+                                Ok(Some(wide_i128_into_value(result, vm.heap)?))
                             } else {
                                 check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
