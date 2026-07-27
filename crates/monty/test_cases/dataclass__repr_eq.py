@@ -150,3 +150,28 @@ assert repr(left) == 'Node(x=Node(x=...))'
 assert Partial(1) != Partial(2)
 partial = Partial(1)
 assert partial == partial
+
+
+# === A defaulted field left unassigned reads its class-level default ===
+# The generated methods use ordinary attribute access, which falls back to the
+# class namespace, so a custom `__init__` skipping a defaulted field is fine.
+@dataclass
+class Defaulted:
+    a: int
+    b: int = 2
+
+    def __init__(self, a: int) -> None:
+        self.a = a
+
+
+assert repr(Defaulted(1)) == 'Defaulted(a=1, b=2)'
+assert Defaulted(1) == Defaulted(1)
+assert Defaulted(1) != Defaulted(3)
+
+# Those reads see the *live* class attribute, where construction uses the
+# default captured at decoration time (see refcount__dataclass_defaults.py).
+Defaulted.b = 99
+assert repr(Defaulted(1)) == 'Defaulted(a=1, b=99)'
+assigned = Defaulted(1)
+assigned.b = 2
+assert assigned != Defaulted(1)

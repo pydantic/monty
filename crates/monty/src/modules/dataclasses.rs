@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput, HeapReader},
-    intern::{StaticStrings, StringId},
+    intern::{Interns, StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
         DataclassField, DataclassMeta, Instance, LazyHeapSet, Module,
@@ -535,16 +535,8 @@ pub(crate) fn dataclass_eq<'h>(
     }
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
-        let a = instance
-            .get(vm.heap)
-            .attrs()
-            .get_by_str(&field_name, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
-        let b = other_inst
-            .get(vm.heap)
-            .attrs()
-            .get_by_str(&field_name, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap));
+        let a = field_value(instance, class_id, &field_name, vm.heap, vm.interns);
+        let b = field_value(&other_inst, class_id, &field_name, vm.heap, vm.interns);
         match (a, b) {
             (Some(a), Some(b)) => {
                 defer_drop!(a, vm);
@@ -554,8 +546,8 @@ pub(crate) fn dataclass_eq<'h>(
                 }
             }
             (a, b) => {
-                // CPython builds a tuple of the fields, so an uninitialised one
-                // raises from the attribute access rather than comparing unequal.
+                // The generated `__eq__` reads each field as an attribute, so one
+                // that resolves nowhere raises rather than comparing unequal.
                 if let Some(a) = a {
                     a.drop_with(vm);
                 }
@@ -582,28 +574,59 @@ pub(crate) fn dataclass_repr_fmt<'h>(
 ) -> RunResult<()> {
     let class_id = instance.get(vm.heap).class();
     let name = class_name(class_id, vm.heap, vm.interns).to_string();
-    // CPython's generated `__repr__` reads each field as an attribute, so an
-    // uninitialised one raises. Checked up front so no partial repr is emitted.
+    // CPython's generated `__repr__` reads each field as an attribute, so one
+    // that resolves nowhere raises. Checked up front so no partial repr is
+    // emitted (the whole string is built before returning in CPython too).
     for name_id in field_names {
-        let field_name = vm.interns.get_str(*name_id).to_owned();
-        if instance
-            .get(vm.heap)
-            .attrs()
-            .get_by_str(&field_name, vm.heap, vm.interns)
-            .is_none()
-        {
-            return Err(ExcType::attribute_error(&name, &field_name));
+        let field_name = vm.interns.get_str(*name_id);
+        if field_slot(instance, class_id, field_name, vm.heap, vm.interns).is_none() {
+            return Err(ExcType::attribute_error(&name, field_name));
         }
     }
     write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, heap, interns| {
         let field_name = interns.get_str(field_names[i]).to_owned();
-        let value = instance
-            .get(heap)
-            .attrs()
-            .get_by_str(&field_name, heap, interns)
-            .map(|v| v.clone_with_heap(heap));
+        let value = field_value(instance, class_id, &field_name, heap, interns);
         (field_name, value)
     })
+}
+
+/// Reads a field the way the generated methods' attribute access does: the
+/// instance `__dict__` first, then the class namespace.
+///
+/// The class fallback is what makes a defaulted field readable on an instance
+/// whose (class-body) `__init__` never assigned it — the default lives on as a
+/// class attribute, exactly as CPython's `self.x` finds it. `None` means neither
+/// binds the name, which callers report as `AttributeError`.
+///
+/// Returns an owned clone; use [`field_slot`] for a presence check that takes no
+/// reference.
+fn field_value<'h>(
+    instance: &HeapRead<'h, Instance>,
+    class_id: HeapId,
+    name: &str,
+    heap: &HeapReader<'h>,
+    interns: &Interns,
+) -> Option<Value> {
+    field_slot(instance, class_id, name, heap, interns).map(|v| v.clone_with_heap(heap))
+}
+
+/// Borrowing form of [`field_value`], for callers that only need to know whether
+/// the field resolves at all.
+fn field_slot<'v, 'h>(
+    instance: &HeapRead<'h, Instance>,
+    class_id: HeapId,
+    name: &str,
+    heap: &'v HeapReader<'h>,
+    interns: &Interns,
+) -> Option<&'v Value> {
+    instance
+        .get(heap)
+        .attrs()
+        .get_by_str(name, heap, interns)
+        .or_else(|| match heap.get(class_id) {
+            HeapData::Class(class) => class.namespace().get_by_str(name, heap, interns),
+            _ => None,
+        })
 }
 
 /// `is_dataclass(obj)` — true when `obj` is a dataclass **class** or an

@@ -53,14 +53,16 @@ pub(crate) struct DataclassMeta {
 }
 
 impl DataclassMeta {
-    /// Bytes this metadata adds to its `Class`, counting the field vector's
-    /// whole capacity (a captured `Ref` default costs only the inline `Value`;
-    /// its entry is charged separately). Decoration grows an already-allocated
-    /// `Class` in place, so the caller must charge this to the tracker —
-    /// otherwise wide classes could be decorated past `max_memory`.
+    /// Bytes this metadata adds to its `Class`: just the field vector's
+    /// allocation, counting its whole capacity (a captured `Ref` default costs
+    /// only the inline `Value`; its entry is charged separately). The metadata
+    /// struct itself is *not* counted — it lives inline in the `Option` field of
+    /// `Class`, already covered by `size_of::<Class>()`. Decoration grows an
+    /// already-allocated `Class` in place, so the caller must charge this to the
+    /// tracker — otherwise wide classes could be decorated past `max_memory`.
     #[must_use]
     pub fn estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.fields.capacity() * mem::size_of::<DataclassField>()
+        self.fields.capacity() * mem::size_of::<DataclassField>()
     }
 
     /// Every captured default that is a heap reference: the metadata's children.
