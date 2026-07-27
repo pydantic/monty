@@ -103,23 +103,40 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Decoration grows the `Class` in place, after its allocation-time size was
     // taken, so the metadata has to be charged explicitly.
     if let Err(err) = vm.heap.track_growth(meta.estimate_size()) {
+        drop_captured_defaults(meta, vm);
         cls.drop_with(vm);
         return Err(err.into());
     }
-    HeapReader::with(vm.heap, &mut (), |heap, ()| {
-        if let HeapReadOutput::Class(mut class) = heap.read(class_id) {
-            class.get_mut(heap).set_dataclass_meta(meta);
-        }
+    let replaced = HeapReader::with(vm.heap, &mut (), |heap, ()| match heap.read(class_id) {
+        HeapReadOutput::Class(mut class) => class.get_mut(heap).set_dataclass_meta(meta),
+        _ => None,
     });
+    // Re-decorating an already-decorated class discards the earlier metadata,
+    // whose captured defaults nothing else owns and whose bytes stay charged
+    // until refunded here.
+    if let Some(replaced) = replaced {
+        vm.heap.track_shrink(replaced.estimate_size());
+        drop_captured_defaults(replaced, vm);
+    }
     Ok(cls)
+}
+
+/// Releases every default a [`DataclassMeta`] captured, for metadata that is
+/// being discarded rather than stored on a class.
+fn drop_captured_defaults(meta: DataclassMeta, vm: &mut VM<'_>) {
+    for field in meta.fields {
+        if let Some(default) = field.default {
+            default.drop_with(vm);
+        }
+    }
 }
 
 /// Builds [`DataclassMeta`] for `class_id` from its `__annotations__`.
 ///
 /// Fields are the annotated names in definition order, excluding `ClassVar`
-/// entries. A field `has_default` when the class namespace binds its name (i.e.
-/// `y: int = 5` created a class variable); the default value stays in the
-/// namespace and is read by name at construction time.
+/// entries. A field has a default when the class namespace binds its name (i.e.
+/// `y: int = 5` created a class variable); that value is captured here and owned
+/// by the metadata from then on.
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
@@ -129,9 +146,16 @@ fn build_dataclass_meta(vm: &mut VM<'_>, class_id: HeapId) -> RunResult<Dataclas
     // CPython's own message; the Monty-only guards below can then only fire for
     // a class CPython accepts.
     let fields = collect_annotated_fields(vm, class_id);
-    validate_fields(vm, class_id, &fields)?;
-    reject_unsupported_members(vm, class_id)?;
-    Ok(DataclassMeta { fields })
+    // `fields` already owns a reference per captured default, so a rejected
+    // class body must release them rather than dropping the `Vec` on the floor.
+    let meta = DataclassMeta { fields };
+    match validate_fields(vm, &meta.fields).and_then(|()| reject_unsupported_members(vm, class_id)) {
+        Ok(()) => Ok(meta),
+        Err(e) => {
+            drop_captured_defaults(meta, vm);
+            Err(e)
+        }
+    }
 }
 
 /// Class-body members Monty does not dispatch, paired with what ignoring them
@@ -181,12 +205,15 @@ fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField
         if is_classvar(&annotation) {
             continue;
         }
-        let has_default = namespace
+        // Capture the default *now*, as CPython bakes it into the generated
+        // `__init__`: rebinding the class attribute later must not change what
+        // subsequent constructions receive.
+        let default = namespace
             .get_by_str(vm.interns.get_str(*name_id), vm.heap, vm.interns)
-            .is_some();
+            .map(|v| v.clone_with_heap(vm.heap));
         fields.push(DataclassField {
             name: *name_id,
-            has_default,
+            default,
             initvar: is_initvar(&annotation),
         });
     }
@@ -197,7 +224,7 @@ fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField
 ///
 /// CPython validates defaults per field as it collects them, so a mutable
 /// default is reported before the whole-list non-default-after-default check.
-fn validate_fields(vm: &mut VM<'_>, class_id: HeapId, fields: &[DataclassField]) -> RunResult<()> {
+fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> {
     for field in fields {
         let name = vm.interns.get_str(field.name).to_owned();
         if field.initvar {
@@ -205,24 +232,16 @@ fn validate_fields(vm: &mut VM<'_>, class_id: HeapId, fields: &[DataclassField])
                 "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
             )));
         }
-        if field.has_default {
+        if let Some(default) = &field.default {
             // CPython's rule is hashability, not a list/dict/set type check, so
-            // a class with `__hash__ = None` is rejected the same way.
-            let default = match vm.heap.get(class_id) {
-                HeapData::Class(class) => class
-                    .namespace()
-                    .get_by_str(&name, vm.heap, vm.interns)
-                    .map(|v| v.clone_with_heap(vm.heap)),
-                _ => None,
-            };
-            if let Some(default) = default {
-                defer_drop!(default, vm);
-                if default.py_hash(vm)?.is_none() {
-                    let ty = default.py_type_name(vm);
-                    return Err(ExcType::value_error(format!(
-                        "mutable default <class '{ty}'> for field {name} is not allowed: use default_factory"
-                    )));
-                }
+            // a class with `__hash__ = None` is rejected the same way. The
+            // captured default is borrowed, not consumed — `build_dataclass_meta`
+            // releases it if this check rejects the class.
+            if default.py_hash(vm)?.is_none() {
+                let ty = default.py_type_name(vm);
+                return Err(ExcType::value_error(format!(
+                    "mutable default <class '{ty}'> for field {name} is not allowed: use default_factory"
+                )));
             }
         }
     }
@@ -240,14 +259,16 @@ fn validate_fields(vm: &mut VM<'_>, class_id: HeapId, fields: &[DataclassField])
 /// invalid `__init__` signature, or `None` when the order is valid.
 fn first_non_default_after_default(fields: &[DataclassField]) -> Option<(StringId, StringId)> {
     let mut last_default = None;
-    fields.iter().find_map(|field| match (field.has_default, last_default) {
-        (true, _) => {
-            last_default = Some(field.name);
-            None
-        }
-        (false, Some(prev)) => Some((prev, field.name)),
-        (false, None) => None,
-    })
+    fields
+        .iter()
+        .find_map(|field| match (field.default.is_some(), last_default) {
+            (true, _) => {
+                last_default = Some(field.name);
+                None
+            }
+            (false, Some(prev)) => Some((prev, field.name)),
+            (false, None) => None,
+        })
 }
 
 /// Whether a stringized annotation denotes `typing.ClassVar`, so the field is
@@ -313,7 +334,7 @@ pub(crate) fn dataclass_init(
             .expect("dataclass_init requires dataclass metadata")
             .fields
             .iter()
-            .map(|f| (f.name, f.has_default))
+            .map(|f| (f.name, f.default.is_some()))
             .collect(),
         _ => unreachable!("dataclass_init called on a non-class"),
     };
@@ -394,27 +415,28 @@ fn bind_dataclass_fields(
         }
     }
 
-    // Both a bad key and too many positionals (CPython counts `self`, so +1 each
-    // side) discard every argument, so drain once and then pick the message.
-    if nonstring_key || n_pos > n_fields {
+    if nonstring_key {
         for v in positionals {
             v.drop_with(vm);
         }
         for (_, v) in keywords {
             v.drop_with(vm);
         }
-        return Err(if nonstring_key {
-            ExcType::type_error_kwargs_nonstring_key()
-        } else {
-            let required = fields.iter().filter(|(_, has_default)| !has_default).count();
-            ExcType::type_error_too_many_positional_range(&init_name, 1 + required, 1 + n_fields, 1 + n_pos, 0)
-        });
+        return Err(ExcType::type_error_kwargs_nonstring_key());
     }
 
-    // Positional arguments fill the leftmost slots; keywords fill by name.
+    // Positional arguments fill the leftmost slots; keywords fill by name. Any
+    // positional beyond the last field is parked in `excess` rather than
+    // reported now, because CPython binds keywords first: `P(1, 2, 3, y=4)` is
+    // "multiple values for argument 'y'", not "takes 3 positional arguments".
     let mut values: Vec<Option<Value>> = (0..n_fields).map(|_| None).collect();
+    let mut excess: Vec<Value> = Vec::new();
     for (slot, value) in positionals.into_iter().enumerate() {
-        values[slot] = Some(value);
+        if slot < n_fields {
+            values[slot] = Some(value);
+        } else {
+            excess.push(value);
+        }
     }
 
     let mut error: Option<RunError> = None;
@@ -436,7 +458,21 @@ fn bind_dataclass_fields(
         }
     }
 
-    // Fill unbound slots from defaults; collect names of missing fields.
+    // Too many positional arguments (CPython counts `self`, so +1 each side),
+    // reported only once keyword binding has had its say.
+    if error.is_none() && n_pos > n_fields {
+        let required = fields.iter().filter(|(_, has_default)| !has_default).count();
+        error = Some(ExcType::type_error_too_many_positional_range(
+            &init_name,
+            1 + required,
+            1 + n_fields,
+            1 + n_pos,
+            0,
+        ));
+    }
+
+    // Fill unbound slots from the defaults captured at decoration time; collect
+    // names of missing fields.
     if error.is_none() {
         let mut missing: Vec<String> = Vec::new();
         for (idx, (id, has_default)) in fields.iter().enumerate() {
@@ -447,8 +483,9 @@ fn bind_dataclass_fields(
                 let name_str = vm.interns.get_str(*id);
                 let default = match vm.heap.get(class_id) {
                     HeapData::Class(class) => class
-                        .namespace()
-                        .get_by_str(name_str, vm.heap, vm.interns)
+                        .dataclass_meta()
+                        .and_then(|meta| meta.fields.get(idx))
+                        .and_then(|field| field.default.as_ref())
                         .map(|v| v.clone_with_heap(vm.heap)),
                     _ => None,
                 };
@@ -466,6 +503,11 @@ fn bind_dataclass_fields(
         }
     }
 
+    // Excess positionals are never bound, so release them on every path.
+    for v in excess {
+        v.drop_with(vm);
+    }
+
     if let Some(e) = error {
         for v in values.into_iter().flatten() {
             v.drop_with(vm);
@@ -478,6 +520,13 @@ fn bind_dataclass_fields(
 /// Field-wise `__eq__`: equal only to the *same* dataclass with equal fields.
 /// Any other operand is `NotImplemented` (`Ok(None)`), so the caller falls back
 /// to identity.
+///
+/// Mirrors CPython 3.14's generated `self.a == other.a and self.b == other.b`:
+/// fields are compared left to right and the chain stops at the first unequal
+/// pair, so a later field that was never assigned goes unnoticed. Each pair uses
+/// the `==` *operator* (`py_eq_operator`), not container equality — a field
+/// holding an object whose `__eq__` always returns `False` makes two dataclasses
+/// unequal even when both hold the very same object.
 pub(crate) fn dataclass_eq<'h>(
     instance: &HeapRead<'h, Instance>,
     field_names: &[StringId],
@@ -508,7 +557,7 @@ pub(crate) fn dataclass_eq<'h>(
             (Some(a), Some(b)) => {
                 defer_drop!(a, vm);
                 defer_drop!(b, vm);
-                if !a.py_eq(b, vm)? {
+                if !a.py_eq_operator(b, vm)? {
                     return Ok(Some(false));
                 }
             }

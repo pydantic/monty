@@ -98,10 +98,6 @@ order and error wording, but with these divergences:
   runs to completion synchronously, so it cannot yield to the host, and an
   external-function `__init__` raises `NotImplementedError` rather than
   suspending.
-- **`a == a` is always true, even when `__eq__` would say otherwise.** A heap
-  object is short-circuited as equal to itself before `__eq__` is consulted,
-  where CPython calls `__eq__` for `==` and only shortcuts identity inside
-  container comparisons (`x in [x]`, `[x] == [x]` — which Monty matches).
 - **A user `__eq__` cannot decline a comparison.** Monty has no
   `NotImplemented` value, so whatever `__eq__` returns is taken as a truth
   value and the reflected `other.__eq__(self)` is never tried.

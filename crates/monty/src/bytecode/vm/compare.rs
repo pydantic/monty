@@ -15,8 +15,10 @@ impl VM<'_> {
     #[inline]
     pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
-            CmpOperator::Eq => lhs.py_eq(rhs, self),
-            CmpOperator::NotEq => Ok(!lhs.py_eq(rhs, self)?),
+            // The bare operator, so `py_eq_operator`: unlike container
+            // comparison it must not shortcut `x == x` past a user `__eq__`.
+            CmpOperator::Eq => lhs.py_eq_operator(rhs, self),
+            CmpOperator::NotEq => Ok(!lhs.py_eq_operator(rhs, self)?),
             CmpOperator::Is => Ok(lhs.is(rhs)),
             CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.

@@ -107,3 +107,37 @@ class Synth:
 
 assert Synth(1) == Synth(1)
 assert Synth(1) != Synth(2)
+
+
+# === A user __eq__ decides `x == x` too; containers still shortcut on identity ===
+# CPython's `==` operator dispatches `__eq__` even for the same object, while
+# container membership/comparison uses `PyObject_RichCompareBool`, which treats
+# identical objects as equal without consulting `__eq__`.
+class Never:
+    def __eq__(self, other: object) -> bool:
+        return False
+
+    def __hash__(self) -> int:
+        return 1
+
+
+never = Never()
+assert not (never == never), 'the operator dispatches __eq__ against self'
+assert never != never, '!= is still the negation of __eq__'
+assert never in [never], 'containment shortcuts on identity'
+assert [never] == [never]
+assert (never,) == (never,)
+assert {'k': never} == {'k': never}
+assert [never].index(never) == 0
+
+
+# A synthesized dataclass `__eq__` opens with `if self is other: return True`,
+# so identity wins there — but each *field* is compared with the operator.
+@dataclass
+class Holder:
+    f: object
+
+
+holder = Holder(never)
+assert holder == holder
+assert not (Holder(never) == Holder(never)), 'fields compare with the == operator'

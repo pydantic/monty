@@ -122,3 +122,29 @@ expect_error(
     mutable_default_dict, ValueError, "mutable default <class 'dict'> for field d is not allowed: use default_factory"
 )
 expect_error(non_default_after_default, TypeError, "non-default argument 'b' follows default argument 'a'")
+
+
+# === Keyword binding is reported before the positional-arity error ===
+# CPython's generated `__init__` binds keywords first, so an excess positional
+# only surfaces once the keywords are known to be valid.
+expect_type_error(lambda: Point(1, 2, 3, z=4), "Point.__init__() got an unexpected keyword argument 'z'")
+expect_type_error(lambda: Point(1, 2, 3, x=4), "Point.__init__() got multiple values for argument 'x'")
+expect_type_error(lambda: WithDefault(1, 2, 3, 4, b=9), "WithDefault.__init__() got multiple values for argument 'b'")
+expect_type_error(
+    lambda: WithDefault(1, 2, 3, 4), 'WithDefault.__init__() takes from 2 to 4 positional arguments but 5 were given'
+)
+
+
+# === Defaults are captured when @dataclass runs, not read at construction ===
+# CPython bakes them into the generated `__init__`, so rebinding the class
+# attribute afterwards changes `Rebind.b` but not what new instances receive.
+@dataclass
+class Rebind:
+    a: int
+    b: int = 5
+
+
+Rebind.b = 99
+assert Rebind(1).b == 5
+assert Rebind.b == 99
+assert repr(Rebind(1)) == 'Rebind(a=1, b=5)'

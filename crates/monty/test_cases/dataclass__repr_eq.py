@@ -130,3 +130,23 @@ try:
     assert False, 'expected an uninitialized field to raise'
 except AttributeError as e:
     assert str(e) == "'Partial' object has no attribute 'b'", f'wrong message: {e!r}'
+
+
+# A cycle reached through a container is elided at the container, and two
+# dataclasses referring to each other nest exactly once before eliding.
+boxed = Node(None)
+boxed.x = [boxed]
+assert repr(boxed) == 'Node(x=[...])'
+
+left = Node(None)
+right = Node(None)
+left.x = right
+right.x = left
+assert repr(left) == 'Node(x=Node(x=...))'
+
+# The comparison chain short-circuits, so an earlier unequal field is reported
+# before the uninitialized one is ever read; and identity wins outright, since
+# CPython's generated `__eq__` opens with `self is other`.
+assert Partial(1) != Partial(2)
+partial = Partial(1)
+assert partial == partial

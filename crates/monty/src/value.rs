@@ -292,16 +292,20 @@ impl<'h> PyTrait<'h> for Value {
                 _ => None,
             }),
             Self::Ref(id) => {
-                // Identity short-circuit: a heap object always equals itself.
-                if let Self::Ref(other_id) = other
+                // A user `__eq__` is dispatched *before* the identity shortcut:
+                // CPython lets it decide `x == x` too. Dispatched here rather
+                // than in `HeapRead<Instance>` because it needs the `HeapId` to
+                // pass `self`, as `instance_repr` does.
+                if let Some(result) = instance_user_eq(*id, other, vm)? {
+                    Ok(Some(result))
+                } else if let Self::Ref(other_id) = other
                     && id == other_id
                 {
+                    // Identity: a heap object with no user `__eq__` equals
+                    // itself. This is also the `self is other` shortcut opening
+                    // CPython's synthesized dataclass `__eq__`, so it must stay
+                    // ahead of the field-wise comparison below.
                     Ok(Some(true))
-                } else if let Some(result) = instance_user_eq(*id, other, vm)? {
-                    // Dispatched here rather than in `HeapRead<Instance>`
-                    // because it needs the `HeapId` to pass `self`, as
-                    // `instance_repr` does.
-                    Ok(Some(result))
                 } else {
                     vm.heap.read(*id).py_eq_impl(other, vm)
                 }
@@ -1370,15 +1374,36 @@ impl Value {
         self.id() == other.id()
     }
 
-    /// Python `==`, resolved to a definite boolean.
+    /// Equality **as containers perform it** — CPython's `PyObject_RichCompareBool`.
+    ///
+    /// Identical objects are equal *without* consulting `__eq__`, which is why
+    /// `c in [c]` and `[c] == [c]` are true even for a class whose `__eq__`
+    /// always returns `False`, and why a `NaN` inside a list still compares
+    /// equal to itself. Every container membership/comparison/lookup uses this;
+    /// the bare `==` operator must use [`py_eq_operator`](Self::py_eq_operator),
+    /// which has no such shortcut.
+    pub fn py_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        if let (Self::Ref(id), Self::Ref(other_id)) = (self, other)
+            && id == other_id
+        {
+            Ok(true)
+        } else {
+            self.py_eq_operator(other, vm)
+        }
+    }
+
+    /// Python's `==` operator, resolved to a definite boolean.
     ///
     /// Implements CPython's reflected comparison protocol on top of the
     /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
     /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
-    /// operand's type recognises the other, the values are unequal. This is the
-    /// entry point the VM `==`/`!=`/`in` operators and all container element
-    /// comparisons use; per-type `py_eq_impl` impls never drive reflection themselves.
-    pub fn py_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+    /// operand's type recognises the other, the values are unequal. Per-type
+    /// `py_eq_impl` impls never drive reflection themselves.
+    ///
+    /// Unlike [`py_eq`](Self::py_eq) this does **not** shortcut on identity, so
+    /// a user-defined `__eq__` still decides `x == x`. Use it only for the
+    /// operator itself, never for container element comparison.
+    pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Some(result) = self.py_eq_impl(other, vm)? {
             Ok(result)
         } else if let Some(result) = other.py_eq_impl(self, vm)? {

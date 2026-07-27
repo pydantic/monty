@@ -1657,6 +1657,13 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
+            // A `@dataclass` also owns each field's captured default, which can
+            // reach back to the class (`x: object = SomeInstanceOfIt`).
+            if let Some(meta) = class.dataclass_meta() {
+                for id in meta.ref_children() {
+                    on_child(id);
+                }
+            }
         }
         HeapData::Instance(instance) => {
             // An instance references its class plus its attribute dict's entries.
