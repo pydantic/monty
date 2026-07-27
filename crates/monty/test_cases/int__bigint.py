@@ -277,6 +277,7 @@ pow_bigger_2 = bigger * bigger
 pow_result2 = pow(bigger, 2)
 assert pow_result2 == pow_bigger_2
 assert bigger**-bigger == 0.0
+assert bigger ** (-bigger - 1) == 0.0
 assert (-1) ** bigger == 1
 try:
     0**-bigger
@@ -288,6 +289,14 @@ try:
     assert False, 'zero modulus with a LongInt base should fail'
 except ValueError as e:
     assert str(e) == 'pow() 3rd argument cannot be 0'
+
+huge_negative_exponent = -(10**400)
+for base in (2, -2, 1, -1):
+    try:
+        base**huge_negative_exponent
+        assert False, 'an exponent too large for float conversion should fail'
+    except OverflowError as e:
+        assert str(e) == 'int too large to convert to float'
 
 # Mixed immediate and heap-backed numeric operands
 assert bigger + 0.5 == 9.223372036854776e18

@@ -738,11 +738,11 @@ fn long_int_pow_value(base: &BigInt, exponent: &BigInt, heap: &Heap) -> RunResul
     if base.is_zero() && exponent.is_negative() {
         Err(ExcType::zero_negative_power())
     } else if exponent.is_negative() {
-        Ok(Some(Value::Float(
-            exponent
-                .to_f64()
-                .map_or(0.0, |exponent| bigint_to_f64(base).powf(exponent)),
-        )))
+        let exponent = exponent
+            .to_f64()
+            .filter(|exponent| exponent.is_finite())
+            .ok_or_else(ExcType::overflow_int_to_float)?;
+        Ok(Some(Value::Float(bigint_to_f64(base).powf(exponent))))
     } else if exponent.is_zero() || base.is_one() {
         Ok(Some(Value::Int(1)))
     } else if base.is_zero() {

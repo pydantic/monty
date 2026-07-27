@@ -185,6 +185,18 @@ for expression in (
     except TypeError as e:
         assert str(e) == "cannot use 'tuple' as a set element (unhashable type: 'list')"
 
+# Reflected operations validate the left iterable before materializing the view.
+for expression in (
+    lambda: 1 | unhashable_values.items(),
+    lambda: 1 ^ unhashable_values.items(),
+    lambda: 1 - unhashable_values.items(),
+):
+    try:
+        expression()
+        assert False, 'reflected items operation should reject a non-iterable left operand'
+    except TypeError as e:
+        assert str(e) == "'int' object is not iterable"
+
 # === dict_keys & iterable ===
 d = {'a': 1, 'b': 2, 'c': 3}
 assert d.keys() & {'b', 'c', 'x'} == {'b', 'c'}

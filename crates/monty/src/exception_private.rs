@@ -1334,6 +1334,12 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into()
     }
 
+    /// Creates an OverflowError when an integer cannot be represented as a float.
+    #[must_use]
+    fn overflow_int_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
     /// Creates a ValueError for a zero modulus passed to `pow`.
     #[must_use]
     fn value_error_pow_modulus_zero() -> RunError {
