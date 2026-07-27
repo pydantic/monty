@@ -1006,9 +1006,16 @@ pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -
 fn repeat_deque(deque: &Deque, count: usize, vm: &VM<'_>) -> RunResult<Value> {
     let len = deque.len();
     let result = if let Some(max) = deque.maxlen() {
-        // Bounded: keep only the last `min(len*count, maxlen)` items.
+        // Bounded: keep only the last `min(len*count, maxlen)` items. `kept` is
+        // still attacker-controlled (a huge `maxlen` like `deque(maxlen=10**9)`),
+        // so pre-check that many `Value` slots against the memory tracker and
+        // poll the time limit while building — otherwise the suffix could
+        // allocate/spin before the final `allocate` ever consults a limit.
         let kept = len.saturating_mul(count).min(max);
-        let mut result = Vec::with_capacity(kept);
+        check_repeat_size(mem::size_of::<Value>(), kept, vm.heap.tracker())?;
+        // `Vec::new()` (not `with_capacity(kept)`): the check above is the real
+        // guard, and reserving an attacker-sized capacity would itself abort.
+        let mut result = Vec::new();
         if kept > 0 {
             // `len*count` is a multiple of `len`, so dropping the leading
             // items down to `kept` survivors starts at this offset.
@@ -1016,6 +1023,11 @@ fn repeat_deque(deque: &Deque, count: usize, vm: &VM<'_>) -> RunResult<Value> {
             for i in 0..kept {
                 let v = deque.get((start + i % len) % len).expect("index within deque");
                 result.push(v.clone_with_heap(vm.heap));
+                // Poll once per notional copy of the deque, matching the
+                // unbounded branch's cadence.
+                if i % len == 0 {
+                    vm.heap.check_time()?;
+                }
             }
         }
         result

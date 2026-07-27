@@ -313,6 +313,30 @@ c.elements()
 }
 
 #[test]
+fn bounded_deque_repeat_huge_maxlen_is_bounded() {
+    // `deque(maxlen=N) * count` keeps only the surviving `min(len*count, N)`
+    // suffix, but that suffix is still attacker-sized when `maxlen` is huge. It
+    // must be pre-checked against the memory limit, not allocated and filled
+    // first. Regression for the missing `check_repeat_size` / `check_time` guard
+    // in the bounded branch of `repeat_deque`.
+    let code = r"
+from collections import deque
+deque([1, 2, 3], maxlen=10**9) * 10**9
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "a bounded deque repeat whose surviving suffix exceeds the memory limit should raise"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
 fn bounded_deque_appends_do_not_leak_the_memory_counter() {
     // A `maxlen` deque evicts as it appends, so its size never grows past the
     // bound. `append` charges the tracker for the new slot, so the eviction on
