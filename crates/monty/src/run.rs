@@ -502,8 +502,13 @@ impl Executor {
                     roots.push(*id);
                 }
             }
-            // Named globals are the only roots: locals are gone once the module frame
-            // exits, so anything still live must hang off a name to not be a leak.
+            // The module's result is a root too: it is still owned by the pending
+            // `FrameExit::Return` here, since `frame_exit_to_object` below is what drops it.
+            if let Ok(FrameExit::Return(Value::Ref(id))) = &frame_exit_result {
+                roots.push(*id);
+            }
+            // Those are the only roots: locals are gone once the module frame exits, so
+            // anything still live must hang off a name or the result to not be a leak.
             let unreachable: Vec<String> = vm
                 .heap
                 .unreachable_entries(roots)
