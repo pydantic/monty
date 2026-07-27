@@ -18,9 +18,9 @@ class Other:
 
 # === repr / str ===
 p = Point(1, 2)
-assert repr(p) == 'Point(x=1, y=2)', 'synthesized repr'
-assert str(p) == 'Point(x=1, y=2)', 'str falls back to repr'
-assert repr(Point(3, 4)) == 'Point(x=3, y=4)', 'repr with other values'
+assert repr(p) == 'Point(x=1, y=2)'
+assert str(p) == 'Point(x=1, y=2)'
+assert repr(Point(3, 4)) == 'Point(x=3, y=4)'
 
 
 # === repr of non-int fields uses repr() of each value ===
@@ -30,11 +30,11 @@ class User:
     active: bool
 
 
-assert repr(User('alice', True)) == "User(name='alice', active=True)", 'string field is quoted in repr'
+assert repr(User('alice', True)) == "User(name='alice', active=True)"
 
 
 # === Nested repr (dataclass inside a list / inside a dataclass) ===
-assert repr([Point(1, 2), Point(3, 4)]) == '[Point(x=1, y=2), Point(x=3, y=4)]', 'repr nests through a list'
+assert repr([Point(1, 2), Point(3, 4)]) == '[Point(x=1, y=2), Point(x=3, y=4)]'
 
 
 @dataclass
@@ -42,25 +42,25 @@ class Wrap:
     p: Point
 
 
-assert repr(Wrap(Point(1, 2))) == 'Wrap(p=Point(x=1, y=2))', 'repr nests through a dataclass field'
+assert repr(Wrap(Point(1, 2))) == 'Wrap(p=Point(x=1, y=2))'
 
 
 # === Equality: same class + equal fields ===
-assert Point(1, 2) == Point(1, 2), 'equal dataclasses compare equal'
-assert Point(1, 2) != Point(1, 3), 'differing fields are not equal'
+assert Point(1, 2) == Point(1, 2)
+assert Point(1, 2) != Point(1, 3)
 assert not (Point(1, 2) == Point(2, 1)), 'field order matters'
 
 
 # === Equality across types / non-dataclasses is False ===
-assert Point(1, 2) != Other(1, 2), 'different dataclass types are never equal'
-assert Point(1, 2) != (1, 2), 'a dataclass is not equal to a tuple'
-assert Point(1, 2) != {'x': 1, 'y': 2}, 'a dataclass is not equal to a dict'
+assert Point(1, 2) != Other(1, 2)
+assert Point(1, 2) != (1, 2)
+assert Point(1, 2) != {'x': 1, 'y': 2}
 
 
 # === Equality composes: containers and nesting ===
-assert Point(1, 2) in [Point(3, 4), Point(1, 2)], 'equal dataclass found in a list'
-assert Wrap(Point(1, 2)) == Wrap(Point(1, 2)), 'nested dataclass equality'
-assert Wrap(Point(1, 2)) != Wrap(Point(1, 3)), 'nested dataclass inequality'
+assert Point(1, 2) in [Point(3, 4), Point(1, 2)]
+assert Wrap(Point(1, 2)) == Wrap(Point(1, 2))
+assert Wrap(Point(1, 2)) != Wrap(Point(1, 3))
 
 
 # === Default dataclass (eq=True, frozen=False) is unhashable ===
@@ -95,7 +95,7 @@ class Node:
 
 n = Node(None)
 n.x = n
-assert repr(n) == 'Node(x=...)', 'the cycle guard survives instance repr dispatch'
+assert repr(n) == 'Node(x=...)'
 
 
 @dataclass
@@ -106,7 +106,7 @@ class Pair:
 
 pair = Pair(1, None)
 pair.b = pair
-assert repr(pair) == 'Pair(a=1, b=...)', 'only the cycling field is elided'
+assert repr(pair) == 'Pair(a=1, b=...)'
 
 
 # === A declared field left uninitialized raises, as the attribute access does ===
@@ -196,4 +196,6 @@ class Hooked:
 assert Hooked(1) != Hooked(1)
 hooked = Hooked(1)
 assert hooked == hooked
-assert repr(Hooked(1)) == repr(Hooked(1)), 'the rendering is stable, whatever a bound method renders as'
+# Only the stability of the rendering, since the two engines spell a bound
+# method differently (see limitations/dataclasses.md).
+assert repr(Hooked(1)) == repr(Hooked(1))

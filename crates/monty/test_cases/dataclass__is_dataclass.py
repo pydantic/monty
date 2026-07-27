@@ -34,4 +34,4 @@ e = Empty()
 assert is_dataclass(e), 'an instance of a dataclass is itself a dataclass'
 
 # === The decorated class is unchanged as a class object ===
-assert Point.__name__ == 'Point', 'the decorator returns the same class'
+assert Point.__name__ == 'Point'

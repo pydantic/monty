@@ -35,10 +35,11 @@ methods, `__init__` (full parameter shapes), instance and class attribute
 get/set (including `setattr(Foo, ...)` and function-attributes-become-methods),
 bound methods, class variables (arbitrary expressions, evaluated in a real
 suspendable class-body scope), **class decorators** (`@deco class Foo`),
-`__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch, `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
+`__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
+`obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional — see
-[typing.md](typing.md)),
-`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg `type()` constructor. The
+[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+`type()` constructor. The
 `__enter__`/`__exit__` divergences are in [with.md](with.md). Everything else
 below is where Monty differs from or does not implement CPython behaviour.
 

@@ -43,9 +43,8 @@ pub(crate) struct Class {
 /// Metadata recorded on a [`Class`] by the `@dataclass` decorator.
 ///
 /// **Holds owned heap references** through its captured defaults, so a `Class`
-/// carrying one counts them in `py_estimate_size` and `py_dec_ref_ids` (below)
-/// and in `heap::for_each_child_id`. Flags for the `@dataclass(...)` keyword
-/// form arrive with the code that reads them, not unread in snapshots.
+/// carrying one counts them in `py_estimate_size`, `py_dec_ref_ids` (both below)
+/// and `heap::for_each_child_id`.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassMeta {
     /// Fields in definition order (from `__annotations__`, `ClassVar` excluded).
@@ -53,13 +52,12 @@ pub(crate) struct DataclassMeta {
 }
 
 impl DataclassMeta {
-    /// Bytes this metadata adds to its `Class`: just the field vector's
-    /// allocation, counting its whole capacity (a captured `Ref` default costs
-    /// only the inline `Value`; its entry is charged separately). The metadata
-    /// struct itself is *not* counted — it lives inline in the `Option` field of
-    /// `Class`, already covered by `size_of::<Class>()`. Decoration grows an
-    /// already-allocated `Class` in place, so the caller must charge this to the
-    /// tracker — otherwise wide classes could be decorated past `max_memory`.
+    /// Bytes this metadata adds to its `Class`: the field vector's allocation
+    /// alone, since the struct itself is inline in `size_of::<Class>()`.
+    ///
+    /// Decoration grows an already-allocated `Class` in place, so the caller must
+    /// charge this to the tracker — otherwise a sandbox could decorate wide
+    /// classes past `max_memory`.
     #[must_use]
     pub fn estimate_size(&self) -> usize {
         self.fields.capacity() * mem::size_of::<DataclassField>()
@@ -83,9 +81,8 @@ pub(crate) struct DataclassField {
     /// `None` for a required field. CPython bakes defaults into the generated
     /// `__init__`, so rebinding the class attribute later must not change it.
     pub default: Option<Value>,
-    /// Whether the annotation was `InitVar[...]`. Recorded rather than acted on:
-    /// `InitVar` is rejected at decoration time until pseudo-fields are
-    /// implemented, so a field carrying it does not reach construction.
+    /// Whether the annotation was `InitVar[...]`. Recorded but not acted on —
+    /// decoration rejects such a field until pseudo-fields are implemented.
     #[serde(default)]
     pub initvar: bool,
 }
@@ -108,13 +105,11 @@ impl Class {
         self.dataclass_meta.as_ref()
     }
 
-    /// Records dataclass metadata (called by the `@dataclass` decorator),
-    /// returning any metadata it replaced.
+    /// Records dataclass metadata (called by the `@dataclass` decorator), after
+    /// the caller has charged [`DataclassMeta::estimate_size`] to the tracker.
     ///
-    /// The caller charges [`DataclassMeta::estimate_size`] to the tracker first,
-    /// since this grows an already-allocated `Class` in place. Re-decorating
-    /// returns the replaced metadata, whose captured defaults the caller **must**
-    /// drop and whose bytes it must refund — nothing else releases them.
+    /// Re-decorating returns the replaced metadata, whose captured defaults the
+    /// caller **must** drop and whose bytes it must refund — nothing else does.
     #[must_use]
     pub fn set_dataclass_meta(&mut self, meta: DataclassMeta) -> Option<DataclassMeta> {
         self.dataclass_meta.replace(meta)

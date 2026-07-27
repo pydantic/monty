@@ -129,20 +129,16 @@ fn drop_captured_defaults(meta: DataclassMeta, vm: &mut VM<'_>) {
     }
 }
 
-/// Builds [`DataclassMeta`] for `class_id` from its `__annotations__`.
-///
-/// Fields are the annotated names in definition order, excluding `ClassVar`
-/// entries. A field has a default when the class namespace binds its name (i.e.
-/// `y: int = 5` created a class variable); that value is captured here and owned
-/// by the metadata from then on.
+/// Builds [`DataclassMeta`] for `class_id` from its `__annotations__`: the
+/// annotated names in definition order, minus `ClassVar` entries, each owning
+/// the default the class namespace bound for it (`y: int = 5`).
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
 /// (see `limitations/dataclasses.md`).
 fn build_dataclass_meta(vm: &mut VM<'_>, class_id: HeapId) -> RunResult<DataclassMeta> {
-    // Field validation runs first so that any class CPython would reject reports
-    // CPython's own message; the Monty-only guards below can then only fire for
-    // a class CPython accepts.
+    // Field validation runs first, so a class CPython would reject reports
+    // CPython's own message and the Monty-only guards can only fire after.
     let fields = collect_annotated_fields(vm, class_id);
     // `fields` owns a reference per captured default: release them if rejected.
     let meta = DataclassMeta { fields };
@@ -173,11 +169,11 @@ fn reject_unsupported_members(vm: &VM<'_>, class_id: HeapId) -> RunResult<()> {
     }
 }
 
-/// Collects the dataclass fields from `__annotations__`, in definition order.
+/// Collects the dataclass fields from `__annotations__`, in definition order,
+/// dropping `ClassVar` entries.
 ///
-/// `ClassVar` entries are dropped here; every other annotated name becomes a
-/// field. Holds only immutable heap borrows and returns no heap references, so
-/// the caller is free to take `&mut VM` for the validation pass.
+/// Each captured default is an owned reference from here on, so a caller that
+/// discards the result must release them ([`drop_captured_defaults`]).
 fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return Vec::new();
@@ -269,10 +265,9 @@ fn first_non_default_after_default(fields: &[DataclassField]) -> Option<(StringI
 /// Whether a stringized annotation denotes `typing.ClassVar`, so the field is
 /// excluded.
 ///
-/// Detection is textual, where CPython resolves a string annotation through the
-/// defining module's namespace. It therefore neither checks that `ClassVar` is
-/// imported nor which module a dotted spelling refers to — both divergences are
-/// recorded in `limitations/dataclasses.md`.
+/// Detection is textual where CPython resolves the annotation through the
+/// defining module, so neither the import nor a dotted spelling's module is
+/// checked — both divergences are in `limitations/dataclasses.md`.
 fn is_classvar(annotation: &str) -> bool {
     annotation_head(annotation, "ClassVar")
 }
@@ -314,8 +309,8 @@ pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
 /// Constructs a dataclass instance by binding `args` to the recorded fields.
 ///
 /// No bytecode is generated: arguments bind natively as CPython's synthesized
-/// `__init__(self, f1, f2=default, ...)` would, with defaults read from the class
-/// namespace. Called from `instantiate_class`; drops the instance on error.
+/// `__init__(self, f1, f2=default, ...)` would, filling unbound fields from the
+/// defaults captured at decoration time. Drops the instance on error.
 pub(crate) fn dataclass_init(
     vm: &mut VM<'_>,
     class_id: HeapId,
@@ -375,10 +370,10 @@ pub(crate) fn dataclass_init(
 /// path leaks a refcount. The instance is untouched; the caller owns it.
 ///
 /// TODO(dataclass-keywords): a third binder alongside `args::bind_native` and
-/// `args::bind_python`, all three reproducing the same CPython error wording and
-/// able to drift. Fold into `Signature::bind` when the `@dataclass(...)` keyword
-/// form lands — not a drop-in, as that fills a `&mut Vec<Value>` from `&[Value]`
-/// defaults where this needs owned values and lazy namespace lookup.
+/// `args::bind_python`, all three reproducing CPython's error wording and able
+/// to drift. Fold into `Signature::bind` when the `@dataclass(...)` keyword form
+/// lands — not a drop-in, as that fills a `&mut Vec<Value>` from `&[Value]`
+/// defaults where this needs owned clones of the captured ones.
 fn bind_dataclass_fields(
     vm: &mut VM<'_>,
     class_id: HeapId,
@@ -511,14 +506,12 @@ fn bind_dataclass_fields(
 }
 
 /// Field-wise `__eq__`: equal only to the *same* dataclass with equal fields.
-/// Any other operand is `NotImplemented` (`Ok(None)`), so the caller falls back
-/// to identity.
+/// Any other operand is `NotImplemented` (`Ok(None)`), leaving the caller on
+/// identity.
 ///
-/// Mirrors CPython 3.14's generated `self.a == other.a and self.b == other.b`:
+/// Mirrors CPython 3.14's generated `self.a == other.a and self.b == other.b` —
 /// left to right, stopping at the first unequal pair, each compared with the
-/// `==` *operator* rather than container equality (so a field whose `__eq__`
-/// always returns `False` makes two dataclasses unequal even when it is the
-/// same object on both sides).
+/// `==` *operator* rather than container equality.
 pub(crate) fn dataclass_eq(
     self_id: HeapId,
     field_names: &[StringId],
@@ -582,10 +575,9 @@ pub(crate) fn dataclass_repr_fmt(
 ) -> RunResult<()> {
     let class_id = instance_class(self_id, vm);
     let name = class_name(class_id, vm.heap, vm.interns).to_string();
-    // CPython's generated `__repr__` reads each field as an attribute, so one
-    // that resolves nowhere raises. Every field is resolved before anything is
-    // written, so such a class emits no partial repr (CPython builds the whole
-    // f-string before returning too).
+    // The generated `__repr__` reads each field as an attribute, so one that
+    // resolves nowhere raises — resolved up front, before anything is written,
+    // so no partial repr is emitted.
     let mut values: Vec<Value> = Vec::with_capacity(field_names.len());
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
@@ -611,8 +603,8 @@ pub(crate) fn dataclass_repr_fmt(
 /// Returns the `HeapId` of a dataclass instance's class object.
 ///
 /// # Panics
-/// If `self_id` is not an `Instance` — every caller reaches this having already
-/// established that (it is how the dataclass dispatch was chosen).
+/// If `self_id` is not an `Instance` — being one is how the caller chose this
+/// dispatch in the first place.
 fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
     match vm.heap.get(self_id) {
         HeapData::Instance(inst) => inst.class(),

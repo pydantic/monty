@@ -32,14 +32,11 @@ default_factory`), and so is a non-default field after a defaulted one
 
 ## Divergences from CPython
 
-- **Annotations are stringized.** A dataclass derives its fields from the
-  class's `__annotations__`, which Monty stores as **source-text strings**
-  (always PEP 563), never evaluated — Monty cannot evaluate parameterized type
-  expressions like `list[int]` at runtime. See
-  [typing.md](typing.md#class-annotations-are-stringized). This matches CPython
-  under `from __future__ import annotations`; field discovery and the generated
-  methods are unaffected (the field *type* is inert metadata), but
-  `fields(C)[i].type` will be a string, not a type object.
+- **Annotations are stringized.** Fields come from the class's
+  `__annotations__`, which Monty stores as never-evaluated source text (always
+  PEP 563) — see [typing.md](typing.md#class-annotations-are-stringized). Field
+  discovery and the generated methods are unaffected, the field *type* being
+  inert metadata, but `fields(C)[i].type` would be a string, not a type object.
 - **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
   annotation text (bare, dotted, subscripted, or quoted) without checking that
   the name is actually imported, where CPython resolves a *string* annotation
@@ -47,23 +44,13 @@ default_factory`), and so is a non-default field after a defaulted one
   `ClassVar` in scope is excluded by Monty but is an ordinary field to CPython.
   Conversely any dotted spelling matches, so a same-named attribute on an
   unrelated module (`mymod.ClassVar`) is treated as `typing.ClassVar`.
-- **A mutable default is rejected by hashability, as in CPython**, including an
-  instance of a class that sets `__hash__ = None` or defines `__eq__`. The
-  divergences in how `__eq__`/`__hash__` themselves behave are in
-  [classes.md](classes.md).
-- **A function-valued default renders as `<bound method>` in `repr`.** The
-  synthesized `__repr__`/`__eq__` read fields as `self.field` does, so a field
-  left unset by a class-body `__init__` falls back to the class attribute and a
-  function there binds as a method — matching CPython, except that Monty renders
-  every bound method as the bare `<bound method>` (see
-  [classes.md](classes.md)). Equality is unaffected: each read binds afresh, so
-  two such instances are unequal in both.
+- **A field holding a function or bound method reprs differently**, since
+  Monty's own `repr` for those differs (see [classes.md](classes.md)). Only the
+  text differs; the value and its equality match CPython.
 - **A class-body `__setattr__` never runs for the synthesized `__init__`**,
-  which writes fields straight into the instance `__dict__`. This is the
-  general never-dispatched attribute hook documented in
-  [classes.md](classes.md), not a dataclass-specific gap — a hand-written
-  `__init__` on an ordinary class bypasses it identically — so `@dataclass`
-  does not reject it.
+  which writes fields straight into the instance `__dict__`. Not a
+  dataclass-specific gap — the never-dispatched attribute hook of
+  [classes.md](classes.md) — so `@dataclass` does not reject it.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
   `TypeError: dataclass() should be called on a class, not '<type>'`. CPython
   instead raises an incidental `AttributeError` about `__module__` from its

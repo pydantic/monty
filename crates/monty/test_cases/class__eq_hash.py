@@ -42,8 +42,8 @@ class EqHash:
 
 
 # === __hash__ alongside __eq__ restores hashability ===
-assert hash(EqHash(1)) == hash(EqHash(1)), 'equal objects hash equally'
-assert hash(EqHash(1)) == hash(1), 'the user hash is the one used'
+assert hash(EqHash(1)) == hash(EqHash(1))
+assert hash(EqHash(1)) == hash(1)
 
 # === Equal + hashable objects collapse in sets and match as dict keys ===
 assert len({EqHash(1), EqHash(1)}) == 1
@@ -52,10 +52,10 @@ assert {EqHash(1): 'x'}[EqHash(1)] == 'x'
 assert EqHash(1) in {EqHash(1): 'x'}
 
 # === __eq__ drives containment and equality of containers ===
-assert Eq(1) in [Eq(2), Eq(1)], 'list containment uses __eq__'
+assert Eq(1) in [Eq(2), Eq(1)]
 assert Eq(3) not in [Eq(2), Eq(1)]
-assert [Eq(1), Eq(2)] == [Eq(1), Eq(2)], 'list equality is element-wise'
-assert (Eq(1),) == (Eq(1),), 'tuple equality is element-wise'
+assert [Eq(1), Eq(2)] == [Eq(1), Eq(2)]
+assert (Eq(1),) == (Eq(1),)
 
 
 # === __hash__ = None opts out explicitly ===
@@ -77,7 +77,7 @@ class Plain:
 
 
 p = Plain(1)
-assert p == p, 'identity equality'
+assert p == p
 assert not (Plain(1) == Plain(1)), 'distinct instances are unequal without __eq__'
 assert isinstance(hash(p), int), 'hashable by identity'
 
@@ -91,7 +91,7 @@ class DC:
         return True
 
 
-assert DC(1) == DC(2), 'the user __eq__ wins over field-wise equality'
+assert DC(1) == DC(2)
 try:
     hash(DC(1))
     assert False, 'expected unhashable'
@@ -123,8 +123,8 @@ class Never:
 
 never = Never()
 assert not (never == never), 'the operator dispatches __eq__ against self'
-assert never != never, '!= is still the negation of __eq__'
-assert never in [never], 'containment shortcuts on identity'
+assert never != never
+assert never in [never]
 assert [never] == [never]
 assert (never,) == (never,)
 assert {'k': never} == {'k': never}

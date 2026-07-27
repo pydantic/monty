@@ -295,20 +295,18 @@ impl<'h> PyTrait<'h> for Value {
                 _ => None,
             }),
             Self::Ref(id) => {
-                // Dispatched ahead of the identity check because CPython lets a
-                // user `__eq__` decide `x == x` too. Handled here rather than in
-                // `HeapRead<Instance>` because it needs the `HeapId` for `self`.
+                // Both instance dispatches happen here, not in
+                // `HeapRead<Instance>`, because they need the `HeapId` for `self`.
+                // A user `__eq__` precedes the identity check (CPython lets it
+                // decide `x == x` too); the dataclass one follows it, as
+                // CPython's synthesized `__eq__` opens with `if self is other`.
                 if let Some(result) = instance_user_eq(*id, other, vm)? {
                     Ok(Some(result))
                 } else if let Self::Ref(other_id) = other
                     && id == other_id
                 {
-                    // The `self is other` shortcut opening CPython's synthesized
-                    // dataclass `__eq__`, so it precedes field-wise comparison.
                     Ok(Some(true))
                 } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
-                    // Field-wise dataclass equality, likewise `HeapId`-dependent:
-                    // its fields are read as `self.field` is.
                     Ok(Some(result))
                 } else {
                     vm.heap.read(*id).py_eq_impl(other, vm)
@@ -482,9 +480,9 @@ impl<'h> PyTrait<'h> for Value {
                 } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
                     // Handled here, not at the heap level, because dispatch needs
                     // the heap id for `self`. A user `__repr__` recurses on the
-                    // *Rust* stack (see the "Recursive/deep `__repr__`" divergence
-                    // in limitations/classes.md); the synthesized dataclass form
-                    // instead carries `heap_ids`, so cycles hit the branch above.
+                    // *Rust* stack (see limitations/classes.md); the synthesized
+                    // dataclass form carries `heap_ids`, so a cycle in one hits
+                    // the branch above.
                     instance_repr_fmt(*id, f, vm, heap_ids)
                 } else {
                     heap_ids.insert(*id);
@@ -1396,10 +1394,9 @@ impl Value {
     /// Implements CPython's reflected comparison protocol on top of the
     /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
     /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
-    /// operand's type recognises the other, the values are unequal. Per-type
+    /// operand's type recognises the other, the values are unequal; per-type
     /// `py_eq_impl` impls never drive reflection themselves. Unlike
-    /// [`py_eq`](Self::py_eq) there is no identity shortcut, so a user
-    /// `__eq__` still decides `x == x`.
+    /// [`py_eq`](Self::py_eq) there is no identity shortcut.
     pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if let Some(result) = self.py_eq_impl(other, vm)? {
             Ok(result)

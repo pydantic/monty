@@ -15,8 +15,8 @@ class Point:
 # === Construction: positional, keyword, mixed ===
 p = Point(1, 2)
 assert p.x == 1 and p.y == 2, 'positional construction sets fields'
-assert Point(10, y=20).y == 20, 'mixed positional + keyword'
-assert Point(x=5, y=6).x == 5, 'all-keyword construction'
+assert Point(10, y=20).y == 20
+assert Point(x=5, y=6).x == 5
 
 
 # === Defaults ===
@@ -27,11 +27,11 @@ class WithDefault:
     c: str = 'hi'
 
 
-assert WithDefault(1).b == 5, 'default used when field omitted'
-assert WithDefault(1).c == 'hi', 'string default used when omitted'
-assert WithDefault(1, 2).b == 2, 'positional argument overrides default'
-assert WithDefault(1, c='x').c == 'x', 'keyword overrides default, others still default'
-assert WithDefault(1, b=9).b == 9, 'keyword override with later field defaulted'
+assert WithDefault(1).b == 5
+assert WithDefault(1).c == 'hi'
+assert WithDefault(1, 2).b == 2
+assert WithDefault(1, c='x').c == 'x'
+assert WithDefault(1, b=9).b == 9
 
 
 # === ClassVar is excluded from the constructor ===
@@ -41,8 +41,8 @@ class WithClassVar:
     count: ClassVar[int] = 0
 
 
-assert WithClassVar(7).x == 7, 'ClassVar is not a constructor field'
-assert WithClassVar.count == 0, 'ClassVar remains an ordinary class attribute'
+assert WithClassVar(7).x == 7
+assert WithClassVar.count == 0
 
 
 # A dotted spelling is excluded too, and a dotted *type argument*
@@ -58,8 +58,9 @@ class ClassVarSpellings:
 
 
 assert repr(ClassVarSpellings(7)) == 'ClassVarSpellings(x=7)'
-assert ClassVarSpellings.dotted == 3, 'dotted ClassVar stays a class attribute'
-assert ClassVarSpellings.dotted_arg == {}, 'a ClassVar may hold a mutable value'
+# Both stay class attributes — and a ClassVar, being no field, may be mutable.
+assert ClassVarSpellings.dotted == 3
+assert ClassVarSpellings.dotted_arg == {}
 
 
 # === Errors: messages match CPython exactly ===

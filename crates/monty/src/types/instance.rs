@@ -86,12 +86,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         None
     }
 
-    /// Always `NotImplemented` (`Ok(None)`), leaving the caller on identity.
-    ///
-    /// Every real instance comparison — a user `__eq__`, the synthesized
-    /// dataclass one — needs the instance's `HeapId` to dispatch, which this
-    /// signature does not carry, so both happen at the `Value` level in
-    /// [`Value::py_eq_impl`](crate::value::Value).
+    /// Always `NotImplemented` (`Ok(None)`), leaving the caller on identity: both
+    /// real comparisons (a user `__eq__`, the synthesized dataclass one) need the
+    /// `HeapId` this signature lacks, so they dispatch at the `Value` level.
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
@@ -120,11 +117,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     /// The best-effort `<ClassName object>` default, never the real `repr`.
     ///
-    /// Every form that distinguishes instances — a user `__repr__`/`__str__`, the
-    /// synthesized dataclass one — needs the `HeapId` to pass `self`, so all of
-    /// it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt` routes every
-    /// instance through. This impl is only the floor under a heap-level `repr`
-    /// reached without a `Value`.
+    /// Every form that distinguishes instances needs the `HeapId` to pass `self`,
+    /// so all of it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt`
+    /// routes every instance through; this is only the floor under a heap-level
+    /// `repr` reached without a `Value`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let class_id = self.get(vm.heap).class();
         Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
@@ -394,9 +390,8 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// `AttributeError` to the caller.
 ///
 /// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
-/// exactly as `self.field` does — including binding a function-valued class
-/// member as a [`BoundMethod`], which is why this needs `self_id` and can
-/// allocate (and so returns `RunResult`).
+/// exactly as `self.field` does, binding a function-valued class member as a
+/// [`BoundMethod`] — which is why this allocates, and so is fallible.
 pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
         && let Some(value) = inst
@@ -432,12 +427,11 @@ pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value
     Ok(allocate_string(s, vm.heap)?)
 }
 
-/// Writes an instance's `repr` into `f`, carrying the caller's cycle set.
+/// Writes an instance's `repr` into `f`: a user `__repr__` wins, then the
+/// synthesized dataclass form, then the `<Foo object at 0x..>` default.
 ///
-/// A user `__repr__` wins, then the synthesized dataclass form, then the
-/// `<Foo object at 0x..>` default. The dataclass form registers the instance in
-/// `heap_ids` for its duration, so a field pointing back renders `...` — which
-/// is why the caller's set is threaded through rather than a fresh one made.
+/// The dataclass form registers the instance in the *caller's* `heap_ids` for
+/// its duration, so a field pointing back renders `...` rather than nesting.
 pub(crate) fn instance_repr_fmt(
     self_id: HeapId,
     f: &mut impl Write,
@@ -657,9 +651,8 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
 /// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
 /// `Ok(None)` when `self_id` is not one, which leaves the caller on identity.
 ///
-/// Lives here rather than in `HeapRead<Instance>::py_eq_impl` because the fields
-/// are read as `self.field` is — see [`instance_attr`] — which needs the
-/// instance's `HeapId`.
+/// Not in `HeapRead<Instance>::py_eq_impl` because fields are read as
+/// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
 pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
     if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
         return Ok(None);
