@@ -415,11 +415,7 @@ pub(crate) fn instance_str(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value>
 /// — so a `__contains__` returning a user object with a false `__bool__` /
 /// `__len__` diverges from CPython's `PyObject_IsTrue` (see
 /// `limitations/classes.md`).
-pub(crate) fn instance_contains(
-    self_id: HeapId,
-    item: &Value,
-    vm: &mut VM<'_>,
-) -> RunResult<Option<bool>> {
+pub(crate) fn instance_contains(self_id: HeapId, item: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
     let class_id = instance_class(self_id, vm);
     if matches!(class_dunder(class_id, "__contains__", vm), Some(Value::None)) {
         return Err(ExcType::type_error_object_not_container(&class_name(
@@ -448,11 +444,7 @@ pub(crate) fn instance_contains(
 /// re-enters the VM on the *Rust* stack; `evaluate_function`'s re-entry guard
 /// bounds it with a catchable `RecursionError` — lower than CPython's depth for
 /// deep-but-finite chains, a documented divergence (`limitations/classes.md`).
-fn instance_call_str_dunder(
-    self_id: HeapId,
-    dunder: &'static str,
-    vm: &mut VM<'_>,
-) -> RunResult<Option<Value>> {
+fn instance_call_str_dunder(self_id: HeapId, dunder: &'static str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
     let Some(result) = instance_call_dunder_sync(self_id, dunder, None, vm)? else {
         return Ok(None);
     };
