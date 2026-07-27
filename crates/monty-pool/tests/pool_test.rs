@@ -13,8 +13,8 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-use monty::{MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_types::{MontyObject, PrintStream, ResourceLimits};
 
 /// Locates (building once if needed) the `monty` CLI binary for tests.
 fn monty_binary() -> PathBuf {
@@ -925,7 +925,7 @@ fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .unwrap();
@@ -985,7 +985,7 @@ fn suspension_time_does_not_consume_the_duration_budget() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(300))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(300))),
             ..ReplConfig::default()
         })
         .unwrap();
@@ -1014,7 +1014,7 @@ fn loaded_session_keeps_its_duration_budget() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .unwrap();

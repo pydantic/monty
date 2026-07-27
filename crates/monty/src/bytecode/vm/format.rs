@@ -9,12 +9,12 @@ use crate::{
         ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec, validate_string_spec,
     },
     heap::HeapReadOutput,
-    resource::{ResourceTracker, check_repeat_size},
+    resource_checks::check_repeat_size,
     types::{PyTrait, date::format_date_strftime, datetime::format_datetime_strftime, str::allocate_string},
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let this = self;
@@ -206,7 +206,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// `String`, dropping the value's heap reference on every path. Used by the
 /// f-string conversion arms, which need the text in an owned buffer to feed
 /// the mini-language formatter.
-fn str_value_into_string(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<String, RunError> {
+fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
     defer_drop!(value, vm);
     Ok(value.to_str(vm)?.to_owned())
 }

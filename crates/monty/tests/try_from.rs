@@ -1,4 +1,5 @@
-use monty::{CompileOptions, MontyRun};
+use monty::MontyRun;
+use monty_types::CompileOptions;
 
 /// Tests for successful TryFrom conversions from Python values to Rust types.
 ///

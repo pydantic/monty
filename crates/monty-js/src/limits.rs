@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use monty::{ResourceLimits, DEFAULT_MAX_RECURSION_DEPTH};
+use monty_types::ResourceLimits;
 use napi::{Error, Result, Status};
 use napi_derive::napi;
 
@@ -17,8 +17,6 @@ use napi_derive::napi;
 #[napi(object, js_name = "ResourceLimits")]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JsResourceLimits {
-    /// Maximum number of heap allocations allowed.
-    pub max_allocations: Option<f64>,
     /// Maximum execution time in seconds.
     pub max_duration_secs: Option<f64>,
     /// Maximum heap memory in bytes.
@@ -38,17 +36,16 @@ pub struct JsResourceLimits {
 /// `usize` or for invalid duration values rejected by
 /// `std::time::Duration::try_from_secs_f64`.
 pub fn extract_limits(js_limits: JsResourceLimits) -> Result<ResourceLimits> {
+    let mut limits = ResourceLimits::default();
+
     let max_recursion_depth = js_limits
         .max_recursion_depth
         .map(|v| js_number_to_usize(v, "maxRecursionDepth"))
-        .transpose()?
-        .or(Some(DEFAULT_MAX_RECURSION_DEPTH));
-
-    let mut limits = ResourceLimits::new().max_recursion_depth(max_recursion_depth);
-
-    if let Some(max) = js_limits.max_allocations {
-        limits = limits.max_allocations(js_number_to_usize(max, "maxAllocations")?);
+        .transpose()?;
+    if let Some(max_recursion_depth) = max_recursion_depth {
+        limits = limits.max_recursion_depth(max_recursion_depth);
     }
+
     if let Some(secs) = js_limits.max_duration_secs {
         limits = limits.max_duration(
             Duration::try_from_secs_f64(secs).map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?,

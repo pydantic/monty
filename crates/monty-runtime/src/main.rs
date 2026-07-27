@@ -7,11 +7,12 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use monty::{
-    CompileOptions, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
-    ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
-};
+use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{
+    CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
+    ResourceTracker,
+};
 use rustyline::{DefaultEditor, error::ReadlineError};
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
@@ -63,10 +64,6 @@ struct Cli {
     /// `write_limit_bytes` is optional and applies to all write modes.
     #[arg(short = 'm', long = "mount")]
     mounts: Vec<String>,
-
-    /// Maximum number of heap allocations before execution is terminated.
-    #[arg(long)]
-    max_allocations: Option<usize>,
 
     /// Maximum execution time in seconds (e.g. `0.5` for 500ms).
     #[arg(long)]
@@ -126,8 +123,7 @@ impl Cli {
     /// `--max-duration` that fails `Duration::try_from_secs_f64`) would be
     /// swallowed and let an invalid flag slip past the conflict guard.
     fn any_resource_limit_flag(&self) -> bool {
-        self.max_allocations.is_some()
-            || self.max_duration.is_some()
+        self.max_duration.is_some()
             || self.max_memory.is_some()
             || self.gc_interval.is_some()
             || self.max_recursion_depth.is_some()
@@ -135,18 +131,11 @@ impl Cli {
 
     /// Builds `ResourceLimits` from the parsed CLI arguments.
     ///
-    /// Returns `Ok(None)` when no resource flags were provided, which lets the
-    /// caller fall back to `NoLimitTracker` for zero-overhead execution.
+    /// When no resource flags were provided, returns the default
+    /// recursion-only limits (`ResourceLimits::default()`).
     /// Returns `Err` if a supplied flag cannot be converted into a valid limit.
-    fn resource_limits(&self) -> Result<Option<ResourceLimits>, String> {
-        if !self.any_resource_limit_flag() {
-            return Ok(None);
-        }
-
-        let mut limits = ResourceLimits::new();
-        if let Some(n) = self.max_allocations {
-            limits = limits.max_allocations(n);
-        }
+    fn resource_limits(&self) -> Result<ResourceLimits, String> {
+        let mut limits = ResourceLimits::default();
         if let Some(secs) = self.max_duration {
             limits = limits.max_duration(
                 Duration::try_from_secs_f64(secs).map_err(|err| format!("invalid --max-duration: {err}"))?,
@@ -159,9 +148,9 @@ impl Cli {
             limits = limits.gc_interval(interval);
         }
         if let Some(depth) = self.max_recursion_depth {
-            limits = limits.max_recursion_depth(Some(depth));
+            limits = limits.max_recursion_depth(depth);
         }
-        Ok(Some(limits))
+        Ok(limits)
     }
 }
 
@@ -227,42 +216,26 @@ fn main() -> ExitCode {
     dispatch_repl("repl.py", "", limits, mount_table)
 }
 
-/// Dispatches script execution with either `LimitedTracker` or `NoLimitTracker`.
-///
-/// This top-level branch avoids threading generics through the entire call chain
-/// while still keeping the zero-overhead `NoLimitTracker` path when no limits are set.
+/// Builds the tracker from the CLI resource limits and runs the script.
 fn dispatch_script(
     file_path: &str,
     code: String,
     type_check_enabled: bool,
-    limits: Option<ResourceLimits>,
+    limits: ResourceLimits,
     mount_table: Option<MountTable>,
 ) -> ExitCode {
-    if let Some(limits) = limits {
-        run_script(
-            file_path,
-            code,
-            type_check_enabled,
-            LimitedTracker::new(limits),
-            mount_table,
-        )
-    } else {
-        run_script(file_path, code, type_check_enabled, NoLimitTracker, mount_table)
-    }
+    run_script(
+        file_path,
+        code,
+        type_check_enabled,
+        ResourceTracker::new(limits),
+        mount_table,
+    )
 }
 
-/// Dispatches REPL startup with either `LimitedTracker` or `NoLimitTracker`.
-fn dispatch_repl(
-    file_path: &str,
-    code: &str,
-    limits: Option<ResourceLimits>,
-    mount_table: Option<MountTable>,
-) -> ExitCode {
-    if let Some(limits) = limits {
-        run_repl(file_path, code, LimitedTracker::new(limits), mount_table)
-    } else {
-        run_repl(file_path, code, NoLimitTracker, mount_table)
-    }
+/// REPL analog of [`dispatch_script`].
+fn dispatch_repl(file_path: &str, code: &str, limits: ResourceLimits, mount_table: Option<MountTable>) -> ExitCode {
+    run_repl(file_path, code, ResourceTracker::new(limits), mount_table)
 }
 
 /// Executes a Python file in one-shot CLI mode.
@@ -278,7 +251,7 @@ fn run_script(
     file_path: &str,
     code: String,
     type_check_enabled: bool,
-    tracker: impl ResourceTracker,
+    tracker: ResourceTracker,
     mut mount_table: Option<MountTable>,
 ) -> ExitCode {
     if type_check_enabled {
@@ -375,12 +348,7 @@ fn run_script(
 ///
 /// Returns `ExitCode::SUCCESS` on EOF or `exit`, and `ExitCode::FAILURE` on
 /// initialization or I/O errors.
-fn run_repl(
-    file_path: &str,
-    code: &str,
-    tracker: impl ResourceTracker,
-    mut mount_table: Option<MountTable>,
-) -> ExitCode {
+fn run_repl(file_path: &str, code: &str, tracker: ResourceTracker, mut mount_table: Option<MountTable>) -> ExitCode {
     let mut repl = Some(MontyRepl::new(file_path, tracker, CompileOptions::default()));
 
     if !code.is_empty() {
@@ -467,13 +435,9 @@ fn run_repl(
 /// When mounts are configured, uses `feed_start()` + a progress loop to intercept
 /// `OsCall`s. Otherwise uses the simpler `feed_run()` path.
 ///
-/// Takes `&mut Option<MontyRepl<T>>` because `feed_start` consumes the repl —
+/// Takes `&mut Option<MontyRepl>` because `feed_start` consumes the repl —
 /// we `take()` it out, run to completion, then put it back.
-fn execute_repl_snippet(
-    repl: &mut Option<MontyRepl<impl ResourceTracker>>,
-    snippet: &str,
-    mount_table: &mut Option<MountTable>,
-) {
+fn execute_repl_snippet(repl: &mut Option<MontyRepl>, snippet: &str, mount_table: &mut Option<MountTable>) {
     let r = repl.take().expect("repl must be present");
 
     if mount_table.is_some() {
@@ -511,11 +475,11 @@ fn execute_repl_snippet(
 /// Returns `Ok((repl, value))` on success, or `Err((repl, message))` on failure.
 /// The repl is always returned so the caller can continue the session.
 #[expect(clippy::result_large_err)]
-fn execute_repl_with_mounts<T: ResourceTracker>(
-    r: MontyRepl<T>,
+fn execute_repl_with_mounts(
+    r: MontyRepl,
     snippet: &str,
     mount_table: &mut Option<MountTable>,
-) -> Result<(MontyRepl<T>, MontyObject), (MontyRepl<T>, String)> {
+) -> Result<(MontyRepl, MontyObject), (MontyRepl, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
         Ok(p) => p,
         Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -556,10 +520,7 @@ fn execute_repl_with_mounts<T: ResourceTracker>(
 /// When a mount table is provided, filesystem `OsCall`s are handled via the
 /// mount table. Non-filesystem `OsCall`s and `OsCall`s without a mount table
 /// produce an error.
-fn run_until_complete(
-    mut progress: RunProgress<impl ResourceTracker>,
-    mount_table: &mut Option<MountTable>,
-) -> Result<MontyObject, String> {
+fn run_until_complete(mut progress: RunProgress, mount_table: &mut Option<MountTable>) -> Result<MontyObject, String> {
     loop {
         match progress {
             RunProgress::Complete(value) => return Ok(value),
@@ -603,7 +564,7 @@ fn run_until_complete(
 /// returns the operation result as an `ExtFunctionResult` — either a
 /// successful `MontyObject` or an exception for errors / unsupported
 /// operations.
-fn handle_os_call(call: monty::OsFunctionCall, mount_table: &mut Option<MountTable>) -> monty::ExtFunctionResult {
+fn handle_os_call(call: OsFunctionCall, mount_table: &mut Option<MountTable>) -> ExtFunctionResult {
     match mount_table.as_mut() {
         Some(mounts) => match mounts.handle_os_call(call) {
             MountCallOutcome::Handled(Ok(obj)) => obj.into(),

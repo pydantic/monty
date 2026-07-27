@@ -7,9 +7,10 @@
 //! successful read raises `current_memory()` by roughly the file size, and
 //! `close()` drops it back down.
 
-use monty::{
-    CompileOptions, ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, PrintWriter,
-    ResourceLimits,
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, ExcType, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
@@ -32,10 +33,10 @@ fn open_then_read(
     handle: MontyFileHandle,
     io_result: MontyObject,
     limits: ResourceLimits,
-) -> Result<(usize, MontyObject), monty::MontyException> {
+) -> Result<(usize, MontyObject), MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     assert_eq!(open_call.function_call.name(), "open");
@@ -49,7 +50,7 @@ fn open_then_read(
     // reading — typically a follow-up OS call inserted by the test to
     // observe state. Tests that complete immediately use `into_complete`.
     match progress {
-        monty::RunProgress::OsCall(next_call) => {
+        RunProgress::OsCall(next_call) => {
             let mem = next_call.tracker().current_memory();
             // Resume the follow-up call so the runner can finish — tests
             // typically use a no-op `Getenv` for this purpose.
@@ -59,7 +60,7 @@ fn open_then_read(
             let complete = progress.into_complete().expect("expected Complete");
             Ok((mem, complete))
         }
-        monty::RunProgress::Complete(value) => Ok((0, value)),
+        RunProgress::Complete(value) => Ok((0, value)),
         _ => panic!("unexpected progress variant"),
     }
 }
@@ -80,7 +81,7 @@ f = open('/big.txt')
 f.read(5)
 ";
     let body = "x".repeat(10_000);
-    let limits = ResourceLimits::new().max_memory(1024);
+    let limits = ResourceLimits::default().max_memory(1024);
     let result = open_then_read(
         code,
         "Path.read_text",
@@ -110,7 +111,7 @@ f.read(5)
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem_after_read, _) = open_then_read(
         code,
         "Path.read_text",
@@ -144,7 +145,7 @@ f.close()
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem_after_close, _) = open_then_read(
         code,
         "Path.read_text",
@@ -182,7 +183,7 @@ f = 0            # OpenFile becomes unreachable WITHOUT close(); refcount -> 0
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem, _) = open_then_read(
         code,
         "Path.read_text",

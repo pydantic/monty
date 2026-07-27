@@ -9,12 +9,13 @@
 //! Behavior for constructors, arithmetic, and classmethods is implemented by the
 //! corresponding runtime types.
 
+use monty_types::ResourceError;
+
 use crate::{
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
     value::Value,
 };
@@ -26,7 +27,7 @@ use crate::{
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Datetime);
 
     module.set_attr(StaticStrings::Date, Value::Builtin(Builtins::Type(Type::Date)), vm);

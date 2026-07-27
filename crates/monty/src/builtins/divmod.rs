@@ -8,9 +8,9 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     heap::HeapData,
-    resource::{ResourceTracker, check_div_size},
+    resource_checks::check_div_size,
     types::{LongInt, allocate_tuple},
     value::{Value, floor_divmod},
 };
@@ -19,7 +19,7 @@ use crate::{
 ///
 /// Returns a tuple (quotient, remainder) from integer division.
 /// Equivalent to (a // b, a % b).
-pub fn builtin_divmod(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_divmod(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (a, b) = args.get_two_args("divmod", vm.heap)?;
     let a = super::round::normalize_bool_to_int(a);
     let b = super::round::normalize_bool_to_int(b);

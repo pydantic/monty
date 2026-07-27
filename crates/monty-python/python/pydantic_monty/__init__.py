@@ -102,9 +102,6 @@ class ResourceLimits(TypedDict, total=False):
     to disable that limit.
     """
 
-    max_allocations: int | None
-    """Maximum number of heap allocations allowed."""
-
     max_duration_secs: float | None
     """Maximum execution time in seconds."""
 

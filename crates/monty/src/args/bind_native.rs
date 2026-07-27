@@ -34,10 +34,9 @@
 use std::{mem, ptr};
 
 use crate::{
-    ResourceTracker,
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::{Interns, StringId},
     value::{EitherStr, Value},
@@ -69,7 +68,7 @@ pub(crate) fn bind<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     // `spec` is passed explicitly (despite living in `bound` too) so the
     // inlined fast-path conditions constant-fold against the caller's
@@ -99,7 +98,7 @@ fn bind_slow<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let (pos, kwargs) = args.into_parts();
     let state = IterState {

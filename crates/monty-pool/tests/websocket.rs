@@ -10,9 +10,9 @@ use std::{
     time::Duration,
 };
 
-use monty::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
 use monty_proto::{decode_frame, encode_to_capped_vec, pb};
+use monty_types::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -270,7 +270,7 @@ fn duration_backstop_kills_an_unresponsive_worker() {
     let pool = Pool::new(config).expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .expect("checkout");

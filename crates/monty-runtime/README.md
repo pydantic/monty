@@ -19,8 +19,8 @@ hello world
   before executing
 - `-m` / `--mount /host/path::/virtual/path[::mode[::write_limit_bytes]]` —
   mount a host directory into the sandbox (`ro`, `rw`, or `overlay`)
-- `--max-memory 10MB`, `--max-duration 0.5`, `--max-allocations`,
-  `--max-recursion-depth`, `--gc-interval` — sandbox resource limits
+- `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
+  `--gc-interval` — sandbox resource limits
 
 ## Worker mode
 
@@ -46,6 +46,7 @@ install it directly.
 ## Monty crates
 
 - [`monty`](https://crates.io/crates/monty) — the core interpreter: Python parser, bytecode VM, and sandbox.
+- [`monty-types`](https://crates.io/crates/monty-types) — the shared boundary data types (values, exceptions, OS calls, resource limits) hosts use without linking the interpreter.
 - [`monty-fs`](https://crates.io/crates/monty-fs) — host-side filesystem mounts: maps virtual sandbox paths to real host directories.
 - [`monty-runtime`](https://crates.io/crates/monty-runtime) — the `monty` binary: REPL, file runner, and subprocess worker mode. **this crate**
 - [`monty-pool`](https://crates.io/crates/monty-pool) — an elastic pool of crash-isolated `monty` worker subprocesses.

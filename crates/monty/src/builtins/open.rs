@@ -3,21 +3,21 @@
 //! `open()` itself allocates no heap object. It validates its arguments and
 //! yields an [`OsFunction::Open`] OS call; the host performs the open-time
 //! effect (truncate / create / existence-check) and returns a
-//! [`MontyObject::FileHandle`](crate::MontyObject::FileHandle), which the
+//! [`MontyObject::FileHandle`](monty_types::MontyObject::FileHandle), which the
 //! generic resume path converts into the heap [`OpenFile`](crate::types::OpenFile)
 //! wrapper. `read()`/`write()` then delegate to full-file OS calls, so all
 //! filesystem access remains behind `OsFunction`.
 
 use std::str;
 
+use monty_types::{MontyPath, OpenCallArgs, OsFunctionCall};
+
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
-    os::{MontyPath, OpenCallArgs, OsFunctionCall},
-    resource::ResourceTracker,
     types::{PyTrait, file::FileMode},
     value::Value,
 };
@@ -31,7 +31,7 @@ use crate::{
 /// `FileNotFoundError`) for `r`/`r+` — and returns a `MontyObject::FileHandle`.
 /// The generic resume path converts that into the `OpenFile` heap wrapper, so
 /// `open()` needs no special resume handling.
-pub(crate) fn builtin_open(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let OpenArgs {
         file,
         mode,
@@ -118,7 +118,7 @@ struct OpenArgs {
 /// `PurePosixPath`. The error message mentions `os.PathLike` to match
 /// CPython, even though full PathLike support is limited to the variants
 /// listed above.
-fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_, impl ResourceTracker>) -> RunResult<&'a str> {
+fn extract_path_string<'a>(value: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
     let opt = match value {
         Value::InternString(string_id) => Some(vm.interns.get_str(*string_id)),
         Value::InternBytes(bytes_id) => decode_utf8_path(vm.interns.get_bytes(*bytes_id))?,
@@ -179,7 +179,7 @@ fn decode_utf8_path(bytes: &[u8]) -> RunResult<Option<&str>> {
 /// Non-default values raise `TypeError` ("'<name>' argument is not yet
 /// supported"). A wrong *type* (e.g. `encoding=123`) is reported as a
 /// dedicated type error so it remains diagnosable.
-fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl ResourceTracker>) -> Result<(), RunError> {
+fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_>) -> Result<(), RunError> {
     let is_default = match name {
         // CPython default is -1 (sentinel for "interpreter picks the
         // buffer size"). Monty has no buffering layer to tune.
@@ -236,7 +236,7 @@ fn validate_ignored_open_kwarg(name: &str, value: &Value, vm: &VM<'_, impl Resou
 }
 
 /// Creates the path type error used by `open()`.
-fn path_type_error(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> RunError {
+fn path_type_error(value: &Value, vm: &VM<'_>) -> RunError {
     ExcType::type_error(format!(
         "expected str, bytes or os.PathLike object, not {}",
         value.py_type_name(vm)

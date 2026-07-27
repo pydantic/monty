@@ -3,14 +3,13 @@
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     expressions::CmpOperator,
-    resource::ResourceTracker,
     types::{CmpOrder, PyTrait},
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Evaluates a comparison as a boolean without consuming its operands.
     ///
     /// Shared by fused asserts and comparison helpers that need truth rather
@@ -25,8 +24,8 @@ impl<T: ResourceTracker> VM<'_, T> {
                 let is_equal = is_equal?;
                 Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
             }
-            CmpOperator::Is => Ok(lhs.is(rhs, self)),
-            CmpOperator::IsNot => Ok(!lhs.is(rhs, self)),
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
             CmpOperator::In => rhs.py_contains(lhs, self),
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
@@ -118,7 +117,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Defines a specialized entry point for each boolean comparison opcode.
 macro_rules! compare_opcodes {
     ($($name:ident => $op:ident,)*) => {
-        impl<T: ResourceTracker> VM<'_, T> {
+        impl VM<'_> {
             $(
                 pub(super) fn $name(&mut self) -> Result<(), RunError> {
                     self.compare_op::<{ CmpOperator::$op.as_operand() }>()

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/monty",
+    "crates/monty-types",
     "crates/monty-fs",
     "crates/monty-runtime",
     "crates/monty-proto",
@@ -20,7 +21,7 @@ default-members = ["crates/monty-runtime"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
@@ -42,23 +43,34 @@ debug = true
 strip = false
 lto = false
 
+# CodSpeed benchmark builds: production codegen (fat LTO, single codegen unit
+# inherited from release) but with symbols kept so CodSpeed can build
+# flamegraphs — release's `strip = true` would discard them.
+[profile.codspeed]
+inherits = "release"
+debug = true
+strip = false
+
 [workspace.dependencies]
 # Internal crates. The `path` is used for local/workspace builds; the `version`
 # is required so the crates can be published to crates.io (`cargo publish`
 # rejects path-only dependencies). These versions MUST be kept in lockstep with
 # `workspace.package.version` above and bumped together on each release — see
 # RELEASING.md.
-monty = { path = "crates/monty", version = "0.0.19-beta.4" }
-monty-fs = { path = "crates/monty-fs", version = "0.0.19-beta.4" }
-monty-macros = { path = "crates/monty-macros", version = "0.0.19-beta.4" }
-monty-proto = { path = "crates/monty-proto", version = "0.0.19-beta.4" }
-monty-pool = { path = "crates/monty-pool", version = "0.0.19-beta.4" }
-monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.19-beta.4" }
-monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19-beta.4" }
+monty = { path = "crates/monty", version = "0.0.19" }
+monty-types = { path = "crates/monty-types", version = "0.0.19" }
+monty-fs = { path = "crates/monty-fs", version = "0.0.19" }
+monty-macros = { path = "crates/monty-macros", version = "0.0.19" }
+monty-proto = { path = "crates/monty-proto", version = "0.0.19" }
+monty-pool = { path = "crates/monty-pool", version = "0.0.19" }
+monty-type-checking = { path = "crates/monty-type-checking", version = "0.0.19" }
+monty-typeshed = { path = "crates/monty-typeshed", version = "0.0.19" }
 # ruff, ty and related crates
 ruff_python_parser = "0.0.3"
 ruff_python_stdlib = "0.0.3"
 ruff_python_ast = "0.0.3"
+ruff_python_codegen = "0.0.3"
+ruff_source_file = "0.0.3"
 ruff_text_size = "0.0.3"
 ruff_db = { version="0.0.3" ,features = ["serde"] }
 # ty_python_semantic, ty_python_core and ty_vendored are only published at 0.0.2,
@@ -99,9 +111,11 @@ num-integer = "0.1"
 pyo3 = "0.28"
 pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 # others
+chrono = { version = "0.4", features = ["serde"] }
+strum = { version = "0.27", features = ["derive"] }
 itoa = "1"
 ahash = { version = "0.8.0", features = ["serde"] }
-indexmap = { version = "2.9", features = ["serde"] }
+indexmap = "2"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 postcard = { version = "1.1", features = ["alloc"] }

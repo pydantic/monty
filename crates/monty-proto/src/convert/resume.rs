@@ -1,7 +1,7 @@
 //! Conversions for resume payloads: the parent's answers to suspension
 //! events (`ResumeCall`, `ResumeNameLookup`, `ResumeFutures`).
 
-use monty::{ExtFunctionResult, MontyException, NameLookupResult};
+use monty_types::{ExtFunctionResult, MontyException, NameLookupResult};
 
 use crate::{convert::ProtoConvertError, pb};
 

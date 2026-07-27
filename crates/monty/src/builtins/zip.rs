@@ -6,7 +6,6 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropGuard, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait, allocate_tuple, tuple::TupleVec},
     value::Value,
 };
@@ -17,7 +16,7 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// When `strict=True`, raises `ValueError` if any iterable has a different length.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
-pub fn builtin_zip(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_zip(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let ZipArgs { iterables, strict } = ZipArgs::from_args(args, vm)?;
     defer_drop_mut!(iterables, vm);
     // CPython's `strict` is truthy-checked (not strict typed), so test the raw

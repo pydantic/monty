@@ -28,7 +28,7 @@
 
 use std::{collections::HashMap, ptr};
 
-use monty::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
 

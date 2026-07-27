@@ -31,7 +31,7 @@
 
 use std::{cell::Cell, fmt::Display, ops::RangeInclusive};
 
-use monty::{
+use monty_types::{
     DictPairs, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone, MontyType,
 };
 use num_bigint::{BigInt, Sign};

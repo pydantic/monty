@@ -10,7 +10,7 @@
 
 use std::{borrow::Cow, mem};
 
-use ahash::AHashSet;
+use monty_types::{MontyException, StackFrame};
 
 use super::{
     RESERVED_MODULE_DUNDERS,
@@ -22,18 +22,19 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
-        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
-        Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CaptureSource, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier,
+        Literal, NameScope, Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     function::Function,
     intern::{Interns, StringId},
     modules::StandardLib,
     name_map::NameMap,
+    namespace::NamespaceId,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
+    source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -276,28 +277,12 @@ pub struct Compiler<'a> {
     ///   nothing is stored in the frame's locals region.
     frame_locals: u16,
 
-    /// Operand-stack offsets for comp-var slot IDs currently in scope.
+    /// Compile-time storage state for active comprehension target slots.
     ///
-    /// Indexed by the slot ID stored in the prepared `Identifier`. The value is
-    /// the absolute operand-stack offset of that comp-var (set after the
-    /// `FOR_ITER` / `UNPACK_SEQUENCE` / `LIFT_TO_TOP` chain that landed it on
-    /// the stack, by `compile_comp_target_unpack`). Used by `compile_name` for
-    /// `NameScope::CompVar` to emit `LoadLocal/W(frame_locals + offset)`.
-    ///
-    /// Pushed/truncated with each comprehension via `enter_comprehension` /
-    /// `exit_comprehension`, so sibling comps reuse slot IDs cleanly.
-    slot_offsets: Vec<u16>,
-
-    /// Slot IDs that are statically known to have been assigned at the current
-    /// emission point.
-    ///
-    /// Updated by `compile_comp_target_unpack` when it records a leaf's offset
-    /// (= the moment the comp's `for` clause has stored a value into that
-    /// slot). Read by `compile_name` for `NameScope::CompVar`: bound reads
-    /// emit `LoadLocal/W`; unbound reads (slot not yet in this set) emit
-    /// `RaiseUnboundLocal(name_id)`. The same comprehension's slots are
-    /// removed at `exit_comprehension`, so sibling comps start fresh.
-    bound_comp_slots: AHashSet<u16>,
+    /// Slot IDs are unique among nested comprehensions and reused by siblings.
+    /// Each entry records whether the target is unbound, stack-backed, or
+    /// cell-backed, together with its absolute frame-stack offset.
+    comp_slots: Vec<Option<CompSlot>>,
 
     /// Whether to compile pytest-style assert failure annotations.
     /// Propagated to nested function and class-body compilers.
@@ -371,14 +356,24 @@ struct FinallyTarget {
 /// `LiftToTop` reorders items; without simulating, the compiler couldn't tell
 /// which final operand-stack offset each comp-var leaf ends up at.
 enum SimItem<'a> {
-    /// A finalized comp-var leaf. The slot ID gets mapped to an absolute
-    /// operand-stack offset (via its position in the sim Vec) once all
-    /// unpacking has finished.
+    /// A finalized comp-var leaf. Its slot gets mapped to an absolute operand-stack
+    /// offset once all unpacking has finished.
     Leaf(u16),
     /// A value that still needs to be matched against an `UnpackTarget`
     /// (which may be a nested `Tuple`). The borrowed target tells the
     /// compiler how to drive the next UNPACK / Lift step.
     Pending(&'a UnpackTarget),
+}
+
+/// Storage selected for an active comprehension target.
+#[derive(Clone, Copy)]
+enum CompSlot {
+    /// A captured target whose stable cell has not been assigned yet.
+    UnboundCell(u16),
+    /// An uncaptured target stored directly at this frame-stack offset.
+    Value(u16),
+    /// A captured target stored in the cell at this frame-stack offset.
+    Cell(u16),
 }
 
 /// Result of module compilation: the module code and all compiled functions.
@@ -416,8 +411,7 @@ impl<'a> Compiler<'a> {
             except_handler_depth: 0,
             is_module_scope,
             frame_locals,
-            slot_offsets: Vec::new(),
-            bound_comp_slots: AHashSet::new(),
+            comp_slots: Vec::new(),
             assert_message_annotations,
         }
     }
@@ -665,7 +659,7 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise)?;
                 }
             }
-            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
                 body,
@@ -702,9 +696,26 @@ impl<'a> Compiler<'a> {
     /// 2. Creating a Function struct with the compiled Code
     /// 3. Adding the Function to the compiler's functions vector
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
-    fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
-        // Build the function object on the stack, then bind it to its name slot.
+    fn compile_function_def(
+        &mut self,
+        func_def: &PreparedFunctionDef,
+        decorators: &[ExprLoc],
+    ) -> Result<(), CompileError> {
+        // Pushed in source order so they sit below the function value: the
+        // applying calls below then run bottom-up, like CPython's `f = deco(f)`.
+        for decorator in decorators {
+            self.compile_expr(decorator)?;
+        }
+        // Build the function object on the stack...
         self.emit_make_function(func_def, "function")?;
+        // ...then apply each decorator, reversed so the bottom-most (last pushed)
+        // applies first, each located at its own decorator so a traceback pins the
+        // one that raised.
+        for decorator in decorators.iter().rev() {
+            self.code.set_location(decorator.position, None);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
+        }
+        // ...and bind the (possibly decorated) function to its name slot.
         self.compile_store(&func_def.name)?;
         Ok(())
     }
@@ -777,11 +788,23 @@ impl<'a> Compiler<'a> {
 
         // 2. Create the compiled Function and add to the vector
         let func_id = functions.len();
+        // `Function` retains the legacy numeric source metadata for serialized-code
+        // compatibility, although closure construction is fully emitted here.
+        let enclosing_slot_metadata = func_def
+            .free_var_enclosing_slots
+            .iter()
+            .map(|source| match source {
+                CaptureSource::Namespace(slot) => *slot,
+                CaptureSource::CompVar(slot) => {
+                    NamespaceId::new(usize::from(*slot)).expect("comp-var slot fits in NamespaceId")
+                }
+            })
+            .collect();
         let function = Function::new(
             func_def.name,
             func_def.signature.clone(),
             func_def.namespace_size,
-            func_def.free_var_enclosing_slots.clone(),
+            enclosing_slot_metadata,
             func_def.free_var_slots.clone(),
             func_def.cell_var_slots.clone(),
             func_def.cell_param_indices.clone(),
@@ -807,12 +830,17 @@ impl<'a> Compiler<'a> {
                 .emit_u16_u8(Opcode::MakeFunction, func_id_u16, defaults_count)?;
         } else {
             // Push captured cells from enclosing scope.
-            for &slot in &func_def.free_var_enclosing_slots {
-                // Load the cell reference from the enclosing namespace.
-                // `slot` is a `NamespaceId` bound by `check_namespace_size_u16`
-                // on the enclosing scope, so the conversion is an invariant
-                // rather than a user-input check (panic-on-failure is fine).
-                self.code.emit_load_local(slot.as_u16())?;
+            for source in &func_def.free_var_enclosing_slots {
+                let slot = match source {
+                    CaptureSource::Namespace(slot) => slot.as_u16(),
+                    CaptureSource::CompVar(slot) => match self.comp_slots.get(usize::from(*slot)).copied().flatten() {
+                        Some(CompSlot::UnboundCell(offset) | CompSlot::Cell(offset)) => offset,
+                        Some(CompSlot::Value(_)) | None => {
+                            panic!("captured comprehension cell must be active while building closure")
+                        }
+                    },
+                };
+                self.code.emit_load_local(slot)?;
             }
             // MakeClosure: func_id (u16) + defaults_count (u8) + cell_count (u8)
             self.code
@@ -1246,16 +1274,29 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::BuildFString, part_count)?;
             }
 
-            Expr::ListComp { elt, generators } => {
-                self.compile_list_comp(elt, generators)?;
+            Expr::ListComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_list_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::SetComp { elt, generators } => {
-                self.compile_set_comp(elt, generators)?;
+            Expr::SetComp {
+                elt,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_set_comp(elt, generators, captured_slots)?;
             }
 
-            Expr::DictComp { key, value, generators } => {
-                self.compile_dict_comp(key, value, generators)?;
+            Expr::DictComp {
+                key,
+                value,
+                generators,
+                captured_slots,
+            } => {
+                self.compile_dict_comp(key, value, generators, captured_slots)?;
             }
 
             Expr::Lambda { func_def } => {
@@ -1368,36 +1409,18 @@ impl<'a> Compiler<'a> {
                 // Emit local slot index — the VM reads the cell HeapId from the stack
                 self.code.emit_u16(Opcode::LoadCell, slot)
             }
-            NameScope::CompVar => {
-                // Comprehension target read. Static analysis tells us
-                // whether the corresponding `for` has stored to this slot
-                // yet in the linear emission order:
-                //
-                // - Bound (`slot ∈ bound_comp_slots`): emit a regular
-                //   `LoadLocal/W` — the comp var lives on the operand stack
-                //   at `frame_locals + offset` (set up by
-                //   `compile_comp_target_unpack` at the corresponding
-                //   FOR_ITER / UNPACK step).
-                // - Unbound: the corresponding `for` clause hasn't stored
-                //   to the slot at this point in the comp (e.g. an earlier
-                //   generator's iter references a later target). Emit
-                //   `RaiseUnboundLocal(name_id)`; the name lives in the
-                //   opcode so sibling comps with different unbound targets
-                //   each report the correct variable.
-                if self.bound_comp_slots.contains(&slot) {
-                    let absolute = self.slot_offsets[slot as usize];
-                    self.code.emit_load_local(absolute)
-                } else {
-                    self.code.emit_raise_unbound_local(ident.name_id)
-                }
-            }
+            NameScope::CompVar => match self.comp_slots.get(usize::from(slot)).copied().flatten() {
+                Some(CompSlot::Value(offset)) => self.code.emit_load_local(offset),
+                Some(CompSlot::Cell(offset)) => self.code.emit_u16(Opcode::LoadCell, offset),
+                Some(CompSlot::UnboundCell(_)) | None => self.code.emit_raise_unbound_local(ident.name_id),
+            },
         }
     }
 
     /// Compiles loading a variable in call context (e.g., `foo()` loads `foo`).
     ///
     /// For `Global` scope, emits a callable-aware load opcode that pushes
-    /// `ExtFunction(name_id)` for undefined names instead of yielding
+    /// an external function for undefined names instead of yielding
     /// `NameLookup`. This allows execution to reach `CallFunction`, which naturally
     /// yields `FunctionCall` — giving the host a chance to handle external function calls.
     ///
@@ -2741,12 +2764,15 @@ impl<'a> Compiler<'a> {
     /// ```
     ///
     /// Comprehension targets live on the operand stack as the values pushed
-    /// by `FOR_ITER` (plus unpacked sub-values). The compiler tracks each
-    /// leaf's absolute operand-stack offset in `Compiler::slot_offsets` so
-    /// that `compile_name` for `NameScope::CompVar` can emit
-    /// `LoadLocal/W(frame_locals + offset)`. Per-iteration `POP`s clean the
-    /// comp vars before the JUMP so the loop's stack discipline is preserved.
-    fn compile_list_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    /// by `FOR_ITER` (plus unpacked sub-values). Captured targets are copied
+    /// into stable cells allocated outside the loops. Per-iteration `POP`s
+    /// clean the raw values before jumping back to the loop head.
+    fn compile_list_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2756,6 +2782,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("list comp: BuildList kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2765,12 +2792,18 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::ListAppend, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
 
     /// Compiles a set comprehension: `{elt for target in iter if cond...}`
-    fn compile_set_comp(&mut self, elt: &ExprLoc, generators: &[Comprehension]) -> Result<(), CompileError> {
+    fn compile_set_comp(
+        &mut self,
+        elt: &ExprLoc,
+        generators: &[Comprehension],
+        captured_slots: &[u16],
+    ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
         }
@@ -2780,6 +2813,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("set comp: BuildSet kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, elt.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(elt)?;
@@ -2789,6 +2823,7 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 1, elt.position)?;
             compiler.code.emit_u8(Opcode::SetAdd, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
         Ok(())
     }
@@ -2799,6 +2834,7 @@ impl<'a> Compiler<'a> {
         key: &ExprLoc,
         value: &ExprLoc,
         generators: &[Comprehension],
+        captured_slots: &[u16],
     ) -> Result<(), CompileError> {
         if self.code.is_dead() {
             return Ok(());
@@ -2809,6 +2845,7 @@ impl<'a> Compiler<'a> {
             .code
             .stack_depth()
             .expect("dict comp: BuildDict kept us live, stack_depth must be Some");
+        self.enter_captured_comp_cells(captured_slots, key.position)?;
 
         self.compile_comprehension_generators(generators, 0, |compiler| {
             compiler.compile_expr(key)?;
@@ -2821,7 +2858,37 @@ impl<'a> Compiler<'a> {
             let depth = compiler.compute_append_depth(depth_after_collection, 2, key.position)?;
             compiler.code.emit_u8(Opcode::DictSetItem, depth)
         })?;
+        self.exit_captured_comp_cells(captured_slots)?;
 
+        Ok(())
+    }
+
+    /// Allocates stable cells for comprehension targets captured by nested callables.
+    fn enter_captured_comp_cells(&mut self, captured_slots: &[u16], position: CodeRange) -> Result<(), CompileError> {
+        for &slot in captured_slots {
+            self.code.emit(Opcode::BuildCell)?;
+            let offset = self
+                .code
+                .stack_depth()
+                .expect("BuildCell keeps comprehension code live")
+                .checked_sub(1)
+                .and_then(|offset| self.frame_locals.checked_add(offset))
+                .ok_or_else(|| CompileError::new("captured comprehension cell exceeds u16 stack offset", position))?;
+            let slot_index = usize::from(slot);
+            if slot_index >= self.comp_slots.len() {
+                self.comp_slots.resize(slot_index + 1, None);
+            }
+            self.comp_slots[slot_index] = Some(CompSlot::UnboundCell(offset));
+        }
+        Ok(())
+    }
+
+    /// Removes a comprehension's stable cell references while preserving its result.
+    fn exit_captured_comp_cells(&mut self, captured_slots: &[u16]) -> Result<(), CompileError> {
+        for &slot in captured_slots.iter().rev() {
+            self.code.emit(Opcode::Pop)?;
+            self.comp_slots[usize::from(slot)] = None;
+        }
         Ok(())
     }
 
@@ -2889,8 +2956,7 @@ impl<'a> Compiler<'a> {
         // FOR_ITER: pushes value, or pops iter and jumps to end on exhaustion.
         let end_jump = self.code.emit_jump(Opcode::ForIter)?;
 
-        // Unpack target — leaves the comp vars on the operand stack at offsets
-        // recorded in `self.slot_offsets`, and marks them in `bound_comp_slots`.
+        // Unpack target and record each leaf's active storage.
         let comp_var_slots = self.compile_comp_target_unpack(&generator.target)?;
 
         // Filters: any false → forward-jump to the per-iter cleanup block
@@ -2926,13 +2992,10 @@ impl<'a> Compiler<'a> {
         self.code.emit_jump_to(Opcode::Jump, loop_start)?;
         self.code.patch_jump(end_jump)?;
 
-        // Comp vars are out of scope after the loop body; clear their
-        // bound-state so a sibling comprehension that reuses the same slot
-        // IDs sees its own targets as unbound at iter-prep time.
-        // `slot_offsets` entries are simply overwritten by whoever uses the
-        // slot next, so we leave them as-is.
+        // Comp vars are out of scope after the loop body. Sibling
+        // comprehensions may reuse these slot IDs.
         for slot in &comp_var_slots {
-            self.bound_comp_slots.remove(slot);
+            self.comp_slots[usize::from(*slot)] = None;
         }
 
         Ok(())
@@ -2943,9 +3006,7 @@ impl<'a> Compiler<'a> {
     /// At entry, `FOR_ITER` has pushed the iter's value at TOS. This emits
     /// `UNPACK_SEQUENCE` / `UNPACK_EX` / `LIFT_TO_TOP` as needed (nested
     /// tuples force `LIFT_TO_TOP` to bring sub-iterables to TOS for
-    /// further unpacking) and records each leaf's absolute operand-stack
-    /// offset in `self.slot_offsets`. Also marks each leaf's slot ID in
-    /// `self.bound_comp_slots`.
+    /// further unpacking) and records each leaf's active storage.
     ///
     /// Returns the slot IDs for this target's leaves so the caller can
     /// emit a matching `POP` per leaf for per-iteration cleanup.
@@ -2958,10 +3019,7 @@ impl<'a> Compiler<'a> {
         // iter expression contained a `RaiseUnboundLocal` that terminated the
         // current code region), no bytecode emission would have any effect.
         // Return an empty slot list — `compile_comprehension_generators` then
-        // emits its `POP`s and `JUMP` in dead state (also no-ops). The
-        // comp-var slots stay out of `bound_comp_slots`, so any subsequent
-        // `CompVar` read would dispatch to `RaiseUnboundLocal` — also a
-        // no-op in dead code.
+        // emits its `POP`s and `JUMP` in dead state, which are also no-ops.
         let Some(stack_depth) = self.code.stack_depth() else {
             return Ok(Vec::new());
         };
@@ -2983,17 +3041,24 @@ impl<'a> Compiler<'a> {
                     target_position(target),
                 )
             })?;
-            let slot_idx = slot as usize;
-            if slot_idx >= self.slot_offsets.len() {
-                self.slot_offsets.resize(slot_idx + 1, 0);
-            }
-            self.slot_offsets[slot_idx] = self.frame_locals.checked_add(offset).ok_or_else(|| {
+            let value_offset = self.frame_locals.checked_add(offset).ok_or_else(|| {
                 CompileError::new(
                     "comprehension comp-var slot exceeds u16 (frame_locals + offset)",
                     target_position(target),
                 )
             })?;
-            self.bound_comp_slots.insert(slot);
+            let slot_idx = usize::from(slot);
+            if slot_idx >= self.comp_slots.len() {
+                self.comp_slots.resize(slot_idx + 1, None);
+            }
+            self.comp_slots[slot_idx] = match self.comp_slots[slot_idx] {
+                Some(CompSlot::UnboundCell(cell_offset) | CompSlot::Cell(cell_offset)) => {
+                    self.code.emit_load_local(value_offset)?;
+                    self.code.emit_u16(Opcode::StoreCell, cell_offset)?;
+                    Some(CompSlot::Cell(cell_offset))
+                }
+                Some(CompSlot::Value(_)) | None => Some(CompSlot::Value(value_offset)),
+            };
             slot_ids.push(slot);
         }
 
@@ -3962,9 +4027,7 @@ impl<'a> Compiler<'a> {
                 self.code.emit(Opcode::LoadNone)?;
                 self.compile_store(target)?;
             }
-            NameScope::CompVar => {
-                unreachable!("no syntax exists to `del` a comprehension variable")
-            }
+            NameScope::CompVar => unreachable!("no syntax exists to `del` a comprehension variable"),
         }
         Ok(())
     }
@@ -4027,7 +4090,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 

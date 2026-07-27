@@ -22,7 +22,7 @@ mod resume;
 
 use std::{error, fmt};
 
-use monty::{DictPairs, MontyObject};
+use monty_types::{DictPairs, MontyObject};
 pub use resume::future_results_from_proto;
 
 /// Why a wire value could not be converted into its monty equivalent.

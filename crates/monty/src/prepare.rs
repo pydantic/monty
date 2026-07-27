@@ -1,13 +1,14 @@
 use std::mem;
 
-use ahash::{AHashMap, AHashSet};
+use ahash::{AHashMap, AHashSet, RandomState};
+use indexmap::IndexMap;
 
 use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Signature},
     builtins::Builtins,
     expressions::{
-        AssignTarget, Callable, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, NameScope, Node,
-        PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CaptureSource, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName,
+        NameScope, Node, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
     },
     fstring::{FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -168,13 +169,11 @@ struct Prepare<'i, 'g> {
     names_used: AHashSet<StringId>,
     /// Number of comprehension-variable slots currently in use.
     ///
-    /// Allocated bottom-up as comprehension target names are encountered,
-    /// released back into the pool when the surrounding comprehension
-    /// finishes. Each allocation gets a function-wide unique slot ID; the
-    /// compiler maps that ID to an operand-stack offset at emission time
-    /// (`Compiler::slot_offsets`).
+    /// Allocated bottom-up as comprehension target names are encountered and
+    /// released when the surrounding comprehension finishes. IDs are unique
+    /// among simultaneously active comprehensions; siblings reuse them.
     comp_var_depth: u16,
-    /// Stack of comprehension-name → comp-var-slot maps for the currently active comprehensions.
+    /// Stack of comprehension-name → binding maps for currently active comprehensions.
     ///
     /// Pushed on entry to a comprehension, popped on exit. Read by `get_id`
     /// (the **expression-position** read path) before falling through to the
@@ -182,7 +181,7 @@ struct Prepare<'i, 'g> {
     /// same-named enclosing binding. Walrus and other assignment-position
     /// stores must bypass this stack (see [`Prepare::get_id_for_store_target`])
     /// so PEP 572 binding semantics are preserved.
-    comp_name_scopes: Vec<AHashMap<StringId, u16>>,
+    comp_name_scopes: Vec<CompNameScope>,
     /// True when this preparer is for a **class body** (see `prepare_class_def`).
     ///
     /// Class scope is skipped for method free-var resolution in CPython: a
@@ -204,6 +203,30 @@ struct Prepare<'i, 'g> {
     /// (see [`Self::get_id_read`]). If class bodies ever allow conditional
     /// bindings this must become a runtime-fallback opcode instead.
     bound_class_members: AHashSet<StringId>,
+}
+
+/// Insertion-ordered bindings for one active comprehension's lexical scope.
+type CompNameScope = IndexMap<StringId, CompBinding, RandomState>;
+
+/// Preparation metadata for a target in an active comprehension scope.
+#[derive(Clone, Copy)]
+struct CompBinding {
+    /// Scratch-slot identifier shared by the target and its expression reads.
+    slot: u16,
+    /// Whether a nested callable captured this target.
+    captured: bool,
+}
+
+/// Prepared parts shared by list, set, and dict comprehensions.
+struct PreparedComprehension {
+    /// Prepared generator clauses in source order.
+    generators: Vec<Comprehension>,
+    /// Prepared list/set element, absent for dict comprehensions.
+    elt: Option<ExprLoc>,
+    /// Prepared dict key and value, absent for list/set comprehensions.
+    key_value: Option<(ExprLoc, ExprLoc)>,
+    /// Captured lexical target slots in allocation order.
+    captured_slots: Vec<u16>,
 }
 
 /// Scope-specific state for [`Prepare`].
@@ -303,7 +326,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// the module global rather than capture a (non-existent) cell — e.g.
     /// `def mid(): global x; x = 1; def inner(): return x` reads the global `x`.
     fn child_enclosing_locals(&self) -> AHashSet<StringId> {
-        match &self.state {
+        let mut locals = match &self.state {
             PrepareState::Module => AHashSet::new(),
             PrepareState::Function(state) if self.is_class_scope => {
                 // Class scope is skipped for method free-var resolution (CPython):
@@ -311,14 +334,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 // from scopes *enclosing the class* — what we ourselves capture
                 // (`free_var_map`) plus what we can reach further up
                 // (`enclosing_locals`) — but must NOT see sibling methods or class
-                // variables by bare name. So we deliberately omit our own locals
-                // (`assigned_names`/`locals`), which are the class members.
-                // NOTE: both the `free_var_map` union and the `global_names`
-                // retain are defensive: the class body's free vars are names
-                // bound in enclosing scopes (already in `enclosing_locals`), and
-                // `global` statements are rejected in class bodies at parse
-                // time, so `global_names` is always empty. Kept so this arm
-                // stays correct if either parse-time restriction is lifted.
+                // variables by bare name.
                 let mut locals: AHashSet<StringId> = state.free_var_map.keys().copied().collect();
                 locals.extend(state.enclosing_locals.iter().copied());
                 locals.retain(|name| !state.global_names.contains(name));
@@ -329,47 +345,53 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 for (_, name_id) in state.locals.iter() {
                     locals.insert(name_id);
                 }
-                // `enclosing_locals` on the parent is itself the transitive
-                // union over ITS ancestors, so propagating it up keeps the
-                // closure visible at arbitrary depth.
                 locals.extend(state.enclosing_locals.iter().copied());
-                // Names this scope declares `global` are NOT capturable locals:
-                // a nested function reading such a name must resolve to the
-                // module global, not capture a (non-existent) cell.
                 locals.retain(|name| !state.global_names.contains(name));
                 locals
             }
+        };
+        // Active comprehension targets are lexical locals even at module scope.
+        // The innermost binding is selected later when the child's captures are
+        // finalized; the set only needs to tell scope analysis that capture is possible.
+        for scope in &self.comp_name_scopes {
+            locals.extend(scope.keys().copied());
         }
+        locals
     }
 
-    /// Returns the slot in THIS scope holding the cell reference for a name
-    /// captured by a just-prepared child function / lambda.
+    /// Returns the source in THIS scope holding the cell for a child capture.
     ///
-    /// Used to populate `PreparedFunctionDef::free_var_enclosing_slots`,
-    /// which the runtime walks at function-construction time to copy
-    /// cells from this frame into the child's namespace.
+    /// Used to populate `PreparedFunctionDef::free_var_enclosing_slots`, which
+    /// compilation resolves to either a namespace or comprehension stack slot.
     ///
-    /// Lookup order mirrors the bubble-up classification:
+    /// Lookup order mirrors lexical shadowing and bubble-up classification:
+    /// - The innermost active comprehension binding.
     /// - Our `cell_var_map` (we own the cell — the local belongs to us).
     /// - Our `free_var_map` (we captured the cell from further up;
     ///   it's a pass-through).
     /// - At module scope, the module globals (a top-level function's free
     ///   var must resolve to a module slot — practically unreachable
     ///   because top-level functions can't have implicit captures).
-    fn lookup_captured_slot(&self, name_id: StringId) -> NamespaceId {
+    fn lookup_captured_slot(&mut self, name_id: StringId) -> CaptureSource {
+        for scope in self.comp_name_scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(&name_id) {
+                binding.captured = true;
+                return CaptureSource::CompVar(binding.slot);
+            }
+        }
         if let PrepareState::Function(state) = &self.state {
             if let Some(&slot) = state.cell_var_map.get(&name_id) {
-                return slot;
+                return CaptureSource::Namespace(slot);
             }
             if let Some(&slot) = state.free_var_map.get(&name_id) {
-                return slot;
+                return CaptureSource::Namespace(slot);
             }
         }
         if let Some(slot) = self.globals.globals.get(name_id) {
-            return slot;
+            return CaptureSource::Namespace(slot);
         }
         let name_str = self.interner.get_str(name_id);
-        panic!("free_var '{name_str}' not found in enclosing scope's cell_var_map, free_var_map, or globals");
+        panic!("free_var '{name_str}' not found in enclosing scope's cells, comprehension targets, or globals");
     }
 
     /// Inner-to-outer scope hand-off when a just-prepared child scope reports a
@@ -391,6 +413,13 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// - Otherwise the child shouldn't have added it to `free_var_map` in
     ///   the first place; we surface a panic naming the offending variable.
     fn bubble_up_captured_name(&mut self, captured_name: StringId, position: CodeRange) -> Result<(), ParseError> {
+        for scope in self.comp_name_scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(&captured_name) {
+                binding.captured = true;
+                return Ok(());
+            }
+        }
+
         let PrepareState::Function(state) = &mut self.state else {
             return Ok(());
         };
@@ -421,9 +450,9 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// built (via [`Self::lookup_captured_slot`]). Both are ordered by the
     /// child slot so they stay index-aligned.
     fn build_free_var_slots(
-        &self,
+        &mut self,
         inner_free_var_map: AHashMap<StringId, NamespaceId>,
-    ) -> (Vec<NamespaceId>, Vec<NamespaceId>) {
+    ) -> (Vec<NamespaceId>, Vec<CaptureSource>) {
         let mut entries: Vec<_> = inner_free_var_map.into_iter().collect();
         entries.sort_by_key(|(_, inner_slot)| *inner_slot);
         let inner_slots = entries.iter().map(|(_, slot)| *slot).collect();
@@ -806,12 +835,23 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     let or_else = self.prepare_nodes(or_else)?;
                     new_nodes.push(Node::If { test, body, or_else });
                 }
-                Node::FunctionDef(RawFunctionDef {
-                    name,
-                    signature,
-                    body,
-                    is_async,
-                }) => {
+                Node::FunctionDef {
+                    def:
+                        RawFunctionDef {
+                            name,
+                            signature,
+                            body,
+                            is_async,
+                        },
+                    decorators,
+                } => {
+                    // Decorators evaluate in the enclosing scope, not the function
+                    // body, and before the name binds — so `@f def f()` sees the
+                    // previous `f`, as in CPython.
+                    let decorators = decorators
+                        .into_iter()
+                        .map(|d| self.prepare_expression(d))
+                        .collect::<Result<Vec<_>, ParseError>>()?;
                     let func = self.prepare_function_def(name, &signature, body, is_async)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
@@ -819,7 +859,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     if self.is_class_scope {
                         self.bound_class_members.insert(func.name.name_id);
                     }
-                    new_nodes.push(Node::FunctionDef(func));
+                    new_nodes.push(Node::FunctionDef { def: func, decorators });
                 }
                 Node::ClassDef {
                     name,
@@ -1116,27 +1156,32 @@ impl<'i, 'g> Prepare<'i, 'g> {
                 body: Box::new(self.prepare_expression(*body)?),
                 orelse: Box::new(self.prepare_expression(*orelse)?),
             },
-            Expr::ListComp { elt, generators } => {
-                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+            Expr::ListComp { elt, generators, .. } => {
+                let prepared = self.prepare_comprehension(generators, Some(*elt), None)?;
                 Expr::ListComp {
-                    elt: Box::new(elt.expect("list comp must have elt")),
-                    generators,
+                    elt: Box::new(prepared.elt.expect("list comp must have elt")),
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
-            Expr::SetComp { elt, generators } => {
-                let (generators, elt, _) = self.prepare_comprehension(generators, Some(*elt), None)?;
+            Expr::SetComp { elt, generators, .. } => {
+                let prepared = self.prepare_comprehension(generators, Some(*elt), None)?;
                 Expr::SetComp {
-                    elt: Box::new(elt.expect("set comp must have elt")),
-                    generators,
+                    elt: Box::new(prepared.elt.expect("set comp must have elt")),
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
-            Expr::DictComp { key, value, generators } => {
-                let (generators, _, key_value) = self.prepare_comprehension(generators, None, Some((*key, *value)))?;
-                let (key, value) = key_value.expect("dict comp must have key/value");
+            Expr::DictComp {
+                key, value, generators, ..
+            } => {
+                let prepared = self.prepare_comprehension(generators, None, Some((*key, *value)))?;
+                let (key, value) = prepared.key_value.expect("dict comp must have key/value");
                 Expr::DictComp {
                     key: Box::new(key),
                     value: Box::new(value),
-                    generators,
+                    generators: prepared.generators,
+                    captured_slots: prepared.captured_slots,
                 }
             }
             Expr::LambdaRaw {
@@ -1245,13 +1290,12 @@ impl<'i, 'g> Prepare<'i, 'g> {
     ///
     /// For list/set comprehensions, pass `elt` as Some and `key_value` as None.
     /// For dict comprehensions, pass `elt` as None and `key_value` as Some((key, value)).
-    #[expect(clippy::type_complexity)]
     fn prepare_comprehension(
         &mut self,
         generators: Vec<Comprehension>,
         elt: Option<ExprLoc>,
         key_value: Option<(ExprLoc, ExprLoc)>,
-    ) -> Result<(Vec<Comprehension>, Option<ExprLoc>, Option<(ExprLoc, ExprLoc)>), ParseError> {
+    ) -> Result<PreparedComprehension, ParseError> {
         // Per PEP 572, walrus operators inside comprehensions bind in the ENCLOSING scope.
         // Pre-register walrus targets so they exist in the enclosing namespace BEFORE the
         // comp-name scope is pushed — that way `get_id_for_store_target` resolves them
@@ -1285,7 +1329,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // remember the scratch depth so we can release this comp's slots on exit
         // (sibling comps reuse the slots; high-water mark records peak nesting).
         let saved_var_depth = self.comp_var_depth;
-        self.comp_name_scopes.push(AHashMap::new());
+        self.comp_name_scopes.push(CompNameScope::default());
 
         // PEP 709 / CPython: the FIRST generator's iter is evaluated in the
         // *enclosing* scope, before any comp shadowing — that is why
@@ -1352,13 +1396,20 @@ impl<'i, 'g> Prepare<'i, 'g> {
             None => None,
         };
 
-        // Pop the comp scope and release this comp's comp-var slots back into the pool.
-        // The high-water mark already records peak nesting, so sibling comps can reuse
-        // these slots without growing the per-frame scratch region.
-        self.comp_name_scopes.pop();
+        // The scope preserves lexical allocation order while keeping each name unique.
+        let comp_scope = self.comp_name_scopes.pop().expect("comprehension scope was pushed");
+        let captured_slots = comp_scope
+            .into_values()
+            .filter_map(|binding| binding.captured.then_some(binding.slot))
+            .collect();
         self.comp_var_depth = saved_var_depth;
 
-        Ok((prepared_generators, prepared_elt, prepared_key_value))
+        Ok(PreparedComprehension {
+            generators: prepared_generators,
+            elt: prepared_elt,
+            key_value: prepared_key_value,
+            captured_slots,
+        })
     }
 
     /// Prepares an `AssignTarget` used by chained assignments.
@@ -1437,13 +1488,10 @@ impl<'i, 'g> Prepare<'i, 'g> {
     /// Predeclares an unpack target's names as comprehension-variable slots.
     ///
     /// Called during the first pass of `prepare_comprehension`, before any
-    /// generator iter expressions are walked, so a later generator's target
-    /// shadows references to the same name in earlier generators' iters. Each
-    /// new name claims the next comp-var slot (recorded in
-    /// `comp_var_depth`) and is inserted into the current `comp_name_scopes`
-    /// frame. Subsequent reads inside the comprehension resolve through the
-    /// scope stack and emit `Load/StoreCompTarget`; outside the comprehension
-    /// the slot is unreachable.
+    /// generator iter expressions are walked, so later target names shadow
+    /// enclosing scopes. Each new lexical name claims the next comp-var slot;
+    /// repeated targets reuse it. Reads inside the comprehension resolve
+    /// through this scope, while outside it the slot is unreachable.
     fn prepare_unpack_target_for_comprehension(&mut self, target: UnpackTarget) -> Result<UnpackTarget, ParseError> {
         match target {
             UnpackTarget::Name(ident) => {
@@ -1477,28 +1525,24 @@ impl<'i, 'g> Prepare<'i, 'g> {
         }
     }
 
-    /// Allocates the next comp-var slot for `name_id`, registering it in
-    /// the topmost comp-name scope and updating the high-water mark.
+    /// Returns the comp-var slot for `name_id`, allocating it on first use.
     ///
-    /// Returns the slot index (a `u16`, matching the `Load/StoreCompTarget`
-    /// operand width). Raises a syntax error anchored to `position` if the
-    /// scratch region would exceed `u16::MAX` slots — the same overflow
-    /// behavior `alloc_slot` uses for the regular namespace.
+    /// Repeated targets in one comprehension share a slot because the whole
+    /// comprehension is one lexical scope. New slots use a `u16` operand and
+    /// report namespace overflow consistently with regular namespace slots.
     fn alloc_comp_var_slot(&mut self, name_id: StringId, position: CodeRange) -> Result<u16, ParseError> {
-        let slot = self.comp_var_depth;
-        let next = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
-        self.comp_var_depth = next;
-        // No per-slot side table for names — each `Load/StoreCompTarget`
-        // opcode carries its target's `name_id` inline. Just push the name
-        // onto the active comp scope so subsequent reads inside the
-        // comprehension can resolve to this slot.
         let top = self
             .comp_name_scopes
             .last_mut()
             .expect("alloc_comp_var_slot called outside an active comp scope");
-        top.insert(name_id, slot);
-
-        Ok(slot)
+        if let Some(binding) = top.get(&name_id) {
+            Ok(binding.slot)
+        } else {
+            let slot = self.comp_var_depth;
+            self.comp_var_depth = slot.checked_add(1).ok_or_else(|| namespace_overflow(position))?;
+            top.insert(name_id, CompBinding { slot, captured: false });
+            Ok(slot)
+        }
     }
 
     /// Prepares a function definition using a two-pass approach for correct scope resolution.
@@ -2043,11 +2087,11 @@ impl<'i, 'g> Prepare<'i, 'g> {
         // path that bypasses the comp scope (see `get_id_for_store_target`),
         // so this lookup is read-only-safe.
         for scope in self.comp_name_scopes.iter().rev() {
-            if let Some(&slot) = scope.get(&name_id) {
+            if let Some(binding) = scope.get(&name_id) {
                 return Ok(Identifier::new_with_scope(
                     name_id,
                     position,
-                    NamespaceId::new(usize::from(slot)).expect("comp-var slot fits in NamespaceId"),
+                    NamespaceId::new(usize::from(binding.slot)).expect("comp-var slot fits in NamespaceId"),
                     NameScope::CompVar,
                 ));
             }
@@ -2176,7 +2220,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
 /// compiler needs to emit `MakeFunction`/`MakeClosure` and install cells at
 /// call time; see [`crate::function::Function`] for their meaning.
 struct FinalizedScope {
-    free_var_enclosing_slots: Vec<NamespaceId>,
+    free_var_enclosing_slots: Vec<CaptureSource>,
     free_var_slots: Vec<NamespaceId>,
     cell_var_slots: Vec<NamespaceId>,
     cell_param_indices: Vec<Option<usize>>,
@@ -2419,10 +2463,17 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        Node::FunctionDef(RawFunctionDef { name, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { name, .. },
+            decorators,
+        } => {
             // Function definition creates a local binding for the function name
             // But we don't recurse into the function body - that's a separate scope
             assigned_names.insert(name.name_id);
+            // Decorators evaluate in *this* scope, so a walrus in one binds here.
+            for decorator in decorators {
+                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+            }
         }
         Node::ClassDef { name, decorators, .. } => {
             // A class definition binds the class name in this scope, just like a `def`.
@@ -2577,7 +2628,7 @@ fn collect_assigned_names_from_expr(
             collect_assigned_names_from_expr(orelse, assigned_names, interner);
         }
         // Per PEP 572, walrus in comprehensions assigns to the ENCLOSING scope
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_assigned_names_from_expr(elt, assigned_names, interner);
             for generator in generators {
                 collect_assigned_names_from_expr(&generator.iter, assigned_names, interner);
@@ -2586,7 +2637,9 @@ fn collect_assigned_names_from_expr(
                 }
             }
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_assigned_names_from_expr(key, assigned_names, interner);
             collect_assigned_names_from_expr(value, assigned_names, interner);
             for generator in generators {
@@ -2701,8 +2754,16 @@ fn collect_cell_vars_from_node(
     interner: &InternerBuilder,
 ) {
     match node {
-        Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { signature, body, .. },
+            decorators,
+        } => {
             collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
+            // A nested scope inside a decorator expression (a lambda in decorator
+            // position, or one passed to a factory) can capture our locals too.
+            for decorator in decorators {
+                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+            }
         }
         Node::ClassDef { body, decorators, .. } => {
             // The class body is a nested scope of *this* scope, like a `def`: any
@@ -3043,7 +3104,7 @@ fn collect_cell_vars_from_expr(
             collect_cell_vars_from_expr(body, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(orelse, our_locals, cell_vars, interner);
         }
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_cell_vars_from_expr(elt, our_locals, cell_vars, interner);
             for generator in generators {
                 collect_cell_vars_from_expr(&generator.iter, our_locals, cell_vars, interner);
@@ -3052,7 +3113,9 @@ fn collect_cell_vars_from_expr(
                 }
             }
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_cell_vars_from_expr(key, our_locals, cell_vars, interner);
             collect_cell_vars_from_expr(value, our_locals, cell_vars, interner);
             for generator in generators {
@@ -3237,12 +3300,19 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { signature, body, .. },
+            decorators,
+        } => {
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
             // — the bug behind issue #477's multi-hop closures.
             collect_nested_function_references(signature, body, referenced, interner);
+            // Decorators evaluate in *our* scope, so their names are ours to collect.
+            for decorator in decorators {
+                collect_referenced_names_from_expr(decorator, referenced, interner);
+            }
         }
         Node::ClassDef { decorators, .. } => {
             // The class body is a separate scope and the name is a binding, so
@@ -3402,10 +3472,12 @@ fn collect_referenced_names_from_expr(expr: &ExprLoc, referenced: &mut AHashSet<
             collect_referenced_names_from_expr(body, referenced, interner);
             collect_referenced_names_from_expr(orelse, referenced, interner);
         }
-        Expr::ListComp { elt, generators } | Expr::SetComp { elt, generators } => {
+        Expr::ListComp { elt, generators, .. } | Expr::SetComp { elt, generators, .. } => {
             collect_referenced_names_from_comprehension(generators, Some(elt), None, referenced, interner);
         }
-        Expr::DictComp { key, value, generators } => {
+        Expr::DictComp {
+            key, value, generators, ..
+        } => {
             collect_referenced_names_from_comprehension(generators, None, Some((key, value)), referenced, interner);
         }
         Expr::LambdaRaw { signature, body, .. } => {

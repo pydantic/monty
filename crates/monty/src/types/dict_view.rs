@@ -6,11 +6,14 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    resource::ResourceTracker,
-    types::{Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple, iter::checked_preallocation_hint},
+    types::{
+        Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
+        dict::{DictItemIterator, DictKeyIterator, DictValueIterator},
+        iter::checked_preallocation_hint,
+    },
     value::{EitherStr, Value},
 };
 
@@ -25,7 +28,7 @@ pub(crate) trait DictView {
     fn dict_id(&self) -> HeapId;
 
     /// Returns the live dictionary backing this view.
-    fn dict<'a>(&self, heap: &'a Heap<impl ResourceTracker>) -> &'a Dict {
+    fn dict<'a>(&self, heap: &'a Heap) -> &'a Dict {
         let HeapData::Dict(dict) = heap.get(self.dict_id()) else {
             panic!("dict view must always reference a dict");
         };
@@ -58,7 +61,7 @@ impl DictKeysView {
 }
 
 impl<'h> HeapRead<'h, DictKeysView> {
-    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_keys view must always reference a dict");
         };
@@ -66,7 +69,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     }
 
     /// Compares this keys view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(&self, other: &HeapRead<'h, Set>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    pub(crate) fn eq_set(&self, other: &HeapRead<'h, Set>, vm: &mut VM<'h>) -> RunResult<bool> {
         dict_keys_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
@@ -76,11 +79,7 @@ impl<'h> HeapRead<'h, DictKeysView> {
     }
 
     /// Compares this keys view to a frozenset using set membership semantics.
-    pub(crate) fn eq_frozenset(
-        &self,
-        other: &HeapRead<'h, FrozenSet>,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<bool> {
+    pub(crate) fn eq_frozenset(&self, other: &HeapRead<'h, FrozenSet>, vm: &mut VM<'h>) -> RunResult<bool> {
         dict_keys_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
@@ -94,24 +93,54 @@ impl<'h> HeapRead<'h, DictKeysView> {
     /// Dict-view operators always produce ordinary `set` results in CPython,
     /// so the VM uses this helper as the left-hand-side snapshot for `& | ^ -`
     /// and for `isdisjoint(...)`.
-    pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
+    pub(crate) fn to_set(&self, vm: &mut VM<'h>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let mut result = Set::with_capacity(dict.get(vm.heap).len());
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             value.drop_with(vm);
             result.add(key, vm)?;
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
+    }
+
+    /// Intersects live keys with an arbitrary iterable without materializing the view.
+    fn intersection(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(other, vm);
+        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        let dict = self.dict(vm);
+        for key in other.iter() {
+            if dict.contains_key(key, vm)? {
+                result.add(key.clone_with_heap(vm), vm)?;
+            }
+        }
+        let (result, vm) = result_guard.into_parts();
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+    }
+
+    /// Applies a reflected set-like operation after validating the left iterable.
+    fn reflected_binary_op(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h>,
+        operation: impl FnOnce(&Set, &Set, &mut VM<'_>) -> RunResult<Set>,
+    ) -> RunResult<Option<Value>> {
+        let lhs = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(lhs, vm);
+        let rhs = self.to_set(vm)?;
+        defer_drop!(rhs, vm);
+        let result = operation(lhs, rhs, vm)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
     }
 
     /// Implements `dict_keys.isdisjoint(iterable)` with CPython's iterable semantics.
-    pub(crate) fn isdisjoint_from_value(
-        &self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<bool> {
+    pub(crate) fn isdisjoint_from_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
         defer_drop!(self_set, vm);
         let other_set = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
@@ -127,20 +156,24 @@ impl DictView for DictKeysView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictKeys
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictKeyIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(
-        &self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DictKeysView(other)) => {
                 if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
@@ -162,12 +195,39 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         }
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.intersection(other, vm)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_xor)
+    }
+
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_sub)
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.intersection(other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_or)
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_xor)
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str("dict_keys([")?;
         write_dict_keys_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
@@ -176,7 +236,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -226,7 +286,7 @@ impl DictItemsView {
 }
 
 impl<'h> HeapRead<'h, DictItemsView> {
-    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_items view must always reference a dict");
         };
@@ -234,7 +294,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     }
 
     /// Compares this items view to a mutable set using set membership semantics.
-    pub(crate) fn eq_set(&self, other: &HeapRead<'h, Set>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    pub(crate) fn eq_set(&self, other: &HeapRead<'h, Set>, vm: &mut VM<'h>) -> RunResult<bool> {
         dict_items_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
@@ -244,11 +304,7 @@ impl<'h> HeapRead<'h, DictItemsView> {
     }
 
     /// Compares this items view to a frozenset using set membership semantics.
-    pub(crate) fn eq_frozenset(
-        &self,
-        other: &HeapRead<'h, FrozenSet>,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<bool> {
+    pub(crate) fn eq_frozenset(&self, other: &HeapRead<'h, FrozenSet>, vm: &mut VM<'h>) -> RunResult<bool> {
         dict_items_eq_set_like(
             &self.dict(vm),
             other.get(vm.heap).len(),
@@ -261,24 +317,94 @@ impl<'h> HeapRead<'h, DictItemsView> {
     ///
     /// Each item is allocated as a 2-tuple so later set-like operators and
     /// membership checks observe standard Python tuple semantics.
-    pub(crate) fn to_set(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Set> {
+    pub(crate) fn to_set(&self, vm: &mut VM<'h>) -> RunResult<Set> {
         let dict = self.dict(vm);
-        let mut result = Set::with_capacity(dict.get(vm.heap).len());
+        let capacity = Set::preallocation_capacity(dict.get(vm.heap).len(), vm.heap.tracker())?;
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
         while let Some((key, value)) = iter.next_owned(vm)? {
             let item = allocate_tuple(smallvec![key, value], vm.heap)?;
             result.add(item, vm)?;
         }
-        Ok(result)
+        Ok(result_guard.into_inner())
+    }
+
+    /// Intersects live items with an arbitrary iterable.
+    fn intersection(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(other, vm);
+        let result = if other.is_empty() {
+            Set::new()
+        } else if self.items_are_hashable(vm)? {
+            let items = self.to_set(vm)?;
+            defer_drop!(items, vm);
+            apply_dict_view_and(items, other, vm)?
+        } else {
+            self.intersect_unhashable_items(other, vm)?
+        };
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
+    }
+
+    /// Returns whether every live value can participate in an item tuple hash.
+    fn items_are_hashable(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        let dict = self.dict(vm);
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((_key, value)) = iter.next(vm)? {
+            if value.py_hash(vm)?.is_none() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Intersects without hashing item tuples whose values are unhashable.
+    fn intersect_unhashable_items(&self, other: &Set, vm: &mut VM<'h>) -> RunResult<Set> {
+        let capacity = Set::preallocation_capacity(other.len(), vm.heap.tracker())?;
+        let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+        let (result, vm) = result_guard.as_parts_mut();
+        for candidate in other.iter() {
+            if self.contains_item(candidate, vm)? {
+                result.add(candidate.clone_with_heap(vm), vm)?;
+            }
+        }
+        Ok(result_guard.into_inner())
+    }
+
+    /// Tests item membership by equality, avoiding a hash of the view's values.
+    fn contains_item(&self, candidate: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
+        let dict = self.dict(vm);
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some((key, value)) = iter.next(vm)? {
+            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+            defer_drop!(item, vm);
+            if candidate.py_eq(item, vm)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Applies a reflected set-like operation after validating the left iterable.
+    fn reflected_binary_op(
+        &self,
+        other: &Value,
+        vm: &mut VM<'h>,
+        operation: impl FnOnce(&Set, &Set, &mut VM<'_>) -> RunResult<Set>,
+    ) -> RunResult<Option<Value>> {
+        let lhs = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
+        defer_drop!(lhs, vm);
+        let rhs = self.to_set(vm)?;
+        defer_drop!(rhs, vm);
+        let result = operation(lhs, rhs, vm)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Set(result))?)))
     }
 
     /// Implements `dict_items.isdisjoint(iterable)` with CPython's iterable semantics.
-    pub(crate) fn isdisjoint_from_value(
-        &self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<bool> {
+    pub(crate) fn isdisjoint_from_value(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<bool> {
         let self_set = self.to_set(vm)?;
         defer_drop!(self_set, vm);
         let other_set = collect_iterable_to_set(other.clone_with_heap(vm), vm)?;
@@ -294,20 +420,24 @@ impl DictView for DictItemsView {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictItems
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictItemIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(
-        &self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DictItemsView(other)) => {
                 if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
@@ -323,12 +453,39 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         }
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.intersection(other, vm)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
+    }
+
+    fn py_xor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_xor)
+    }
+
+    fn py_rsub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_sub)
+    }
+
+    fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.intersection(other, vm)
+    }
+
+    fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_or)
+    }
+
+    fn py_rxor_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.reflected_binary_op(other, vm, apply_dict_view_xor)
+    }
+
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str("dict_items([")?;
         write_dict_items_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
@@ -337,7 +494,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     fn py_call_attr(
         &mut self,
         _self_id: HeapId,
-        vm: &mut VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
@@ -393,7 +550,7 @@ impl DictView for DictValuesView {
 }
 
 impl<'h> HeapRead<'h, DictValuesView> {
-    fn dict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> HeapRead<'h, Dict> {
+    fn dict(&self, vm: &mut VM<'h>) -> HeapRead<'h, Dict> {
         let HeapReadOutput::Dict(dict) = vm.heap.read(self.get(vm.heap).dict_id) else {
             panic!("dict_values view must always reference a dict");
         };
@@ -402,30 +559,29 @@ impl<'h> HeapRead<'h, DictValuesView> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictValues
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let dict_id = self.get(vm.heap).dict_id();
+        DictValueIterator::allocate(dict_id, self.get(vm.heap).dict(vm.heap).len(), vm)
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(
-        &self,
-        _other: &Value,
-        _vm: &mut VM<'h, impl ResourceTracker>,
-        _self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
         // `dict_values` views use identity equality (handled before the heap read).
         Ok(None)
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         f.write_str("dict_values([")?;
         write_dict_values_contents(f, &self.dict(vm), vm, heap_ids)?;
         Ok(f.write_str("])")?)
@@ -443,11 +599,11 @@ impl HeapItem for DictValuesView {
 }
 
 /// Compares a dict's live keys to another set-like container by membership.
-fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
+fn dict_keys_eq_set_like<'h>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> RunResult<bool>,
-    vm: &mut VM<'h, T>,
+    mut contains: impl FnMut(&Value, &mut VM<'h>) -> RunResult<bool>,
+    vm: &mut VM<'h>,
 ) -> RunResult<bool> {
     if dict.get(vm.heap).len() != other_len {
         return Ok(false);
@@ -468,11 +624,11 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
 }
 
 /// Compares a dict's live items to another set-like container by membership.
-fn dict_items_eq_set_like<'h, T: ResourceTracker>(
+fn dict_items_eq_set_like<'h>(
     dict: &HeapRead<'h, Dict>,
     other_len: usize,
-    mut contains: impl FnMut(&Value, &mut VM<'h, T>) -> RunResult<bool>,
-    vm: &mut VM<'h, T>,
+    mut contains: impl FnMut(&Value, &mut VM<'h>) -> RunResult<bool>,
+    vm: &mut VM<'h>,
 ) -> RunResult<bool> {
     if dict.get(vm.heap).len() != other_len {
         return Ok(false);
@@ -497,7 +653,7 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
 fn write_dict_keys_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, impl ResourceTracker>,
+    vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
@@ -517,7 +673,7 @@ fn write_dict_keys_contents<'h>(
 fn write_dict_items_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, impl ResourceTracker>,
+    vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
@@ -541,7 +697,7 @@ fn write_dict_items_contents<'h>(
 fn write_dict_values_contents<'h>(
     f: &mut impl Write,
     dict: &HeapRead<'h, Dict>,
-    vm: &mut VM<'h, impl ResourceTracker>,
+    vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
 ) -> RunResult<()> {
     let iter = dict.iter(vm)?;
@@ -557,12 +713,84 @@ fn write_dict_values_contents<'h>(
     Ok(())
 }
 
+/// Applies a dict-view set-like binary operator and returns a plain `set`.
+fn dict_view_binary_op_value(
+    lhs_set: Set,
+    rhs: &Value,
+    vm: &mut VM<'_>,
+    operation: impl FnOnce(&Set, &Set, &mut VM<'_>) -> RunResult<Set>,
+) -> RunResult<Option<Value>> {
+    defer_drop!(lhs_set, vm);
+    let rhs_set = collect_iterable_to_set(rhs.clone_with_heap(vm), vm)?;
+    defer_drop!(rhs_set, vm);
+
+    let result = operation(lhs_set, rhs_set, vm)?;
+    let result_id = vm.heap.allocate(HeapData::Set(result))?;
+    Ok(Some(Value::Ref(result_id)))
+}
+
+/// Computes dictionary-view intersection.
+fn apply_dict_view_and(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().min(rhs.len()), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    let (smaller, larger) = if lhs.len() <= rhs.len() { (lhs, rhs) } else { (rhs, lhs) };
+    for value in smaller.iter() {
+        if vm.heap.protect(larger).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    Ok(result_guard.into_inner())
+}
+
+/// Computes dictionary-view union.
+fn apply_dict_view_or(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter().chain(rhs.iter()) {
+        result.add(value.clone_with_heap(vm), vm)?;
+    }
+    Ok(result_guard.into_inner())
+}
+
+/// Computes dictionary-view symmetric difference.
+fn apply_dict_view_xor(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len().saturating_add(rhs.len()), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter() {
+        if !vm.heap.protect(rhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    for value in rhs.iter() {
+        if !vm.heap.protect(lhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    Ok(result_guard.into_inner())
+}
+
+/// Computes dictionary-view difference.
+fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> {
+    let capacity = Set::preallocation_capacity(lhs.len(), vm.heap.tracker())?;
+    let mut result_guard = DropGuard::new(Set::with_capacity(capacity), vm);
+    let (result, vm) = result_guard.as_parts_mut();
+    for value in lhs.iter() {
+        if !vm.heap.protect(rhs).contains(value, vm)? {
+            result.add(value.clone_with_heap(vm), vm)?;
+        }
+    }
+    Ok(result_guard.into_inner())
+}
+
 /// Collects an arbitrary iterable into a temporary `set`.
 ///
 /// Dict-view operators accept any iterable on the right-hand side in CPython,
 /// including one-shot iterator objects. Reusing the same collection path keeps
 /// binary operators and `isdisjoint(...)` consistent with each other.
-pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Set, RunError> {
+pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<Set, RunError> {
     let mut value_guard = DropGuard::new(value, vm);
     let (value, vm) = value_guard.as_parts();
     let iter = value.py_iter(vm)?;
@@ -578,7 +806,7 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, impl Resourc
 }
 
 /// Returns whether two temporary sets have no elements in common.
-fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
+fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_>) -> RunResult<bool> {
     let (smaller, larger) = if left.len() <= right.len() {
         (left, right)
     } else {

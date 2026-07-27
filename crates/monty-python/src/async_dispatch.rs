@@ -5,8 +5,8 @@
 //! (`ResolveFutures`), the completed task results are batched back to the
 //! worker.
 
-use ::monty::{ExtFunctionResult, MontyObject};
 use monty_proto::python::DcRegistry;
+use monty_types::{ExtFunctionResult, MontyObject};
 use pyo3::{exceptions::PyRuntimeError, prelude::*, types::PyDict};
 use pyo3_async_runtimes::tokio::into_future;
 use tokio::task::{JoinError, JoinSet};

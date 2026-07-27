@@ -6,9 +6,8 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
-    resource::ResourceTracker,
     types::{List, PyTrait, iter::checked_preallocation_hint},
     value::Value,
 };
@@ -27,7 +26,7 @@ use crate::{
 /// map(pow, [2, 3], [3, 2])          # [8, 9]
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
-pub fn builtin_map(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_map(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // CPython's map() uses a bespoke arity message
     // (`map() must have at least two arguments.`) rather than the generic
     // "missing N required positional arguments" wording the macro would

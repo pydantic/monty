@@ -16,10 +16,9 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
@@ -117,7 +116,7 @@ impl Range {
     /// - `range(stop)` - range from 0 to stop
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let pos_args = args.into_pos_only("range", vm.heap)?;
         defer_drop!(pos_args, vm);
 
@@ -151,7 +150,7 @@ impl Range {
     ///
     /// Returns a new range object representing the sliced view.
     /// The new range has computed start, stop, and step values.
-    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap) -> RunResult<Value> {
         let range_len = self.len();
         let (start, stop, step) = slice.indices(range_len)?;
 
@@ -188,15 +187,23 @@ impl Default for Range {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Range
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_iter(&self, _: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        RangeIterator::allocate(*self.get(vm.heap), vm)
+    }
+
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
@@ -233,12 +240,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Value::Int(offset_i64))
     }
 
-    fn py_eq_impl(
-        &self,
-        other: &Value,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _self_id: Option<HeapId>,
-    ) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Range(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -262,7 +264,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         }))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         // Ranges are equal by the sequence they produce, so the hash must depend
         // only on what equality compares: length, then start (if non-empty), then
         // step (only if length > 1). Hashing the raw `start`/`stop`/`step` fields
@@ -281,16 +283,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let this = self.get(vm.heap);
         if this.step == 1 {
             Ok(write!(f, "range({}, {})", this.start, this.stop)?)
@@ -307,5 +304,75 @@ impl HeapItem for Range {
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
         // Range doesn't contain heap references, nothing to do
+    }
+}
+
+/// Iterator over the arithmetic progression represented by a range.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct RangeIterator {
+    next: i64,
+    step: i64,
+    remaining: usize,
+}
+
+impl RangeIterator {
+    /// Allocates independent iteration state copied from `range`.
+    fn allocate(range: Range, vm: &mut VM<'_>) -> RunResult<Value> {
+        Ok(Value::Ref(vm.heap.allocate(HeapData::RangeIterator(Self {
+            next: range.start,
+            step: range.step,
+            remaining: range.len(),
+        }))?))
+    }
+
+    /// Returns the exact number of values not yet yielded.
+    pub(crate) fn size_hint(&self) -> usize {
+        self.remaining
+    }
+}
+
+impl HeapItem for RangeIterator {
+    fn py_estimate_size(&self) -> usize {
+        mem::size_of::<Self>()
+    }
+
+    fn py_dec_ref_ids(&mut self, _: &mut Vec<HeapId>) {}
+}
+
+impl<'h> PyTrait<'h> for HeapRead<'h, RangeIterator> {
+    fn py_is_iterable(&self, _: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _: &VM<'h>) -> Type {
+        Type::RangeIterator
+    }
+
+    fn py_len(&self, _: &VM<'h>) -> Option<usize> {
+        None
+    }
+
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>, _: Option<HeapId>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        let self_id = self_id.expect("heap values have an id");
+        vm.heap.inc_ref(self_id);
+        Ok(Value::Ref(self_id))
+    }
+
+    fn py_next(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let iter = self.get_mut(vm.heap);
+        if iter.remaining == 0 {
+            Ok(None)
+        } else {
+            let value = iter.next;
+            iter.remaining -= 1;
+            if iter.remaining > 0 {
+                iter.next += iter.step;
+            }
+            Ok(Some(Value::Int(value)))
+        }
     }
 }

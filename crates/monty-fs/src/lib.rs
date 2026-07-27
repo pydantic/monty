@@ -9,7 +9,7 @@
 //! only by host/parent crates (`monty-pool`, the CLI, bindings). The `monty`
 //! interpreter crate deliberately does not depend on it — sandboxed code can
 //! only *request* filesystem operations by suspending with an
-//! [`OsFunctionCall`](monty::OsFunctionCall), which a host holding a
+//! [`OsFunctionCall`](monty_types::OsFunctionCall), which a host holding a
 //! [`MountTable`] services via [`MountTable::handle_os_call`].
 //!
 //! # Security

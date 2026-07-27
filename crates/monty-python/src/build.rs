@@ -6,8 +6,8 @@
 //! unconvertible values) into the matching `MontyError` subclasses rather
 //! than leaking raw PyO3 errors.
 
-use ::monty::{ExcType, MontyException, MontyObject};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, py_to_monty_value};
+use monty_types::{ExcType, MontyException, MontyObject};
 use pyo3::{
     prelude::*,
     types::{PyDict, PyString},

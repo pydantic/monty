@@ -28,11 +28,11 @@ use std::{
     time::Duration,
 };
 
-use monty::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame};
 use monty_pool::{
     exceeds_max_value_depth, Checkout, MountSpec, MountSpecMode, OnPrint, Pool, PoolConfig, PoolError, ReplConfig,
     ResumeValue, TurnEvent,
 };
+use monty_types::{AssertMessageAnnotations, ExcType, MontyException, MontyObject, PrintStream, StackFrame};
 use napi::{
     bindgen_prelude::{
         block_on, spawn_blocking, Array, Buffer, FnArgs, FromNapiValue, Function, JsObjectValue, Object, PromiseRaw,

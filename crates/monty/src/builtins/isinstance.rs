@@ -5,9 +5,8 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId, HeapRead, HeapReadOutput},
-    resource::ResourceTracker,
     types::{PyTrait, Tuple, Type},
     value::Value,
 };
@@ -15,7 +14,7 @@ use crate::{
 /// Implementation of the isinstance() builtin function.
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
-pub fn builtin_isinstance(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_isinstance(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
     defer_drop!(obj, vm);
     defer_drop!(classinfo, vm);
@@ -31,7 +30,7 @@ pub fn builtin_isinstance(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues
 /// - User-defined classes: `isinstance(obj, Foo)` (identity of the instance's
 ///   class; there is no inheritance chain to walk yet)
 /// - Tuples (possibly nested) of the above
-fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<bool> {
+fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResult<bool> {
     match classinfo {
         Value::Builtin(Builtins::Type(t)) => Ok(obj.py_type(vm).is_instance_of(*t)),
         Value::Builtin(Builtins::ExcType(handler_type)) => {
@@ -47,16 +46,12 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_, impl Resourc
 }
 
 /// Whether `obj` is an instance whose class object is `class_id`.
-fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_, impl ResourceTracker>) -> bool {
+fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
 }
 
 /// Recursively walks a tuple of classinfo entries.
-fn isinstance_check_tuple<'h>(
-    obj: &Value,
-    tuple: &HeapRead<'h, Tuple>,
-    vm: &mut VM<'h, impl ResourceTracker>,
-) -> RunResult<bool> {
+fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut VM<'h>) -> RunResult<bool> {
     let len = tuple.get(vm.heap).as_slice().len();
     let mut guard = vm.recursion_guard()?;
     let vm = &mut *guard;

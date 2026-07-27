@@ -18,21 +18,17 @@
 
 use std::{borrow::Cow, mem};
 
-use monty::{
-    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject,
-    MontyRepl, OsFunctionCall, PrintWriter, PrintWriterCallback, ReplProgress, ReplStartError,
-};
+use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, type_check};
+use monty_types::{
+    AssertMessageAnnotations, CompileOptions, ExcType, ExtFunctionResult, MontyException, MontyObject, OsFunctionCall,
+    PrintWriter, PrintWriterCallback, ResourceTracker,
+};
 
 use super::{
     FrameError, FrameReader, MAX_FRAME_LEN, MONTY_VERSION, WireFunctionCall, exceeds_max_frame_len,
     exceeds_max_value_depth, future_results_from_proto, pb, write_frame,
 };
-
-/// The child always runs with `LimitedTracker`: an absent/empty limits message
-/// behaves like `ResourceLimits::new()`, and a single tracker type keeps the
-/// session state enum free of generics.
-type Tracker = LimitedTracker;
 
 /// Version tag of the opaque dump envelope produced by `Dump`.
 ///
@@ -47,9 +43,11 @@ type Tracker = LimitedTracker;
 ///   `str` is a `u32 LE` byte length followed by UTF-8 bytes.
 ///
 /// The payload is monty's postcard format — only a monty child of the same
-/// version can restore it. Bumped to 6 for the serialized `NotImplemented`
-/// variants after argument-name variants changed `StaticStrings` discriminants.
-const DUMP_VERSION: u16 = 6;
+/// version can restore it. Bumped to 7 because this format includes both the
+/// serialized `NotImplemented` variants and the concrete built-in iterator
+/// variants. Public so tests and hosts inspecting an envelope can reference
+/// the current version.
+pub const DUMP_VERSION: u16 = 7;
 
 /// A sink for framed [`pb::ChildEvent`]s, decoupling the child from its
 /// transport.
@@ -179,10 +177,10 @@ enum SessionState {
     /// valid only from here — it cannot clobber a started session.
     Configured(Option<Box<pb::Configure>>),
     /// Session ready for the next `Feed`.
-    Ready(Box<MontyRepl<Tracker>>),
+    Ready(Box<MontyRepl>),
     /// Mid-feed, waiting for a resume request. Never holds
     /// `ReplProgress::Complete` — completion ends the turn immediately.
-    Suspended(Box<ReplProgress<Tracker>>),
+    Suspended(Box<ReplProgress>),
 }
 
 /// Per-session type-check state, mirroring `pydantic_monty.MontyRepl`:
@@ -422,7 +420,7 @@ impl Child {
         };
         self.state = SessionState::Ready(Box::new(MontyRepl::new(
             &self.script_name,
-            LimitedTracker::new(limits),
+            ResourceTracker::new(limits),
             options,
         )));
         Ok(())
@@ -685,7 +683,7 @@ impl Child {
     /// filesystem I/O (mounts are serviced parent-side).
     fn drive(
         &mut self,
-        mut result: Result<ReplProgress<Tracker>, Box<ReplStartError<Tracker>>>,
+        mut result: Result<ReplProgress, Box<ReplStartError>>,
         print: &mut ProtoPrint,
     ) -> pb::ChildEvent {
         loop {
@@ -756,7 +754,7 @@ impl Child {
     }
 
     /// Ends the current feed with a runtime error while keeping the REPL usable.
-    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl<Tracker>, message: &str) -> pb::ChildEvent {
+    fn abort_feed_with_runtime_error(&mut self, repl: MontyRepl, message: &str) -> pb::ChildEvent {
         self.state = SessionState::Ready(Box::new(repl));
         if let Some(state) = &mut self.type_check {
             state.pending_snippet = None;
@@ -859,7 +857,7 @@ fn oversize_suspension_error_message(event: &pb::ChildEvent) -> Option<String> {
 ///
 /// Clones the argument payload: the suspension keeps its args so a `Dump` of
 /// the suspended state (and its replay on `Load`) stays complete.
-fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb::ChildEvent {
+fn suspension_event_function_call(call: &monty::ReplFunctionCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::FunctionCall(WireFunctionCall {
         function_name: call.function_name.clone(),
         args: call.args.clone(),
@@ -875,7 +873,7 @@ fn suspension_event_function_call(call: &monty::ReplFunctionCall<Tracker>) -> pb
 /// suspended state (and its re-announcement on `Load`) stays complete — a
 /// restored session's parent can service the call from mounts or its `os`
 /// callback exactly like a fresh one.
-fn suspension_event_os_call(call: &monty::ReplOsCall<Tracker>) -> pb::ChildEvent {
+fn suspension_event_os_call(call: &monty::ReplOsCall) -> pb::ChildEvent {
     event(pb::child_event::Kind::OsCall(pb::OsCall {
         call_id: call.call_id,
         call: Some(call.function_call.clone().into()),
@@ -890,7 +888,7 @@ fn complete_event(value: MontyObject) -> pb::ChildEvent {
 
 /// Whether a suspension's argument payload nests too deeply for the wire —
 /// used by `drive` (fresh) and `handle_load` (restored, i.e. forged dumps).
-fn suspension_args_too_deep(progress: &ReplProgress<Tracker>) -> bool {
+fn suspension_args_too_deep(progress: &ReplProgress) -> bool {
     match progress {
         ReplProgress::FunctionCall(call) => function_call_args_too_deep(call),
         ReplProgress::OsCall(call) => os_call_args_too_deep(call),
@@ -900,7 +898,7 @@ fn suspension_args_too_deep(progress: &ReplProgress<Tracker>) -> bool {
 }
 
 /// Whether an external call's args/kwargs nest too deeply for the wire.
-fn function_call_args_too_deep(call: &monty::ReplFunctionCall<Tracker>) -> bool {
+fn function_call_args_too_deep(call: &monty::ReplFunctionCall) -> bool {
     call.args.iter().any(exceeds_max_value_depth)
         || call
             .kwargs
@@ -910,7 +908,7 @@ fn function_call_args_too_deep(call: &monty::ReplFunctionCall<Tracker>) -> bool 
 
 /// Whether an OS call's payload nests too deeply for the wire — only
 /// `os.getenv`'s default carries an arbitrary (nestable) sandbox value.
-fn os_call_args_too_deep(call: &monty::ReplOsCall<Tracker>) -> bool {
+fn os_call_args_too_deep(call: &monty::ReplOsCall) -> bool {
     match &call.function_call {
         OsFunctionCall::Getenv(args) => exceeds_max_value_depth(&args.default),
         _ => false,
@@ -921,7 +919,7 @@ fn os_call_args_too_deep(call: &monty::ReplOsCall<Tracker>) -> bool {
 /// `Load` to re-announce a restored suspension; fresh suspensions go through
 /// `drive`, which adds depth/oversize checks before delegating to the same
 /// per-variant builders.
-fn suspension_event(progress: &ReplProgress<Tracker>) -> pb::ChildEvent {
+fn suspension_event(progress: &ReplProgress) -> pb::ChildEvent {
     match progress {
         ReplProgress::FunctionCall(call) => suspension_event_function_call(call),
         ReplProgress::OsCall(call) => suspension_event_os_call(call),

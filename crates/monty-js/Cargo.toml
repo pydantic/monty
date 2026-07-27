@@ -19,7 +19,7 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-monty = { workspace = true }
+monty-types = { workspace = true }
 monty-pool = { workspace = true }
 monty-type-checking = { workspace = true }
 napi = { version = "3.8", default-features = false, features = ["napi6", "compat-mode", "tokio_rt"] }

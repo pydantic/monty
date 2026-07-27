@@ -6,7 +6,8 @@ use std::ffi::CString;
 use codspeed_criterion_compat::{Bencher, Criterion, black_box, criterion_group, criterion_main};
 #[cfg(not(codspeed))]
 use criterion::{Bencher, Criterion, black_box, criterion_group, criterion_main};
-use monty::{CompileOptions, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
 // CPython benchmarks are only run locally, not on CodSpeed CI (requires Python + pyo3 setup)

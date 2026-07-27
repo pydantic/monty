@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use monty::{MontyObject, OsFunctionCall};
+use monty_types::{MontyObject, OsFunctionCall};
 
 use super::{
     common::MountContext, dispatch, error::MountError, mount_mode::MountMode, path_security::normalize_virtual_path,

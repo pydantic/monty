@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyException, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyException};
 
 /// Helper to extract the exception from a parse error.
 fn get_parse_err(code: impl Into<String>) -> MontyException {
@@ -43,15 +44,6 @@ fn class_inheritance_returns_not_implemented_error() {
         err.message().unwrap(),
         @"The monty syntax parser does not yet support class inheritance and metaclasses"
     );
-}
-
-#[test]
-fn function_decorators_return_not_implemented_error() {
-    // A top-level `def` decorator is rejected rather than silently ignored:
-    // silently dropping a decorator would change behaviour without warning.
-    let err = get_parse_err("@deco\ndef foo(): pass");
-    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
-    assert_snapshot!(err.message().unwrap(), @"The monty syntax parser does not yet support function decorators");
 }
 
 #[test]
@@ -123,6 +115,85 @@ fn unknown_imports_compile_successfully_error_deferred_to_runtime() {
     // imports to work without causing compile-time errors.
     let result = MontyRun::new("import foobar".to_owned(), "test.py", vec![], CompileOptions::default());
     assert!(result.is_ok(), "unknown import should compile successfully");
+}
+
+#[test]
+fn explicit_class_annotations_assignment_returns_not_implemented_error() {
+    // The synthesized `__annotations__` is the last class-body statement, so an
+    // explicit assignment would be silently clobbered and its entries lost.
+    // CPython merges the two; Monty rejects rather than dropping them quietly.
+    let err = get_parse_err("class C:\n    __annotations__ = {'a': 'b'}\n    x: int");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support assigning `__annotations__` in a class body with annotated names"
+    );
+}
+
+#[test]
+fn class_binding_annotations_without_annotated_names_compiles() {
+    // With nothing to store, the body's own binding stands rather than being
+    // overwritten by a synthesized empty dict — CPython accepts both of these,
+    // so rejecting them would fail class bodies that are perfectly valid.
+    for body in [
+        "__annotations__ = {'a': 'b'}",
+        "def __annotations__(self):\n        return 1",
+    ] {
+        let code = format!("class C:\n    {body}\n");
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert!(result.is_ok(), "`{body}` should compile");
+    }
+}
+
+#[test]
+fn supported_future_imports_compile_successfully() {
+    // `__future__` imports are compiler directives, not real imports. All but
+    // `annotations` became mandatory in Python 3.7 or earlier and so are inert
+    // in CPython too; `annotations` is a no-op because Monty already stringizes
+    // annotations. Rejecting any of them would break otherwise-valid code.
+    for feature in ["division", "print_function", "generator_stop", "annotations"] {
+        let code = format!("from __future__ import {feature}\nx = 1");
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert!(result.is_ok(), "`{feature}` should compile as a no-op");
+    }
+}
+
+#[test]
+fn unsupported_future_import_returns_not_implemented_error() {
+    // `barry_as_FLUFL` (PEP 401) is one of only two `__future__` features still
+    // meaningful in Python 3, and Monty does not implement it — it makes `<>`
+    // the inequality operator and `!=` a SyntaxError. Rejected rather than
+    // ignored, so the import cannot quietly fail to do what it says. CPython
+    // accepts it, so this is a deliberate divergence.
+    let err = get_parse_err("from __future__ import barry_as_FLUFL");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support the 'barry_as_FLUFL' future feature"
+    );
+}
+
+#[test]
+fn aliased_future_import_returns_not_implemented_error() {
+    // The no-op binds nothing, so accepting an alias would leave the name
+    // undefined and surface as a `NameError` far from the import. CPython binds
+    // a `__future__._Feature` object, so this is a deliberate divergence.
+    let err = get_parse_err("from __future__ import annotations as ann");
+    assert_eq!(err.exc_type(), ExcType::NotImplementedError);
+    assert_snapshot!(
+        err.message().unwrap(),
+        @"The monty syntax parser does not yet support aliasing a `__future__` feature"
+    );
+}
+
+#[test]
+fn undefined_future_import_returns_syntax_error() {
+    // A name that is not a `__future__` feature at all, matching CPython's
+    // message. See `test_cases/import__future_unknown_feature.py` for the
+    // dual-run traceback test.
+    let err = get_parse_err("from __future__ import teleportation");
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"future feature teleportation is not defined");
 }
 
 #[test]
@@ -733,6 +804,52 @@ fn moderate_bool_op_chain_within_limit() {
     }
     let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
     assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
+}
+
+/// A flat-looking expression ruff parses without recursing, so only an explicit
+/// depth check stops a later recursive walk overflowing the host stack.
+fn deep_attribute_chain() -> String {
+    let mut chain = "a".to_owned();
+    for _ in 0..2_000 {
+        chain.push_str(".x");
+    }
+    chain
+}
+
+#[test]
+fn deeply_nested_class_annotation_exceeds_limit() {
+    // Stringized, never parsed, so `parse_expression`'s budget never sees it.
+    let code = format!("class C:\n    y: {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_class_var_value_exceeds_limit() {
+    // The class-scope walrus search walks the value before it is parsed.
+    let code = format!("class C:\n    y = {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_method_default_exceeds_limit() {
+    // Parameter defaults go through the same pre-parse walrus search.
+    let code = format!("class C:\n    def m(self, x={}): pass\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn moderate_class_annotation_within_limit() {
+    // The new checks must not reject annotations of ordinary depth.
+    let code = "class C:\n    y: dict[str, list[int]]\n    z: a.b.c = 1\n\
+                assert C.__annotations__ == {'y': 'dict[str, list[int]]', 'z': 'a.b.c'}\n";
+    let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok(), "ordinary class annotations should compile: {result:?}");
 }
 
 #[test]
