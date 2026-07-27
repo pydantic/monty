@@ -1996,6 +1996,7 @@ dependencies = [
  "chrono",
  "fancy-regex 0.17.0",
  "hashbrown 0.16.1",
+ "indexmap",
  "insta",
  "itertools 0.14.0",
  "itoa",

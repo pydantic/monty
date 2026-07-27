@@ -256,27 +256,133 @@ pub(crate) trait PyTrait<'h> {
         self.py_repr(vm)
     }
 
-    /// Python addition (`__add__`).
-    ///
-    /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_add(&self, _other: &Self, _vm: &mut VM<'h>) -> Result<Option<Value>, ResourceError> {
+    /// One-sided implementation of Python addition (`__add__`).
+    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
-    /// Python subtraction (`__sub__`).
-    ///
-    /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_sub(&self, _other: &Self, _vm: &mut VM<'h>) -> Result<Option<Value>, ResourceError> {
+    /// Reflected implementation of Python addition (`__radd__`).
+    fn py_radd_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
-    /// Python modulus (`__mod__`).
-    ///
-    /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs.
-    fn py_mod(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// One-sided implementation of Python subtraction (`__sub__`).
+    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python subtraction (`__rsub__`).
+    fn py_rsub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python multiplication (`__mul__`).
+    fn py_mul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python multiplication (`__rmul__`).
+    fn py_rmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python matrix multiplication (`__matmul__`).
+    fn py_matmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python matrix multiplication (`__rmatmul__`).
+    fn py_rmatmul_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python true division (`__truediv__`).
+    fn py_truediv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python true division (`__rtruediv__`).
+    fn py_rtruediv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python floor division (`__floordiv__`).
+    fn py_floordiv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python floor division (`__rfloordiv__`).
+    fn py_rfloordiv_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python modulus (`__mod__`).
+    fn py_mod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python modulus (`__rmod__`).
+    fn py_rmod_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python power (`__pow__`).
+    fn py_pow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python power (`__rpow__`).
+    fn py_rpow_impl(&self, _other: &Value, _modulus: Option<&Value>, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python bitwise AND (`__and__`).
+    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python bitwise AND (`__rand__`).
+    fn py_rand_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python bitwise OR (`__or__`).
+    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python bitwise OR (`__ror__`).
+    fn py_ror_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python bitwise XOR (`__xor__`).
+    fn py_xor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python bitwise XOR (`__rxor__`).
+    fn py_rxor_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python left shift (`__lshift__`).
+    fn py_lshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python left shift (`__rlshift__`).
+    fn py_rlshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// One-sided implementation of Python right shift (`__rshift__`).
+    fn py_rshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Reflected implementation of Python right shift (`__rrshift__`).
+    fn py_rrshift_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -286,43 +392,13 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported,
     /// or `Err(ResourceError)` if allocation fails.
-    fn py_iadd(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(
+        &mut self,
+        _other: &Value,
+        _vm: &mut VM<'h>,
+        _self_id: Option<HeapId>,
+    ) -> Result<bool, ResourceError> {
         Ok(false)
-    }
-
-    /// Python multiplication (`__mul__`).
-    ///
-    /// Returns `Ok(None)` if the operation is not supported for these types.
-    /// For numeric types: Int * Int, Float * Float, Int * Float, etc.
-    /// For sequences: str * int, list * int for repetition.
-    fn py_mult(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(None)
-    }
-
-    /// Python true division (`__truediv__`).
-    ///
-    /// Always returns float for numeric types. Returns `Ok(None)` if not supported.
-    /// Returns `Err(ZeroDivisionError)` for division by zero.
-    fn py_div(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(None)
-    }
-
-    /// Python floor division (`__floordiv__`).
-    ///
-    /// Returns int for int//int, float for float operations.
-    /// Returns `Ok(None)` if not supported.
-    /// Returns `Err(ZeroDivisionError)` for division by zero.
-    fn py_floordiv(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(None)
-    }
-
-    /// Python power (`__pow__`).
-    ///
-    /// Int ** positive_int returns int, int ** negative_int returns float.
-    /// Returns `Ok(None)` if not supported.
-    /// Returns `Err(ZeroDivisionError)` for 0 ** negative.
-    fn py_pow(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        Ok(None)
     }
 
     /// Calls an attribute method on this value (e.g., `list.append()`), returning a

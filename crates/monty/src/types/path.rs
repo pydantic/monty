@@ -322,17 +322,6 @@ fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> O
     }
 }
 
-/// Returns the `Path` behind `value` if it is a heap-allocated `Path`.
-fn value_as_path<'a>(value: &Value, heap: &'a Heap) -> Option<&'a Path> {
-    match value {
-        Value::Ref(id) => match heap.get(*id) {
-            HeapData::Path(p) => Some(p),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path> {
     for part in parts {
         path = Path::new(path.joinpath(extract_path_string(part, vm)?));
@@ -340,28 +329,21 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
     Ok(path)
 }
 
-/// Handles the `/` operator when either operand is a `Path` (path concatenation).
-///
-/// Covers both `Path / (str | Path)` and the reflected `str / Path` form,
-/// matching CPython's `PurePath.__truediv__` / `__rtruediv__`. Returns
-/// `Ok(None)` when neither combination applies so the caller can raise the
-/// standard unsupported-operand `TypeError`.
-pub(crate) fn path_div(lhs: &Value, rhs: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
-    let result = if let Some(path) = value_as_path(lhs, heap) {
-        // Path / (str | Path)
-        match value_as_path_str(rhs, heap, interns) {
-            Some(other) => path.joinpath(other),
-            None => return Ok(None),
-        }
-    } else if let Some(path) = value_as_path(rhs, heap) {
-        // str / Path — CPython's __rtruediv__: the left operand becomes the base
-        match value_as_path_str(lhs, heap, interns) {
-            Some(base) => Path::new(base.to_owned()).joinpath(path.as_str()),
-            None => return Ok(None),
-        }
-    } else {
+/// Joins a `Path` with a path-like right operand for `Path.__truediv__`.
+fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
+    let Some(other) = value_as_path_str(other, heap, interns) else {
         return Ok(None);
     };
+    let result = path.joinpath(other);
+    Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
+}
+
+/// Prepends a path-like left operand for `Path.__rtruediv__`.
+fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
+    let Some(base) = value_as_path_str(other, heap, interns) else {
+        return Ok(None);
+    };
+    let result = Path::new(base.to_owned()).joinpath(path.as_str());
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
@@ -490,6 +472,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
         // Paths are always truthy (even empty paths)
         true
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        path_div(self.get(vm.heap), other, vm.heap, vm.interns)
+    }
+
+    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns)
+    }
+
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

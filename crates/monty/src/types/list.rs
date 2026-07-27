@@ -12,9 +12,11 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
+    resource_checks::check_repeat_size,
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
+        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, VALUE_SIZE, Value},
@@ -481,14 +483,35 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h>) -> Result<Option<Value>, ResourceError> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
         let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
         Ok(Some(Value::Ref(id)))
     }
 
-    fn py_iadd(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        let value = self.get(vm.heap);
+        check_repeat_size(value.len().saturating_mul(VALUE_SIZE), count, vm.heap.tracker())?;
+        let mut result = Vec::with_capacity(value.len() * count);
+        for _ in 0..count {
+            result.extend(value.as_slice().iter().map(|value| value.clone_with_heap(vm.heap)));
+            vm.heap.check_time()?;
+        }
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::List(List::new(result)))?)))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> Result<bool, ResourceError> {
         let Value::Ref(other_id) = other else {
             return Ok(false);
         };

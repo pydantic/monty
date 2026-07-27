@@ -32,7 +32,7 @@ use crate::{
     },
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
-    heap_data::{Closure, FunctionDefaults},
+    heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
@@ -42,7 +42,7 @@ use crate::{
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
-    value::{BitwiseOp, EitherStr, Value},
+    value::{EitherStr, Value},
 };
 
 /// Result of executing Await opcode.
@@ -1039,6 +1039,10 @@ impl<'h> VM<'h> {
                 Opcode::LoadNone => self.push(Value::None),
                 Opcode::LoadTrue => self.push(Value::Bool(true)),
                 Opcode::LoadFalse => self.push(Value::Bool(false)),
+                Opcode::BuildCell => {
+                    let cell_id = self.heap.allocate(HeapData::Cell(CellValue(Value::Undefined)))?;
+                    self.push(Value::Ref(cell_id));
+                }
                 Opcode::LoadSmallInt => {
                     let n = cached_frame.fetch_i8();
                     self.push(Value::Int(i64::from(n)));
@@ -1123,10 +1127,10 @@ impl<'h> VM<'h> {
                 Opcode::BinaryOr => try_catch_sync!(self, cached_frame, self.binary_or()),
                 Opcode::BinaryXor => try_catch_sync!(self, cached_frame, self.binary_xor()),
                 Opcode::BinaryLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::BinaryRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 Opcode::BinaryMatMul => try_catch_sync!(self, cached_frame, self.binary_matmul()),
                 // Comparison Operations
@@ -1265,17 +1269,17 @@ impl<'h> VM<'h> {
                 Opcode::InplaceMod => try_catch_sync!(self, cached_frame, self.binary_mod()),
                 Opcode::InplacePow => try_catch_sync!(self, cached_frame, self.binary_pow()),
                 Opcode::InplaceAnd => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::And));
+                    try_catch_sync!(self, cached_frame, self.binary_and());
                 }
-                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Or)),
+                Opcode::InplaceOr => try_catch_sync!(self, cached_frame, self.binary_or()),
                 Opcode::InplaceXor => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::Xor));
+                    try_catch_sync!(self, cached_frame, self.binary_xor());
                 }
                 Opcode::InplaceLShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::LShift));
+                    try_catch_sync!(self, cached_frame, self.binary_lshift());
                 }
                 Opcode::InplaceRShift => {
-                    try_catch_sync!(self, cached_frame, self.binary_bitwise(BitwiseOp::RShift));
+                    try_catch_sync!(self, cached_frame, self.binary_rshift());
                 }
                 // Collection Building - route through exception handling
                 Opcode::BuildList => {
@@ -2122,11 +2126,11 @@ impl<'h> VM<'h> {
         Ok(())
     }
 
-    /// Loads a global variable in call context, pushing `ExtFunction` for undefined names.
+    /// Loads a global variable in call context, pushing an external function for undefined names.
     ///
     /// Unlike `load_global`, this never yields `NameLookup`. When the variable is undefined,
-    /// it pushes `Value::ExtFunction(name_id)` so that the subsequent `CallFunction` opcode
-    /// can yield `FunctionCall` instead. Before doing so it tries the builtin fallback
+    /// it allocates an external function so that the subsequent `CallFunction` opcode can
+    /// yield `FunctionCall` instead. Before doing so it tries the builtin fallback
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
@@ -2147,7 +2151,8 @@ impl<'h> VM<'h> {
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
-            self.push(Value::ExtFunction(name_id));
+            let function = self.heap.get_ext_function(self.interns.get_str(name_id))?;
+            self.push(function);
         } else {
             self.push(value);
         }

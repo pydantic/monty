@@ -26,6 +26,7 @@ ruff_python_codegen = { workspace = true }
 ruff_source_file = { workspace = true }
 ruff_text_size = { workspace = true }
 ahash = { workspace = true }
+indexmap = { workspace = true }
 itoa = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }

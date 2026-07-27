@@ -212,17 +212,7 @@ impl MontyObjectExt for MontyObject {
                 )),
             },
             Self::BuiltinFunction(f) => Ok(Value::Builtin(Builtins::Function(f))),
-            Self::Function { name, .. } => {
-                // Try to intern the function name. If the name is already interned
-                // (common case: the function has the same name as the variable it was
-                // assigned to), use the lightweight `Value::ExtFunction(StringId)`.
-                // Otherwise, allocate a `HeapData::ExtFunction(String)` on the heap.
-                if let Some(string_id) = vm.interns.get_string_id_by_name(&name) {
-                    Ok(Value::ExtFunction(string_id))
-                } else {
-                    Ok(Value::Ref(vm.heap.allocate(HeapData::ExtFunction(name))?))
-                }
-            }
+            Self::Function { name, .. } => Ok(vm.heap.get_ext_function(&name)?),
             Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
@@ -480,8 +470,8 @@ impl MontyObjectExt for MontyObject {
                             position: file.position(),
                         })
                     }
-                    HeapReadOutput::ExtFunction(name) => Self::Function {
-                        name: name.get(vm.heap).clone(),
+                    HeapReadOutput::ExtFunction(function) => Self::Function {
+                        name: function.get(vm.heap).as_str().to_owned(),
                         docstring: None,
                     },
                     _ => repr_or_error(object, vm),
@@ -494,14 +484,6 @@ impl MontyObjectExt for MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(MontyType::from_internal(*t, vm.heap, vm.interns)),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(MontyType::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
-            // Inline external function: export under the same shape as the heap
-            // path's `HeapReadOutput::ExtFunction` arm above, so an interned
-            // function name round-trips through Monty as `MontyObject::Function`
-            // regardless of which representation it took (issue #345).
-            Value::ExtFunction(name_id) => Self::Function {
-                name: vm.interns.get_str(*name_id).to_owned(),
-                docstring: None,
-            },
             #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),

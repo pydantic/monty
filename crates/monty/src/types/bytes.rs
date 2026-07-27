@@ -84,6 +84,7 @@ use crate::{
     resource_checks::{check_repeat_size, check_replace_size},
     types::{
         List,
+        long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value, eq_bytes},
@@ -235,6 +236,22 @@ struct BytesInitArgs {
     errors: Option<StrArg>,
 }
 
+/// Concatenates two byte strings into a tracked heap value.
+pub(crate) fn concat_bytes(lhs: &[u8], rhs: &[u8], heap: &Heap) -> Result<Value, ResourceError> {
+    let result_len = lhs.len().saturating_add(rhs.len());
+    check_repeat_size(result_len, 1, heap.tracker())?;
+    let mut result = Vec::with_capacity(result_len);
+    result.extend_from_slice(lhs);
+    result.extend_from_slice(rhs);
+    Ok(Value::Ref(heap.allocate(HeapData::Bytes(result.into()))?))
+}
+
+/// Repeats bytes after validating the allocation against resource limits.
+pub(crate) fn repeat_bytes(value: &[u8], count: usize, heap: &Heap) -> Result<Value, ResourceError> {
+    check_repeat_size(value.len(), count, heap.tracker())?;
+    Ok(Value::Ref(heap.allocate(HeapData::Bytes(value.repeat(count).into()))?))
+}
+
 impl From<Vec<u8>> for Bytes {
     fn from(bytes: Vec<u8>) -> Self {
         Self::new(bytes)
@@ -326,6 +343,26 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let other = match other {
+            Value::InternBytes(id) => vm.interns.get_bytes(*id),
+            Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
+            _ => return Ok(None),
+        };
+        Ok(Some(concat_bytes(self.get(vm.heap).as_slice(), other, vm.heap)?))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(count) = repeat_count(other, vm)? else {
+            return Ok(None);
+        };
+        Ok(Some(repeat_bytes(self.get(vm.heap).as_slice(), count, vm.heap)?))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
     }
 
     fn py_call_attr(

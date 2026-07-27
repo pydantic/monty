@@ -44,6 +44,8 @@ assert 3 * (1, 2) == (1, 2, 1, 2, 1, 2)
 assert (1,) * 0 == ()
 assert (1,) * -1 == ()
 assert () * 5 == ()
+assert () * (2**30) == ()
+assert (2**30) * () == ()
 assert (1, 2) * 1 == (1, 2)
 
 # === Tuple augmented assignment edge cases ===

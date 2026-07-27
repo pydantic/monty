@@ -1379,7 +1379,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::SetComp(ast::ExprSetComp {
@@ -1389,7 +1393,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::SetComp { elt, generators },
+                    Expr::SetComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::DictComp(ast::ExprDictComp {
@@ -1415,7 +1423,12 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::DictComp { key, value, generators },
+                    Expr::DictComp {
+                        key,
+                        value,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Generator(ast::ExprGenerator {
@@ -1428,7 +1441,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Await(a) => {

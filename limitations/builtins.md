@@ -63,8 +63,9 @@ mechanism beyond dataclass field inheritance.
   dataclass / namedtuple as the second argument raises `TypeError`.
 - **`iter()`** — see [iter.md](iter.md) for iterator and `iter(callable, sentinel)` divergences.
 - **`pow(base, exp, mod)`** — three-argument form requires all integers and
-  rejects negative exponents with `ValueError`. Exponents greater than
-  `u32::MAX` raise `OverflowError` (see [resource_limits.md](resource_limits.md)).
+  rejects negative exponents with `ValueError` instead of computing a modular
+  inverse. Non-modular exponents whose result cannot be materialized raise
+  `OverflowError` (see [resource_limits.md](resource_limits.md)).
 - **`sorted(iterable, *, key=None, reverse=False)`** — `key` and `reverse`
   must be passed by keyword; positional forms raise `TypeError`.
 - **`round(n, ndigits)`** — `ndigits` values outside the i64 range are
@@ -74,17 +75,12 @@ mechanism beyond dataclass field inheritance.
   Monty returns `0` immediately.
 - **`print`** — writes via the host print callback. `file=`, `flush=` are
   not honoured; `sep=` and `end=` are.
-- **`id(f)` / `hash(f)` / `f is g` / `f == g` for host-supplied callables**
-  — host functions passed in as inputs (`MontyObject::Function`) lose their
-  host object identity at the sandbox boundary. Inside Monty they are
-  compared by `__name__` alone: two distinct host callables with the same
-  `__name__` satisfy `a is b`, `a == b`, `id(a) == id(b)`, and
-  `hash(a) == hash(b)`. In CPython those would be four separate objects
-  and all four checks would return `False` / unequal. Conversely, the same
-  callable passed in twice is guaranteed identical regardless of whether
-  its name was interned in source. This applies only to external functions
-  — `def`-defined functions inside the sandbox retain per-definition
-  identity.
+- **Identity of host-supplied callables** — host functions passed in as inputs
+  (`MontyObject::Function`) lose their host object identity at the sandbox
+  boundary. Live external functions are identified by lookup name, so distinct
+  host callables with the same name share `is`, equality, `id()`, and `hash()`
+  results. Once the last sandbox reference is dropped, a later conversion of
+  that name may create a new function object.
 - **Type objects across the host boundary** — a `type` object (a class, not an
   instance) round-trips in both directions.
   - *Sandbox → host* (external/OS-call argument, or a `.run()` return value): the

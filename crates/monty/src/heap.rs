@@ -1,10 +1,12 @@
 use std::{
     cell::{Cell, UnsafeCell},
+    collections::BTreeMap,
     fmt,
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use monty_types::{ResourceError, ResourceTracker};
@@ -20,10 +22,10 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, FrozenSet, Instance, List, LongInt, Module, NamedTuple,
-        OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str, StringIterator,
-        TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime, list::ListIterator,
-        timedelta, timezone,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
+        NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
+        StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
+        list::ListIterator, timedelta, timezone,
     },
     value::Value,
 };
@@ -215,7 +217,7 @@ pub enum HeapReadOutput<'a> {
     FrozenSet(HeapRead<'a, FrozenSet>),
     Closure(HeapRead<'a, Closure>),
     FunctionDefaults(HeapRead<'a, FunctionDefaults>),
-    ExtFunction(HeapRead<'a, String>),
+    ExtFunction(HeapRead<'a, ExtFunction>),
     Cell(HeapRead<'a, CellValue>),
     Range(HeapRead<'a, Range>),
     Slice(HeapRead<'a, Slice>),
@@ -783,6 +785,10 @@ pub(crate) struct Heap {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
+    /// Live external functions indexed by name without owning heap references.
+    ///
+    /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
+    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
 }
 
 impl serde::Serialize for Heap {
@@ -811,14 +817,25 @@ impl<'de> serde::Deserialize<'de> for Heap {
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::deserialize(deserializer)?;
+        let mut entries = fields.entries;
+        let mut ext_function_cache = BTreeMap::new();
+        for index in 0..entries.len() {
+            let id = HeapId::from_index(index);
+            if let Some(mut entry) = entries.entry(id)
+                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
+            {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+        }
         Ok(Self {
-            entries: fields.entries,
+            entries,
             tracker: fields.tracker,
             purple_count: fields.purple_count,
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
+            ext_function_cache,
         })
     }
 }
@@ -851,6 +868,7 @@ impl Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
+            ext_function_cache: BTreeMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -974,6 +992,31 @@ impl Heap {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
+    /// Returns the external function for `name`, reusing a live object when possible.
+    ///
+    /// The cache holds no reference count of its own. Its entry is removed when the
+    /// last owning reference is dropped, before the heap slot can be reused.
+    pub fn get_ext_function(&mut self, name: &str) -> Result<Value, ResourceError> {
+        if let Some(id) = self.ext_function_cache.get(name).copied() {
+            self.inc_ref(id);
+            Ok(Value::Ref(id))
+        } else {
+            let function = ExtFunction::new(name);
+            let cache_key = function.cache_key();
+            let id = self.allocate(HeapData::ExtFunction(function))?;
+            let previous = self.ext_function_cache.insert(cache_key, id);
+            debug_assert!(previous.is_none());
+            Ok(Value::Ref(id))
+        }
+    }
+
+    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
+    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
+        if cache.get(name) == Some(&id) {
+            cache.remove(name);
+        }
+    }
+
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
     ///
     /// The returned `Value::Ref` has its refcount incremented so the caller can drop
@@ -1057,6 +1100,17 @@ impl Heap {
                     if heap_entry.color.get() == CcColor::Purple {
                         reader.heap.purple_count -= 1;
                     }
+                    // Remove weak-cache entries before the slot becomes available for reuse.
+                    let ext_function_name = match ptr.data(reader) {
+                        HeapData::ExtFunction(function) => Some(function.cache_key()),
+                        _ => None,
+                    };
+                    // Clear the cache (only if it points to this exact function, it's possible for
+                    // snapshot deserialization to create duplicate functions with the same name)
+                    if let Some(name) = ext_function_name {
+                        Self::remove_ext_function_cache_entry(&mut reader.heap.ext_function_cache, &name, current_id);
+                    }
+
                     // It is not possible to free from `HeapPtr` because it is created through
                     // a &self borrow on `StableHeap`. At least this repeated lookup is already
                     // on the slow path.
@@ -1229,6 +1283,10 @@ impl Heap {
                 heap_entry.readers.get(),
             );
             let mut value = entry.free();
+            // Clear weak entries before freeing their slots, just as `dec_ref`.
+            if let HeapData::ExtFunction(function) = value.data.0.get_mut() {
+                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &function.cache_key(), id);
+            }
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
