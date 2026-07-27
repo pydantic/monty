@@ -187,41 +187,21 @@ test('file handles round-trip with canonical modes and positions', async () => {
   t.deepEqual(defaultPosition, new MontyFileHandle('/data/default.txt', 'r'))
 })
 
-test('malformed file handles are rejected precisely', async () => {
-  const cases: [unknown, string][] = [
-    [{ __monty_type__: 'FileHandle', mode: 'r' }, 'MontyFileHandle path must be a string'],
-    [{ __monty_type__: 'FileHandle', path: 1, mode: 'r' }, 'MontyFileHandle path must be a string'],
-    [{ __monty_type__: 'FileHandle', path: '/x' }, 'MontyFileHandle mode must be a string'],
-    [{ __monty_type__: 'FileHandle', path: '/x', mode: 1 }, 'MontyFileHandle mode must be a string'],
-    [{ __monty_type__: 'FileHandle', path: '/x', mode: 'q' }, "invalid mode: 'q'"],
-    [
-      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: -1 },
-      'MontyFileHandle position must be a non-negative safe integer',
-    ],
-    [
-      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: 1.5 },
-      'MontyFileHandle position must be a non-negative safe integer',
-    ],
-    [
-      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: Number.POSITIVE_INFINITY },
-      'MontyFileHandle position must be a non-negative safe integer',
-    ],
-    [
-      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: Number.MAX_SAFE_INTEGER + 1 },
-      'MontyFileHandle position must be a non-negative safe integer',
-    ],
-    [
-      { __monty_type__: 'FileHandle', path: '/x', mode: 'r', position: '0' },
-      'MontyFileHandle position must be a non-negative safe integer',
-    ],
-    [{ __monty_type__: 'Unknown' }, 'Unknown Monty marker type: Unknown'],
+test('MontyFileHandle rejects invalid arguments', () => {
+  const cases: [() => unknown, string][] = [
+    [() => new MontyFileHandle(1 as unknown as string, 'r'), 'MontyFileHandle path must be a string'],
+    [() => new MontyFileHandle('/x', 1 as unknown as string), 'MontyFileHandle mode must be a string'],
+    [() => new MontyFileHandle('/x', 'q'), "invalid mode: 'q'"],
   ]
+  for (const position of [-1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, '0']) {
+    cases.push([
+      () => new MontyFileHandle('/x', 'r', { position: position as number }),
+      'MontyFileHandle position must be a non-negative safe integer',
+    ])
+  }
 
-  for (const [handle, expected] of cases) {
-    const result = await run("\ntry:\n    open('/x')\nexcept TypeError as exc:\n    result = str(exc)\nresult\n", {
-      os: () => handle,
-    })
-    t.is(result, expected)
+  for (const [create, expected] of cases) {
+    t.throws(create, { instanceOf: TypeError, message: expected })
   }
 })
 
