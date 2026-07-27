@@ -9,6 +9,7 @@ and no way for sandboxed code to load additional modules.
 | Module     | See                                  |
 | ---------- | ------------------------------------ |
 | `asyncio`  | [asyncio.md](asyncio.md)             |
+| `dataclasses` | [dataclasses.md](dataclasses.md)  |
 | `datetime` | [datetime.md](datetime.md)           |
 | `json`     | [json.md](json.md)                   |
 | `math`     | [math.md](math.md)                   |
@@ -28,8 +29,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 `abc`, `argparse`, `array`, `base64`, `bisect`, `collections` (no
 `defaultdict`, `Counter`, `OrderedDict`, `deque`; `namedtuple` is exposed
 as a builtin, not via `collections`), `contextlib`, `copy`, `csv`,
-`ctypes`, `dataclasses` (the `@dataclass` decorator is built in; the
-module is not importable), `decimal`, `enum`, `fractions`, `functools`,
+`ctypes`, `decimal`, `enum`, `fractions`, `functools`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`, `itertools`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,

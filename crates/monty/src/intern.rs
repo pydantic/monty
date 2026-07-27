@@ -763,6 +763,16 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+
+    // ==========================
+    // dataclasses module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import dataclasses`.
+    Dataclasses,
+    /// `dataclasses.dataclass` decorator.
+    Dataclass,
+    /// `dataclasses.is_dataclass()` function.
+    IsDataclass,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

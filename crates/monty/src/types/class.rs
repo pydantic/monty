@@ -8,6 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{BorrowedHeapReadMut, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    intern::StringId,
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
@@ -32,13 +33,62 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// Present when `@dataclass` has been applied — drives native synthesis of
+    /// `__init__`/`__repr__`/`__eq__`/etc. off the field metadata. `None` for an
+    /// ordinary class. `#[serde(default)]` so pre-dataclass snapshots still load.
+    #[serde(default)]
+    dataclass_meta: Option<DataclassMeta>,
+}
+
+/// Metadata recorded on a [`Class`] by the `@dataclass` decorator.
+///
+/// Holds no heap references (field names are interned), so a `Class` carrying
+/// one needs no extra refcount handling. Flags for the `@dataclass(...)` keyword
+/// form arrive with the code that reads them, rather than sitting unread in
+/// snapshots.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassMeta {
+    /// Fields in definition order (from `__annotations__`, `ClassVar` excluded).
+    pub fields: Vec<DataclassField>,
+}
+
+/// A single dataclass field's metadata (see [`DataclassMeta`]).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DataclassField {
+    /// The interned field name (from an `__annotations__` key, always interned).
+    pub name: StringId,
+    /// Whether the class namespace holds a default value for this field. The
+    /// default value itself lives in the class namespace (read by name at
+    /// construction time), so this struct holds no heap references.
+    pub has_default: bool,
+    /// Whether the annotation was `InitVar[...]`. Recorded rather than acted on:
+    /// `InitVar` is rejected at decoration time until pseudo-fields are
+    /// implemented, so a field carrying it does not reach construction.
+    #[serde(default)]
+    pub initvar: bool,
 }
 
 impl Class {
-    /// Creates a new class object from its name and member namespace.
+    /// Creates a new class object from its name and member namespace. Ordinary
+    /// classes start with no dataclass metadata; `@dataclass` sets it later.
     #[must_use]
     pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self { name, namespace }
+        Self {
+            name,
+            namespace,
+            dataclass_meta: None,
+        }
+    }
+
+    /// Returns the dataclass metadata, or `None` for an ordinary class.
+    #[must_use]
+    pub fn dataclass_meta(&self) -> Option<&DataclassMeta> {
+        self.dataclass_meta.as_ref()
+    }
+
+    /// Records dataclass metadata (called by the `@dataclass` decorator).
+    pub fn set_dataclass_meta(&mut self, meta: DataclassMeta) {
+        self.dataclass_meta = Some(meta);
     }
 
     /// Returns the class name (interned or heap-owned).

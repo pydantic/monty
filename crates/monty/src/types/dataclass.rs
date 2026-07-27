@@ -14,8 +14,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
+        heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::Type,
@@ -208,42 +208,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        // Check depth limit before recursing
-        let Ok(mut guard) = vm.recursion_guard() else {
-            return Ok(f.write_str("...")?);
-        };
-        let vm = &mut *guard;
-
-        // Format: ClassName(field1=value1, field2=value2, ...)
-        // Only declared fields are shown, not dynamically added attributes
-        let dc = self.get(vm.heap);
-        f.write_str(dc.name(vm.interns))?;
-        f.write_char('(')?;
-
+        // Only declared fields are shown, not dynamically added attributes.
+        let name = self.get(vm.heap).name(vm.interns).to_owned();
         let field_count = self.get(vm.heap).field_names.len();
-        let interns = vm.interns;
-        for i in 0..field_count {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            // Write field name
-            let field_name = &self.get(vm.heap).field_names[i];
-            f.write_str(field_name)?;
-            f.write_char('=')?;
-
-            // Look up value in attrs
-            if let Some(value) = self.get(vm.heap).attrs.get_by_str(field_name, vm.heap, interns) {
-                let value = value.clone_with_heap(vm.heap);
-                defer_drop!(value, vm);
-                value.py_repr_fmt(f, vm, heap_ids)?;
-            } else {
-                // Field not found - shouldn't happen for well-formed dataclasses
-                f.write_str("<?>")?;
-            }
-        }
-
-        f.write_char(')')?;
-        Ok(())
+        write_dataclass_repr(f, &name, field_count, vm, heap_ids, |i, heap, interns| {
+            let dc = self.get(heap);
+            let field_name = dc.field_names[i].clone();
+            let value = dc
+                .attrs
+                .get_by_str(&field_name, heap, interns)
+                .map(|v| v.clone_with_heap(heap));
+            (field_name, value)
+        })
     }
 
     /// Performs lazy method detection for dataclass instances.
@@ -302,6 +278,45 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
             None => Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name)),
         }
     }
+}
+
+/// Writes `ClassName(f1=v1, ...)`, shared by the host-supplied [`Dataclass`] and
+/// native `@dataclass` instances so the two renderings cannot drift.
+///
+/// Only declared fields are shown, so each caller supplies its own list via
+/// `field`, mapping an index to that field's name and a cloned value (dropped
+/// here). Self-referencing fields render `...` via the recursion guard; a field
+/// missing from `attrs` renders `<?>`.
+pub(crate) fn write_dataclass_repr<'h>(
+    f: &mut impl Write,
+    name: &str,
+    field_count: usize,
+    vm: &mut VM<'h>,
+    heap_ids: &mut LazyHeapSet,
+    field: impl Fn(usize, &HeapReader<'h>, &Interns) -> (String, Option<Value>),
+) -> RunResult<()> {
+    let Ok(mut guard) = vm.recursion_guard() else {
+        return Ok(f.write_str("...")?);
+    };
+    let vm = &mut *guard;
+    f.write_str(name)?;
+    f.write_char('(')?;
+    for i in 0..field_count {
+        if i > 0 {
+            f.write_str(", ")?;
+        }
+        let (field_name, value) = field(i, vm.heap, vm.interns);
+        f.write_str(&field_name)?;
+        f.write_char('=')?;
+        match value {
+            Some(value) => {
+                defer_drop!(value, vm);
+                value.py_repr_fmt(f, vm, heap_ids)?;
+            }
+            None => f.write_str("<?>")?,
+        }
+    }
+    Ok(f.write_char(')')?)
 }
 
 impl HeapItem for Dataclass {

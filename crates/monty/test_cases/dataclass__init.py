@@ -1,0 +1,118 @@
+# Native `@dataclass` construction: the synthesized `__init__` binds positional
+# and keyword arguments to the annotated fields, applies defaults, excludes
+# `ClassVar`, and raises CPython's exact arity/keyword errors.
+import typing
+from dataclasses import dataclass
+from typing import ClassVar
+
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+
+# === Construction: positional, keyword, mixed ===
+p = Point(1, 2)
+assert p.x == 1 and p.y == 2, 'positional construction sets fields'
+assert Point(10, y=20).y == 20, 'mixed positional + keyword'
+assert Point(x=5, y=6).x == 5, 'all-keyword construction'
+
+
+# === Defaults ===
+@dataclass
+class WithDefault:
+    a: int
+    b: int = 5
+    c: str = 'hi'
+
+
+assert WithDefault(1).b == 5, 'default used when field omitted'
+assert WithDefault(1).c == 'hi', 'string default used when omitted'
+assert WithDefault(1, 2).b == 2, 'positional argument overrides default'
+assert WithDefault(1, c='x').c == 'x', 'keyword overrides default, others still default'
+assert WithDefault(1, b=9).b == 9, 'keyword override with later field defaulted'
+
+
+# === ClassVar is excluded from the constructor ===
+@dataclass
+class WithClassVar:
+    x: int
+    count: ClassVar[int] = 0
+
+
+assert WithClassVar(7).x == 7, 'ClassVar is not a constructor field'
+assert WithClassVar.count == 0, 'ClassVar remains an ordinary class attribute'
+
+
+# A dotted spelling is excluded too, and a dotted *type argument*
+# (`ClassVar[typing.Dict[...]]`) must not confuse the qualifier match. The
+# quoted spelling is covered in `tests/dataclass_rejections.rs`: CPython
+# resolves it via the defining module's namespace, so it is not stable here.
+@dataclass
+class ClassVarSpellings:
+    x: int
+    bare: ClassVar[int] = 1
+    dotted: typing.ClassVar[int] = 3
+    dotted_arg: ClassVar[typing.Dict[str, int]] = {}
+
+
+assert repr(ClassVarSpellings(7)) == 'ClassVarSpellings(x=7)'
+assert ClassVarSpellings.dotted == 3, 'dotted ClassVar stays a class attribute'
+assert ClassVarSpellings.dotted_arg == {}, 'a ClassVar may hold a mutable value'
+
+
+# === Errors: messages match CPython exactly ===
+def expect_type_error(fn, message):
+    try:
+        fn()
+        assert False, f'expected TypeError: {message}'
+    except TypeError as e:
+        assert str(e) == message, f'wrong message: {e!r}'
+
+
+expect_type_error(lambda: Point(), "Point.__init__() missing 2 required positional arguments: 'x' and 'y'")
+expect_type_error(lambda: Point(1), "Point.__init__() missing 1 required positional argument: 'y'")
+expect_type_error(lambda: Point(1, 2, 3), 'Point.__init__() takes 3 positional arguments but 4 were given')
+expect_type_error(lambda: Point(1, x=2), "Point.__init__() got multiple values for argument 'x'")
+expect_type_error(lambda: Point(1, 2, z=3), "Point.__init__() got an unexpected keyword argument 'z'")
+expect_type_error(lambda: WithClassVar(7, 8), 'WithClassVar.__init__() takes 2 positional arguments but 3 were given')
+
+
+# === Class-body rejections that match CPython exactly ===
+def expect_error(fn, exc_type, message):
+    try:
+        fn()
+        assert False, f'expected an exception: {message}'
+    except exc_type as e:
+        assert str(e) == message, f'wrong message: {e!r}'
+
+
+def mutable_default():
+    @dataclass
+    class BadList:
+        xs: list[int] = []
+
+
+def mutable_default_dict():
+    @dataclass
+    class BadDict:
+        d: dict[str, int] = {}
+
+
+def non_default_after_default():
+    @dataclass
+    class BadOrder:
+        a: int = 1
+        b: int
+
+
+# CPython's rule is hashability; Monty matches it for built-in unhashable types.
+# A class setting `__hash__ = None` is NOT rejected (see limitations/dataclasses.md).
+expect_error(
+    mutable_default, ValueError, "mutable default <class 'list'> for field xs is not allowed: use default_factory"
+)
+expect_error(
+    mutable_default_dict, ValueError, "mutable default <class 'dict'> for field d is not allowed: use default_factory"
+)
+expect_error(non_default_after_default, TypeError, "non-default argument 'b' follows default argument 'a'")
