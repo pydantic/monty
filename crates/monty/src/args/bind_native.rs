@@ -34,10 +34,9 @@
 use std::{mem, ptr};
 
 use crate::{
-    ResourceTracker,
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext},
     intern::{Interns, StringId},
     value::{EitherStr, Value},
@@ -69,7 +68,7 @@ pub(crate) fn bind<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     // `spec` is passed explicitly (despite living in `bound` too) so the
     // inlined fast-path conditions constant-fold against the caller's
@@ -99,7 +98,7 @@ fn bind_slow<const N: usize>(
     spec: &'static ParamSpec,
     bound: &mut Bound<N>,
     args: ArgValues,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> RunResult<()> {
     let (pos, kwargs) = args.into_parts();
     let state = IterState {
@@ -523,7 +522,7 @@ impl<const N: usize> Bound<N> {
     }
 }
 
-impl<'h, C: ContainsHeap<'h>, const N: usize> DropWithContext<'h, C> for Bound<N> {
+impl<C: ContainsHeap, const N: usize> DropWithContext<C> for Bound<N> {
     fn drop_with(self, heap: &mut C) {
         for slot in self.slots {
             slot.drop_with(heap);
@@ -544,7 +543,7 @@ struct IterState {
     kwargs: KwargsValuesIter,
 }
 
-impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for IterState {
+impl<C: ContainsHeap> DropWithContext<C> for IterState {
     fn drop_with(self, heap: &mut C) {
         self.pos.drop_with(heap);
         self.kwargs.drop_with(heap);

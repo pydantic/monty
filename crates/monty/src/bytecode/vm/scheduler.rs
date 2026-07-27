@@ -9,13 +9,13 @@
 use std::{collections::VecDeque, mem};
 
 use ahash::AHashMap;
+use monty_types::ResourceError;
 
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithContext, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    resource::{ResourceError, ResourceTracker},
     value::Value,
 };
 
@@ -50,7 +50,7 @@ pub(crate) enum TaskState {
     Failed(RunError),
 }
 
-impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for TaskState {
+impl<C: ContainsHeap> DropWithContext<C> for TaskState {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Ready | Self::Failed(_) => {}
@@ -95,7 +95,7 @@ pub(crate) struct Task {
     pub state: TaskState,
 }
 
-impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for Task {
+impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
         for value in self.stack.drain(..) {
             value.drop_with(heap);
@@ -279,12 +279,7 @@ impl Scheduler {
     /// The scheduler inc_refs `future_id` so the entry stays alive between
     /// the yield to the host and the matching `resolve_future` / `fail_future`
     /// call, even if no awaiter holds a `Value::Ref` to it.
-    pub fn add_pending_external(
-        &mut self,
-        call_id: CallId,
-        future_id: HeapId,
-        heap: &HeapReader<'_, impl ResourceTracker>,
-    ) {
+    pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap) {
         heap.inc_ref(future_id);
         let prev = self.pending_externals.insert(call_id, future_id);
         debug_assert!(prev.is_none(), "add_pending_external: CallId already registered");
@@ -303,7 +298,7 @@ impl Scheduler {
     /// The task will be unblocked when the awaitable settles and its awaiter
     /// slot routes back here (`Awaiter::Task(task_id)` on either
     /// `ExternalFuture::Pending` or `AwaitedGather`).
-    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &HeapReader<'_, impl ResourceTracker>) {
+    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &Heap) {
         if let Some(task_id) = self.current_task {
             let task = self.get_task_mut(task_id);
             heap.inc_ref(awaitable_id);
@@ -339,7 +334,7 @@ impl Scheduler {
     /// [`Scheduler::cancel_task`].
     pub fn spawn(
         &mut self,
-        heap: &HeapReader<'_, impl ResourceTracker>,
+        heap: &Heap,
         coroutine_id: HeapId,
         gather_id: Option<HeapId>,
     ) -> Result<Option<TaskId>, ResourceError> {
@@ -399,19 +394,14 @@ impl Scheduler {
 
     /// Replaces a task's state, properly releasing any heap references owned
     /// by the previous state.
-    pub fn set_state(
-        &mut self,
-        task_id: TaskId,
-        new_state: TaskState,
-        heap: &mut HeapReader<'_, impl ResourceTracker>,
-    ) {
+    pub fn set_state(&mut self, task_id: TaskId, new_state: TaskState, heap: &mut Heap) {
         let task = self.get_task_mut(task_id);
         let old_state = mem::replace(&mut task.state, new_state);
         old_state.drop_with(heap);
     }
 
     /// Adds a task back to the ready queue.
-    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
+    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut Heap) {
         self.set_state(task_id, TaskState::Ready, heap);
         self.ready_queue.push_back(task_id);
     }
@@ -428,12 +418,7 @@ impl Scheduler {
     ///
     /// # Returns
     /// The gather_id if this task belongs to a gather (for sibling lookup).
-    pub fn fail_task(
-        &mut self,
-        task_id: TaskId,
-        error: RunError,
-        heap: &mut HeapReader<'_, impl ResourceTracker>,
-    ) -> Option<HeapId> {
+    pub fn fail_task(&mut self, task_id: TaskId, error: RunError, heap: &mut Heap) -> Option<HeapId> {
         let gather_id = self.get_task(task_id).gather_id;
         self.set_state(task_id, TaskState::Failed(error), heap);
         gather_id
@@ -447,7 +432,7 @@ impl Scheduler {
     /// call the task no longer exists in `Scheduler::tasks`; its owning
     /// references to its coroutine and (outer) gather are released by the
     /// `Task::drop_with` call at the end.
-    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
+    pub fn cancel_task(&mut self, task_id: TaskId, heap: &mut HeapReader<'_>) {
         // No-op if the task has already been removed (idempotent — finalization
         // sites may iterate task ids that include already-cancelled siblings).
         let Some(task) = self.tasks.remove(&task_id) else {
@@ -458,9 +443,9 @@ impl Scheduler {
         // so it was never charged for `SCHEDULER_TASK_OVERHEAD`; skipping
         // its decrement keeps cleanup balanced across VM drops.
         if task_id != TaskId::default() {
-            heap.track_shrink(SCHEDULER_TASK_OVERHEAD);
+            heap.heap_mut().track_shrink(SCHEDULER_TASK_OVERHEAD);
         }
-        heap.track_shrink(task.saved_context_size());
+        heap.heap_mut().track_shrink(task.saved_context_size());
 
         // If we're cancelling the current task, clear `current_task` so callers
         // don't try to look up a task that's about to be dropped (e.g.
@@ -526,12 +511,7 @@ impl Scheduler {
     /// already-resolved future, or the future had no awaiter — the failure
     /// is simply cached on the future for replay).
     #[must_use]
-    pub fn fail_for_call(
-        &mut self,
-        call_id: CallId,
-        error: &RunError,
-        heap: &mut HeapReader<'_, impl ResourceTracker>,
-    ) -> Option<Awaiter> {
+    pub fn fail_for_call(&mut self, call_id: CallId, error: &RunError, heap: &mut HeapReader<'_>) -> Option<Awaiter> {
         let future_id = self.pending_externals.remove(&call_id)?;
 
         let HeapReadOutput::ExternalFuture(mut fut) = heap.read(future_id) else {
@@ -597,7 +577,7 @@ impl Scheduler {
 
     /// Cleans up all scheduler resources: the pending-future inc_refs and
     /// every remaining task (via [`Scheduler::cancel_task`]).
-    pub fn cleanup(&mut self, heap: &mut HeapReader<'_, impl ResourceTracker>) {
+    pub fn cleanup(&mut self, heap: &mut HeapReader<'_>) {
         // Release the inc_refs the scheduler holds on each pending future.
         for (_, future_id) in mem::take(&mut self.pending_externals) {
             heap.dec_ref(future_id);

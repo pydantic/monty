@@ -16,9 +16,9 @@ and sync `pydantic-monty`'s exact pin on `pydantic-monty-runtime` (via `crates/m
 ## 2. Commit and Push
 
 ```bash
-git checkout -b prepare-release-X.Y.Z
+git checkout -b prepare-release-vX.Y.Z
 git add .
-git commit -m "Bump version to X.Y.Z"
+git commit -m "Bump version to vX.Y.Z"
 git push
 ```
 
@@ -32,7 +32,7 @@ Once the tag is pushed, CI will:
 - Build wheels for all platforms
 - Publish to PyPI (`pydantic-monty`)
 - Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
-- Publish the Rust crates to crates.io (`monty`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
+- Publish the Rust crates to crates.io (`monty`, `monty-types`, `monty-fs`, `monty-runtime`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

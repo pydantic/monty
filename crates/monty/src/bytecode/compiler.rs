@@ -11,6 +11,7 @@
 use std::{borrow::Cow, mem};
 
 use ahash::AHashSet;
+use monty_types::{MontyException, StackFrame};
 
 use super::{
     RESERVED_MODULE_DUNDERS,
@@ -22,7 +23,6 @@ use crate::{
     args::{ArgExprs, CallArg, CallKwarg, Kwarg},
     builtins::{Builtins, BuiltinsFunctions},
     exception_private::ExcType,
-    exception_public::{MontyException, SourceMap, StackFrame},
     expressions::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, NameScope,
         Node, Operator, PreparedFunctionDef, PreparedNode, SequenceItem, UnpackTarget,
@@ -34,6 +34,7 @@ use crate::{
     name_map::NameMap,
     parse::{CodeRange, ExceptHandler, Try},
     run::CompileOptions,
+    source_map::{SourceMap, StackFrameExt},
     value::{EitherStr, Value},
 };
 
@@ -665,7 +666,7 @@ impl<'a> Compiler<'a> {
                     self.code.emit(Opcode::Reraise)?;
                 }
             }
-            Node::FunctionDef(func_def) => self.compile_function_def(func_def)?,
+            Node::FunctionDef { def, decorators } => self.compile_function_def(def, decorators)?,
             Node::ClassDef {
                 name,
                 body,
@@ -702,9 +703,26 @@ impl<'a> Compiler<'a> {
     /// 2. Creating a Function struct with the compiled Code
     /// 3. Adding the Function to the compiler's functions vector
     /// 4. Emitting bytecode to evaluate defaults and create the function at runtime
-    fn compile_function_def(&mut self, func_def: &PreparedFunctionDef) -> Result<(), CompileError> {
-        // Build the function object on the stack, then bind it to its name slot.
+    fn compile_function_def(
+        &mut self,
+        func_def: &PreparedFunctionDef,
+        decorators: &[ExprLoc],
+    ) -> Result<(), CompileError> {
+        // Pushed in source order so they sit below the function value: the
+        // applying calls below then run bottom-up, like CPython's `f = deco(f)`.
+        for decorator in decorators {
+            self.compile_expr(decorator)?;
+        }
+        // Build the function object on the stack...
         self.emit_make_function(func_def, "function")?;
+        // ...then apply each decorator, reversed so the bottom-most (last pushed)
+        // applies first, each located at its own decorator so a traceback pins the
+        // one that raised.
+        for decorator in decorators.iter().rev() {
+            self.code.set_location(decorator.position, None);
+            self.code.emit_u8(Opcode::CallFunction, 1)?;
+        }
+        // ...and bind the (possibly decorated) function to its name slot.
         self.compile_store(&func_def.name)?;
         Ok(())
     }
@@ -4027,7 +4045,7 @@ impl CompileError {
         if self.exc_type == ExcType::ModuleNotFoundError {
             frame.hide_caret = true;
         }
-        MontyException::new_full(self.exc_type, Some(self.message.into_owned()), vec![frame])
+        MontyException::with_traceback(self.exc_type, Some(self.message.into_owned()), vec![frame])
     }
 }
 

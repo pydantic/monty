@@ -7,7 +7,7 @@
 //! Ownership matters: write payloads are *moved* through here so overlay
 //! storage can retain them without a copy.
 
-use monty::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall};
+use monty_types::{FileMode, MontyFileHandle, MontyObject, MontyPath, OsFunctionCall};
 
 use super::{
     common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay,
@@ -172,7 +172,6 @@ pub(super) fn fs_request_from_call(call: OsFunctionCall) -> FsRequest {
         | OsFunctionCall::GetEnviron
         | OsFunctionCall::DateToday
         | OsFunctionCall::DateTimeNow(_) => unreachable!("non-filesystem OS function reached filesystem parser"),
-        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used reached filesystem parser"),
     }
 }
 

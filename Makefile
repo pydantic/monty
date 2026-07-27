@@ -16,8 +16,8 @@ endif
 
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
-	# --only-dev to avoid building the python package, use make dev-py for that
-	uv sync --all-packages --only-dev
+	# --only-dev avoids building the python packages; --inexact preserves builds installed by make dev-py
+	uv sync --all-packages --only-dev --inexact
 
 .PHONY: install-js
 install-js: ## Install JS package dependencies
@@ -29,7 +29,7 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 	uvx prek install --install-hooks
 
 .PHONY: dev-py
-dev-py: ## Install the python package for development
+dev-py: install-py ## Install the python package for development
 	uv run maturin develop --uv -m crates/monty-runtime/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 

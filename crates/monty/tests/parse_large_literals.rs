@@ -4,7 +4,8 @@
 //! at parse time to prevent the O(n^2) `BigInt::parse` from running. Non-decimal
 //! literals (hex, binary) and floats are unaffected.
 
-use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 #[test]
 fn large_decimal_literal_rejected() {

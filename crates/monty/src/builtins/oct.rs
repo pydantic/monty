@@ -7,9 +7,8 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::HeapData,
-    resource::ResourceTracker,
     types::str::allocate_string_no_interning,
     value::Value,
 };
@@ -18,7 +17,7 @@ use crate::{
 ///
 /// Converts an integer to an octal string prefixed with '0o'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_oct(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_oct(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("oct", vm.heap)?;
     defer_drop!(value, vm);
 

@@ -20,11 +20,11 @@ Implemented: `name`, `parent`, `stem`, `suffix`, `suffixes`, `parts`,
 `is_absolute()`, `joinpath(*other)`, `with_name(name)`, `with_stem(stem)`,
 `with_suffix(suffix)`, `as_posix()`, `__fspath__()`.
 
-The `/` operator works (`Path("a") / "b"` → `Path("a/b")`).
+The `/` operator works in both directions (`Path("a") / "b"`,
+`Path("a") / Path("b")`, `"a" / Path("b")`).
 
 Not implemented: `anchor`, `drive`, `root`, `relative_to`, `is_reserved`,
-`match`, `full_match`, `__truediv__` with a `Path` on the *left* of a str
-(but right-side str is fine), `with_segments`.
+`match`, `full_match`, `with_segments`.
 
 ## I/O methods (yield to host)
 

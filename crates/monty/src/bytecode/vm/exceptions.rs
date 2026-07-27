@@ -6,16 +6,15 @@ use super::VM;
 use crate::{
     builtins::Builtins,
     defer_drop,
-    exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, ExceptionRaise, RawStackFrame, RunError, RunResult, SimpleException},
     expressions::CmpOperator,
     heap::{DropGuard, HeapData},
     intern::{StaticStrings, StringId},
-    resource::ResourceTracker,
     types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Returns the current frame's name for traceback generation: the
     /// function name for user-defined functions, or `<module>` for
     /// module-level code. The empty-frames branch is defensive — async
@@ -248,7 +247,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
-        // For uncatchable exceptions (ResourceError like RecursionError),
+        // For terminal resource errors such as memory limits,
         // we still need to unwind the stack to collect all frames for the traceback
         if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
             return Some(self.unwind_for_traceback(error));
@@ -377,7 +376,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
     /// Unwinds the call stack to collect all frames for a traceback.
     ///
-    /// Used for uncatchable exceptions (like RecursionError) that can't be handled
+    /// Used for terminal resource errors that can't be handled
     /// but still need a complete traceback showing all active call frames.
     fn unwind_for_traceback(&mut self, mut error: RunError) -> RunError {
         // Pop frames and add caller frame info to the traceback
@@ -483,7 +482,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
 /// Streams an assert operand's repr into the configured byte-capped writer.
 /// Reaching the cap stops formatting the remainder and appends `…`.
-fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+fn assert_operand_repr(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let mut writer = TruncatingWriter::new(vm.assert_repr_max_bytes as usize);
     let mut heap_ids = LazyHeapSet::default();
     match value.py_repr_fmt(&mut writer, vm, &mut heap_ids) {
@@ -497,7 +496,7 @@ fn assert_operand_repr(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> 
 
 /// `str()` of an explicit assert message, matching how the message renders in
 /// `AssertionError: {msg}` — not truncated, since the user chose it explicitly.
-fn assert_msg_str(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<String> {
+fn assert_msg_str(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
     let str_value = value.py_str(vm)?;
     defer_drop!(str_value, vm);
     Ok(str_value.to_str(vm)?.to_owned())

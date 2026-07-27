@@ -17,9 +17,11 @@ use std::{
     str,
 };
 
+use monty_types::ResourceTracker;
+pub use monty_types::utf8_error_reason;
+
 use crate::{
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     string_builder::StringBuilder,
 };
 
@@ -90,7 +92,7 @@ impl Codec {
     /// UTF-32, plus a BOM — so those paths need no tracked builder; only the
     /// ASCII error handlers can amplify further, and they build through the
     /// tracker.
-    pub(crate) fn encode(self, s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+    pub(crate) fn encode(self, s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
         match self {
             Self::Utf8 => Ok(s.as_bytes().to_vec()),
             Self::Ascii => encode_ascii(s, errors, tracker),
@@ -282,7 +284,7 @@ fn handle_decode_error(
 /// `namereplace` amplifies a single character into up to ~90 bytes
 /// (`\N{LONGEST UNICODE NAME...}`), so an untracked accumulator could grow
 /// far past the memory limit before the final allocation was checked.
-fn encode_ascii(s: &str, errors: &str, tracker: &impl ResourceTracker) -> RunResult<Vec<u8>> {
+fn encode_ascii(s: &str, errors: &str, tracker: &ResourceTracker) -> RunResult<Vec<u8>> {
     // Fast path for the overwhelmingly common all-ASCII case: `is_ascii` is
     // SIMD-vectorized in std, and the output is byte-for-byte the (already
     // tracked) input, so a bulk copy needs no StringBuilder.
@@ -426,26 +428,6 @@ fn decode_utf8(bytes: &[u8], errors: &str) -> RunResult<String> {
         }
     }
     Ok(out)
-}
-
-/// Classifies an invalid-UTF-8 error into CPython's reason wording, from the
-/// first unexpected byte and `Utf8Error::error_len()`.
-///
-/// `error_len == None` means the input ended mid-sequence (`unexpected end of
-/// data`); otherwise a byte that is a legal multi-byte lead (0xC2–0xF4) was
-/// followed by an invalid continuation, and anything else (stray
-/// continuation bytes, the overlong leads 0xC0/0xC1, 0xF5–0xFF) is an
-/// `invalid start byte`. Public (re-exported at the crate root) so `monty-fs`
-/// produces identical wording for text-mode file reads.
-#[must_use]
-pub fn utf8_error_reason(first_bad_byte: u8, error_len: Option<usize>) -> &'static str {
-    if error_len.is_none() {
-        "unexpected end of data"
-    } else if (0xC2..=0xF4).contains(&first_bad_byte) {
-        "invalid continuation byte"
-    } else {
-        "invalid start byte"
-    }
 }
 
 /// Returns true if `rest` starts with a complete CESU-8-encoded surrogate

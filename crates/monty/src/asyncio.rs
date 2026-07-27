@@ -214,7 +214,7 @@ pub(crate) enum Awaiter {
     GatherSlot { gather: HeapId, source: HeapId },
 }
 
-impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for Awaiter {
+impl<C: ContainsHeap> DropWithContext<C> for Awaiter {
     fn drop_with(self, heap: &mut C) {
         if let Self::GatherSlot { gather, .. } = self {
             heap.heap_mut().dec_ref(gather);

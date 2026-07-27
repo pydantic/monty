@@ -8,16 +8,16 @@
 //! via the `OsFunction` callback mechanism - Monty yields control to the host
 //! which executes the operation and returns the result.
 
+use monty_types::{GetenvArgs, MontyObject, OsFunctionCall, ResourceError};
+
 use crate::{
-    MontyObject,
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    os::{GetenvArgs, OsFunctionCall},
-    resource::{ResourceError, ResourceTracker},
+    object_bridge::MontyObjectExt,
     types::{Module, Property, property::ZeroArgOsProperty},
     value::Value,
 };
@@ -42,7 +42,7 @@ pub(crate) enum OsFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Os);
 
     // os.getenv - function to get a single environment variable
@@ -66,11 +66,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 ///
 /// Returns `CallResult::OsCall` for functions that need host involvement,
 /// or `CallResult::Value` for functions that can be computed immediately.
-pub(super) fn call(
-    vm: &mut VM<'_, impl ResourceTracker>,
-    functions: OsFunctions,
-    args: ArgValues,
-) -> RunResult<CallResult> {
+pub(super) fn call(vm: &mut VM<'_>, functions: OsFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
         OsFunctions::Getenv => getenv(vm, args),
     }
@@ -84,7 +80,7 @@ pub(super) fn call(
 /// `TypeError("str expected, not <type>")`. That wording is bespoke to
 /// `os._Environ` in the CPython stdlib, so it lives inline here rather
 /// than as a shared helper.
-fn getenv(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
+fn getenv(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let (key_value, default_value) = args.get_one_two_args("os.getenv", vm.heap)?;
     if let Some(key) = key_value.as_either_str(vm.heap) {
         key_value.drop_with(vm.heap);

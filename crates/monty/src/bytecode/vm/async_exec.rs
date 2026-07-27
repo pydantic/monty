@@ -9,27 +9,27 @@
 use std::{collections::hash_map::Entry, mem, task::Poll};
 
 use ahash::AHashMap;
+use monty_types::MontyException;
 use smallvec::{SmallVec, smallvec};
 
 use super::{AwaitResult, CallFrame, FrameExit, VM};
 use crate::{
-    MontyException,
     asyncio::{
         AwaitedGather, Awaiter, CallId, Coroutine, CoroutineState, ExternalFuture, ExternalFutureState, GatherFuture,
         GatherState, TaskId, awaited_state_size,
     },
     bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
-    resource::ResourceTracker,
-    run_progress::ExtFunctionResult,
+    object_bridge::MontyObjectExt,
+    run_progress::{ExtFunctionResult, ExtFunctionResultExt},
     types::List,
     value::Value,
 };
 
-impl<'h, T: ResourceTracker> VM<'h, T> {
+impl<'h> VM<'h> {
     /// Executes the Await opcode.
     ///
     /// Pops the awaitable from the stack and handles it based on its type:
@@ -307,7 +307,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // `cleanup_frame_state`. Comprehension variables live on the operand
         // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         // Extend the stack with the coroutine's pre-bound locals.
         let stack_base = self.stack.len();
@@ -689,7 +689,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // `cleanup_frame_state`. Comprehension variables live on the operand
         // stack (pushed per-comp).
         let size = namespace_values.len() * mem::size_of::<Value>();
-        self.heap.tracker().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         let stack_base = self.stack.len();
         self.stack.extend(namespace_values);
@@ -996,7 +996,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// [`VM::await_gather_future`] for the synchronous-completion paths
     /// (empty gather, all externals already resolved); on the async path the
     /// transition happens inside [`Self::resolve_child`].
-    pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h, impl ResourceTracker>, list_id: HeapId) {
+    pub(crate) fn cache_result(&mut self, heap: &mut HeapReader<'h>, list_id: HeapId) {
         // Pending and Completed both report 0 state-size, so this is a
         // no-op on the synchronous-completion path and a real shrink
         // when transitioning out of `Awaited`.
@@ -1022,12 +1022,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
     ///
     /// Returns `None` while children are still in flight; otherwise
     /// `Some(GatherResolution::Success)` with the cached result list.
-    fn resolve_child(
-        &mut self,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        child_id: HeapId,
-        value: Value,
-    ) -> RunResult<Option<GatherSuccess>> {
+    fn resolve_child(&mut self, vm: &mut VM<'h>, child_id: HeapId, value: Value) -> RunResult<Option<GatherSuccess>> {
         // Remove this child's slot-index mapping.
         let indices: SmallVec<[usize; 1]> = self
             .get_mut(vm.heap)
@@ -1091,12 +1086,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
     /// this works from both `VM::handle_task_failure` (has a VM, splits
     /// borrows on its fields) and `Scheduler::fail_for_call` (only has a
     /// scheduler + heap reader).
-    pub(crate) fn fail(
-        &mut self,
-        scheduler: &mut Scheduler,
-        heap: &mut HeapReader<'h, impl ResourceTracker>,
-        error: &RunError,
-    ) -> Awaiter {
+    pub(crate) fn fail(&mut self, scheduler: &mut Scheduler, heap: &mut HeapReader<'h>, error: &RunError) -> Awaiter {
         // Captured before draining so the decrement below balances the
         // `track_growth` from the Pending → Awaited transition.
         let old_size = self.get(heap).py_estimate_size();
@@ -1142,7 +1132,7 @@ impl<'h> HeapRead<'h, GatherFuture> {
 fn drop_committed_children(
     pending_children: AHashMap<HeapId, SmallVec<[usize; 1]>>,
     scheduler: &mut Scheduler,
-    heap: &mut HeapReader<'_, impl ResourceTracker>,
+    heap: &mut HeapReader<'_>,
     error: &RunError,
 ) {
     for child_id in pending_children.into_keys() {

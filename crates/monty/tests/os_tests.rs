@@ -4,9 +4,10 @@
 //! `RunProgress::OsCall` with the correct `OsFunction` variant and arguments,
 //! and that return values are correctly used by Python code.
 
-use monty::{
-    CompileOptions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun, NoLimitTracker,
-    PrintWriter, RunProgress, file_stat,
+use monty::{MontyRun, RunProgress};
+use monty_types::{
+    CompileOptions, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, OsFunctionCall, PrintWriter,
+    ResourceTracker, file_stat,
 };
 
 /// Helper to run code and extract the OsCall progress.
@@ -17,7 +18,9 @@ use monty::{
 /// result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
@@ -32,39 +35,39 @@ fn run_to_oscall(code: &str) -> (&'static str, Vec<MontyObject>) {
 }
 
 /// Returns a `MontyObject` shaped like a plausible host response for `call`.
-fn mock_oscall_result(call: &monty::OsFunctionCall) -> MontyObject {
+fn mock_oscall_result(call: &OsFunctionCall) -> MontyObject {
     match call {
-        monty::OsFunctionCall::Exists(_)
-        | monty::OsFunctionCall::IsFile(_)
-        | monty::OsFunctionCall::IsDir(_)
-        | monty::OsFunctionCall::IsSymlink(_) => MontyObject::Bool(true),
-        monty::OsFunctionCall::ReadText(_) | monty::OsFunctionCall::Resolve(_) | monty::OsFunctionCall::Absolute(_) => {
+        OsFunctionCall::Exists(_)
+        | OsFunctionCall::IsFile(_)
+        | OsFunctionCall::IsDir(_)
+        | OsFunctionCall::IsSymlink(_) => MontyObject::Bool(true),
+        OsFunctionCall::ReadText(_) | OsFunctionCall::Resolve(_) | OsFunctionCall::Absolute(_) => {
             MontyObject::String("mock".to_owned())
         }
-        monty::OsFunctionCall::ReadBytes(_) => MontyObject::Bytes(vec![]),
-        monty::OsFunctionCall::Stat(_) => MontyObject::None,
-        monty::OsFunctionCall::Iterdir(_) => MontyObject::List(vec![]),
-        monty::OsFunctionCall::WriteText(_)
-        | monty::OsFunctionCall::WriteBytes(_)
-        | monty::OsFunctionCall::AppendText(_)
-        | monty::OsFunctionCall::AppendBytes(_)
-        | monty::OsFunctionCall::Mkdir(_)
-        | monty::OsFunctionCall::Unlink(_)
-        | monty::OsFunctionCall::Rmdir(_)
-        | monty::OsFunctionCall::Rename(_) => MontyObject::None,
-        monty::OsFunctionCall::Open(_) => MontyObject::FileHandle(MontyFileHandle {
+        OsFunctionCall::ReadBytes(_) => MontyObject::Bytes(vec![]),
+        OsFunctionCall::Stat(_) => MontyObject::None,
+        OsFunctionCall::Iterdir(_) => MontyObject::List(vec![]),
+        OsFunctionCall::WriteText(_)
+        | OsFunctionCall::WriteBytes(_)
+        | OsFunctionCall::AppendText(_)
+        | OsFunctionCall::AppendBytes(_)
+        | OsFunctionCall::Mkdir(_)
+        | OsFunctionCall::Unlink(_)
+        | OsFunctionCall::Rmdir(_)
+        | OsFunctionCall::Rename(_) => MontyObject::None,
+        OsFunctionCall::Open(_) => MontyObject::FileHandle(MontyFileHandle {
             path: "mock".to_owned(),
             mode: "r".parse::<FileMode>().unwrap(),
             position: 0,
         }),
-        monty::OsFunctionCall::Getenv(_) => MontyObject::String("mock_env_value".to_owned()),
-        monty::OsFunctionCall::GetEnviron => MontyObject::Dict(vec![].into()),
-        monty::OsFunctionCall::DateToday => MontyObject::Date(MontyDate {
+        OsFunctionCall::Getenv(_) => MontyObject::String("mock_env_value".to_owned()),
+        OsFunctionCall::GetEnviron => MontyObject::Dict(vec![].into()),
+        OsFunctionCall::DateToday => MontyObject::Date(MontyDate {
             year: 2023,
             month: 11,
             day: 14,
         }),
-        monty::OsFunctionCall::DateTimeNow(_) => MontyObject::DateTime(MontyDateTime {
+        OsFunctionCall::DateTimeNow(_) => MontyObject::DateTime(MontyDateTime {
             year: 2023,
             month: 11,
             day: 14,
@@ -75,14 +78,15 @@ fn mock_oscall_result(call: &monty::OsFunctionCall) -> MontyObject {
             offset_seconds: None,
             timezone_name: None,
         }),
-        monty::OsFunctionCall::Used => unreachable!("OsFunctionCall::Used in mock_oscall_result"),
     }
 }
 
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (&'static str, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {

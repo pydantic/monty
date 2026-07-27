@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use monty::{
-    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
-    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyRun, MontyTimeDelta,
-    MontyTimeZone, MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs,
-    RenameCallArgs, ResourceLimits, StackFrame, UnicodeErrorData,
-};
+use monty::MontyRun;
 use monty_proto::{MAX_VALUE_DEPTH, ProtoConvertError, WireObject, exceeds_max_value_depth, pb};
+use monty_types::{
+    CodeLoc, CompileOptions, DictPairs, ExcData, ExcType, ExtFunctionResult, GetenvArgs, JsonErrorData, MkdirCallArgs,
+    MontyDate, MontyDateTime, MontyException, MontyFileHandle, MontyObject, MontyPath, MontyTimeDelta, MontyTimeZone,
+    MontyType, NameLookupResult, OpenCallArgs, OsFunctionCall, PathBytesDataArgs, PathStringDataArgs, RenameCallArgs,
+    ResourceLimits, StackFrame, UnicodeErrorData,
+};
 use num_bigint::BigInt;
 use prost::Message;
 
@@ -436,14 +437,12 @@ fn bogus_json_payloads_are_dropped_not_trusted() {
 #[test]
 fn resource_limits_round_trip() {
     let limits = ResourceLimits {
-        max_allocations: Some(10_000),
         max_duration: Some(Duration::from_millis(1500)),
         max_memory: Some(64 * 1024 * 1024),
         gc_interval: Some(100),
-        max_recursion_depth: Some(50),
+        max_recursion_depth: 50,
     };
     let back = ResourceLimits::from(pb::ResourceLimits::from(&limits));
-    assert_eq!(back.max_allocations, limits.max_allocations);
     assert_eq!(back.max_duration, limits.max_duration);
     assert_eq!(back.max_memory, limits.max_memory);
     assert_eq!(back.gc_interval, limits.gc_interval);
@@ -452,11 +451,10 @@ fn resource_limits_round_trip() {
 
 #[test]
 fn empty_resource_limits_default_recursion_depth() {
-    // an all-absent wire message must behave like ResourceLimits::new():
+    // an all-absent wire message must behave like ResourceLimits::default():
     // unlimited everything except the standard recursion-depth default
     let back = ResourceLimits::from(pb::ResourceLimits::default());
-    let expected = ResourceLimits::new();
-    assert_eq!(back.max_allocations, expected.max_allocations);
+    let expected = ResourceLimits::default();
     assert_eq!(back.max_duration, expected.max_duration);
     assert_eq!(back.max_memory, expected.max_memory);
     assert_eq!(back.gc_interval, expected.gc_interval);
@@ -705,11 +703,5 @@ fn os_call_conversion_rejects_invalid_payloads() {
     assert!(matches!(
         OsFunctionCall::try_from(missing_default),
         Err(ProtoConvertError::MissingField("Getenv.default"))
-    ));
-    // A consumed re-announcement carries no call — receivers must match it
-    // before converting.
-    assert!(matches!(
-        OsFunctionCall::try_from(pb::os_call::Call::Consumed(pb::Unit {})),
-        Err(ProtoConvertError::InvalidValue { .. })
     ));
 }

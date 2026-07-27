@@ -6,14 +6,14 @@
 use std::{borrow::Cow, mem};
 
 use jiter::{Jiter, JiterError, JiterErrorType, JsonErrorType, NumberAny, NumberInt, Peek};
+use monty_types::ResourceError;
 
 use super::JsonStringCache;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
-    exception_private::{ExcType, RunError, RunResult},
-    heap::{DropGuard, HeapData, HeapReader},
-    resource::{ResourceError, ResourceTracker},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
     types::{
         Dict, List, LongInt,
         long_int::{check_decimal_digit_count, decimal_digit_count_ascii},
@@ -69,7 +69,7 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// CPython kwargs `cls`, `object_hook`, `parse_float`, `parse_int`,
 /// `parse_constant`, and `object_pairs_hook` are intentionally unsupported
 /// and will raise `TypeError` if passed.
-pub(super) fn call_loads(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
     let mut data_guard = DropGuard::new(s, vm);
     let (data, vm) = data_guard.as_parts_mut();
@@ -94,7 +94,7 @@ struct JsonLoadsArgs {
 /// The parser works directly on the underlying byte slice. Decoded strings from
 /// `jiter` are copied into Monty's heap immediately before any further parser
 /// movement so borrowed tape-backed data never escapes.
-fn parse_json_input(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn parse_json_input(value: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let bytes: Cow<'_, [u8]> = match value {
         Value::InternString(string_id) => Cow::Borrowed(vm.interns.get_str(*string_id).as_bytes()),
         Value::InternBytes(bytes_id) => Cow::Borrowed(vm.interns.get_bytes(*bytes_id)),
@@ -116,7 +116,7 @@ fn parse_json_input(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> Run
 ///
 /// Syntax errors are wrapped in `json.JSONDecodeError` using the same
 /// line/column/character suffix as CPython.
-fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn parse_json_bytes(bytes: &[u8], vm: &mut VM<'_>) -> RunResult<Value> {
     let mut jiter = Jiter::new(bytes).with_allow_inf_nan();
     // Take the cache out of the VM so we can pass it alongside &mut VM
     // without conflicting borrows. `mem::take` leaves `Default` in its place.
@@ -146,7 +146,7 @@ fn parse_json_value(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     let peek = jiter.peek()?;
     parse_json_value_from_peek(peek, jiter, depth, cache, vm)
@@ -161,7 +161,7 @@ fn parse_json_value_from_peek(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     match peek {
         Peek::Null => {
@@ -183,14 +183,10 @@ fn parse_json_value_from_peek(
 /// Allocates a string using the cache when eligible, falling back to direct
 /// allocation for empty/single-char strings (already interned by
 /// `allocate_string`).
-fn allocate_cached_string(
-    s: String,
-    cache: &mut JsonStringCache,
-    heap: &HeapReader<'_, impl ResourceTracker>,
-) -> ParseResult<Value> {
+fn allocate_cached_string(s: String, cache: &mut JsonStringCache, heap: &HeapReader<'_>) -> ParseResult<Value> {
     if s.len() < 2 {
         // Empty and single-char strings are interned by allocate_string.
-        Ok(allocate_string(s, heap)?)
+        Ok(allocate_string(s, heap.heap())?)
     } else {
         Ok(cache.get_or_allocate(s, heap)?)
     }
@@ -199,7 +195,7 @@ fn allocate_cached_string(
 /// Parses a JSON number into the corresponding Monty numeric value.
 ///
 /// Oversized integers that exceed Monty's digit limit are rejected with a `ValueError`
-fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_, impl ResourceTracker>) -> ParseResult<Value> {
+fn parse_json_number(peek: Peek, jiter: &mut Jiter<'_>, vm: &mut VM<'_>) -> ParseResult<Value> {
     let start = jiter.current_index();
     // Parse to bytes so that we can check the digit count before any BigInt allocation occurs.
     let token = jiter.known_number_bytes(peek)?;
@@ -232,7 +228,7 @@ fn parse_json_array(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
 
@@ -275,7 +271,7 @@ fn parse_json_object(
     jiter: &mut Jiter<'_>,
     depth: usize,
     cache: &mut JsonStringCache,
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
 ) -> ParseResult<Value> {
     check_json_recursion_limit(jiter, depth)?;
 

@@ -81,6 +81,18 @@ impl From<io::Error> for FrameError {
     }
 }
 
+/// The encoded frame length of `msg` when it exceeds [`MAX_FRAME_LEN`]
+/// (saturating at [`u32::MAX`]), or `None` when it fits.
+///
+/// [`write_frame`] rejects an oversize frame anyway, but only once the caller
+/// is committed to sending. Peers that must not mutate their own state until
+/// the frame is known sendable — a parent about to mark a suspension answered,
+/// a child about to enter one — check it with this first.
+pub fn exceeds_max_frame_len(msg: &impl Message) -> Option<u32> {
+    let len = u32::try_from(msg.encoded_len()).unwrap_or(u32::MAX);
+    (len > MAX_FRAME_LEN).then_some(len)
+}
+
 /// Encodes `msg` and writes it to `writer` as one length-prefixed frame, then
 /// flushes (see the module docs for why flushing every frame is required).
 ///

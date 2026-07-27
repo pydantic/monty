@@ -6,10 +6,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::DropGuard,
-    resource::ResourceTracker,
-    types::{MontyIter, PyTrait, Type},
+    types::{PyTrait, Type},
     value::Value,
 };
 
@@ -31,12 +30,13 @@ struct SumArgs {
 /// Sums the items of an iterable from left to right with an optional start value.
 /// The default start value is 0. Str and bytes start values are explicitly
 /// rejected, pointing at `''.join(seq)` / `b''.join(seq)` instead.
-pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let SumArgs { iterable, start } = SumArgs::from_args(args, vm)?;
     defer_drop_mut!(start, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     // Reject str/bytes start values - Python explicitly forbids these
     match start.py_type(vm) {
@@ -53,7 +53,7 @@ pub fn builtin_sum(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
     // Sum all items
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
         // Try to add the item to accumulator

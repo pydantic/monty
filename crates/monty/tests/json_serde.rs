@@ -10,7 +10,8 @@
 //! structural values, not strings.
 
 use insta::assert_snapshot;
-use monty::{CompileOptions, ExcType, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyObject};
 
 /// Evaluate a Python snippet under Monty and return its final value.
 fn eval(code: &str) -> MontyObject {
@@ -81,6 +82,19 @@ fn json_output_exception() {
 fn json_output_repr() {
     let obj = MontyObject::Repr("<function foo>".to_string());
     assert_snapshot!(to_json(&obj), @r#"{"Repr":"<function foo>"}"#);
+}
+
+#[test]
+fn json_output_builtin_function() {
+    // Builtin functions serialize by their lowercase Python name, matching
+    // the strum `Display`/wire representation.
+    assert_snapshot!(to_json(&eval("print")), @r#"{"BuiltinFunction":"print"}"#);
+}
+
+#[test]
+fn json_deserialize_builtin_function() {
+    let obj: MontyObject = serde_json::from_str(r#"{"BuiltinFunction":"print"}"#).unwrap();
+    assert_eq!(obj, eval("print"));
 }
 
 #[test]

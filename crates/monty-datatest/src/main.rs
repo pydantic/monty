@@ -24,12 +24,13 @@ use std::{
 
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
-use monty::{
-    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
-    MontyFileHandle, MontyObject, MontyRun, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter,
-    ResourceLimits, RunProgress, dir_stat, file_stat,
-};
+use monty::{MontyRun, RunProgress};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_types::{
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
+    MontyObject, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, ResourceTracker,
+    dir_stat, file_stat,
+};
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 
@@ -64,7 +65,7 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// 100_000 otherwise — tests that need a larger value to stay within the
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
-    ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
+    ResourceLimits::default().max_recursion_depth(TEST_RECURSION_LIMIT)
 }
 
 /// Builds a `MontyRun` with production-default [`CompileOptions`] so fixtures
@@ -1223,7 +1224,6 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
-        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 
@@ -1384,7 +1384,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
 
     match new_monty_run(code, &test_name) {
         Ok(ex) => {
-            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+            let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1750,7 +1750,7 @@ fn run_mount_fs_iter_loop(
     mount_table: &mut MountTable,
     limits: ResourceLimits,
 ) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     loop {
         match progress {
@@ -1769,15 +1769,14 @@ fn run_mount_fs_iter_loop(
                 };
                 progress = lookup.resume(result, PrintWriter::Stdout)?;
             }
-            RunProgress::OsCall(mut call) => {
+            RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                let ext_result = match mount_table.handle_os_call(call.take_function_call()) {
+                progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
                     MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
                     MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     // Non-filesystem operation — dispatch to the regular handler.
                     MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
-                };
-                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+                })?;
             }
         }
     }
@@ -1793,7 +1792,7 @@ fn run_mount_fs_iter_loop(
 /// - Sync functions: result is passed immediately via `state.run()`
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun, limits: ResourceLimits) -> Result<MontyObject, MontyException> {
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)?;
 
     // Track pending async calls: (call_id, pre-built ExtFunctionResult).
     // Successful async calls produce `Return(value)`; `async_fail` produces

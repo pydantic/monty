@@ -8,7 +8,8 @@
 //! test_case would fail on a macOS CI runner. They live here instead. See
 //! limitations/datetime.md.
 
-use monty::{CompileOptions, MontyObject, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyObject};
 
 /// Runs a snippet and returns its result as a `String`.
 fn run_str(code: &str) -> String {

@@ -1,5 +1,4 @@
 use std::{
-    marker::PhantomData,
     mem::ManuallyDrop,
     ptr::addr_of,
     vec::{Drain, IntoIter},
@@ -8,8 +7,7 @@ use std::{
 use smallvec::SmallVec;
 
 use crate::{
-    ResourceTracker,
-    heap::{HeapId, HeapReader},
+    heap::{Heap, HeapId},
     value::Value,
 };
 
@@ -53,25 +51,27 @@ pub(crate) trait HeapItem {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
 }
 
-/// Gives cleanup contexts access to their branded [`HeapReader`].
-///
-/// The explicit `'h` preserves the reader's invariant brand instead of
-/// reconstructing a new reader from its heap and tracker fields.
-pub(crate) trait ContainsHeap<'h> {
-    /// Tracker borrowed by the heap reader.
-    type Tracker: ResourceTracker + 'h;
+/// This trait represents types that contain a `Heap`; it allows for more complex structures
+/// to participate in the `DropGuard` pattern.
+pub(crate) trait ContainsHeap {
+    fn heap(&self) -> &Heap;
+    fn heap_mut(&mut self) -> &mut Heap;
+}
 
-    /// Returns immutable access to the branded reader.
-    fn heap(&self) -> &HeapReader<'h, Self::Tracker>;
-
-    /// Returns mutable access to the branded reader.
-    fn heap_mut(&mut self) -> &mut HeapReader<'h, Self::Tracker>;
+impl ContainsHeap for Heap {
+    fn heap(&self) -> &Self {
+        self
+    }
+    #[inline]
+    fn heap_mut(&mut self) -> &mut Self {
+        self
+    }
 }
 
 /// Cleanup for types holding heap (and possibly VM-side) references that must be
 /// released explicitly — Rust's `Drop` cannot, since it has no heap access.
 ///
-/// `C` is whatever cleanup context the caller has on hand: a
+/// `C` is whatever cleanup context the caller has on hand: a [`Heap`], a
 /// [`HeapReader`](crate::heap::HeapReader), the [`VM`](crate::bytecode::VM), or the
 /// json `Encoder`. The bound on each impl states the capability the value needs:
 /// heap-only values bound `C` by [`ContainsHeap`] (satisfied by all of those),
@@ -83,12 +83,12 @@ pub(crate) trait ContainsHeap<'h> {
 /// path, but early returns via `?`, `continue`, conditional branches, etc. A missed
 /// call leaks reference counts. Prefer [`defer_drop!`] or [`DropGuard`] to guarantee
 /// cleanup automatically rather than inserting manual calls in every branch.
-pub(crate) trait DropWithContext<'h, C: ?Sized> {
+pub(crate) trait DropWithContext<C: ?Sized> {
     /// Consume `self`, releasing every heap/VM reference it owns through `ctx`.
     fn drop_with(self, ctx: &mut C);
 }
 
-impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Option<U> {
+impl<C, U: DropWithContext<C>> DropWithContext<C> for Option<U> {
     #[inline]
     fn drop_with(self, ctx: &mut C) {
         if let Some(value) = self {
@@ -97,7 +97,7 @@ impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Option<U> {
     }
 }
 
-impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Vec<U> {
+impl<C, U: DropWithContext<C>> DropWithContext<C> for Vec<U> {
     fn drop_with(self, ctx: &mut C) {
         for value in self {
             value.drop_with(ctx);
@@ -105,9 +105,9 @@ impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Vec<U> {
     }
 }
 
-impl<'h, C, A: smallvec::Array> DropWithContext<'h, C> for SmallVec<A>
+impl<C, A: smallvec::Array> DropWithContext<C> for SmallVec<A>
 where
-    A::Item: DropWithContext<'h, C>,
+    A::Item: DropWithContext<C>,
 {
     fn drop_with(self, ctx: &mut C) {
         for value in self {
@@ -116,7 +116,7 @@ where
     }
 }
 
-impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for IntoIter<U> {
+impl<C, U: DropWithContext<C>> DropWithContext<C> for IntoIter<U> {
     fn drop_with(self, ctx: &mut C) {
         for value in self {
             value.drop_with(ctx);
@@ -124,7 +124,7 @@ impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for IntoIter<U> {
     }
 }
 
-impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Drain<'_, U> {
+impl<C, U: DropWithContext<C>> DropWithContext<C> for Drain<'_, U> {
     fn drop_with(self, ctx: &mut C) {
         for value in self {
             value.drop_with(ctx);
@@ -132,9 +132,9 @@ impl<'h, C, U: DropWithContext<'h, C>> DropWithContext<'h, C> for Drain<'_, U> {
     }
 }
 
-impl<'h, C, const N: usize> DropWithContext<'h, C> for [Value; N]
+impl<C, const N: usize> DropWithContext<C> for [Value; N]
 where
-    Value: DropWithContext<'h, C>,
+    Value: DropWithContext<C>,
 {
     fn drop_with(self, ctx: &mut C) {
         for value in self {
@@ -145,7 +145,7 @@ where
     }
 }
 
-impl<'h, C, U: DropWithContext<'h, C>, V: DropWithContext<'h, C>> DropWithContext<'h, C> for (U, V) {
+impl<C, U: DropWithContext<C>, V: DropWithContext<C>> DropWithContext<C> for (U, V) {
     fn drop_with(self, ctx: &mut C) {
         let (left, right) = self;
         left.drop_with(ctx);
@@ -160,10 +160,10 @@ impl<'h, C, U: DropWithContext<'h, C>, V: DropWithContext<'h, C>> DropWithContex
 /// or any other branch. This eliminates the need to manually insert `drop_with`
 /// calls in every branch.
 ///
-/// `C` is the cleanup context (`HeapReader` / `VM` / `Encoder`); it is *not*
+/// `C` is the cleanup context (`Heap` / `HeapReader` / `VM` / `Encoder`); it is *not*
 /// bounded here, so a single guard type serves both heap-only values and
-/// recursion-token holders — the `V: DropWithContext<'h, C>` bound is what constrains
-/// the pairing, exactly as on a bare `drop_with` call.
+/// recursion-token holders — the `V: DropWithContext<C>` bound is what constrains the
+/// pairing, exactly as on a bare `drop_with` call.
 ///
 /// On the normal path, the guarded value can be borrowed via [`as_parts`](Self::as_parts) /
 /// [`as_parts_mut`](Self::as_parts_mut), or reclaimed via [`into_inner`](Self::into_inner) /
@@ -173,21 +173,19 @@ impl<'h, C, U: DropWithContext<'h, C>, V: DropWithContext<'h, C>> DropWithContex
 /// value is dropped at scope exit. Use `DropGuard` directly when you need to conditionally
 /// reclaim the value (e.g. push it back onto the stack on success) or need mutable access
 /// to both the value and context through [`as_parts_mut`](Self::as_parts_mut).
-pub(crate) struct DropGuard<'a, 'h, C, V: DropWithContext<'h, C>> {
+pub(crate) struct DropGuard<'a, C, V: DropWithContext<C>> {
     // manually dropped because it needs to be dropped by move.
     value: ManuallyDrop<V>,
     ctx: &'a mut C,
-    heap_brand: PhantomData<fn(&'h ()) -> &'h ()>,
 }
 
-impl<'a, 'h, C, V: DropWithContext<'h, C>> DropGuard<'a, 'h, C, V> {
+impl<'a, C, V: DropWithContext<C>> DropGuard<'a, C, V> {
     /// Creates a new `DropGuard` for the given value and context.
     #[inline]
     pub fn new(value: V, ctx: &'a mut C) -> Self {
         Self {
             value: ManuallyDrop::new(value),
             ctx,
-            heap_brand: PhantomData,
         }
     }
 
@@ -238,7 +236,7 @@ impl<'a, 'h, C, V: DropWithContext<'h, C>> DropGuard<'a, 'h, C, V> {
     }
 }
 
-impl<'h, C, V: DropWithContext<'h, C>> Drop for DropGuard<'_, 'h, C, V> {
+impl<C, V: DropWithContext<C>> Drop for DropGuard<'_, C, V> {
     fn drop(&mut self) {
         // SAFETY: [DH] - value is never manually dropped until this point
         unsafe { ManuallyDrop::take(&mut self.value) }.drop_with(self.ctx);

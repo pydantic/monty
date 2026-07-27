@@ -12,17 +12,18 @@
 //!   can simulate Monty's lower default depth on CPython too. Only allows
 //!   *lowering* the host-configured ceiling — see [`SysFunctions`].
 
+use monty_types::ResourceError;
+
 #[cfg(feature = "test-hooks")]
 use crate::{
     args::ArgValues,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     modules::ModuleFunctions,
 };
 use crate::{
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, NamedTuple},
     value::{Marker, Value},
 };
@@ -48,7 +49,7 @@ pub(crate) enum SysFunctions {
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Sys);
 
     // sys.platform
@@ -99,7 +100,7 @@ pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, Re
 /// no callables on the `sys` module, so this dispatcher would have nothing
 /// to do.
 #[cfg(feature = "test-hooks")]
-pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
+pub(super) fn call(vm: &mut VM<'_>, function: SysFunctions, args: ArgValues) -> RunResult<Value> {
     match function {
         SysFunctions::Setrecursionlimit => setrecursionlimit(vm, args),
     }
@@ -114,7 +115,7 @@ pub(super) fn call(vm: &mut VM<'_, impl ResourceTracker>, function: SysFunctions
 /// dump, etc.). Attempts to raise raise `ValueError` with a message
 /// pointing at the current cap.
 #[cfg(feature = "test-hooks")]
-fn setrecursionlimit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn setrecursionlimit(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let arg = args.get_one_arg("sys.setrecursionlimit", vm.heap)?;
     let Value::Int(limit) = arg else {
         arg.drop_with(vm);
@@ -128,11 +129,8 @@ fn setrecursionlimit(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> 
     }
     match vm.heap.tracker().lower_recursion_limit(new_limit) {
         Ok(()) => Ok(Value::None),
-        Err(Some(current)) => Err(ExcType::value_error(format!(
+        Err(current) => Err(ExcType::value_error(format!(
             "sys.setrecursionlimit: cannot raise above current limit {current} (sandbox only allows lowering)"
         ))),
-        Err(None) => Err(ExcType::value_error(
-            "sys.setrecursionlimit: this runtime does not expose a settable recursion limit",
-        )),
     }
 }

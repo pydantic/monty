@@ -5,10 +5,9 @@ use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData},
     intern::StaticStrings,
-    resource::ResourceTracker,
     types::{Class, Dict, PyTrait},
     value::Value,
 };
@@ -24,7 +23,7 @@ use crate::{
 /// because the "exactly 1 *or* 3 positionals, same name" overload isn't
 /// expressible by any of the binder families — CPython special-cases `type`'s
 /// argument parsing in `type_new`/`type_init` for the same reason.
-pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_type(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (mut pos, kwargs) = args.into_parts();
     match pos.len() {
         1 => {
@@ -56,7 +55,7 @@ pub fn builtin_type(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> R
 /// For an instance of a user-defined class the type *is* the class object
 /// itself, so `type(x) is Foo` holds via reference identity; for everything
 /// else it returns the builtin `Type` marker.
-fn type_of(vm: &mut VM<'_, impl ResourceTracker>, value: Value) -> Value {
+fn type_of(vm: &mut VM<'_>, value: Value) -> Value {
     defer_drop!(value, vm);
     if let Value::Ref(id) = &value
         && let HeapData::Instance(inst) = vm.heap.get(*id)
@@ -80,7 +79,7 @@ fn type_of(vm: &mut VM<'_, impl ResourceTracker>, value: Value) -> Value {
 /// matching CPython's `type` descriptor default (compiled `class` bodies
 /// get their `__doc__` from the parser instead).
 fn create_class(
-    vm: &mut VM<'_, impl ResourceTracker>,
+    vm: &mut VM<'_>,
     name: Value,
     bases: Value,
     namespace: Value,

@@ -9,9 +9,9 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
-    heap::{HeapData, HeapReader},
-    resource::{ResourceTracker, check_pow_size},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    heap::{Heap, HeapData},
+    resource_checks::check_pow_size,
     types::{LongInt, PyTrait},
     value::Value,
 };
@@ -20,7 +20,7 @@ use crate::{
 ///
 /// Returns base to the power exp. With three arguments, returns (base ** exp) % mod.
 /// Handles negative exponents by returning a float.
-pub fn builtin_pow(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_pow(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let PowArgs { base, exp, modulus } = PowArgs::from_args(args, vm)?;
     defer_drop!(base, vm);
     defer_drop!(exp, vm);
@@ -155,7 +155,7 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 /// Implements two-argument pow with LongInt support.
 ///
 /// On overflow, promotes to LongInt instead of returning an error.
-fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     match (base, exp) {
         (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
         (Value::Int(b), Value::Ref(id)) if let HeapData::LongInt(li) = vm.heap.get(*id) => {
@@ -203,7 +203,7 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, impl ResourceTracker>)
 }
 
 /// int ** int with LongInt promotion on overflow.
-fn int_pow_int(b: i64, e: i64, heap: &mut HeapReader<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn int_pow_int(b: i64, e: i64, heap: &mut Heap) -> RunResult<Value> {
     if e < 0 {
         // Negative exponent returns float
         if b == 0 {
@@ -234,7 +234,7 @@ fn int_pow_int(b: i64, e: i64, heap: &mut HeapReader<'_, impl ResourceTracker>) 
 }
 
 /// int ** LongInt with LongInt result.
-fn int_pow_longint(b: i64, e: &BigInt, heap: &HeapReader<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn int_pow_longint(b: i64, e: &BigInt, heap: &Heap) -> RunResult<Value> {
     if b == 0 && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }
@@ -268,7 +268,7 @@ fn int_pow_longint(b: i64, e: &BigInt, heap: &HeapReader<'_, impl ResourceTracke
 }
 
 /// LongInt ** int with LongInt result.
-fn longint_pow_int(b: &BigInt, e: i64, heap: &HeapReader<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn longint_pow_int(b: &BigInt, e: i64, heap: &Heap) -> RunResult<Value> {
     if b.is_zero() && e < 0 {
         return Err(ExcType::zero_negative_power());
     }
@@ -297,7 +297,7 @@ fn longint_pow_int(b: &BigInt, e: i64, heap: &HeapReader<'_, impl ResourceTracke
 }
 
 /// LongInt ** LongInt with LongInt result.
-fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &HeapReader<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn longint_pow_longint(b: &BigInt, e: &BigInt, heap: &Heap) -> RunResult<Value> {
     if b.is_zero() && e.is_negative() {
         return Err(ExcType::zero_negative_power());
     }

@@ -15,11 +15,12 @@
 //! validation now happens during decode, so these tests pin the exact error
 //! messages a misbehaving peer produces.
 
-use monty::{
-    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyRun,
-    MontyTimeDelta, MontyTimeZone, MontyType,
-};
+use monty::MontyRun;
 use monty_proto::{WireFunctionCall, WireObject, pb};
+use monty_types::{
+    CompileOptions, DictPairs, ExcType, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
+    MontyTimeZone, MontyType,
+};
 use num_bigint::{BigInt, Sign};
 use prost::Message;
 

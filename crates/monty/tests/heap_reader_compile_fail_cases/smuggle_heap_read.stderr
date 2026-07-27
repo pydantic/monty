@@ -1,12 +1,12 @@
 error[E0521]: borrowed data escapes outside of closure
-  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:92:9
+  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:93:9
    |
-86 |     let mut smuggled: Option<HeapRead<'_, List>> = None;
+87 |     let mut smuggled: Option<HeapRead<'_, List>> = None;
    |         ------------ `smuggled` declared here, outside of the closure body
-87 |     HeapReader::with(heap, tracker, &mut (), |heap, ()| {
-   |                                               ---- `heap` is a reference that is only valid in the closure body
+88 |     HeapReader::with(heap, &mut (), |heap, ()| {
+   |                                      ---- `heap` is a reference that is only valid in the closure body
 ...
-92 |         smuggled = Some(a);
+93 |         smuggled = Some(a);
    |         ^^^^^^^^ `heap` escapes the closure body here
    |
    = note: requirement occurs because of the type `heap::HeapRead<'_, list::List>`, which makes the generic argument `'_` invariant

@@ -7,7 +7,7 @@
 //! snapshots). The Python-facing `MontyError` class hierarchy stays in
 //! `pydantic-monty` — this module only maps values.
 
-use monty::{ExcData, ExcType, JsonErrorData, MontyException, MontyObject, UnicodeErrorObject};
+use monty_types::{ExcData, ExcType, JsonErrorData, MontyException, MontyObject, UnicodeErrorObject};
 use pyo3::{
     PyTypeCheck,
     exceptions::{self},

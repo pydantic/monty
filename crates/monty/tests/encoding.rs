@@ -3,7 +3,8 @@
 //! which therefore cannot live in `test_cases/` — that suite runs every file
 //! against CPython too.
 
-use monty::{CompileOptions, MontyException, MontyRun, UnicodeErrorData, UnicodeErrorObject};
+use monty::MontyRun;
+use monty_types::{CompileOptions, MontyException, UnicodeErrorData, UnicodeErrorObject};
 
 /// Runs `code` and returns the resulting error's full traceback rendering.
 fn run_err(code: &str) -> String {

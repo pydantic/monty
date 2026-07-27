@@ -10,7 +10,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use monty::{DictPairs, MontyObject};
+use monty_types::{DictPairs, MontyObject};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyTypeError},

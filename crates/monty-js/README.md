@@ -147,14 +147,33 @@ session, before any feed; using the wrong one for a dump's kind throws.
 
 ## Print Output
 
+`printCallback` accepts a function or a host collector (`PrintTargetInput` in
+TypeScript). Output is line-buffered; without a callback it goes to the host
+process stdout/stderr.
+
 ```ts
+// Function form
 await session.feedRun('print("hello")', {
   printCallback: (stream, text) => console.log(`[${stream}] ${text}`),
 })
+
+// Collectors — accumulate on the host (not covered by ResourceLimits.maxMemory)
+import { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES } from '@pydantic/monty'
+
+const text = new CollectString()
+await session.feedRun('print("hello")', { printCallback: text })
+text.output // 'hello\n'
+
+const streams = new CollectStreams()
+await session.feedRun('print("hello")', { printCallback: streams })
+streams.output // [{ stream: 'stdout', text: 'hello\n' }]
 ```
 
-Output is line-buffered; without a callback it goes to the host process
-stdout/stderr.
+Both collectors default to a **10 MiB** cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
+Pass `maxBytes: null` to disable (trusted hosts only). `maxBytes` must be a
+finite non-negative number or `null` (constructors throw `TypeError` otherwise).
+Exceeding the cap rejects the feed with `MontyRuntimeError` / `MemoryError`
+(`memory limit exceeded: …`).
 
 ## Filesystem Mounts
 
@@ -173,8 +192,12 @@ operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
 
 Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
 kept in memory and discarded at the end of the feed). Mount I/O is serviced
-on the host side of the pool, so mounts work even for remote workers. OS
-calls mounts don't cover can be handled with the `os` callback:
+on the host side of the pool, so mounts work even for remote workers.
+
+`feedRun` answers every OS call automatically: mounts get first refusal, then
+the `os` callback. `feedStart` answers none — a mounted read surfaces as a
+`FunctionSnapshot` with `isOsFunction` set, and `resumeAuto()` is what consults
+the mounts and `os`. OS calls mounts don't cover reach the `os` callback:
 
 ```ts
 import { NOT_HANDLED } from '@pydantic/monty'

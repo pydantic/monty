@@ -4,8 +4,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunResult, SimpleException},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     types::PyTrait,
     value::Value,
 };
@@ -13,7 +12,7 @@ use crate::{
 /// Implementation of the len() builtin function.
 ///
 /// Returns the length of an object (number of items in a container).
-pub fn builtin_len(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_len(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("len", vm.heap)?;
     defer_drop!(value, vm);
     if let Some(len) = value.py_len(vm) {

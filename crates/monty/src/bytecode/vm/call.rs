@@ -6,20 +6,20 @@
 
 use std::mem;
 
+use monty_types::OsFunctionCall;
+
 use super::{CallFrame, VM, recursion::RunReentryGuard};
 use crate::{
     args::{ArgValues, KwargsValues},
     asyncio::Coroutine,
-    builtins::{Builtins, BuiltinsFunctions},
+    builtins::{Builtins, BuiltinsFunctions, BuiltinsFunctionsExt},
     bytecode::FrameExit,
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, ExcTypeExt, RunError},
     function::Function,
     heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    os::OsFunctionCall,
-    resource::ResourceTracker,
     types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
     value::{EitherStr, Value},
 };
@@ -78,7 +78,7 @@ pub(crate) enum CallResult {
     OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
 }
 
-impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for CallResult {
+impl<C: ContainsHeap> DropWithContext<C> for CallResult {
     fn drop_with(self, heap: &mut C) {
         match self {
             Self::Value(value) | Self::AwaitValue(value) => value.drop_with(heap),
@@ -98,7 +98,7 @@ impl<'h, C: ContainsHeap<'h>> DropWithContext<'h, C> for CallResult {
     }
 }
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     // ========================================================================
     // Call Opcode Executors
     // ========================================================================
@@ -870,7 +870,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // stack (pushed per-comp), not in any frame-level region, so they
         // don't enter this accounting.
         let size = namespace_size * mem::size_of::<Value>();
-        self.heap.tracker().on_allocate(|| size)?;
+        self.heap.tracker_mut().on_grow(|| size)?;
 
         // 1. Build the namespace in the reusable scratch buffer to avoid a
         //    per-call allocation. On error `DropGuard` drops the buffer, so the
@@ -885,7 +885,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
 
             if let Err(e) = bind_result {
-                this.heap.tracker().on_free(|| size);
+                this.heap.tracker_mut().on_free(|| size);
                 return Err(e);
             }
         }
@@ -1079,10 +1079,10 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Adding a new dunder is just a new arm in the inner `match`; type
 /// implementations only need to override the corresponding `PyTrait`
 /// method, never a `StaticStrings::Foo` arm in their `py_call_attr`.
-fn dispatch_dunder<T: ResourceTracker>(
+fn dispatch_dunder(
     name_id: StringId,
     heap_id: HeapId,
-    vm: &mut VM<'_, T>,
+    vm: &mut VM<'_>,
     args: &mut Option<ArgValues>,
 ) -> Option<Result<CallResult, RunError>> {
     let static_str = StaticStrings::from_string_id(name_id)?;
@@ -1130,11 +1130,7 @@ fn dispatch_dunder<T: ResourceTracker>(
 /// `typ` and `tb` are discarded: every implementation we have re-derives the
 /// type from `val` and Monty has no traceback objects (see
 /// `limitations/with.md`).
-fn dispatch_exit<T: ResourceTracker>(
-    heap_id: HeapId,
-    vm: &mut VM<'_, T>,
-    args: ArgValues,
-) -> Result<CallResult, RunError> {
+fn dispatch_exit(heap_id: HeapId, vm: &mut VM<'_>, args: ArgValues) -> Result<CallResult, RunError> {
     let positional = args.into_pos_only("__exit__", vm.heap)?;
     defer_drop!(positional, vm);
     let [typ, val, tb] = positional.as_slice() else {

@@ -10,11 +10,10 @@
 use crate::{
     args::ArgValues,
     bytecode::VM,
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::RunResult,
     heap::{DropGuard, HeapData},
-    resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait},
+    types::{List, PyTrait},
     value::Value,
 };
 
@@ -30,18 +29,19 @@ use crate::{
 /// filter(lambda x: x > 0, [-1, 0, 1, 2])  # [1, 2]
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
-pub fn builtin_filter(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_filter(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
-    defer_drop_mut!(iter, vm);
+    let iter = iterable.into_py_iter(vm)?;
+    defer_drop!(iter, vm);
+    let mut iter = iter.read(vm);
 
     let out: Vec<Value> = Vec::new();
     let mut out_guard = DropGuard::new(out, vm);
     let (out, vm) = out_guard.as_parts_mut();
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some(item) = iter.py_next(vm)? {
         let mut item_guard = DropGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {

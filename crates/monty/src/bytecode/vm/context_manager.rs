@@ -10,13 +10,12 @@
 use super::{CallResult, VM};
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult},
-    resource::ResourceTracker,
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     types::PyTrait,
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// `BeforeWith`: peek the context manager at TOS, call `__enter__`, and push
     /// the result. The context manager stays on the stack across the body so the
     /// matching `WithExit` / `WithExceptStart` can find it.
@@ -94,7 +93,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// this gate failure always reports `__exit__`. A user class that defines
 /// `__exit__` but not `__enter__` passes the gate and gets the
 /// "missed __enter__ method" variant from `Instance::py_enter` instead.
-fn not_a_context_manager<T: ResourceTracker>(vm: &VM<'_, T>) -> RunError {
+fn not_a_context_manager(vm: &VM<'_>) -> RunError {
     let ty = vm.peek().py_type_name(vm);
     ExcType::type_error_not_context_manager(ty, "__exit__")
 }

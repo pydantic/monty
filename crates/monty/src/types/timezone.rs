@@ -13,11 +13,10 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
+    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::Interns,
-    resource::ResourceTracker,
     types::{
         LazyHeapSet, PyTrait, Type,
         str::{StringRepr, allocate_string},
@@ -66,7 +65,7 @@ impl TimeZone {
     }
 
     /// Parses timezone constructor arguments.
-    pub fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         let TimezoneInitArgs { offset, name } = TimezoneInitArgs::from_args(args, vm)?;
         // Keep `offset` and `name` alive across the validation helpers — they
         // own the heap refs (TimeDelta / Str) we're reading from. `name` is
@@ -192,11 +191,7 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     timedelta::format_repr(&delta)
 }
 
-fn extract_name(
-    name_arg: &Value,
-    heap: &HeapReader<'_, impl ResourceTracker>,
-    interns: &Interns,
-) -> RunResult<Option<String>> {
+fn extract_name(name_arg: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<String>> {
     match name_arg {
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
@@ -227,15 +222,15 @@ impl HeapItem for TimeZone {
 /// `HeapRead`-based dispatch for `TimeZone`, enabling the `HeapReadOutput` enum to
 /// delegate `PyTrait` calls to heap-resident timezone objects.
 impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::TimeZone
     }
 
-    fn py_len(&self, _vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -244,22 +239,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         ))
     }
 
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let mut hasher = DefaultHasher::new();
         self.get(vm.heap).hash(&mut hasher);
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
         true
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        _heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         let tz = self.get(vm.heap);
         if tz.offset_seconds == 0 && tz.name.is_none() {
             f.write_str("datetime.timezone.utc")?;
@@ -275,7 +265,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
         let tz = self.get(vm.heap);
         let s = if let Some(name) = &tz.name {
             name.clone()

@@ -1,3 +1,11 @@
+use std::{
+    cell::Cell,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
+
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -15,23 +23,14 @@
 ///
 /// This type is used for `sys.version_info` and similar structured tuples where
 /// named access improves usability and readability.
-use std::{
-    cell::Cell,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
-
 use super::PyTrait;
 use crate::{
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
     types::{Type, py_trait::LazyHeapSet},
     value::{EitherStr, Value},
 };
@@ -149,7 +148,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// Returns `Some(value)` if the index is in bounds, `None` otherwise.
     /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
     #[must_use]
-    pub fn get_by_index<'a>(&'a self, vm: &'a VM<'h, impl ResourceTracker>, index: i64) -> Option<&'a Value> {
+    pub fn get_by_index<'a>(&'a self, vm: &'a VM<'h>, index: i64) -> Option<&'a Value> {
         let len = i64::try_from(self.get(vm.heap).items.len()).ok()?;
         let normalized = if index < 0 { index + len } else { index };
         if normalized < 0 || normalized >= len {
@@ -159,7 +158,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
     }
 
     /// Clones a single item.
-    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, impl ResourceTracker>) -> Value {
+    pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h>) -> Value {
         self.get(vm.heap).items[index].clone_with_heap(vm)
     }
 
@@ -170,16 +169,12 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// [`NamedTupleIter`]) because that's the obvious entry point for
     /// "iterate this container".
     #[expect(clippy::iter_not_returning_iterator)]
-    pub(crate) fn iter<R: ResourceTracker>(&self, vm: &mut VM<'h, R>) -> RunResult<NamedTupleIter<'_, 'h>> {
+    pub(crate) fn iter(&self, vm: &mut VM<'h>) -> RunResult<NamedTupleIter<'_, 'h>> {
         NamedTupleIter::new(self, vm)
     }
 
     /// Cross-type equality between NamedTuple and Tuple via HeapRead.
-    pub(crate) fn eq_tuple(
-        &self,
-        other: &HeapRead<'h, super::Tuple>,
-        vm: &mut VM<'h, impl ResourceTracker>,
-    ) -> RunResult<bool> {
+    pub(crate) fn eq_tuple(&self, other: &HeapRead<'h, super::Tuple>, vm: &mut VM<'h>) -> RunResult<bool> {
         if self.get(vm.heap).len() != other.get(vm.heap).as_slice().len() {
             return Ok(false);
         }
@@ -218,7 +213,7 @@ pub(crate) struct NamedTupleIter<'a, 'h> {
 }
 
 impl<'a, 'h> NamedTupleIter<'a, 'h> {
-    fn new<R: ResourceTracker>(tuple: &'a HeapRead<'h, NamedTuple>, vm: &mut VM<'h, R>) -> RunResult<Self> {
+    fn new(tuple: &'a HeapRead<'h, NamedTuple>, vm: &mut VM<'h>) -> RunResult<Self> {
         let token = vm.recursion_token()?;
         Ok(Self {
             tuple,
@@ -236,7 +231,7 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
     ///
     /// Performs a [`check_time`](Heap::check_time) on every call so long
     /// Rust-side loops cannot bypass the configured timeout.
-    pub(crate) fn next<'i, R: ResourceTracker>(&'i mut self, vm: &mut VM<'h, R>) -> RunResult<Option<&'i Value>> {
+    pub(crate) fn next<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<&'i Value>> {
         // Drop the previously-yielded item (no-op when `current` is `Undefined`).
         mem::replace(&mut self.current, Value::Undefined).drop_with(vm.heap);
         vm.heap.check_time()?;
@@ -251,17 +246,14 @@ impl<'a, 'h> NamedTupleIter<'a, 'h> {
 
     /// Like [`next`](Self::next), but also returns the 0-based position of
     /// the yielded item — useful for `zip`-style sibling-container access.
-    pub(crate) fn next_with_index<'i, R: ResourceTracker>(
-        &'i mut self,
-        vm: &mut VM<'h, R>,
-    ) -> RunResult<Option<(usize, &'i Value)>> {
+    pub(crate) fn next_with_index<'i>(&'i mut self, vm: &mut VM<'h>) -> RunResult<Option<(usize, &'i Value)>> {
         // Capture before `next` increments `self.index`.
         let position = self.index;
         Ok(self.next(vm)?.map(|item| (position, item)))
     }
 }
 
-impl<'h, C: ContainsVM<'h>> DropWithContext<'h, C> for NamedTupleIter<'_, 'h> {
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for NamedTupleIter<'_, 'h> {
     fn drop_with(self, container: &mut C) {
         self.current.drop_with(container);
         self.token.drop_with(container);
@@ -271,15 +263,19 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<'h, C> for NamedTupleIter<'_, 'h> {
 /// `PyTrait` implementation for `HeapRead<NamedTuple>`, providing all Python operations
 /// on heap-allocated named tuples via short-lived borrow patterns.
 impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
-    fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
+    fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
+        true
+    }
+
+    fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::NamedTuple
     }
 
-    fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
         Some(self.get(vm.heap).len())
     }
 
-    fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
@@ -293,7 +289,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A namedtuple equals another namedtuple element-wise, and also equals a
         // plain tuple with the same elements (class name is ignored). Both
         // directions of the tuple case are covered here, so `Tuple::py_eq_impl`
@@ -323,7 +319,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// so a `NamedTuple` and a `Tuple` with equal elements share the same hash.
     /// Caches the computed hash on first call (see `Tuple::py_hash` for the
     /// caching rationale).
-    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         if let Some(cached) = self.get(vm.heap).cached_hash.get() {
             return Ok(Some(cached));
         }
@@ -341,16 +337,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
         self.get(vm.heap).len() > 0
     }
 
-    fn py_repr_fmt(
-        &self,
-        f: &mut impl Write,
-        vm: &mut VM<'h, impl ResourceTracker>,
-        heap_ids: &mut LazyHeapSet,
-    ) -> RunResult<()> {
+    fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         // Check depth limit before recursing
         let Ok(mut guard) = vm.recursion_guard() else {
             return Ok(f.write_str("...")?);
@@ -375,7 +366,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Ok(())
     }
 
-    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+    fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
         if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
             Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))

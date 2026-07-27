@@ -343,3 +343,26 @@ def test_collectors_are_valid_print_callback_values(monty_run: RunMonty) -> None
     assert str(exc_info.value) == snapshot(
         'print_callback must be a callable, CollectStreams(), CollectString(), or None'
     )
+
+
+def test_collect_string_max_bytes_raises(monty_run: RunMonty) -> None:
+    """Host CollectString cap is independent of ResourceLimits.max_memory (issue #464)."""
+    collector = CollectString(max_bytes=100)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("print('x' * 200)", print_callback=collector)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, MemoryError)
+    assert str(inner) == snapshot('memory limit exceeded: 201 bytes > 100 bytes')
+    assert collector.output == snapshot('')
+
+
+def test_collect_streams_max_bytes_raises(monty_run: RunMonty) -> None:
+    """Host CollectStreams cap charges payload + per-entry overhead (issue #464)."""
+    collector = CollectStreams(max_bytes=100)
+    with pytest.raises(MontyRuntimeError) as exc_info:
+        monty_run("print('x' * 200)", print_callback=collector)
+    inner = exc_info.value.exception()
+    assert isinstance(inner, MemoryError)
+    # 201 payload bytes + 64 entry overhead
+    assert str(inner) == snapshot('memory limit exceeded: 265 bytes > 100 bytes')
+    assert collector.output == snapshot([])

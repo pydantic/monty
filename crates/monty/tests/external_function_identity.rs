@@ -10,7 +10,8 @@
 //! conversion must agree on a single answer based on the name string, regardless
 //! of which path the conversion took.
 
-use monty::{CompileOptions, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty::{MontyRepl, MontyRun};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
@@ -89,7 +90,7 @@ fn same_callable_round_trips_through_dict() {
 #[test]
 fn different_named_callables_remain_distinct() {
     let runner = MontyRun::new(
-        "(a is b, a == b)".to_owned(),
+        "(a is b, a == b, id(a) == id(b))".to_owned(),
         "test.py",
         vec!["a".to_owned(), "b".to_owned()],
         CompileOptions::default(),
@@ -109,7 +110,11 @@ fn different_named_callables_remain_distinct() {
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Bool(false), MontyObject::Bool(false)]),
+        MontyObject::Tuple(vec![
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+            MontyObject::Bool(false),
+        ]),
     );
 }
 
@@ -185,7 +190,7 @@ fn callable_export_stable_across_source_mention() {
 /// unit-input tests above cannot reach.
 #[test]
 fn repl_cross_representation_extfunction_identity() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new("session.py", ResourceTracker::default(), CompileOptions::default());
 
     // Feed 1: `x = foobar` triggers NameLookup for "foobar"; host returns a
     // `Function` whose `__name__` ("ext_fn") does not appear in feed 1's

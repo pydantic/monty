@@ -5,7 +5,7 @@
 
 use std::{fs, path::PathBuf};
 
-use monty::{FileMode, MontyObject};
+use monty_types::{FileMode, MontyObject};
 
 use super::{
     common::{

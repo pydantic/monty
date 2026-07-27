@@ -18,13 +18,12 @@
 
 use std::ops::{Deref, DerefMut};
 
-use super::VM;
-use crate::{
-    heap::{ContainsHeap, DropWithContext},
-    resource::{ResourceError, ResourceTracker},
-};
+use monty_types::ResourceError;
 
-impl<'h, T: ResourceTracker> VM<'h, T> {
+use super::VM;
+use crate::heap::{ContainsHeap, DropWithContext};
+
+impl<'h> VM<'h> {
     /// Enters a lexically-scoped recursive operation, returning a guard that
     /// releases the depth level when dropped.
     ///
@@ -37,7 +36,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// ```
     ///
     /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
-    pub(crate) fn recursion_guard(&mut self) -> Result<RecursionGuard<'_, 'h, T>, ResourceError> {
+    pub(crate) fn recursion_guard(&mut self) -> Result<RecursionGuard<'_, 'h>, ResourceError> {
         self.incr_recursion()?;
         Ok(RecursionGuard { vm: self })
     }
@@ -75,24 +74,24 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 ///
 /// Derefs to the [`VM`] so recursive operations run through the guard; the
 /// reserved level is released when the guard is dropped on any code path.
-pub(crate) struct RecursionGuard<'a, 'h, T: ResourceTracker> {
-    vm: &'a mut VM<'h, T>,
+pub(crate) struct RecursionGuard<'a, 'h> {
+    vm: &'a mut VM<'h>,
 }
 
-impl<'h, T: ResourceTracker> Deref for RecursionGuard<'_, 'h, T> {
-    type Target = VM<'h, T>;
+impl<'h> Deref for RecursionGuard<'_, 'h> {
+    type Target = VM<'h>;
     fn deref(&self) -> &Self::Target {
         self.vm
     }
 }
 
-impl<T: ResourceTracker> DerefMut for RecursionGuard<'_, '_, T> {
+impl DerefMut for RecursionGuard<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.vm
     }
 }
 
-impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
+impl Drop for RecursionGuard<'_, '_> {
     fn drop(&mut self) {
         self.vm.decr_recursion();
     }
@@ -114,7 +113,7 @@ impl<T: ResourceTracker> Drop for RecursionGuard<'_, '_, T> {
 // TODO set this value to custom values per-OS/arch
 pub(crate) const MAX_RUN_REENTRY_DEPTH: u8 = 12;
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Charges one native re-entry level, counting the remaining budget down
     /// from [`MAX_RUN_REENTRY_DEPTH`]; errors when it's exhausted. Pair with
     /// [`RunReentryGuard::new`] to release the level on every exit path.
@@ -157,32 +156,32 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// Derefs to the [`VM`] so the nested `call_function`/`run()` call runs
 /// through the guard; the reserved level is released when the guard is
 /// dropped on any code path (normal return, `?`, or early return).
-pub(crate) struct RunReentryGuard<'a, 'h, T: ResourceTracker> {
-    vm: &'a mut VM<'h, T>,
+pub(crate) struct RunReentryGuard<'a, 'h> {
+    vm: &'a mut VM<'h>,
 }
 
-impl<'a, 'h, T: ResourceTracker> RunReentryGuard<'a, 'h, T> {
+impl<'a, 'h> RunReentryGuard<'a, 'h> {
     /// Wraps a re-entry level already charged by a prior
     /// [`VM::enter_run_reentry`] call.
-    pub(crate) fn new(vm: &'a mut VM<'h, T>) -> Self {
+    pub(crate) fn new(vm: &'a mut VM<'h>) -> Self {
         Self { vm }
     }
 }
 
-impl<'h, T: ResourceTracker> Deref for RunReentryGuard<'_, 'h, T> {
-    type Target = VM<'h, T>;
+impl<'h> Deref for RunReentryGuard<'_, 'h> {
+    type Target = VM<'h>;
     fn deref(&self) -> &Self::Target {
         self.vm
     }
 }
 
-impl<T: ResourceTracker> DerefMut for RunReentryGuard<'_, '_, T> {
+impl DerefMut for RunReentryGuard<'_, '_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.vm
     }
 }
 
-impl<T: ResourceTracker> Drop for RunReentryGuard<'_, '_, T> {
+impl Drop for RunReentryGuard<'_, '_> {
     fn drop(&mut self) {
         self.vm.release_run_reentry();
     }
@@ -204,18 +203,12 @@ pub(crate) struct RecursionToken(());
 /// counter — e.g. dropping a [`RecursionToken`] — while a wrapper like the encoder
 /// stays borrowable through the same handle. Because `ContainsVM: ContainsHeap`,
 /// such a context can still drop plain heap fields via `drop_with(ctx)`.
-pub(crate) trait ContainsVM<'h>: ContainsHeap<'h, Tracker = <Self as ContainsVM<'h>>::Tracker> {
-    /// Tracker shared by the VM and heap cleanup context.
-    type Tracker: ResourceTracker + 'h;
-
-    /// Returns the VM whose heap and tracker back this cleanup context.
-    fn vm(&mut self) -> &mut VM<'h, <Self as ContainsVM<'h>>::Tracker>;
+pub(crate) trait ContainsVM<'h>: ContainsHeap {
+    fn vm(&mut self) -> &mut VM<'h>;
 }
 
-impl<'h, T: ResourceTracker> ContainsVM<'h> for VM<'h, T> {
-    type Tracker = T;
-
-    fn vm(&mut self) -> &mut VM<'h, <Self as ContainsVM<'h>>::Tracker> {
+impl<'h> ContainsVM<'h> for VM<'h> {
+    fn vm(&mut self) -> &mut Self {
         self
     }
 }
@@ -225,7 +218,7 @@ impl<'h, T: ResourceTracker> ContainsVM<'h> for VM<'h, T> {
 /// confines token cleanup to a `VM`/`Encoder` — a bare heap cannot reach the
 /// counter — and there is no overlap with the heap-only impls because those are
 /// for different `Self` types.
-impl<'h, C: ContainsVM<'h>> DropWithContext<'h, C> for RecursionToken {
+impl<'h, C: ContainsVM<'h>> DropWithContext<C> for RecursionToken {
     fn drop_with(self, ctx: &mut C) {
         ctx.vm().decr_recursion();
     }

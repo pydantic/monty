@@ -138,7 +138,9 @@ def test_os_call_surfaces_without_handler(session: MontySession):
     assert snap.function_name == snapshot('Path.read_text')
 
 
-def test_os_handler_auto_dispatched(session: MontySession):
+def test_os_handler_used_by_resume_auto(session: MontySession):
+    """`feed_start` surfaces the OS call even with `os=`; `resume_auto` answers it."""
+
     def handle_os(name: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
         assert name == 'Path.read_text'
         return 'file body'
@@ -147,8 +149,11 @@ def test_os_handler_auto_dispatched(session: MontySession):
         "from pathlib import Path\nPath('/data/x').read_text()",
         os=handle_os,
     )
-    assert isinstance(snap, MontyComplete)
-    assert snap.output == snapshot('file body')
+    assert isinstance(snap, FunctionSnapshot)
+    assert snap.is_os_function == snapshot(True)
+    done = snap.resume_auto()
+    assert isinstance(done, MontyComplete)
+    assert done.output == snapshot('file body')
 
 
 def test_future_mechanism_sync(session: MontySession):
@@ -222,7 +227,7 @@ def test_loaded_snapshot_reports_the_dumps_script_name(pool: Monty):
 
 def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
     # Re-supplying the feed's mounts to load_snapshot rebuilds the mount table,
-    # so the mounted read after resume is served in-worker and never surfaces.
+    # so `resume_auto` on the restored feed's mounted read is served from it.
     (tmp_path / 'hello.txt').write_text('hi')
     mount = MountDir(host_path=str(tmp_path), virtual_path='/data', mode='read-only')
     code = "f()\nfrom pathlib import Path\nPath('/data/hello.txt').read_text()"
@@ -235,9 +240,57 @@ def test_mounts_restored_on_load_when_resupplied(pool: Monty, tmp_path: Path):
     with pool.checkout() as session:
         loaded_snap = session.load_snapshot(blob, mount=mount)
         assert isinstance(loaded_snap, FunctionSnapshot)
-        done = loaded_snap.resume({'return_value': None})
+        read = loaded_snap.resume({'return_value': None})
+        assert isinstance(read, FunctionSnapshot)
+        assert read.is_os_function
+        assert read.function_name == snapshot('Path.read_text')
+        done = read.resume_auto()
         assert isinstance(done, MontyComplete)
         assert done.output == snapshot('hi')
+
+
+def test_load_snapshot_mid_os_call_serviced_by_mount(pool: Monty, tmp_path: Path):
+    # A dump taken while suspended on an OS call retains the call payload, so a
+    # mount supplied to load_snapshot can answer the re-announced call even
+    # though the original feed had none.
+    (tmp_path / 'hello.txt').write_text('hi')
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        # no mount: the read surfaces as an OS-call snapshot
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        assert snap.is_os_function
+        assert snap.function_name == snapshot('Path.read_text')
+        blob = snap.dump()
+
+    mount = MountDir(host_path=(tmp_path), virtual_path='/data', mode='read-only')
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob, mount=mount)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.is_os_function
+        done = loaded_snap.resume_auto()
+        assert isinstance(done, MontyComplete)
+        assert done.output == snapshot('hi')
+
+
+def test_load_snapshot_mid_os_call_retains_payload(pool: Monty, tmp_path: Path):
+    # Without a mount the re-announced OS call surfaces to the caller — with
+    # its full payload (name, args, and per-call not-handled error) intact.
+    code = "from pathlib import Path\nPath('/data/hello.txt').read_text()"
+    with pool.checkout() as session:
+        snap = session.feed_start(code)
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded_snap = session.load_snapshot(blob)
+        assert isinstance(loaded_snap, FunctionSnapshot)
+        assert loaded_snap.is_os_function
+        assert loaded_snap.function_name == snapshot('Path.read_text')
+        assert loaded_snap.args == snapshot((Path('/data/hello.txt'),))
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            loaded_snap.resume_not_handled()
+    assert exc_info.value.display(format='msg') == snapshot("Permission denied: '/data/hello.txt'")
 
 
 def test_load_without_resupplied_mount_degrades_to_os_calls(pool: Monty, tmp_path: Path):

@@ -77,8 +77,8 @@ properties that real CPython does not provide, per the caveat above.
   The in-sandbox limit normally fires first with a clean `TimeoutError`; the
   backstop covers cases where it cannot — a worker that stops answering
   (e.g. compromised or wedged) — and surfaces as `MontyCrashedError`, losing
-  the session. Mount I/O runs on the host between watchdog exchanges and does
-  not count against the worker's deadline. Because the budget and consumed time are also stamped onto the
+  the session. Mount I/O runs on the host between protocol turns and does not
+  count against the worker's deadline. Because the budget and consumed time are also stamped onto the
   worker's replies, sessions restored via the Rust `Pool::checkout_load`
   regain the backstop too. A *compromised* worker could under-report its
   total, stretching each turn to the full budget plus grace — turns stay
@@ -114,6 +114,10 @@ properties that real CPython does not provide, per the caveat above.
   When an external-function argument makes the suspension announcement itself
   too large, the current feed is aborted with a host-visible `RuntimeError`;
   Monty code cannot catch that error inside the aborted feed.
+- The same frame limit applies to `dump()`: a session whose serialized state
+  (heap plus any retained suspension payload) exceeds 256 MiB cannot be
+  dumped. The call raises a `RuntimeError` and the session is unaffected — a
+  suspended session stays suspended and resumable.
 - Independently of the wire-byte limit, a frame is rejected if the values it
   decodes into would exceed a **per-frame host-memory budget** — a hard,
   non-configurable limit of 1 GiB of *resident* decoded bytes. The wire cap
@@ -158,31 +162,34 @@ properties that real CPython does not provide, per the caveat above.
   `read-write` mounts write through to the real host directory as before. An
   invalid mount (host path missing / not a directory) raises at `feed` time,
   before the snippet runs, as a session-preserving error.
+- **Mounts only answer calls on the automatic path.** Every OS call the sandbox
+  makes surfaces as a suspension; the pool consults the mount table only when
+  the caller asks it to. `feed_run` (and the JS `feedRun`) asks on every OS
+  call, so mounted I/O is transparent there. `feed_start` never does: a mounted
+  read comes back as a `FunctionSnapshot` with `is_os_function` set, and it is
+  `resume_auto()` that offers the call to the mounts and then to `os=`.
+  Answering such a snapshot with an explicit `resume(...)` bypasses the mount
+  entirely — the value you supply is what the sandbox sees.
 - **Special files are rejected.** Reading, writing, or `open()`ing a
   non-regular file in a mounted directory (FIFO, socket, device) raises
   `PermissionError` instead of blocking — CPython would block until a peer
   appears, but mount I/O runs on the host thread driving the session and must
   never block on sandbox-reachable input.
-- **Mount I/O is not covered by `request_timeout`.** Covered filesystem calls
-  run synchronously on the host thread driving the session; the watchdog's
-  only lever is killing the worker, which cannot interrupt host-side I/O.
-  Sandbox code cannot *hang* the host this way (special files are rejected,
-  above), but a mount on a pathological host filesystem — a stalled NFS or
-  FUSE volume — blocks the feed with no timeout. Like a blocking
-  `print_callback` or external function, hang-free host I/O is the embedder's
-  responsibility: do not mount directories on filesystems that can hang.
-  Worker execution time is still hard-bounded: each covered call deducts the
-  worker's elapsed interval from the turn's allowance, so cumulative worker
-  execution per turn never exceeds `request_timeout` no matter how many
-  covered calls it makes. The parent-side I/O itself is deducted from
-  nothing, though, so sandbox code *can* stretch a feed's wall clock well
-  beyond `request_timeout` on a perfectly healthy filesystem — e.g. a loop of
-  large mounted reads pays only its own (bounded) execution time while the
-  host does up to a mount-memory-budget's worth of free I/O per call. Feed
-  wall clock with mounts is therefore not a hard bound; only worker execution
-  is.
-- **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
-  filesystem calls are serviced by the pool and never reach the callback.
+- **Mount I/O is not bounded by any timeout.** Covered filesystem calls run
+  synchronously on the host *between* protocol turns, with no watchdog armed —
+  and its only lever, killing the worker, could not interrupt host I/O anyway.
+  Special files are rejected (above) so sandbox code cannot hang the host, but
+  a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free host I/O is
+  the embedder's responsibility, as for `print_callback` and external
+  functions. Each covered call is answered by its own turn, so a *loop* of
+  mounted reads resets `request_timeout` every iteration, exactly like a loop
+  of external calls. `max_duration` still bounds such a feed's worker
+  execution, but nothing bounds its wall clock.
+- **`os=` fallback** receives `(function_name, args, kwargs)`. On the
+  automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
+  mount-covered filesystem calls never reach the callback. Under `feed_start`
+  the callback is consulted only by `resume_auto()` — it is never invoked
+  between snapshots.
 - **Mounts have a 100 MB memory budget by default.** Retained overlay data and
   transient filesystem results share the configurable per-mount budget.
   Oversized operations raise `MemoryError` inside the sandbox before protocol
@@ -256,8 +263,10 @@ properties that real CPython does not provide, per the caveat above.
   A *failed* load (wrong dump kind, or a protocol desync) poisons the session
   — its worker is discarded, so every later feed fails too; the load is not
   retryable and the caller must check out a fresh session.
-- **`resume` takes no `mount=`.** Mounts are fixed for the whole feed (passed
-  to `feed_start`), so there is no per-`resume` mount argument.
+- **`resume` takes no `mount=` or `os=`.** Mounts and the OS fallback are
+  fixed for the whole feed (passed to `feed_start` / `load_snapshot`), and a
+  plain `resume(...)` answers only the call in hand — it consults neither.
+  `resume_auto()` is the method that uses them.
 - **Mounts are re-supplied to `load_snapshot`, not stored in the dump.** Mounts
   are host configuration serviced by the host, not sandbox state, so nothing
   about them (host paths included) enters the (opaque, possibly-transmitted)
@@ -268,18 +277,14 @@ properties that real CPython does not provide, per the caveat above.
   next feed supplies its own.)
 - **Re-supplied mounts are not validated.** The dump records nothing about the
   feed's mounts, so `load_snapshot` cannot check what you pass: a mount
-  silently omitted (or altered) simply degrades the resumed feed's covered
-  filesystem calls into surfaced OS calls — unhandled ones raise
-  `PermissionError` inside the sandbox.
+  silently omitted (or altered) simply means `resume_auto()` finds nothing
+  covering the resumed feed's filesystem calls, and they fall through to `os=`
+  or raise `PermissionError` inside the sandbox. A dump taken *while suspended
+  on an OS call* re-announces that call in full, so a mount supplied only at
+  `load_snapshot` can still answer it.
 - **`'overlay'` writes are not preserved across a dump.** A restored overlay
   mount starts empty; `read-only` / `read-write` mounts have no overlay state
   and restore fully.
-- **A re-announced OS-call snapshot after `load_snapshot` carries no
-  payload** — its arguments were consumed before the dump, so it surfaces
-  with an empty function name and empty `args`/`kwargs`, and there is no
-  per-call default error to decline with: `resume_not_handled()` raises
-  `RuntimeError` instead of resuming, so the host must answer from its own
-  records via `resume(...)` / `resume_error(...)`.
 - **Natural-JSON host serialization was removed.** Results now cross the
   subprocess boundary as structured protocol values; the old
   `MontyComplete.output_json()` / `FunctionSnapshot.args_json()` /

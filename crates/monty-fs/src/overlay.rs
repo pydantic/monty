@@ -11,7 +11,7 @@ use std::{
 };
 
 use ahash::AHashSet;
-use monty::{FileMode, MontyObject, dir_stat, file_stat};
+use monty_types::{FileMode, MontyObject, dir_stat, file_stat};
 
 use super::{
     common::{

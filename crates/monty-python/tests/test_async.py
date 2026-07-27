@@ -430,7 +430,7 @@ for i in range(10000):
     result.append([i])
 len(result)
 """
-    async with apool.checkout(limits={'max_allocations': 5}) as session:
+    async with apool.checkout(limits={'max_memory': 500}) as session:
         with pytest.raises(MontyRuntimeError) as exc_info:
             await session.feed_run(code)
         assert isinstance(exc_info.value.exception(), MemoryError)

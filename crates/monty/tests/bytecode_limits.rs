@@ -9,7 +9,8 @@
 
 use std::fmt::Write;
 
-use monty::{CompileOptions, ExcType, MontyRun};
+use monty::MontyRun;
+use monty_types::{CompileOptions, ExcType, MontyException};
 
 /// Generates Python code with N local variables in a function.
 ///
@@ -79,7 +80,7 @@ fn generate_many_parameters(count: usize) -> String {
 }
 
 /// Asserts that a MontyRun result is a SyntaxError with a message containing the expected text.
-fn assert_syntax_error(result: Result<MontyRun, monty::MontyException>, expected_msg: &str) {
+fn assert_syntax_error(result: Result<MontyRun, MontyException>, expected_msg: &str) {
     let err = result.expect_err("expected SyntaxError");
     assert_eq!(
         err.exc_type(),

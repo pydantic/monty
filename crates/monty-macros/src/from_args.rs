@@ -374,9 +374,7 @@ impl Signature {
             }
 
             #[automatically_derived]
-            impl<'__h, __C: crate::heap::ContainsHeap<'__h>> crate::heap::DropWithContext<'__h, __C>
-                for #slots_struct_ident
-            {
+            impl<__C: crate::heap::ContainsHeap> crate::heap::DropWithContext<__C> for #slots_struct_ident {
                 fn drop_with(self, heap: &mut __C) {
                     crate::heap::DropWithContext::drop_with(self.raw, heap);
                     #(
@@ -396,7 +394,7 @@ impl Signature {
                 /// struct's `DropWithContext` impl (driven by a `DropGuard`).
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
-                    vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
+                    vm: &mut crate::bytecode::VM<'_>,
                 ) -> crate::exception_private::RunResult<Self> {
                     #spec
 

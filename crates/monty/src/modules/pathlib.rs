@@ -6,12 +6,13 @@
 //! The `Path` class supports both pure methods (no I/O, handled directly) and
 //! filesystem methods (require I/O, yield external function calls for host resolution).
 
+use monty_types::ResourceError;
+
 use crate::{
     builtins::Builtins,
     bytecode::VM,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     types::{Module, Type},
     value::Value,
 };
@@ -23,7 +24,7 @@ use crate::{
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let mut module = Module::new(StaticStrings::Pathlib);
 
     // pathlib.Path - the Path class (callable to create Path instances)
