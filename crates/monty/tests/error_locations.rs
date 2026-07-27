@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use monty::MontyRun;
-use monty_types::{CompileOptions, ExcType, LimitedTracker, PrintWriter, ResourceLimits};
+use monty_types::{CompileOptions, ExcType, PrintWriter, ResourceLimits, ResourceTracker};
 
 #[test]
 fn non_ascii_earlier_line_does_not_shift_column() {
@@ -50,9 +50,9 @@ def recurse(n):
 recurse(50)
 ";
     let run = MontyRun::new(code.to_string(), "test.py", vec![], CompileOptions::default()).expect("should parse");
-    let limits = ResourceLimits::new().max_recursion_depth(Some(10));
+    let limits = ResourceLimits::default().max_recursion_depth(10);
     let err = run
-        .run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .expect_err("should exceed recursion depth");
 
     assert_eq!(err.exc_type(), ExcType::RecursionError);

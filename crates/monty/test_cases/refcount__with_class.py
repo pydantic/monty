@@ -25,4 +25,7 @@ with cm:
 # binding (refcount 2); `cm` and `bound` alias the one instance (refcount 2);
 # `CM` is held by the global plus the instance's class slot (refcount 2).
 survived = cm.last_exc
-# ref-counts={'CM': 2, 'cm': 2, 'bound': 2, 'survived': 2}
+# The class's synthesized `__annotations__` dict (empty here) is a heap object
+# owned by the class namespace, so bind it too — see `refcount__class.py`.
+ann = CM.__annotations__
+# ref-counts={'CM': 2, 'cm': 2, 'bound': 2, 'survived': 2, 'ann': 2}

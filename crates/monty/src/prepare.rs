@@ -806,12 +806,23 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     let or_else = self.prepare_nodes(or_else)?;
                     new_nodes.push(Node::If { test, body, or_else });
                 }
-                Node::FunctionDef(RawFunctionDef {
-                    name,
-                    signature,
-                    body,
-                    is_async,
-                }) => {
+                Node::FunctionDef {
+                    def:
+                        RawFunctionDef {
+                            name,
+                            signature,
+                            body,
+                            is_async,
+                        },
+                    decorators,
+                } => {
+                    // Decorators evaluate in the enclosing scope, not the function
+                    // body, and before the name binds — so `@f def f()` sees the
+                    // previous `f`, as in CPython.
+                    let decorators = decorators
+                        .into_iter()
+                        .map(|d| self.prepare_expression(d))
+                        .collect::<Result<Vec<_>, ParseError>>()?;
                     let func = self.prepare_function_def(name, &signature, body, is_async)?;
                     // In a class body, the method name becomes a bound member
                     // only now — its own parameter defaults (evaluated in class
@@ -819,7 +830,7 @@ impl<'i, 'g> Prepare<'i, 'g> {
                     if self.is_class_scope {
                         self.bound_class_members.insert(func.name.name_id);
                     }
-                    new_nodes.push(Node::FunctionDef(func));
+                    new_nodes.push(Node::FunctionDef { def: func, decorators });
                 }
                 Node::ClassDef {
                     name,
@@ -2419,10 +2430,17 @@ fn collect_scope_info_from_node(
                 collect_scope_info_from_node(n, global_names, nonlocal_names, assigned_names, interner);
             }
         }
-        Node::FunctionDef(RawFunctionDef { name, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { name, .. },
+            decorators,
+        } => {
             // Function definition creates a local binding for the function name
             // But we don't recurse into the function body - that's a separate scope
             assigned_names.insert(name.name_id);
+            // Decorators evaluate in *this* scope, so a walrus in one binds here.
+            for decorator in decorators {
+                collect_assigned_names_from_expr(decorator, assigned_names, interner);
+            }
         }
         Node::ClassDef { name, decorators, .. } => {
             // A class definition binds the class name in this scope, just like a `def`.
@@ -2701,8 +2719,16 @@ fn collect_cell_vars_from_node(
     interner: &InternerBuilder,
 ) {
     match node {
-        Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { signature, body, .. },
+            decorators,
+        } => {
             collect_cell_vars_from_function(signature, body, our_locals, cell_vars, interner);
+            // A nested scope inside a decorator expression (a lambda in decorator
+            // position, or one passed to a factory) can capture our locals too.
+            for decorator in decorators {
+                collect_cell_vars_from_expr(decorator, our_locals, cell_vars, interner);
+            }
         }
         Node::ClassDef { body, decorators, .. } => {
             // The class body is a nested scope of *this* scope, like a `def`: any
@@ -3237,12 +3263,19 @@ fn collect_referenced_names_from_node(
                 collect_referenced_names_from_node(n, referenced, interner);
             }
         }
-        Node::FunctionDef(RawFunctionDef { signature, body, .. }) => {
+        Node::FunctionDef {
+            def: RawFunctionDef { signature, body, .. },
+            decorators,
+        } => {
             // Recurse into the nested function's body so transitively-captured
             // names propagate out of it. Without this, an intermediate scope
             // that doesn't itself reference a deep capture would not see it
             // — the bug behind issue #477's multi-hop closures.
             collect_nested_function_references(signature, body, referenced, interner);
+            // Decorators evaluate in *our* scope, so their names are ours to collect.
+            for decorator in decorators {
+                collect_referenced_names_from_expr(decorator, referenced, interner);
+            }
         }
         Node::ClassDef { decorators, .. } => {
             // The class body is a separate scope and the name is a binding, so

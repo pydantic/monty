@@ -925,7 +925,7 @@ fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .unwrap();
@@ -985,7 +985,7 @@ fn suspension_time_does_not_consume_the_duration_budget() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(300))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(300))),
             ..ReplConfig::default()
         })
         .unwrap();
@@ -1014,7 +1014,7 @@ fn loaded_session_keeps_its_duration_budget() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool
         .checkout(&ReplConfig {
-            limits: Some(ResourceLimits::new().max_duration(Duration::from_millis(100))),
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
         .unwrap();

@@ -19,8 +19,10 @@ export {
   type LoadSnapshotOptions,
   type OsCallback,
   type PrintCallback,
+  type PrintTargetInput,
   type Snapshot,
 } from './session.js'
+export { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES, type CollectedStreamEntry } from './print.js'
 export {
   MontyCrashedError,
   MontyError,

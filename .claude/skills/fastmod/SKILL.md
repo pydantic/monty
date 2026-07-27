@@ -15,8 +15,8 @@ THINK HARD about how best to use `fastmod` as it can dramatically improve your p
 
 ## Examples
 
-Example of switching the `py_type` function to use `impl ResourceTracker` instead of `T: ResourceTracker`:
+Example of switching the `py_type` function to take `heap: &Heap` instead of a generic `H: HeapAccess` parameter:
 
 ```bash
-fastmod --accept-all 'fn py_type<T: ResourceTracker>(\(.+?)<T>' 'fn py_type$1<impl ResourceTracker>'
+fastmod --accept-all 'fn py_type<H: HeapAccess>\((.+?), heap: &H\b' 'fn py_type($1, heap: &Heap'
 ```

@@ -20,7 +20,7 @@ use crate::{
 ///
 /// The one-argument form enters the ordinary iteration protocol; the
 /// two-argument form creates a callable iterator which stops at its sentinel.
-pub(crate) fn init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub(crate) fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let IterArgs { object, sentinel } = IterArgs::from_args(args, vm)?;
 
     if let Some(sentinel) = sentinel {
@@ -53,7 +53,7 @@ struct IterArgs {
 pub(crate) fn checked_preallocation_hint(
     hint: usize,
     elem_size: usize,
-    tracker: &impl ResourceTracker,
+    tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
     const MAX_PREALLOCATION_HINT: usize = 65_536;
 
@@ -62,13 +62,13 @@ pub(crate) fn checked_preallocation_hint(
 }
 
 /// Adapts a retained Python iterator to Rust's `Iterator` with memory checks.
-struct HeapedIterator<'this, 'h, T: ResourceTracker, I: CollectIter<'h>> {
+struct HeapedIterator<'this, 'h, I: CollectIter<'h>> {
     iter: &'this mut I,
-    vm: &'this mut VM<'h, T>,
+    vm: &'this mut VM<'h>,
     yielded: usize,
 }
 
-impl<'h, T: ResourceTracker, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, T, I> {
+impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
     type Item = RunResult<Value>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -95,42 +95,36 @@ impl<'h, T: ResourceTracker, I: CollectIter<'h>> Iterator for HeapedIterator<'_,
 /// Interface used to drain a retained Python iterator through Rust's `collect()`.
 trait CollectIter<'h> {
     /// Advances the iterator by one item.
-    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>>;
+    fn next_value(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>>;
 
     /// Returns an internal remaining-length hint when available.
-    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize;
+    fn remaining(&self, vm: &VM<'h>) -> usize;
 }
 
 impl<'h> CollectIter<'h> for ValueRead<'h, '_> {
-    fn next_value(&mut self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn next_value(&mut self, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.py_next(vm)
     }
 
-    fn remaining(&self, vm: &VM<'h, impl ResourceTracker>) -> usize {
+    fn remaining(&self, vm: &VM<'h>) -> usize {
         self.iter_size_hint(vm)
     }
 }
 
 /// Collects every item yielded by an iterable into a `Vec`.
-pub fn collect_iterable(value: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Vec<Value>> {
+pub fn collect_iterable(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = value.py_iter(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
 /// Collects every item yielded by an owned iterable into a target collection.
-pub(crate) fn collect_owned_iterable<T: FromIterator<Value>>(
-    value: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<T> {
+pub(crate) fn collect_owned_iterable<T: FromIterator<Value>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
     let iterator = value.into_py_iter(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
 /// Drains an owned Python iterator with incremental allocation checks.
-fn collect_python_iterator<T: FromIterator<Value>>(
-    iterator: Value,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<T> {
+fn collect_python_iterator<T: FromIterator<Value>>(iterator: Value, vm: &mut VM<'_>) -> RunResult<T> {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
     HeapedIterator {
@@ -142,11 +136,7 @@ fn collect_python_iterator<T: FromIterator<Value>>(
 }
 
 /// Pulls at most `limit` items from an iterable, stopping early.
-pub fn collect_iterable_bounded(
-    value: &Value,
-    limit: usize,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Vec<Value>> {
+pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) -> RunResult<Vec<Value>> {
     let iterator = value.py_iter(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
@@ -167,11 +157,7 @@ pub fn collect_iterable_bounded(
 }
 
 /// Implements Python's `next(iterator[, default])` semantics.
-pub fn iterator_next(
-    iter_value: &Value,
-    default: Option<Value>,
-    vm: &mut VM<'_, impl ResourceTracker>,
-) -> RunResult<Value> {
+pub fn iterator_next(iter_value: &Value, default: Option<Value>, vm: &mut VM<'_>) -> RunResult<Value> {
     let mut default_guard = DropGuard::new(default, vm);
     let vm = default_guard.ctx();
 

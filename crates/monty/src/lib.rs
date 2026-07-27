@@ -30,6 +30,7 @@ mod run_progress;
 mod sorting;
 mod source_map;
 mod string_builder;
+mod stringize;
 mod types;
 mod value;
 

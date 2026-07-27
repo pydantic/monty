@@ -1,6 +1,6 @@
 //! Implementation of the getattr() builtin function.
 
-use monty_types::{ExcType, ResourceTracker};
+use monty_types::ExcType;
 
 use crate::{
     args::ArgValues,
@@ -27,7 +27,7 @@ use crate::{
 /// getattr(obj, 'y', None)       # Get obj.y or None if not found
 /// getattr(module, 'function')   # Get module.function
 /// ```
-pub fn builtin_getattr(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_getattr(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let positional = args.into_pos_only("getattr", vm.heap)?;
     defer_drop!(positional, vm);
 

@@ -464,6 +464,148 @@ fn invalid_input_repr_nested_in_list() {
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
 
+// === Error-Path Cleanup Tests ===
+// An invalid element placed *after* elements that allocate heap values: the
+// partially-built container must release the already-converted values (the
+// `memory-model-checks` feature panics on any missed drop) and report the error.
+
+/// Runs `x` bound to `input`, returning the conversion/execution result.
+fn run_input(input: MontyObject) -> Result<MontyObject, monty_types::MontyException> {
+    let ex = MontyRun::new(
+        "x".to_owned(),
+        "test.py",
+        vec!["x".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    ex.run_no_limits(vec![input])
+}
+
+/// A list element guaranteed to allocate on the heap during conversion.
+fn heap_element() -> MontyObject {
+    MontyObject::List(vec![MontyObject::Int(1)])
+}
+
+#[test]
+fn invalid_input_repr_in_list_after_heap_values() {
+    let err = run_input(MontyObject::List(vec![
+        heap_element(),
+        MontyObject::Repr("bad".to_owned()),
+    ]))
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_tuple_after_heap_values() {
+    let err = run_input(MontyObject::Tuple(vec![
+        heap_element(),
+        MontyObject::Repr("bad".to_owned()),
+    ]))
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_dict_value_after_pairs() {
+    // The first pair converts fully (heap key and value); the second pair's
+    // key converts before its value fails, exercising the key-guard path too.
+    let err = run_input(MontyObject::Dict(
+        vec![
+            (MontyObject::String("a".to_owned()), heap_element()),
+            (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
+        ]
+        .into(),
+    ))
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_set_after_heap_values() {
+    let err = run_input(MontyObject::Set(vec![
+        MontyObject::String("heap string".to_owned()),
+        MontyObject::Repr("bad".to_owned()),
+    ]))
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_frozenset_after_heap_values() {
+    let err = run_input(MontyObject::FrozenSet(vec![
+        MontyObject::String("heap string".to_owned()),
+        MontyObject::Repr("bad".to_owned()),
+    ]))
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_namedtuple_after_heap_values() {
+    let err = run_input(MontyObject::NamedTuple {
+        type_name: "nt".to_owned(),
+        field_names: vec!["a".to_owned(), "b".to_owned()],
+        values: vec![heap_element(), MontyObject::Repr("bad".to_owned())],
+    })
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
+#[test]
+fn invalid_input_namedtuple_length_mismatch() {
+    // `NamedTuple::new` asserts equal lengths — malformed host input must
+    // surface as an error, not a panic.
+    let err = run_input(MontyObject::NamedTuple {
+        type_name: "nt".to_owned(),
+        field_names: vec!["a".to_owned()],
+        values: vec![MontyObject::Int(1), MontyObject::Int(2)],
+    })
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: NamedTuple field_names and values must have the same length")
+    );
+}
+
+#[test]
+fn invalid_input_repr_in_dataclass_attrs() {
+    let err = run_input(MontyObject::Dataclass {
+        name: "Point".to_owned(),
+        type_id: 1,
+        field_names: vec!["a".to_owned(), "b".to_owned()],
+        attrs: vec![
+            (MontyObject::String("a".to_owned()), heap_element()),
+            (MontyObject::String("b".to_owned()), MontyObject::Repr("bad".to_owned())),
+        ]
+        .into(),
+        frozen: false,
+    })
+    .unwrap_err();
+    assert_eq!(
+        err.message(),
+        Some("invalid input type: 'Repr' is not a valid input value")
+    );
+}
+
 // === Function Parameter Shadowing Tests ===
 // These tests verify that function parameters properly shadow script inputs with the same name.
 

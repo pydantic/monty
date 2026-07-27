@@ -1,7 +1,5 @@
 //! F-string and value formatting helpers for the VM.
 
-use monty_types::ResourceTracker;
-
 use super::VM;
 use crate::{
     bytecode::op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC},
@@ -16,7 +14,7 @@ use crate::{
     value::Value,
 };
 
-impl<T: ResourceTracker> VM<'_, T> {
+impl VM<'_> {
     /// Builds an f-string by concatenating n string parts from the stack.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let this = self;
@@ -208,7 +206,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 /// `String`, dropping the value's heap reference on every path. Used by the
 /// f-string conversion arms, which need the text in an owned buffer to feed
 /// the mini-language formatter.
-fn str_value_into_string(value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> Result<String, RunError> {
+fn str_value_into_string(value: Value, vm: &mut VM<'_>) -> Result<String, RunError> {
     defer_drop!(value, vm);
     Ok(value.to_str(vm)?.to_owned())
 }

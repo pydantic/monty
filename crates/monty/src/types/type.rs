@@ -1,6 +1,5 @@
 use std::{borrow::Cow, fmt};
 
-use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 
 use crate::{
@@ -193,7 +192,7 @@ impl Type {
     /// class names are cloned into `Cow::Owned`), so it can be captured
     /// before heap-mutating cleanup (`drop_with`) at error sites and
     /// formatted after.
-    pub(crate) fn name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::Instance(class_id) => class_name(class_id, heap, interns),
             Self::Exception(exc_type) => Cow::Borrowed(exc_type.into()),
@@ -207,7 +206,7 @@ impl Type {
     /// `arg == Py_None ? "None" : Py_TYPE(arg)->tp_name`, and since `NoneType`
     /// is a singleton, branching on the type is equivalent to branching on the
     /// value. Use for the "not Y" half of arg-type error messages only.
-    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap<impl ResourceTracker>, interns: &'i Interns) -> Cow<'i, str> {
+    pub(crate) fn cpython_arg_name<'i>(self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
         match self {
             Self::NoneType => Cow::Borrowed("None"),
             other => other.name(heap, interns),
@@ -366,7 +365,7 @@ impl Type {
         self,
         method_id: StringId,
         args: ArgValues,
-        vm: &mut VM<'_, impl ResourceTracker>,
+        vm: &mut VM<'_>,
     ) -> RunResult<AttrCallResult> {
         match (self, method_id) {
             (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
@@ -394,7 +393,7 @@ impl Type {
     ///
     /// Dispatches to the appropriate type's init method for container types,
     /// or handles primitive type conversions inline.
-    pub(crate) fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    pub(crate) fn call(self, vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
@@ -522,7 +521,7 @@ struct IntArgs {
 
 /// Implements the `int()` constructor: numeric coercion, and str/bytes
 /// parsing with an optional base (auto-detected when `base=0`).
-fn int_init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+fn int_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let IntArgs { x, base } = IntArgs::from_args(args, vm)?;
     let Some(x) = x else {
         // `int()` → 0; `int(base=N)` complains about the missing value even
@@ -556,7 +555,7 @@ fn int_init(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult
 }
 
 /// `int(x)` with no base: numeric coercion plus base-10 str/bytes parsing.
-fn int_convert(x: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Value> {
+fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     let interns = vm.interns;
     match x {
         Value::Int(i) => Ok(Value::Int(*i)),
@@ -580,7 +579,7 @@ fn int_convert(x: &Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<Va
 /// which *clamps* out-of-i64 ints instead of raising — so a `LongInt` base
 /// lands in the range error, not `OverflowError`; non-integers raise
 /// `TypeError` before the range is checked.
-fn int_base(base: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u32> {
+fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
     let n = match &base {
         Value::Bool(b) => i64::from(*b),
         Value::Int(i) => *i,
@@ -605,7 +604,7 @@ fn int_base(base: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<u32
 /// `base` is `0` (auto-detect from a `0x`/`0o`/`0b` prefix) or `2..=36`.
 /// Returns `Value::Int` if the value fits in i64, otherwise allocates a
 /// `LongInt` on the heap. Returns `ValueError` on failure.
-fn parse_int_from_str(value: &str, base: u32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn parse_int_from_str(value: &str, base: u32, heap: &Heap) -> RunResult<Value> {
     // Fast path: plain base-10 literals parse directly (no whitespace,
     // underscores or prefix handling needed).
     if base == 10
@@ -631,7 +630,7 @@ fn parse_int_from_str(value: &str, base: u32, heap: &Heap<impl ResourceTracker>)
 ///
 /// Unlike `str`, bytes must not treat UTF-8 encodings of Unicode whitespace as
 /// separators. Failures repr the input as a bytes literal, matching CPython.
-fn parse_int_from_bytes(bytes: &[u8], base: u32, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
+fn parse_int_from_bytes(bytes: &[u8], base: u32, heap: &Heap) -> RunResult<Value> {
     let invalid = || ExcType::value_error_invalid_literal_for_int(base, bytes_repr(bytes));
     match str::from_utf8(bytes.trim_ascii()) {
         Ok(s) => parse_int_digits(s, base, &invalid, heap),
@@ -651,12 +650,7 @@ enum IntScanState {
 
 /// Parses a whitespace-trimmed str/bytes int literal: sign, base prefix,
 /// underscore placement, digit limits, and BigInt promotion.
-fn parse_int_digits(
-    value: &str,
-    base: u32,
-    invalid: &impl Fn() -> RunError,
-    heap: &Heap<impl ResourceTracker>,
-) -> RunResult<Value> {
+fn parse_int_digits(value: &str, base: u32, invalid: &impl Fn() -> RunError, heap: &Heap) -> RunResult<Value> {
     let (negative, body) = match value.strip_prefix(['+', '-']) {
         Some(rest) => (value.starts_with('-'), rest),
         None => (false, value),

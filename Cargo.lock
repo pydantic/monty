@@ -1418,7 +1418,7 @@ dependencies = [
  "hash32",
  "rustc_version",
  "serde",
- "spin 0.9.8",
+ "spin 0.9.9",
  "stable_deref_trait",
 ]
 
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "monty"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "ahash",
  "chrono",
@@ -2008,8 +2008,10 @@ dependencies = [
  "num-traits",
  "postcard",
  "ruff_python_ast",
+ "ruff_python_codegen",
  "ruff_python_parser",
  "ruff_python_stdlib",
+ "ruff_source_file",
  "ruff_text_size",
  "serde",
  "serde_json",
@@ -2024,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "monty-bench"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2038,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "monty-datatest"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "ahash",
  "chrono",
@@ -2054,7 +2056,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fs"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "ahash",
  "monty-types",
@@ -2063,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "monty-fuzz"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
@@ -2073,7 +2075,7 @@ dependencies = [
 
 [[package]]
 name = "monty-js"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "monty-pool",
  "monty-type-checking",
@@ -2088,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "monty-macros"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "insta",
  "proc-macro2",
@@ -2098,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "monty-pool"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "monty-fs",
  "monty-proto",
@@ -2110,7 +2112,7 @@ dependencies = [
 
 [[package]]
 name = "monty-proto"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "monty",
  "monty-type-checking",
@@ -2124,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "monty-runtime"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "clap",
  "monty",
@@ -2138,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "monty-type-checking"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
@@ -2157,7 +2159,7 @@ dependencies = [
 
 [[package]]
 name = "monty-types"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "chrono",
  "monty-macros",
@@ -2171,7 +2173,7 @@ dependencies = [
 
 [[package]]
 name = "monty-typeshed"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "path-slash",
  "ruff_db",
@@ -2181,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "monty-wasm-runtime"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "monty-proto",
  "prost",
@@ -2588,7 +2590,7 @@ dependencies = [
  "nix 0.26.4",
  "once_cell",
  "smallvec",
- "spin 0.10.0",
+ "spin 0.10.1",
  "symbolic-demangle",
  "tempfile",
  "thiserror",
@@ -2735,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "pydantic-monty"
-version = "0.0.19-beta.4"
+version = "0.0.19"
 dependencies = [
  "ahash",
  "monty-fs",
@@ -3199,6 +3201,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruff_python_codegen"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1902d82ae0745be9d3d12a1aee4429acff987c768710dc38a6521eab05990ca0"
+dependencies = [
+ "ruff_python_ast",
+ "ruff_python_literal",
+ "ruff_python_parser",
+ "ruff_source_file",
+ "ruff_text_size",
+]
+
+[[package]]
 name = "ruff_python_literal"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3593,18 +3608,18 @@ dependencies = [
 
 [[package]]
 name = "spin"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
  "lock_api",
 ]
 
 [[package]]
 name = "spin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
  "lock_api",
 ]
