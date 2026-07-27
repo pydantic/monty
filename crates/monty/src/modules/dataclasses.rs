@@ -111,9 +111,7 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         HeapReadOutput::Class(mut class) => class.get_mut(heap).set_dataclass_meta(meta),
         _ => None,
     });
-    // Re-decorating an already-decorated class discards the earlier metadata,
-    // whose captured defaults nothing else owns and whose bytes stay charged
-    // until refunded here.
+    // Re-decorating discards the earlier metadata, which nothing else owns.
     if let Some(replaced) = replaced {
         vm.heap.track_shrink(replaced.estimate_size());
         drop_captured_defaults(replaced, vm);
@@ -146,8 +144,7 @@ fn build_dataclass_meta(vm: &mut VM<'_>, class_id: HeapId) -> RunResult<Dataclas
     // CPython's own message; the Monty-only guards below can then only fire for
     // a class CPython accepts.
     let fields = collect_annotated_fields(vm, class_id);
-    // `fields` already owns a reference per captured default, so a rejected
-    // class body must release them rather than dropping the `Vec` on the floor.
+    // `fields` owns a reference per captured default: release them if rejected.
     let meta = DataclassMeta { fields };
     match validate_fields(vm, &meta.fields).and_then(|()| reject_unsupported_members(vm, class_id)) {
         Ok(()) => Ok(meta),
@@ -205,9 +202,8 @@ fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField
         if is_classvar(&annotation) {
             continue;
         }
-        // Capture the default *now*, as CPython bakes it into the generated
-        // `__init__`: rebinding the class attribute later must not change what
-        // subsequent constructions receive.
+        // Captured now, as CPython bakes it into the generated `__init__`:
+        // rebinding the class attribute later must not change it.
         let default = namespace
             .get_by_str(vm.interns.get_str(*name_id), vm.heap, vm.interns)
             .map(|v| v.clone_with_heap(vm.heap));
@@ -234,9 +230,8 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> 
         }
         if let Some(default) = &field.default {
             // CPython's rule is hashability, not a list/dict/set type check, so
-            // a class with `__hash__ = None` is rejected the same way. The
-            // captured default is borrowed, not consumed — `build_dataclass_meta`
-            // releases it if this check rejects the class.
+            // a class with `__hash__ = None` is rejected the same way. Borrowed,
+            // not consumed — `build_dataclass_meta` releases it on rejection.
             if default.py_hash(vm)?.is_none() {
                 let ty = default.py_type_name(vm);
                 return Err(ExcType::value_error(format!(
@@ -398,9 +393,8 @@ fn bind_dataclass_fields(
     let n_pos = positionals.len();
 
     // Materialize keyword pairs (name string + value); drop the key `Value`s.
-    // A non-string key is fatal: CPython raises from the call machinery before
-    // `__init__` is entered, so it outranks every arity error below. The whole
-    // mapping is still drained first so no path leaks a refcount.
+    // A non-string key outranks every arity error below — CPython raises it from
+    // the call machinery — but the mapping is drained first so nothing leaks.
     let mut keywords: Vec<(String, Value)> = Vec::with_capacity(kwargs.len());
     let mut nonstring_key = false;
     for (key, value) in kwargs {
@@ -425,10 +419,9 @@ fn bind_dataclass_fields(
         return Err(ExcType::type_error_kwargs_nonstring_key());
     }
 
-    // Positional arguments fill the leftmost slots; keywords fill by name. Any
-    // positional beyond the last field is parked in `excess` rather than
-    // reported now, because CPython binds keywords first: `P(1, 2, 3, y=4)` is
-    // "multiple values for argument 'y'", not "takes 3 positional arguments".
+    // Positional arguments fill the leftmost slots; keywords fill by name. A
+    // positional beyond the last field is parked in `excess`, since CPython binds
+    // keywords first: `P(1, 2, 3, y=4)` is "multiple values for argument 'y'".
     let mut values: Vec<Option<Value>> = (0..n_fields).map(|_| None).collect();
     let mut excess: Vec<Value> = Vec::new();
     for (slot, value) in positionals.into_iter().enumerate() {
@@ -458,8 +451,8 @@ fn bind_dataclass_fields(
         }
     }
 
-    // Too many positional arguments (CPython counts `self`, so +1 each side),
-    // reported only once keyword binding has had its say.
+    // Too many positionals (CPython counts `self`, so +1 each side), reported
+    // only once keyword binding has had its say.
     if error.is_none() && n_pos > n_fields {
         let required = fields.iter().filter(|(_, has_default)| !has_default).count();
         error = Some(ExcType::type_error_too_many_positional_range(
@@ -522,11 +515,10 @@ fn bind_dataclass_fields(
 /// to identity.
 ///
 /// Mirrors CPython 3.14's generated `self.a == other.a and self.b == other.b`:
-/// fields are compared left to right and the chain stops at the first unequal
-/// pair, so a later field that was never assigned goes unnoticed. Each pair uses
-/// the `==` *operator* (`py_eq_operator`), not container equality — a field
-/// holding an object whose `__eq__` always returns `False` makes two dataclasses
-/// unequal even when both hold the very same object.
+/// left to right, stopping at the first unequal pair, each compared with the
+/// `==` *operator* rather than container equality (so a field whose `__eq__`
+/// always returns `False` makes two dataclasses unequal even when it is the
+/// same object on both sides).
 pub(crate) fn dataclass_eq<'h>(
     instance: &HeapRead<'h, Instance>,
     field_names: &[StringId],

@@ -3,10 +3,9 @@
 #
 #   Cyclic  ->  metadata default `box`  ->  box.owner  ->  Cyclic
 #
-# The cycle collector must therefore walk the captured defaults as children of
-# the class, the same way it walks the class namespace. An instance default is
-# accepted because dataclasses reject defaults by *hashability*, and a class
-# defining neither `__eq__` nor `__hash__` hashes by identity.
+# The cycle collector must therefore walk captured defaults as children of the
+# class. An instance is an accepted default because dataclasses reject them by
+# *hashability*, and a class defining no `__eq__`/`__hash__` hashes by identity.
 from dataclasses import dataclass
 
 

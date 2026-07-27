@@ -429,9 +429,8 @@ pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value
 ///
 /// A user `__repr__` wins, then the synthesized dataclass form, then the
 /// `<Foo object at 0x..>` default. The dataclass form registers the instance in
-/// `heap_ids` for the duration, so a field referring back to it renders `...`
-/// instead of recursing — which is why this takes the caller's set rather than
-/// starting a fresh one.
+/// `heap_ids` for its duration, so a field pointing back renders `...` — which
+/// is why the caller's set is threaded through rather than a fresh one made.
 pub(crate) fn instance_repr_fmt(
     self_id: HeapId,
     f: &mut impl Write,

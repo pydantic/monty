@@ -42,12 +42,10 @@ pub(crate) struct Class {
 
 /// Metadata recorded on a [`Class`] by the `@dataclass` decorator.
 ///
-/// **Holds owned heap references** through its fields' captured defaults, so a
-/// `Class` carrying one must include them in `py_estimate_size`,
-/// `py_dec_ref_ids` and the cycle collector's child walk — the first two live in
-/// this file's [`HeapItem`] impl, the third in `heap::for_each_child_id`. Flags
-/// for the `@dataclass(...)` keyword form arrive with the code that reads them,
-/// rather than sitting unread in snapshots.
+/// **Holds owned heap references** through its captured defaults, so a `Class`
+/// carrying one counts them in `py_estimate_size` and `py_dec_ref_ids` (below)
+/// and in `heap::for_each_child_id`. Flags for the `@dataclass(...)` keyword
+/// form arrive with the code that reads them, not unread in snapshots.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassMeta {
     /// Fields in definition order (from `__annotations__`, `ClassVar` excluded).
@@ -56,19 +54,16 @@ pub(crate) struct DataclassMeta {
 
 impl DataclassMeta {
     /// Bytes this metadata adds to its `Class`, counting the field vector's
-    /// whole capacity. A captured default that is a `Ref` costs only the inline
-    /// `Value` — the entry it points at is charged as its own allocation.
-    ///
-    /// Decoration grows an already-allocated `Class` in place, so this must be
-    /// charged to the resource tracker explicitly — otherwise a sandbox could
-    /// decorate arbitrarily many wide classes without `max_memory` noticing.
+    /// whole capacity (a captured `Ref` default costs only the inline `Value`;
+    /// its entry is charged separately). Decoration grows an already-allocated
+    /// `Class` in place, so the caller must charge this to the tracker —
+    /// otherwise wide classes could be decorated past `max_memory`.
     #[must_use]
     pub fn estimate_size(&self) -> usize {
         mem::size_of::<Self>() + self.fields.capacity() * mem::size_of::<DataclassField>()
     }
 
-    /// Yields every captured default that is a heap reference — the single
-    /// place refcount and GC walks enumerate the metadata's children.
+    /// Every captured default that is a heap reference: the metadata's children.
     pub fn ref_children(&self) -> impl Iterator<Item = HeapId> + '_ {
         self.fields.iter().filter_map(|f| match &f.default {
             Some(Value::Ref(id)) => Some(*id),
@@ -82,12 +77,9 @@ impl DataclassMeta {
 pub(crate) struct DataclassField {
     /// The interned field name (from an `__annotations__` key, always interned).
     pub name: StringId,
-    /// The default **captured when `@dataclass` ran**, or `None` for a required
-    /// field. CPython bakes defaults into the generated `__init__`, so later
-    /// rebinding of the class attribute must not change what new instances get;
-    /// holding the value here rather than re-reading the namespace preserves
-    /// that. This is the owned reference that makes [`DataclassMeta`] a refcount
-    /// participant.
+    /// The default **captured when `@dataclass` ran** (an owned reference), or
+    /// `None` for a required field. CPython bakes defaults into the generated
+    /// `__init__`, so rebinding the class attribute later must not change it.
     pub default: Option<Value>,
     /// Whether the annotation was `InitVar[...]`. Recorded rather than acted on:
     /// `InitVar` is rejected at decoration time until pseudo-fields are
@@ -117,12 +109,10 @@ impl Class {
     /// Records dataclass metadata (called by the `@dataclass` decorator),
     /// returning any metadata it replaced.
     ///
-    /// The caller charges [`DataclassMeta::estimate_size`] to the resource
-    /// tracker first: this grows an already-allocated `Class` in place, so the
-    /// allocation-time estimate has been taken and would otherwise miss it.
-    /// Re-decorating an existing dataclass hands back the previous metadata,
-    /// whose captured defaults the caller **must** drop (and whose bytes it must
-    /// refund) — they are owned references that nothing else releases.
+    /// The caller charges [`DataclassMeta::estimate_size`] to the tracker first,
+    /// since this grows an already-allocated `Class` in place. Re-decorating
+    /// returns the replaced metadata, whose captured defaults the caller **must**
+    /// drop and whose bytes it must refund — nothing else releases them.
     #[must_use]
     pub fn set_dataclass_meta(&mut self, meta: DataclassMeta) -> Option<DataclassMeta> {
         self.dataclass_meta.replace(meta)
@@ -255,8 +245,7 @@ impl HeapItem for Class {
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         self.namespace.py_dec_ref_ids(stack);
-        // Captured dataclass defaults are owned references like any namespace
-        // entry, so they must be released with the class.
+        // Captured dataclass defaults are owned references too.
         if let Some(meta) = &mut self.dataclass_meta {
             for field in &mut meta.fields {
                 if let Some(default) = &mut field.default {
