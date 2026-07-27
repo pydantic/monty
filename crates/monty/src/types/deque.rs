@@ -505,10 +505,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         let Some(count) = repeat_count(other, vm)? else {
             return Ok(None);
         };
-        // Snapshot the source items and `maxlen` so the build below holds no heap
-        // borrow — a timeout mid-build can then release the clones with `&mut vm`.
-        let source: Vec<Value> = self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect();
         let maxlen = self.get(vm.heap).maxlen();
+        // `count == 0` (and negative counts, clamped to 0) yields an empty deque,
+        // so skip cloning the items. Otherwise snapshot the source items so the
+        // build holds no heap borrow — a timeout mid-build can then release the
+        // clones with `&mut vm`.
+        let source: Vec<Value> = if count == 0 {
+            Vec::new()
+        } else {
+            self.get(vm.heap).iter().map(|v| v.clone_with_heap(vm.heap)).collect()
+        };
         let result = repeat_deque(source, maxlen, count, vm)?;
         Ok(Some(result))
     }
