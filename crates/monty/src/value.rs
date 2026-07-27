@@ -16,7 +16,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     fstring::FormatFloat,
-    hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
+    hash::{HashValue, hash_one, hash_python_long_int},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
@@ -70,12 +70,6 @@ pub(crate) enum Value {
     ModuleFunction(ModuleFunctions),
     /// A function defined in the module (not a closure, doesn't capture any variables)
     DefFunction(FunctionId),
-    /// Reference to an external function defined on the host.
-    ///
-    /// The `StringId` stores the interned function name. When called, the VM yields
-    /// a `FrameExit::ExternalCall` with this `StringId` so the host can look up and
-    /// execute the function by name.
-    ExtFunction(StringId),
     /// A marker value representing special objects like sys.stdout/stderr.
     /// These exist but have minimal functionality in the sandboxed environment.
     Marker(Marker),
@@ -202,7 +196,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(c) => c.py_type(),
             Self::ModuleFunction(_) => Type::BuiltinFunction,
-            Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
+            Self::DefFunction(_) => Type::Function,
             Self::Marker(m) => m.py_type(),
             Self::Property(_) => Type::Property,
             Self::Ref(id) => vm.heap.read(*id).py_type(vm),
@@ -258,10 +252,6 @@ impl<'h> PyTrait<'h> for Value {
                 Self::DefFunction(o) => Some(f == o),
                 _ => None,
             }),
-            // External function equality is name-based across both the inline
-            // `Value::ExtFunction(StringId)` and heap `HeapData::ExtFunction(String)`
-            // representations. (#347)
-            Self::ExtFunction(name_id) => Ok(eq_ext_function(vm.interns.get_str(*name_id), other, vm)),
             Self::Marker(m) => Ok(match other {
                 Self::Marker(o) => Some(m == o),
                 _ => None,
@@ -390,7 +380,7 @@ impl<'h> PyTrait<'h> for Value {
             // InternLongInt is always truthy (if it were zero, it would fit in i64)
             Self::InternLongInt(_) => true,
             Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
-            Self::DefFunction(_) | Self::ExtFunction(_) => true, // Functions are always truthy
+            Self::DefFunction(_) => true,                       // Functions are always truthy
             Self::Marker(_) => true,                            // Markers are always truthy
             Self::Property(_) => true,                          // Properties are always truthy
             Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
@@ -420,18 +410,17 @@ impl<'h> PyTrait<'h> for Value {
             Self::Float(v) => Ok(write!(f, "{}", FormatFloat(*v))?),
             Self::Builtin(b) => Ok(b.py_repr_fmt(f)?),
             Self::ModuleFunction(mf) => {
-                let py_id = self.id(vm).into_value(vm.heap)?;
+                let py_id = self.id().into_value(vm.heap)?;
                 defer_drop!(py_id, vm);
                 Ok(mf.py_repr_fmt(f, PythonIdDisplay::new(py_id, vm.heap))?)
             }
             Self::DefFunction(f_id) => {
-                let py_id = self.id(vm).into_value(vm.heap)?;
+                let py_id = self.id().into_value(vm.heap)?;
                 defer_drop!(py_id, vm);
                 Ok(interns
                     .get_function(*f_id)
                     .py_repr_fmt(f, interns, PythonIdDisplay::new(py_id, vm.heap))?)
             }
-            Self::ExtFunction(name_id) => Ok(write!(f, "<function '{}' external>", interns.get_str(*name_id))?),
             Self::InternString(string_id) => Ok(string_repr_fmt(interns.get_str(*string_id), f)?),
             Self::InternBytes(bytes_id) => Ok(bytes_repr_fmt(interns.get_bytes(*bytes_id), f)?),
             Self::Marker(m) => Ok(m.py_repr_fmt(f)?),
@@ -1289,7 +1278,7 @@ impl Value {
             Self::InternString(_) => Type::Str,
             Self::InternBytes(_) => Type::Bytes,
             Self::Builtin(_) => Type::BuiltinFunction,
-            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
+            Self::ModuleFunction(_) | Self::DefFunction(_) => Type::Function,
             Self::Marker(_) => Type::SpecialForm,
             Self::Property(_) => Type::Property,
             Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
@@ -1300,10 +1289,10 @@ impl Value {
 
     /// Returns this value's complete structural identity.
     ///
-    /// Immediate values retain Monty's value-derived identity, heap objects use
-    /// their arena index, and external functions remain identified by name.
-    pub(crate) fn id<'a>(&self, vm: &'a VM<'_>) -> Identity<'a> {
-        Identity::new(self, vm)
+    /// Immediate values retain Monty's value-derived identity, while heap objects
+    /// use their arena index.
+    pub(crate) fn id(&self) -> Identity {
+        Identity::new(self)
     }
 
     /// Returns the Ref ID if this value is a reference, otherwise returns None.
@@ -1329,10 +1318,9 @@ impl Value {
 
     /// Python-visible `is` operator using complete structural identity.
     ///
-    /// External functions compare by name across inline and heap representations;
-    /// all other values compare using their full immediate or arena identity.
-    pub fn is(&self, other: &Self, vm: &VM<'_>) -> bool {
-        self.id(vm) == other.id(vm)
+    /// Values compare using their full immediate or arena identity.
+    pub fn is(&self, other: &Self) -> bool {
+        self.id() == other.id()
     }
 
     /// Python `==`, resolved to a definite boolean.
@@ -1441,11 +1429,6 @@ impl Value {
             Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
             // Hash functions based on function ID
             Self::DefFunction(f_id) => Ok(Some(hash_one(f_id))),
-            // Hash the function name's string contents so the inline path
-            // agrees with the heap `HeapData::ExtFunction` arm in `heap_data.rs`.
-            // Required so cross-representation equality (added in the same fix
-            // series) preserves the dict invariant `a == b ⇒ hash(a) == hash(b)`.
-            Self::ExtFunction(name_id) => Ok(Some(hash_python_str(vm.interns.get_str(*name_id)))),
             // Markers are hashable based on their discriminant
             Self::Marker(m) => Ok(Some(hash_one(m))),
             // Properties are hashable based on their OS function discriminant
@@ -1943,7 +1926,6 @@ impl Value {
             Self::Builtin(b) => Self::Builtin(*b),
             Self::ModuleFunction(mf) => Self::ModuleFunction(*mf),
             Self::DefFunction(f) => Self::DefFunction(*f),
-            Self::ExtFunction(f) => Self::ExtFunction(*f),
             Self::InternString(s) => Self::InternString(*s),
             Self::InternBytes(b) => Self::InternBytes(*b),
             Self::InternLongInt(bi) => Self::InternLongInt(*bi),
@@ -2076,7 +2058,7 @@ impl Value {
     /// `debug_assert!`s in dispatch's "not callable" arms.
     pub(crate) fn is_callable(&self, heap: &Heap) -> bool {
         match self {
-            Self::Builtin(_) | Self::ModuleFunction(_) | Self::ExtFunction(_) | Self::DefFunction(_) => true,
+            Self::Builtin(_) | Self::ModuleFunction(_) | Self::DefFunction(_) => true,
             Self::Ref(id) => heap.get(*id).is_callable(),
             _ => false,
         }
@@ -2147,16 +2129,6 @@ pub(crate) fn eq_bytes(b: &[u8], other: &Value, vm: &VM<'_>) -> Option<bool> {
     match other {
         Value::InternBytes(id) => Some(b == vm.interns.get_bytes(*id)),
         Value::Ref(id) if let HeapData::Bytes(o) = vm.heap.get(*id) => Some(b == o.as_slice()),
-        _ => None,
-    }
-}
-
-/// External functions compare equal iff their names match — used by both the
-/// inline `Value::ExtFunction` and heap `HeapData::ExtFunction` representations. (#347)
-pub(crate) fn eq_ext_function(name: &str, other: &Value, vm: &VM<'_>) -> Option<bool> {
-    match other {
-        Value::ExtFunction(id) => Some(name == vm.interns.get_str(*id)),
-        Value::Ref(id) if let HeapData::ExtFunction(o) = vm.heap.get(*id) => Some(name == o.as_str()),
         _ => None,
     }
 }

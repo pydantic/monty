@@ -474,17 +474,12 @@ impl VM<'_> {
     /// Dispatches based on the callable type:
     /// - `Value::Builtin`: calls builtin directly, returns `Push`
     /// - `Value::ModuleFunction`: calls module function directly, returns `Push`
-    /// - `Value::ExtFunction`: returns `External` for caller to execute
     /// - `Value::DefFunction`: pushes a new frame, returns `FramePushed`
     /// - `Value::Ref`: checks for closure/function on heap
     pub(crate) fn call_function(&mut self, callable: &Value, args: ArgValues) -> Result<CallResult, RunError> {
         match callable {
             Value::Builtin(builtin) => builtin.call(self, args),
             Value::ModuleFunction(mf) => mf.call(self, args),
-            Value::ExtFunction(name_id) => {
-                // External function - return to caller to execute
-                Ok(CallResult::External(EitherStr::Interned(*name_id), args))
-            }
             Value::DefFunction(func_id) => {
                 // Defined function without defaults or captured variables
                 self.call_def_function(*func_id, &[], &[], args)
@@ -532,10 +527,9 @@ impl VM<'_> {
                 let cloned_defaults: Vec<Value> = fd.defaults.iter().map(|v| v.clone_with_heap(self)).collect();
                 (fd.func_id, Vec::new(), cloned_defaults)
             }
-            HeapData::ExtFunction(name) => {
-                // Heap-allocated external function with a non-interned name
-                let name = name.clone();
-                return Ok(CallResult::External(EitherStr::Heap(name), args));
+            HeapData::ExtFunction(function) => {
+                let name = function.clone_name();
+                return Ok(CallResult::External(name, args));
             }
             _ => {
                 // Coupling check: dispatch rejected this Ref, so the heap-side

@@ -67,19 +67,23 @@ pub(crate) fn wide_i128_into_value(value: i128, heap: &Heap) -> Result<Value, Re
     Ok(Value::Ref(id))
 }
 
-/// Converts a `u128` into the compact integer representation.
-pub(crate) fn u128_into_value(value: u128, heap: &Heap) -> Result<Value, ResourceError> {
-    if let Ok(value) = i64::try_from(value) {
-        Ok(Value::Int(value))
-    } else {
-        LongInt::new(BigInt::from(value)).into_value(heap)
-    }
-}
-
 impl LongInt {
     /// Creates a new `LongInt` from a `BigInt`.
     pub fn new(bi: BigInt) -> Self {
         Self(bi)
+    }
+
+    /// Converts a nonnegative `u128` to its most compact Python integer representation.
+    ///
+    /// The common immediate path avoids constructing a temporary `BigInt`.
+    pub(crate) fn value_from_u128(value: u128, heap: &Heap) -> Result<Value, ResourceError> {
+        if let Ok(value) = i64::try_from(value) {
+            Ok(Value::Int(value))
+        } else {
+            let long_int = Self::new(BigInt::from(value));
+            let heap_id = heap.allocate(HeapData::LongInt(long_int))?;
+            Ok(Value::Ref(heap_id))
+        }
     }
 
     /// Converts to a `Value`, demoting to i64 if it fits.
