@@ -292,6 +292,14 @@ try:
 except ValueError as exc:
     assert str(exc) == "invalid mode: 'z'", f'unexpected unknown mode message: {exc}'
 
+try:
+    open(root / 'hello.txt', 'b')
+    assert False, 'expected mode without an action to fail'
+except ValueError as exc:
+    assert str(exc) == 'Must have exactly one of create/read/write/append mode and at most one plus', (
+        f'unexpected missing action message: {exc}'
+    )
+
 # === Sized read ===
 # Set up a multi-line text fixture for the rest of these tests.
 (root / 'sized.txt').write_text('hello world')

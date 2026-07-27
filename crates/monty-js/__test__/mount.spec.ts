@@ -192,6 +192,10 @@ test('MontyFileHandle rejects invalid arguments', () => {
     [() => new MontyFileHandle(1 as unknown as string, 'r'), 'MontyFileHandle path must be a string'],
     [() => new MontyFileHandle('/x', 1 as unknown as string), 'MontyFileHandle mode must be a string'],
     [() => new MontyFileHandle('/x', 'q'), "invalid mode: 'q'"],
+    [
+      () => new MontyFileHandle('/x', 'b'),
+      'Must have exactly one of create/read/write/append mode and at most one plus',
+    ],
   ]
   for (const position of [-1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, '0']) {
     cases.push([

@@ -131,7 +131,10 @@ export function canonicalFileMode(mode: string): string {
     }
   }
   if (binary && text) throw new TypeError("can't have text and binary mode at once")
-  return `${action ?? 'r'}${binary ? 'b' : ''}`
+  if (action === undefined) {
+    throw new TypeError('Must have exactly one of create/read/write/append mode and at most one plus')
+  }
+  return `${action}${binary ? 'b' : ''}`
 }
 
 /** Validates that a file position can cross the JavaScript boundary exactly. */

@@ -203,8 +203,11 @@ impl FromStr for FileMode {
         if binary && text {
             return Err("can't have text and binary mode at once".into());
         }
+        let Some(action) = action else {
+            return Err("Must have exactly one of create/read/write/append mode and at most one plus".into());
+        };
 
-        Ok(match action.unwrap_or('r') {
+        Ok(match action {
             'w' => Self::Write(binary),
             'a' => Self::Append(binary),
             _ => Self::Read(binary),
