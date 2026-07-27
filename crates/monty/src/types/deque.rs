@@ -470,7 +470,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
             defer_drop!(b, vm);
             match a.py_cmp(b, vm)? {
                 CmpOrder::Ordered(Ordering::Equal) => {}
-                other_order => return Ok(other_order),
+                CmpOrder::Ordered(ord) => return Ok(CmpOrder::Ordered(ord)),
+                // A `NaN` element is never `==`-equal, so it is the first
+                // differing pair and the deque is unordered (yields `False`).
+                CmpOrder::Unordered => return Ok(CmpOrder::Unordered),
+                // CPython checks `__eq__` first and only orders non-equal pairs,
+                // so equal-but-unorderable elements (e.g. `None == None`) don't
+                // block the comparison — mirror list/tuple.
+                CmpOrder::Incomparable => {
+                    if !a.py_eq(b, vm)? {
+                        return Ok(CmpOrder::Incomparable);
+                    }
+                }
             }
         }
         // All shared items equal — the shorter deque sorts first.

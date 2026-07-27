@@ -153,6 +153,17 @@ assert deque([2]) > deque([1, 9]), 'ordering is lexicographic'
 assert deque([1, 2]) <= deque([1, 2]), 'less-or-equal'
 assert deque([1, 2]) >= deque([1, 2]), 'greater-or-equal'
 
+# Equal-but-unorderable elements (e.g. None == None) do NOT block ordering:
+# CPython checks __eq__ first and only orders non-equal pairs, so a shared
+# `None` prefix falls through to the length tiebreak instead of raising.
+assert deque([None]) < deque([None, 1]), 'shared None prefix falls through to length'
+assert deque([None]) <= deque([None]), 'equal None deques are <='
+assert deque([None, 1]) > deque([None]), 'longer sorts after on a shared None prefix'
+assert deque([1, None]) < deque([1, None, 2]), 'unorderable element mid-sequence still tiebreaks by length'
+# Two DISTINCT NaN elements are never ==-equal, so the pair is the first
+# difference and the comparison is unordered (yields False), matching list/tuple.
+assert (deque([float('nan')]) < deque([float('nan'), 1])) is False, 'a NaN element makes the ordering false'
+
 # Comparing two *distinct* cyclic deques re-enters the element walk once per
 # level; CPython raises RecursionError, and Monty must bound it rather than
 # overflowing the host stack.
