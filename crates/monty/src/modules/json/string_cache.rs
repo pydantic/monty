@@ -19,7 +19,7 @@
 use std::iter;
 
 use ahash::RandomState;
-use monty_types::{ResourceError, ResourceTracker};
+use monty_types::ResourceError;
 
 use crate::{
     heap::{ContainsHeap, HeapReader},
@@ -81,11 +81,7 @@ impl JsonStringCache {
     /// cache entirely and are allocated directly.
     ///
     /// The backing array is allocated lazily on the first eligible string.
-    pub fn get_or_allocate(
-        &mut self,
-        s: String,
-        heap: &HeapReader<'_, impl ResourceTracker>,
-    ) -> Result<Value, ResourceError> {
+    pub fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Result<Value, ResourceError> {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
             return allocate_string(s, heap.heap());
@@ -128,11 +124,7 @@ impl CacheInner {
 
     /// Looks up `s` in the cache. On hit, returns a cloned `Value`. On miss,
     /// allocates on the heap and inserts into the cache.
-    fn get_or_allocate(
-        &mut self,
-        s: String,
-        heap: &HeapReader<'_, impl ResourceTracker>,
-    ) -> Result<Value, ResourceError> {
+    fn get_or_allocate(&mut self, s: String, heap: &HeapReader<'_>) -> Result<Value, ResourceError> {
         let hash = self.hash_builder.hash_one(s.as_str());
         // Truncation is intentional — we only need the low bits for indexing.
         #[expect(clippy::cast_possible_truncation)]
@@ -161,13 +153,7 @@ impl CacheInner {
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
     /// returns the original `Value`.
-    fn insert_at(
-        &mut self,
-        index: usize,
-        hash: u64,
-        s: String,
-        heap: &HeapReader<'_, impl ResourceTracker>,
-    ) -> Result<Value, ResourceError> {
+    fn insert_at(&mut self, index: usize, hash: u64, s: String, heap: &HeapReader<'_>) -> Result<Value, ResourceError> {
         let key = s.clone().into_boxed_str();
         // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
         let value = allocate_string_no_interning(s, heap.heap())?;

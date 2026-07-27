@@ -1,13 +1,13 @@
 # Resource limits
 
-Monty enforces hard limits on memory, time, allocations, and recursion to
-keep untrusted code bounded. When a limit is exceeded, execution
-terminates with a `ResourceError` (visible to the *host*, not catchable
-inside the sandbox).
+Monty enforces hard limits on memory, time, and recursion to keep untrusted
+code bounded. Memory limits surface to the host as terminal `MemoryError`s,
+while time limits surface as terminal `TimeoutError`s; sandboxed code cannot
+catch them. `RecursionError` is catchable, as in CPython.
 
 ## Memory / size limits
 
-- Allocation tracking is global; the host sets the bytes budget when
+- Memory tracking is global; the host sets the bytes budget when
   constructing the VM.
 - The byte count is **approximate**: per-object sizing uses `py_estimate_size`,
   which elides bookkeeping overhead (HashMap bucket padding, `Vec` capacity
@@ -17,12 +17,13 @@ inside the sandbox).
   process RSS.
 - Operations whose result is bounded by simple arithmetic on input sizes
   are **pre-checked** before allocating: integer multiplication, left
-  shift, integer power, sequence repeat (`'x' * n`), padding (`str.ljust`,
-  `str.center`, `str.zfill`, `bytes.ljust`, …), and f-string formatting
+  shift, integer power, sequence repeat (`'x' * n`), replacement
+  (`str.replace`, `bytes.replace`), padding (`str.ljust`, `str.center`,
+  `str.zfill`, `bytes.ljust`, …), and f-string formatting
   (both dynamic width `f"{v:>{w}}"` and dynamic precision on float
   formats `f"{v:.{p}f}"` / `e` / `%`). The pre-check threshold is 100 KB —
-  anything that would estimate above that is rejected with `ResourceError`
-  rather than attempting the allocation.
+  estimates above that are checked against the remaining budget and rejected
+  with `MemoryError` before allocation when they would exceed it.
 - `bigint.pow(base, exp)` estimates result size as `bits(base) * exp` with
   a 4× safety multiplier to cover repeated-squaring intermediate values.
 
@@ -76,8 +77,9 @@ inside the sandbox).
 - `json.loads` rejects input nested deeper than 200 levels with
   `json.JSONDecodeError` (independent of the Python recursion limit).
 
-## After a ResourceError
+## After a terminal resource error
 
-When a resource limit fires, **no guarantees are made about heap state or
-reference counts**. The host should discard the VM rather than try to
-recover and continue running code in it.
+After a memory or time limit fires, **no guarantees are made about
+heap state or reference counts**. The host should discard the VM rather than
+try to recover and continue running code in it. A caught `RecursionError` does
+not invalidate the VM and execution may continue inside the sandbox.

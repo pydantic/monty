@@ -15,7 +15,6 @@ const isRuntimeError = { instanceOf: MontyRuntimeError }
 
 test('resource limits custom', async () => {
   const limits: ResourceLimits = {
-    maxAllocations: 100,
     maxDurationSecs: 5.0,
     maxMemory: 1024,
     gcInterval: 10,
@@ -56,26 +55,6 @@ def recurse(n):
 recurse(5)
 `
   t.is(await run(code, { limits: { maxRecursionDepth: 100 } }), 5)
-})
-
-// =============================================================================
-// Allocation limit tests
-// =============================================================================
-
-test('allocation limit', async () => {
-  // Use a more aggressive allocation pattern
-  const code = `
-result = []
-for i in range(10000):
-    result.append([i])
-len(result)
-`
-  const error = await t.throwsAsync(() => run(code, { limits: { maxAllocations: 5 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: allocation limit exceeded: 6 > 5')
-})
-
-test('allocation limit accepts values above u32 max', async () => {
-  t.is(await run('1 + 1', { limits: { maxAllocations: 2 ** 33 } }), 2)
 })
 
 // =============================================================================

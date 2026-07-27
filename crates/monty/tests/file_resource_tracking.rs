@@ -9,8 +9,8 @@
 
 use monty::{MontyRun, RunProgress};
 use monty_types::{
-    CompileOptions, ExcType, FileMode, LimitedTracker, MontyException, MontyFileHandle, MontyObject, PrintWriter,
-    ResourceLimits,
+    CompileOptions, ExcType, FileMode, MontyException, MontyFileHandle, MontyObject, PrintWriter, ResourceLimits,
+    ResourceTracker,
 };
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
@@ -36,7 +36,7 @@ fn open_then_read(
 ) -> Result<(usize, MontyObject), MontyException> {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
-        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .start(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
     assert_eq!(open_call.function_call.name(), "open");
@@ -81,7 +81,7 @@ f = open('/big.txt')
 f.read(5)
 ";
     let body = "x".repeat(10_000);
-    let limits = ResourceLimits::new().max_memory(1024);
+    let limits = ResourceLimits::default().max_memory(1024);
     let result = open_then_read(
         code,
         "Path.read_text",
@@ -111,7 +111,7 @@ f.read(5)
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem_after_read, _) = open_then_read(
         code,
         "Path.read_text",
@@ -145,7 +145,7 @@ f.close()
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem_after_close, _) = open_then_read(
         code,
         "Path.read_text",
@@ -183,7 +183,7 @@ f = 0            # OpenFile becomes unreachable WITHOUT close(); refcount -> 0
 os.getenv('PROBE')
 ";
     let body = "abcdefghijklmnopqrstuvwxyz".repeat(100); // 2600 bytes
-    let limits = ResourceLimits::new().max_memory(1_000_000);
+    let limits = ResourceLimits::default().max_memory(1_000_000);
     let (mem, _) = open_then_read(
         code,
         "Path.read_text",

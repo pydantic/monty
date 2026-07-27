@@ -8,7 +8,7 @@ pub(crate) use bind_native::{Bound, ErrorFamily, Param, ParamKind, ParamSpec, bi
 pub(crate) use bind_python::Signature;
 pub(crate) use from_value::{ArgErrCtx, FromValue, FromValueFail, LaxBool, StrArg, is_long_int};
 pub(crate) use monty_macros::FromArgs;
-use monty_types::{MontyObject, ResourceTracker};
+use monty_types::MontyObject;
 
 use crate::{
     bytecode::VM,
@@ -40,7 +40,7 @@ impl ArgValues {
     /// Checks that zero arguments were passed.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn check_zero_args(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<()> {
+    pub fn check_zero_args(self, name: &str, heap: &mut Heap) -> RunResult<()> {
         match self {
             Self::Empty => Ok(()),
             other => {
@@ -54,7 +54,7 @@ impl ArgValues {
     /// Checks that exactly one positional argument was passed, returning it.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_one_arg(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    pub fn get_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Value> {
         match self {
             Self::One(a) => Ok(a),
             other => {
@@ -68,7 +68,7 @@ impl ArgValues {
     /// Checks that exactly two positional arguments were passed, returning them as a tuple.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_two_args(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<(Value, Value)> {
+    pub fn get_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Value)> {
         match self {
             Self::Two(a1, a2) => Ok((a1, a2)),
             other => {
@@ -82,11 +82,7 @@ impl ArgValues {
     /// Checks that one or two arguments were passed, returning them as a tuple.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_one_two_args(
-        self,
-        name: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> RunResult<(Value, Option<Value>)> {
+    pub fn get_one_two_args(self, name: &str, heap: &mut Heap) -> RunResult<(Value, Option<Value>)> {
         match self {
             Self::One(a) => Ok((a, None)),
             Self::Two(a1, a2) => Ok((a1, Some(a2))),
@@ -105,7 +101,7 @@ impl ArgValues {
     /// Checks that zero or one argument was passed, returning the optional value.
     ///
     /// On error, properly drops all contained values to maintain reference counts.
-    pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub fn get_zero_one_arg(self, name: &str, heap: &mut Heap) -> RunResult<Option<Value>> {
         match self {
             Self::Empty => Ok(None),
             Self::One(a) => Ok(Some(a)),
@@ -154,7 +150,7 @@ impl ArgValues {
     }
 
     /// Variant of [`into_parts()`](Self::into_parts) that accepts no kwargs, returning an error if any are present.
-    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap<impl ResourceTracker>) -> RunResult<ArgPosIter> {
+    pub fn into_pos_only(self, method_name: &str, heap: &mut Heap) -> RunResult<ArgPosIter> {
         match self {
             Self::Empty => Ok(ArgPosIter::Empty),
             Self::One(v) => Ok(ArgPosIter::One(v)),
@@ -178,11 +174,7 @@ impl ArgValues {
     }
 
     #[cold]
-    fn unexpected_kwargs_error(
-        kwargs: KwargsValues,
-        method_name: &str,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> RunError {
+    fn unexpected_kwargs_error(kwargs: KwargsValues, method_name: &str, heap: &mut Heap) -> RunError {
         kwargs.drop_with(heap);
         ExcType::type_error_no_kwargs(method_name)
     }
@@ -190,10 +182,7 @@ impl ArgValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    pub fn into_py_objects(
-        self,
-        vm: &mut VM<'_, impl ResourceTracker>,
-    ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    pub fn into_py_objects(self, vm: &mut VM<'_>) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
         match self {
             Self::Empty => (vec![], vec![]),
             Self::One(a) => (vec![MontyObject::new(a, vm)], vec![]),
@@ -351,7 +340,7 @@ impl KwargsValues {
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
+    fn into_py_objects(self, vm: &mut VM<'_>) -> Vec<(MontyObject, MontyObject)> {
         match self {
             Self::Empty => vec![],
             Self::Inline(kvs) => kvs

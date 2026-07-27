@@ -4,7 +4,6 @@ use std::{
     vec::{Drain, IntoIter},
 };
 
-use monty_types::ResourceTracker;
 use smallvec::SmallVec;
 
 use crate::{
@@ -55,13 +54,11 @@ pub(crate) trait HeapItem {
 /// This trait represents types that contain a `Heap`; it allows for more complex structures
 /// to participate in the `DropGuard` pattern.
 pub(crate) trait ContainsHeap {
-    type ResourceTracker: ResourceTracker;
-    fn heap(&self) -> &Heap<Self::ResourceTracker>;
-    fn heap_mut(&mut self) -> &mut Heap<Self::ResourceTracker>;
+    fn heap(&self) -> &Heap;
+    fn heap_mut(&mut self) -> &mut Heap;
 }
 
-impl<T: ResourceTracker> ContainsHeap for Heap<T> {
-    type ResourceTracker = T;
+impl ContainsHeap for Heap {
     fn heap(&self) -> &Self {
         self
     }

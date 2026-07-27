@@ -1,6 +1,5 @@
 //! Implementation of the bin() builtin function.
 
-use monty_types::ResourceTracker;
 use num_bigint::BigInt;
 use num_traits::Signed;
 
@@ -18,7 +17,7 @@ use crate::{
 ///
 /// Converts an integer to a binary string prefixed with '0b'.
 /// Supports both i64 and BigInt integers.
-pub fn builtin_bin(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+pub fn builtin_bin(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("bin", vm.heap)?;
     defer_drop!(value, vm);
 

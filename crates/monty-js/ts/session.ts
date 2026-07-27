@@ -31,6 +31,7 @@ import type {
   OsCallTurn,
   ResolveFuturesTurn,
 } from './native.js'
+import { CollectString, CollectStreams } from './print.js'
 
 /**
  * Sentinel an `os` callback returns to decline a call: the sandbox then
@@ -51,6 +52,12 @@ export type OsCallback = (name: string, args: unknown[], kwargs: Record<string, 
 /** Receives sandbox `print()` output (line-buffered). */
 export type PrintCallback = (stream: 'stdout' | 'stderr', text: string) => void
 
+/**
+ * Values accepted by `printCallback` options (function or host collectors).
+ * Mirrors pydantic_monty's PrintCallback union.
+ */
+export type PrintTargetInput = PrintCallback | CollectString | CollectStreams
+
 /** Options for [`MontySession.feedRun`]. */
 export interface FeedOptions {
   /** Values bound as globals before the snippet runs. */
@@ -66,7 +73,7 @@ export interface FeedOptions {
    */
   externalLookup?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /** Handler for OS calls not covered by mounts. */
@@ -92,7 +99,7 @@ export interface FeedStartOptions {
    */
   externalLookup?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /** Handler for OS calls not covered by mounts. Consulted only by
@@ -105,7 +112,7 @@ export interface FeedStartOptions {
 /** Options for [`MontySession.loadSnapshot`]. */
 export interface LoadSnapshotOptions {
   /** Receives `print()` output from the resumed feed. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** The mounts the paused feed used (re-established by value; host paths are
    *  not stored in the dump). Validated against the dump's requirements. */
   mount?: MountDir | MountDir[]
@@ -190,6 +197,14 @@ export class MontySession {
           throw this.poison(new MontyCrashedError(turn.message, turn))
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
+      }
+      // Print failures take precedence. On a suspension the worker is waiting
+      // for a resume we will never send — poison so the next feed fails cleanly
+      // (matches Python pool: discard checkout when print fails mid-suspend).
+      try {
+        printTarget.throwIfFailed()
+      } catch (err) {
+        throw this.poison(err instanceof Error ? err : new Error(String(err)))
       }
       try {
         turn = await answerer.answer(turn, onPrint)
@@ -599,8 +614,13 @@ class PrintTarget {
   private readonly callback: PrintCallback | undefined
   private failure: unknown = null
 
-  constructor(callback: PrintCallback | undefined) {
-    this.callback = callback
+  constructor(input: PrintTargetInput | undefined) {
+    // Collectors adapt once to a function so the drive loop / native path stay typed as PrintCallback.
+    if (input instanceof CollectString || input instanceof CollectStreams) {
+      this.callback = (stream, text) => input.write(stream, text)
+    } else {
+      this.callback = input
+    }
   }
 
   write(stream: 'stdout' | 'stderr', text: string): void {
@@ -668,16 +688,33 @@ class SnapshotDriver {
         case 'osCall':
           // Every OS call surfaces; mounts and the `os` callback are consulted
           // only by `resumeAuto`.
+          this.throwIfPrintFailedOnSuspend()
           return new FunctionSnapshot(this, turn, true)
         case 'functionCall':
+          this.throwIfPrintFailedOnSuspend()
           return new FunctionSnapshot(this, turn, false)
         case 'nameLookup':
+          this.throwIfPrintFailedOnSuspend()
           return new NameLookupSnapshot(this, turn)
         case 'resolveFutures':
+          this.throwIfPrintFailedOnSuspend()
           return new FutureSnapshot(this, turn)
         default:
           throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
       }
+    }
+  }
+
+  /**
+   * Surfaces a pending print-callback failure before exposing a suspension
+   * snapshot. The worker is left suspended with no resume coming, so poison
+   * the session (same policy as Python's checkout discard on this path).
+   */
+  private throwIfPrintFailedOnSuspend(): void {
+    try {
+      this.printTarget.throwIfFailed()
+    } catch (err) {
+      throw this.poison(err instanceof Error ? err : new Error(String(err)))
     }
   }
 

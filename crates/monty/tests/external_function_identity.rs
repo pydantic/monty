@@ -5,7 +5,7 @@
 //! share sandbox identity regardless of which conversion path produced them.
 
 use monty::{MontyRepl, MontyRun, RunProgress};
-use monty_types::{CompileOptions, MontyObject, NameLookupResult, NoLimitTracker, PrintWriter};
+use monty_types::{CompileOptions, MontyObject, NameLookupResult, PrintWriter, ResourceTracker};
 
 /// Builds two `MontyObject::Function` inputs with the same `__name__` ("foo")
 /// and runs `code` against them as inputs `a` and `b`.
@@ -156,7 +156,7 @@ fn callable_export_stable_across_source_mention() {
 /// A live external function retains object identity across REPL feeds.
 #[test]
 fn repl_extfunction_identity_across_feeds() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new("session.py", ResourceTracker::default(), CompileOptions::default());
 
     // Feed 1 resolves "foobar" to a host function named "ext_fn".
     let progress = repl.feed_start("x = foobar", vec![], PrintWriter::Stdout).unwrap();
@@ -222,19 +222,19 @@ fn extfunction_cache_is_rebuilt_after_snapshot_load() {
                 name: "ext_fn".to_owned(),
                 docstring: None,
             }],
-            NoLimitTracker,
+            ResourceTracker::default(),
             PrintWriter::Stdout,
         )
         .unwrap();
     let bytes = progress.dump().unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 
-    let progress: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
+    let progress = RunProgress::load(&bytes).unwrap();
     assert_eq!(resume_snapshot_identity_test(progress), MontyObject::Bool(true));
 }
 
 /// Completes the snapshot cache test while preserving refcount cleanup.
-fn resume_snapshot_identity_test(progress: RunProgress<NoLimitTracker>) -> MontyObject {
+fn resume_snapshot_identity_test(progress: RunProgress) -> MontyObject {
     let call = progress.into_function_call().expect("expected call to 'gate'");
     assert_eq!(call.function_name, "gate");
 
@@ -255,7 +255,7 @@ fn resume_snapshot_identity_test(progress: RunProgress<NoLimitTracker>) -> Monty
 /// Dropping the last reference removes the weak-cache entry before slot reuse.
 #[test]
 fn repl_extfunction_cache_does_not_retain_freed_id() {
-    let repl = MontyRepl::new("session.py", NoLimitTracker, CompileOptions::default());
+    let repl = MontyRepl::new("session.py", ResourceTracker::default(), CompileOptions::default());
 
     let progress = repl.feed_start("x = foobar", vec![], PrintWriter::Stdout).unwrap();
     let lookup = progress.into_name_lookup().expect("expected NameLookup for 'foobar'");
@@ -329,7 +329,7 @@ y = missing
                 name: "ext_fn".to_owned(),
                 docstring: None,
             }],
-            NoLimitTracker,
+            ResourceTracker::default(),
             PrintWriter::Stdout,
         )
         .unwrap();
