@@ -51,6 +51,12 @@ default_factory`), and so is a non-default field after a defaulted one
   instance of a class that sets `__hash__ = None` or defines `__eq__`. The
   divergences in how `__eq__`/`__hash__` themselves behave are in
   [classes.md](classes.md).
+- **A class-body `__setattr__` never runs for the synthesized `__init__`**,
+  which writes fields straight into the instance `__dict__`. This is the
+  general never-dispatched attribute hook documented in
+  [classes.md](classes.md), not a dataclass-specific gap — a hand-written
+  `__init__` on an ordinary class bypasses it identically — so `@dataclass`
+  does not reject it.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
   `TypeError: dataclass() should be called on a class, not '<type>'`. CPython
   instead raises an incidental `AttributeError` about `__module__` from its

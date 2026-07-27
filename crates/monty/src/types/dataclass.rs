@@ -286,7 +286,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 /// Only declared fields are shown, so each caller supplies its own list via
 /// `field`, mapping an index to that field's name and a cloned value (dropped
 /// here). Self-referencing fields render `...` via the recursion guard; a field
-/// missing from `attrs` renders `<?>`.
+/// missing from `attrs` renders `<?>`; and a run that exhausts `max_duration`
+/// mid-way is truncated with `...[timeout]` rather than overrunning the limit.
 pub(crate) fn write_dataclass_repr<'h>(
     f: &mut impl Write,
     name: &str,
@@ -303,6 +304,12 @@ pub(crate) fn write_dataclass_repr<'h>(
     f.write_char('(')?;
     for i in 0..field_count {
         if i > 0 {
+            // Same between-item checkpoint as sequence repr: a wide dataclass
+            // whose fields have expensive reprs must not outrun `max_duration`.
+            if vm.heap.check_time().is_err() {
+                f.write_str(", ...[timeout]")?;
+                break;
+            }
             f.write_str(", ")?;
         }
         let (field_name, value) = field(i, vm.heap, vm.interns);

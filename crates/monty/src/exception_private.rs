@@ -732,7 +732,8 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for **kwargs with non-string keys.
     ///
-    /// Matches CPython's format: `{name}() keywords must be strings`
+    /// Matches CPython exactly: `keywords must be strings`, unqualified — the
+    /// call machinery raises before the callee is entered, so no name is shown.
     #[must_use]
     fn type_error_kwargs_nonstring_key() -> RunError {
         SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into()

@@ -371,7 +371,11 @@ fn bind_dataclass_fields(
     let n_pos = positionals.len();
 
     // Materialize keyword pairs (name string + value); drop the key `Value`s.
+    // A non-string key is fatal: CPython raises from the call machinery before
+    // `__init__` is entered, so it outranks every arity error below. The whole
+    // mapping is still drained first so no path leaks a refcount.
     let mut keywords: Vec<(String, Value)> = Vec::with_capacity(kwargs.len());
+    let mut nonstring_key = false;
     for (key, value) in kwargs {
         if let Some(name) = key.as_either_str(vm.heap) {
             let name = name.as_str(vm.interns).to_owned();
@@ -380,25 +384,25 @@ fn bind_dataclass_fields(
         } else {
             key.drop_with(vm);
             value.drop_with(vm);
+            nonstring_key = true;
         }
     }
 
-    // Too many positional arguments (CPython counts `self`, so +1 each side).
-    if n_pos > n_fields {
+    // Both a bad key and too many positionals (CPython counts `self`, so +1 each
+    // side) discard every argument, so drain once and then pick the message.
+    if nonstring_key || n_pos > n_fields {
         for v in positionals {
             v.drop_with(vm);
         }
         for (_, v) in keywords {
             v.drop_with(vm);
         }
-        let required = fields.iter().filter(|(_, has_default)| !has_default).count();
-        return Err(ExcType::type_error_too_many_positional_range(
-            &init_name,
-            1 + required,
-            1 + n_fields,
-            1 + n_pos,
-            0,
-        ));
+        return Err(if nonstring_key {
+            ExcType::type_error_kwargs_nonstring_key()
+        } else {
+            let required = fields.iter().filter(|(_, has_default)| !has_default).count();
+            ExcType::type_error_too_many_positional_range(&init_name, 1 + required, 1 + n_fields, 1 + n_pos, 0)
+        });
     }
 
     // Positional arguments fill the leftmost slots; keywords fill by name.

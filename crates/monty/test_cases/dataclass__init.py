@@ -78,6 +78,12 @@ expect_type_error(lambda: Point(1, x=2), "Point.__init__() got multiple values f
 expect_type_error(lambda: Point(1, 2, z=3), "Point.__init__() got an unexpected keyword argument 'z'")
 expect_type_error(lambda: WithClassVar(7, 8), 'WithClassVar.__init__() takes 2 positional arguments but 3 were given')
 
+# A non-string `**kwargs` key is raised by the call machinery before `__init__`
+# is entered, so it outranks every arity error.
+expect_type_error(lambda: Point(**{1: 2}), 'keywords must be strings')
+expect_type_error(lambda: Point(**{1: 2, 'x': 5}), 'keywords must be strings')
+expect_type_error(lambda: Point(1, 2, 3, **{1: 2}), 'keywords must be strings')
+
 
 # === Class-body rejections that match CPython exactly ===
 def expect_error(fn, exc_type, message):
