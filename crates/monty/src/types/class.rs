@@ -52,6 +52,19 @@ pub(crate) struct DataclassMeta {
     pub fields: Vec<DataclassField>,
 }
 
+impl DataclassMeta {
+    /// Bytes this metadata adds to its `Class`, counting the field vector's
+    /// whole capacity.
+    ///
+    /// Decoration grows an already-allocated `Class` in place, so this must be
+    /// charged to the resource tracker explicitly — otherwise a sandbox could
+    /// decorate arbitrarily many wide classes without `max_memory` noticing.
+    #[must_use]
+    pub fn estimate_size(&self) -> usize {
+        mem::size_of::<Self>() + self.fields.capacity() * mem::size_of::<DataclassField>()
+    }
+}
+
 /// A single dataclass field's metadata (see [`DataclassMeta`]).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassField {
@@ -87,6 +100,10 @@ impl Class {
     }
 
     /// Records dataclass metadata (called by the `@dataclass` decorator).
+    ///
+    /// The caller charges [`DataclassMeta::estimate_size`] to the resource
+    /// tracker first: this grows an already-allocated `Class` in place, so the
+    /// allocation-time estimate has been taken and would otherwise miss it.
     pub fn set_dataclass_meta(&mut self, meta: DataclassMeta) {
         self.dataclass_meta = Some(meta);
     }
@@ -210,7 +227,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
 impl HeapItem for Class {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.name.py_estimate_size() + self.namespace.py_estimate_size()
+        mem::size_of::<Self>()
+            + self.name.py_estimate_size()
+            + self.namespace.py_estimate_size()
+            + self.dataclass_meta.as_ref().map_or(0, DataclassMeta::estimate_size)
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

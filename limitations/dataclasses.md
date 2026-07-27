@@ -57,6 +57,11 @@ default_factory`), and so is a non-default field after a defaulted one
   [classes.md](classes.md), not a dataclass-specific gap — a hand-written
   `__init__` on an ordinary class bypasses it identically — so `@dataclass`
   does not reject it.
+- **Defaults are read from the class namespace at construction time**, where
+  CPython captures them when `@dataclass` runs. Rebinding a defaulted class
+  attribute afterwards (`D.b = 99`) therefore changes the default every later
+  construction uses. Capturing them requires the metadata to hold heap values,
+  which arrives with `field()`/`default_factory`.
 - **`@dataclass` on a non-class** (e.g. `dataclasses.dataclass(5)`) raises
   `TypeError: dataclass() should be called on a class, not '<type>'`. CPython
   instead raises an incidental `AttributeError` about `__module__` from its

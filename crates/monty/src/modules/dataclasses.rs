@@ -100,6 +100,12 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             return Err(err);
         }
     };
+    // Decoration grows the `Class` in place, after its allocation-time size was
+    // taken, so the metadata has to be charged explicitly.
+    if let Err(err) = vm.heap.track_growth(meta.estimate_size()) {
+        cls.drop_with(vm);
+        return Err(err.into());
+    }
     HeapReader::with(vm.heap, &mut (), |heap, ()| {
         if let HeapReadOutput::Class(mut class) = heap.read(class_id) {
             class.get_mut(heap).set_dataclass_meta(meta);
@@ -507,13 +513,16 @@ pub(crate) fn dataclass_eq<'h>(
                 }
             }
             (a, b) => {
+                // CPython builds a tuple of the fields, so an uninitialised one
+                // raises from the attribute access rather than comparing unequal.
                 if let Some(a) = a {
                     a.drop_with(vm);
                 }
                 if let Some(b) = b {
                     b.drop_with(vm);
                 }
-                return Ok(Some(false));
+                let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
+                return Err(ExcType::attribute_error(&class_name, &field_name));
             }
         }
     }
@@ -532,6 +541,19 @@ pub(crate) fn dataclass_repr_fmt<'h>(
 ) -> RunResult<()> {
     let class_id = instance.get(vm.heap).class();
     let name = class_name(class_id, vm.heap, vm.interns).to_string();
+    // CPython's generated `__repr__` reads each field as an attribute, so an
+    // uninitialised one raises. Checked up front so no partial repr is emitted.
+    for name_id in field_names {
+        let field_name = vm.interns.get_str(*name_id).to_owned();
+        if instance
+            .get(vm.heap)
+            .attrs()
+            .get_by_str(&field_name, vm.heap, vm.interns)
+            .is_none()
+        {
+            return Err(ExcType::attribute_error(&name, &field_name));
+        }
+    }
     write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, heap, interns| {
         let field_name = interns.get_str(field_names[i]).to_owned();
         let value = instance

@@ -85,3 +85,48 @@ try:
     assert False, 'expected unhashable'
 except TypeError as e:
     assert str(e) == "unhashable type: 'OptedOut'", f'wrong message: {e!r}'
+
+
+# === A self-referential field renders `...`, not an infinite nesting ===
+@dataclass
+class Node:
+    x: object
+
+
+n = Node(None)
+n.x = n
+assert repr(n) == 'Node(x=...)', 'the cycle guard survives instance repr dispatch'
+
+
+@dataclass
+class Pair:
+    a: object
+    b: object
+
+
+pair = Pair(1, None)
+pair.b = pair
+assert repr(pair) == 'Pair(a=1, b=...)', 'only the cycling field is elided'
+
+
+# === A declared field left uninitialized raises, as the attribute access does ===
+@dataclass
+class Partial:
+    a: int
+    b: int
+
+    def __init__(self, a: int) -> None:
+        self.a = a
+
+
+try:
+    repr(Partial(1))
+    assert False, 'expected an uninitialized field to raise'
+except AttributeError as e:
+    assert str(e) == "'Partial' object has no attribute 'b'", f'wrong message: {e!r}'
+
+try:
+    Partial(1) == Partial(1)
+    assert False, 'expected an uninitialized field to raise'
+except AttributeError as e:
+    assert str(e) == "'Partial' object has no attribute 'b'", f'wrong message: {e!r}'

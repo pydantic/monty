@@ -418,23 +418,41 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
+    // Top of a repr, so the cycle set starts empty.
+    let mut s = String::new();
+    let mut heap_ids = LazyHeapSet::default();
+    instance_repr_fmt(self_id, &mut s, vm, &mut heap_ids)?;
+    Ok(allocate_string(s, vm.heap)?)
+}
+
+/// Writes an instance's `repr` into `f`, carrying the caller's cycle set.
+///
+/// A user `__repr__` wins, then the synthesized dataclass form, then the
+/// `<Foo object at 0x..>` default. The dataclass form registers the instance in
+/// `heap_ids` for the duration, so a field referring back to it renders `...`
+/// instead of recursing — which is why this takes the caller's set rather than
+/// starting a fresh one.
+pub(crate) fn instance_repr_fmt(
+    self_id: HeapId,
+    f: &mut impl Write,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
     if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
-        Ok(s)
+        defer_drop!(s, vm);
+        return Ok(f.write_str(s.to_str(vm)?)?);
+    }
+    let class_id = instance_class(self_id, vm);
+    if dataclasses::dataclass_fields(class_id, vm).is_some() {
+        heap_ids.insert(self_id);
+        let result = match vm.heap.read(self_id) {
+            HeapReadOutput::Instance(inst) => inst.py_repr_fmt(f, vm, heap_ids),
+            _ => Ok(()),
+        };
+        heap_ids.remove(&self_id);
+        result
     } else {
-        let class_id = instance_class(self_id, vm);
-        if dataclasses::dataclass_fields(class_id, vm).is_some() {
-            // Synthesized dataclass repr — built via the instance's `py_repr_fmt`
-            // (shared with nested `repr`), same String + `LazyHeapSet` shape as
-            // `Value::py_repr`.
-            let mut s = String::new();
-            let mut heap_ids = LazyHeapSet::default();
-            if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id) {
-                inst.py_repr_fmt(&mut s, vm, &mut heap_ids)?;
-            }
-            Ok(allocate_string(s, vm.heap)?)
-        } else {
-            Ok(allocate_string(default_repr(self_id, vm), vm.heap)?)
-        }
+        Ok(f.write_str(&default_repr(self_id, vm))?)
     }
 }
 

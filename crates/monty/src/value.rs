@@ -25,7 +25,7 @@ use crate::{
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
         bytes::{bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{instance_contains, instance_getattr, instance_repr, instance_str, instance_user_eq},
+        instance::{instance_contains, instance_getattr, instance_repr_fmt, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
@@ -474,13 +474,13 @@ impl<'h> PyTrait<'h> for Value {
                 } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
                     // Instances dispatch to a user `__repr__` (or the default), which
                     // needs the heap id to pass `self` — handled here, not at the heap
-                    // level, so no `heap_ids` insertion happens. Recursion here
-                    // re-enters the VM on the *Rust* stack, bounded by
-                    // `evaluate_function`'s re-entry guard (see the "Recursive/deep
-                    // `__repr__`/`__str__`" divergence in limitations/classes.md).
-                    let str_value = instance_repr(*id, vm)?;
-                    defer_drop!(str_value, vm);
-                    Ok(f.write_str(str_value.to_str(vm)?)?)
+                    // level. Recursion through a user `__repr__` re-enters the VM on
+                    // the *Rust* stack, bounded by `evaluate_function`'s re-entry
+                    // guard (see the "Recursive/deep `__repr__`/`__str__`" divergence
+                    // in limitations/classes.md); a synthesized dataclass repr instead
+                    // carries `heap_ids` through, so a self-referential field hits the
+                    // cycle branch above.
+                    instance_repr_fmt(*id, f, vm, heap_ids)
                 } else {
                     heap_ids.insert(*id);
                     let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
