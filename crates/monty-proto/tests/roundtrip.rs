@@ -547,6 +547,7 @@ fn decodes_in_frame(value: &MontyObject) -> bool {
             }],
             skip_type_check: false,
         })),
+        trace_parent: None,
     };
     pb::ParentRequest::decode(request.encode_to_vec().as_slice()).is_ok()
 }

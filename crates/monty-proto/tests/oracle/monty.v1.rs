@@ -435,8 +435,20 @@ pub struct NamedValue {
     #[prost(message, optional, tag = "2")]
     pub value: ::core::option::Option<MontyObject>,
 }
+/// Tags 1-19 are reserved for `kind` arms and the message-level fields start
+/// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
+/// the enclosing message, so a new arm never has to jump the numbering. The
+/// same caveats apply: arms past 15 cost a two-byte key, and a forwarding
+/// server mirrors this numbering to classify frames without decoding them, so
+/// adding an arm degrades to "opaque" while renumbering one would misroute.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParentRequest {
+    /// W3C `traceparent` identifying the caller's span, so a child that exports
+    /// its own telemetry can attach its spans to the trace the request came
+    /// from. Purely additive context: the child's execution of the request must
+    /// not depend on it, and it is absent whenever the parent is not tracing.
+    #[prost(string, optional, tag = "20")]
+    pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }

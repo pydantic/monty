@@ -73,9 +73,9 @@ pub const PARENT_REQUEST_RESET: u32 = 9;
 /// `ParentRequest` oneof tag for `Shutdown`.
 pub const PARENT_REQUEST_SHUTDOWN: u32 = 10;
 
-/// Field numbers reserved for `ParentRequest.kind` arms. The message is
-/// nothing *but* the oneof today, so this mirrors the range `ChildEvent`
-/// reserves and new arms land inside it without a change here.
+/// Field numbers reserved for `ParentRequest.kind` arms. The message's own
+/// fields start at 20 (`trace_parent` today), mirroring `ChildEvent`, so new
+/// arms land inside this range and need no change here.
 const PARENT_REQUEST_ONEOF: RangeInclusive<u32> = 1..=19;
 /// Field numbers reserved for `ChildEvent.kind` arms. The message's own
 /// fields start at 20 (see the schema), so new arms land inside this range
@@ -92,8 +92,8 @@ pub fn parent_request_kind(frame: &[u8]) -> Option<u32> {
 }
 
 /// Field number of the encoded `ChildEvent.kind` oneof arm, or `None` for an
-/// empty, malformed, or unknown-arm frame. Message-level fields (20+, which
-/// prost emits *before* the oneof) are skipped without being read.
+/// empty, malformed, or unknown-arm frame. Message-level fields (20+) are
+/// skipped without being read.
 ///
 /// Callers must treat `None` as "opaque — forward verbatim, never intercept".
 #[must_use]
@@ -105,6 +105,14 @@ pub fn child_event_kind(frame: &[u8]) -> Option<u32> {
 /// prost's merge semantics (each occurrence of a oneof field replaces the
 /// previous one) so a relay classifying by peek and a client decoding with
 /// prost can never disagree about a frame that decodes.
+///
+/// Walking, rather than reading the first key, is what makes this safe
+/// against frames the *sender* laid out differently. Prost orders fields by
+/// tag, so its own output always leads with the oneof arm — but the wire
+/// format permits any order, and a child speaking another implementation (or
+/// deliberately probing the relay) may put a message-level field first.
+/// Reading one key would call such a frame opaque while the endpoint decoded
+/// it normally: precisely the classification desync this module must avoid.
 ///
 /// Values are skipped with prost's own [`skip_field`] — the same routine its
 /// decoder applies to unknown fields — and an arm that is not

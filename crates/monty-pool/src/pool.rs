@@ -9,7 +9,7 @@ use monty_proto::pb;
 
 use crate::{
     PoolConfig, PoolError,
-    checkout::{Checkout, ReplConfig},
+    checkout::{Checkout, ReplConfig, request},
     watchdog::Watchdog,
     worker::{Worker, lock_ignore_poison},
 };
@@ -179,9 +179,7 @@ impl PoolInner {
     fn shutdown_idle(&self) {
         let mut state = lock_ignore_poison(&self.state);
         for worker in &mut state.idle {
-            let _ = worker.send(&pb::ParentRequest {
-                kind: Some(pb::parent_request::Kind::Shutdown(pb::Shutdown {})),
-            });
+            let _ = worker.send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})));
         }
         // dropping the workers reaps them (kill is a no-op if Shutdown won)
         state.idle.clear();

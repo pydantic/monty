@@ -34,7 +34,14 @@ impl ChildProc {
     }
 
     fn send(&mut self, kind: pb::parent_request::Kind) {
-        write_frame(&mut self.writer, &pb::ParentRequest { kind: Some(kind) }).expect("failed to write request");
+        write_frame(
+            &mut self.writer,
+            &pb::ParentRequest {
+                kind: Some(kind),
+                trace_parent: None,
+            },
+        )
+        .expect("failed to write request");
     }
 
     /// Reads a single event.

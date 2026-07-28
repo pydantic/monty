@@ -28,6 +28,7 @@ fn feed() -> pb::ParentRequest {
             inputs: vec![],
             skip_type_check: false,
         })),
+        trace_parent: None,
     }
 }
 
@@ -115,15 +116,20 @@ fn garbage_body_is_a_decode_error() {
 // state its tag — and, for a child event, to decide whether it streams (like
 // `Print`) or ends a turn, which forwarding servers classify by tag alone.
 
-/// Encodes a `ParentRequest` with the given kind and returns its raw frame
-/// bytes (no length prefix — the WebSocket message form).
+/// Encodes a `ParentRequest` with the given kind plus the message-level
+/// `trace_parent` set, so classification has a non-oneof field to step over.
+/// Returns raw frame bytes (no length prefix — the WebSocket message form).
 fn request_frame(kind: RequestKind) -> Vec<u8> {
-    encode_to_capped_vec(&pb::ParentRequest { kind: Some(kind) }).unwrap()
+    encode_to_capped_vec(&pb::ParentRequest {
+        kind: Some(kind),
+        trace_parent: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned()),
+    })
+    .unwrap()
 }
 
 /// Encodes a `ChildEvent` with the given kind plus the message-level timing
-/// and script-name fields set, so the walk must skip fields 20–22 (which
-/// prost emits *before* the oneof) to reach the arm.
+/// and script-name fields set, so classification has non-oneof fields (20–22)
+/// to step over.
 fn event_frame(kind: EventKind) -> Vec<u8> {
     encode_to_capped_vec(&pb::ChildEvent {
         kind: Some(kind),
@@ -296,15 +302,48 @@ fn peek_rejects_a_non_message_arm_like_prost() {
 
 #[test]
 fn peek_skips_unknown_leading_fields_like_prost() {
-    // a message-level field added to ParentRequest tomorrow (tag 20+) must
-    // not stop classification: prost skips unknown fields, so peek does too
+    // a message-level field added to ParentRequest tomorrow (tag 21+, i.e.
+    // beyond `trace_parent`) must not stop classification: prost skips
+    // unknown fields, so peek does too
     let mut frame = Vec::new();
-    encode_key(20, WireType::Varint, &mut frame);
+    encode_key(21, WireType::Varint, &mut frame);
     encode_varint(7, &mut frame);
     frame.extend(request_frame(RequestKind::Dump(pb::Dump {})));
     let decoded = pb::ParentRequest::decode(frame.as_slice()).expect("unknown field is skipped");
     assert!(matches!(decoded.kind, Some(RequestKind::Dump(_))));
     assert_eq!(peek::parent_request_kind(&frame), Some(peek::PARENT_REQUEST_DUMP));
+}
+
+/// A message-level field preceding the oneof must not hide the arm.
+///
+/// Prost orders fields by tag, so its own `ParentRequest` always leads with
+/// the arm and `trace_parent` (tag 20) trails it — but the wire format allows
+/// either order, and a sender that is not prost may lead with `trace_parent`.
+/// Reading only the first key would call such a frame opaque, so a relay
+/// would never intercept it, while the endpoint decoded it normally.
+#[test]
+fn peek_finds_an_arm_behind_a_leading_message_level_field() {
+    for (kind, tag) in [
+        (RequestKind::Dump(pb::Dump {}), peek::PARENT_REQUEST_DUMP),
+        (RequestKind::Shutdown(pb::Shutdown {}), peek::PARENT_REQUEST_SHUTDOWN),
+    ] {
+        // hand-built: `trace_parent` first, then the arm
+        let mut frame = Vec::new();
+        encode_key(20, WireType::LengthDelimited, &mut frame);
+        encode_varint(2, &mut frame);
+        frame.extend_from_slice(b"tp");
+        frame.extend(
+            encode_to_capped_vec(&pb::ParentRequest {
+                kind: Some(kind),
+                trace_parent: None,
+            })
+            .unwrap(),
+        );
+
+        let decoded = pb::ParentRequest::decode(frame.as_slice()).expect("leading field is legal");
+        assert_eq!(decoded.trace_parent.as_deref(), Some("tp"));
+        assert_eq!(peek::parent_request_kind(&frame), Some(tag));
+    }
 }
 
 #[test]
@@ -313,7 +352,7 @@ fn peek_reports_an_unknown_arm_as_opaque_not_misclassified() {
     // the reserved range must read as `None` ("forward verbatim, never
     // intercept") rather than as some known kind
     let mut frame = Vec::new();
-    encode_key(20, WireType::LengthDelimited, &mut frame);
+    encode_key(21, WireType::LengthDelimited, &mut frame);
     encode_varint(0, &mut frame);
     assert_eq!(peek::parent_request_kind(&frame), None);
 }

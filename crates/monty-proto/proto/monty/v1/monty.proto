@@ -333,6 +333,12 @@ message NamedValue {
 // Requests (parent -> child)
 // ============================================================================
 
+// Tags 1-19 are reserved for `kind` arms and the message-level fields start
+// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
+// the enclosing message, so a new arm never has to jump the numbering. The
+// same caveats apply: arms past 15 cost a two-byte key, and a forwarding
+// server mirrors this numbering to classify frames without decoding them, so
+// adding an arm degrades to "opaque" while renumbering one would misroute.
 message ParentRequest {
   oneof kind {
     Configure configure = 1;
@@ -346,6 +352,12 @@ message ParentRequest {
     Reset reset = 9;
     Shutdown shutdown = 10;
   }
+
+  // W3C `traceparent` identifying the caller's span, so a child that exports
+  // its own telemetry can attach its spans to the trace the request came
+  // from. Purely additive context: the child's execution of the request must
+  // not depend on it, and it is absent whenever the parent is not tracing.
+  optional string trace_parent = 20;
 }
 
 // Configures the REPL session this child will serve until `Reset`, sent once

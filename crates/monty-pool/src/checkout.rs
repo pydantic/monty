@@ -205,20 +205,18 @@ impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
-                script_name: repl.script_name.clone(),
-                limits: repl.limits.as_ref().map(Into::into),
-                type_check: repl.type_check,
-                type_check_stubs: repl.type_check_stubs.clone(),
-                assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
-                // This crate ships the matching `monty` binary, so our own
-                // version is always what the child expects. The child rejects a
-                // mismatch with a `FatalError` (relevant when a remote driver
-                // built against a different version reuses the wire format).
-                monty_version: MONTY_VERSION.to_owned(),
-            })),
-        };
+        let request = request(pb::parent_request::Kind::Configure(pb::Configure {
+            script_name: repl.script_name.clone(),
+            limits: repl.limits.as_ref().map(Into::into),
+            type_check: repl.type_check,
+            type_check_stubs: repl.type_check_stubs.clone(),
+            assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
+            // This crate ships the matching `monty` binary, so our own
+            // version is always what the child expects. The child rejects a
+            // mismatch with a `FatalError` (relevant when a remote driver
+            // built against a different version reuses the wire format).
+            monty_version: MONTY_VERSION.to_owned(),
+        }));
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -271,9 +269,7 @@ impl Checkout {
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
         self.feed_mounts = build_mount_table(mounts)?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
-        };
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
@@ -309,19 +305,17 @@ impl Checkout {
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         self.feed_mounts = build_mount_table(mounts)?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
-                code: code.to_owned(),
-                inputs: inputs
-                    .into_iter()
-                    .map(|(name, value)| pb::NamedValue {
-                        name,
-                        value: Some(value.into()),
-                    })
-                    .collect(),
-                skip_type_check,
-            })),
-        };
+        let request = request(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            inputs: inputs
+                .into_iter()
+                .map(|(name, value)| pb::NamedValue {
+                    name,
+                    value: Some(value.into()),
+                })
+                .collect(),
+            skip_type_check,
+        }));
         self.expect_turn(&request, on_print)
     }
 
@@ -351,12 +345,10 @@ impl Checkout {
             ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
             ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         };
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
-                call_id,
-                result: Some(pb::ExtFunctionResult { kind: Some(result) }),
-            })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+        }));
         // `pending` is deliberately NOT cleared here: an oversize answer is
         // rejected by `Worker::send` before any bytes reach the child, and
         // `request_turn` surfaces it with the suspension still answerable.
@@ -439,11 +431,9 @@ impl Checkout {
             Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
         };
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-                kind: Some(kind),
-            })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+            kind: Some(kind),
+        }));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
@@ -480,9 +470,7 @@ impl Checkout {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
@@ -515,11 +503,9 @@ impl Checkout {
         for requirement in &requirements {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-                requirements,
-            })),
-        };
+        let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+            requirements,
+        }));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
@@ -530,9 +516,7 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Dump(pb::Dump {})),
-        };
+        let request = request(pb::parent_request::Kind::Dump(pb::Dump {}));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
             other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
@@ -555,9 +539,7 @@ impl Checkout {
             }
             return Ok(());
         }
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Reset(pb::Reset {})),
-        };
+        let request = request(pb::parent_request::Kind::Reset(pb::Reset {}));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => {
                 if let Some(mut worker) = self.worker.take() {
@@ -932,6 +914,19 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
+}
+
+/// Wraps a request kind in a `ParentRequest`.
+///
+/// The one place the pool builds a request, so `ParentRequest`'s
+/// message-level fields are decided here rather than at every callsite.
+/// `trace_parent` is left unset: the pool does not propagate a tracing
+/// context yet, and an absent one just means the child starts its own trace.
+pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
+    pb::ParentRequest {
+        kind: Some(kind),
+        trace_parent: None,
+    }
 }
 
 /// Rejects values too deeply nested for the wire (see
