@@ -368,6 +368,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         true
     }
 
+    /// Linear search by equality. `ListIter` re-reads the length on every step,
+    /// so a user `__eq__` re-entering the VM and shrinking the list halts the
+    /// walk cleanly instead of indexing out of bounds.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(el) = iter.next(vm)? {
+            if item.py_eq(el, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::List
     }

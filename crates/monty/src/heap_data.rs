@@ -569,6 +569,12 @@ macro_rules! heap_read_output_py_trait_forward {
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
+    /// Delegates to the types defining their own `in`; the rest keep the trait
+    /// default (`None`), leaving `Value::py_contains` to iterate or raise.
+    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_contains_impl(self_id, item, vm), else Ok(None))
+    }
+
     fn py_bool(&self, vm: &mut VM<'h>) -> bool {
         heap_read_output_py_trait_forward!(
             self,

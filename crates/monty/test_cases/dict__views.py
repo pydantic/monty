@@ -269,3 +269,14 @@ me_map = {'me': 1, 'you': 2, 'merve': 3}
 merve_set = {'merve', 'unknown'}
 common_ids = me_map.keys() & merve_set
 assert common_ids == {'merve'}
+
+# === `in` / `not in` on the views ===
+view_source = {'a': 1, 'b': 2}
+assert 'a' in view_source.keys()
+assert 'z' not in view_source.keys()
+assert 2 in view_source.values()
+assert 9 not in view_source.values()
+# An items probe must be a (key, value) pair; anything else is simply absent.
+assert ('a', 1) in view_source.items()
+assert ('a', 2) not in view_source.items()
+assert 'a' not in view_source.items()

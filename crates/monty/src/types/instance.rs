@@ -78,6 +78,12 @@ impl<'h> HeapRead<'h, Instance> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
+    /// The class's `__contains__`, or `None` when it defines none — `in` then
+    /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
+    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        instance_contains(self_id, item, vm)
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Instance(self.get(vm.heap).class)
     }

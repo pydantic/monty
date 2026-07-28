@@ -139,3 +139,11 @@ assert repr(()) == '()'
 assert repr((1,)) == '(1,)'
 assert repr((1, 2)) == '(1, 2)'
 assert repr((1, (2, 3))) == '(1, (2, 3))'
+
+# === `in` / `not in` ===
+tu = (1, 'two', 3)
+assert 1 in tu
+assert 'two' in tu
+assert 9 not in tu
+assert () == ()
+assert 2 in (1, (2, 3))[1]

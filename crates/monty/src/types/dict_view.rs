@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
@@ -158,6 +158,15 @@ impl DictView for DictKeysView {
 impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    /// Delegates to the backing dict's key lookup.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_keys view must reference a dict");
+        };
+        dict.contains_key(item, vm).map(Some)
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -424,6 +433,31 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         true
     }
 
+    /// Membership takes a `(key, value)` probe: look the key up, then compare
+    /// the stored value. A non-pair probe can never be a member.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
+            return Ok(Some(false));
+        };
+        let mut key_guard = DropGuard::new(key, vm);
+        let (key, vm) = key_guard.as_parts_mut();
+        let mut value_guard = DropGuard::new(value, vm);
+        let (value, vm) = value_guard.as_parts_mut();
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_items view must reference a dict");
+        };
+        match dict.dict_get(key, vm) {
+            Ok(Some(existing_value)) => {
+                let result = value.py_eq(&existing_value, vm);
+                existing_value.drop_with(vm);
+                result.map(Some)
+            }
+            Ok(None) => Ok(Some(false)),
+            Err(e) => Err(e),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictItems
     }
@@ -561,6 +595,22 @@ impl<'h> HeapRead<'h, DictValuesView> {
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    /// Values are not indexed, so this is a linear scan of the backing dict.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_values view must reference a dict");
+        };
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(value) = iter.next_value(vm)? {
+            if item.py_eq(value, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -819,4 +869,35 @@ fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_>) -> RunResult<bool
         }
     }
     Ok(true)
+}
+
+/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
+///
+/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
+/// also accepts namedtuples of length two so tuple-like runtime values behave
+/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
+    let Value::Ref(heap_id) = item else {
+        return None;
+    };
+
+    match heap.heap().get(*heap_id) {
+        HeapData::Tuple(tuple) => {
+            let items = tuple.as_slice();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        HeapData::NamedTuple(namedtuple) => {
+            let items = namedtuple.as_vec();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }

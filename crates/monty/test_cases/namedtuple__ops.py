@@ -32,3 +32,9 @@ r = repr(vi)
 assert r.startswith('sys.version_info(major='), f'namedtuple repr starts with type name, {r!r}'
 assert ', minor=' in r, f'namedtuple repr has minor field, {r!r}'
 assert r.endswith(')'), f'namedtuple repr ends with paren, {r!r}'
+
+# === `in` / `not in` ===
+# `vi` is sys.version_info, this file's namedtuple fixture.
+assert vi.major in vi
+assert vi.minor in vi
+assert 9999 not in vi

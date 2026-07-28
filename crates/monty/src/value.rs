@@ -13,28 +13,28 @@ use num_traits::FromPrimitive;
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
-        bytes::{bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{
-            instance_contains, instance_dataclass_eq, instance_getattr, instance_repr_fmt, instance_str,
-            instance_user_eq,
-        },
+        bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
+        instance::{instance_dataclass_eq, instance_getattr, instance_repr_fmt, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
         },
         slice::slice_collect_iterator,
-        str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, string_repr_fmt},
+        str::{
+            allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
+            string_repr_fmt,
+        },
     },
 };
 
@@ -1512,135 +1512,27 @@ impl Value {
         }
     }
 
-    /// TODO this doesn't have many tests!!! also doesn't cover bytes
-    /// Checks if `item` is contained in `self` (the container).
+    /// Checks if `item` is contained in `self` (the container) — Python's `in`.
     ///
-    /// Implements Python's `in` operator for various container types:
-    /// - List/Tuple: linear search with equality
-    /// - Dict: key lookup
-    /// - Set/FrozenSet: element lookup
-    /// - Str: substring search
-    /// - Instance: the class's `__contains__`, else iteration
-    ///
-    /// Anything else iterable is consumed until the item is found.
+    /// Type-specific logic lives on each type's [`PyTrait::py_contains`]; this
+    /// resolves the value and applies CPython's protocol order: a type's own
+    /// containment first (`sq_contains`), then consuming it by iteration
+    /// (`tp_iter`), then `TypeError`.
     pub fn py_contains(&self, item: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         match self {
-            Self::Ref(heap_id) => {
-                let output = vm.heap.read(*heap_id);
-                match output {
-                    HeapReadOutput::List(list) => {
-                        let len = list.get(vm.heap).len();
-                        for i in 0..len {
-                            let el = list.clone_item(i, vm);
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Tuple(tuple) => {
-                        let len = tuple.get(vm.heap).as_slice().len();
-                        for i in 0..len {
-                            let el = tuple.clone_item(i, vm);
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Dict(dict) => dict.contains_key(item, vm),
-                    HeapReadOutput::DictKeysView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_keys view must reference a dict");
-                        };
-                        dict.contains_key(item, vm)
-                    }
-                    HeapReadOutput::DictItemsView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
-                            return Ok(false);
-                        };
-                        let mut key_guard = DropGuard::new(key, vm);
-                        let (key, vm) = key_guard.as_parts_mut();
-                        let mut value_guard = DropGuard::new(value, vm);
-                        let (value, vm) = value_guard.as_parts_mut();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_items view must reference a dict");
-                        };
-                        match dict.dict_get(key, vm) {
-                            Ok(Some(existing_value)) => {
-                                let result = value.py_eq(&existing_value, vm);
-                                existing_value.drop_with(vm);
-                                result
-                            }
-                            Ok(None) => Ok(false),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    HeapReadOutput::DictValuesView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_values view must reference a dict");
-                        };
-                        let iter = dict.iter(vm)?;
-                        defer_drop_mut!(iter, vm);
-                        while let Some(value) = iter.next_value(vm)? {
-                            if item.py_eq(value, vm)? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Set(set) => set.contains(item, vm),
-                    HeapReadOutput::FrozenSet(fset) => fset.contains(item, vm),
-                    HeapReadOutput::Str(s) => {
-                        let s_str = s.get(vm.heap).as_str();
-                        str_contains(s_str, item, vm.heap, vm.interns)
-                    }
-                    HeapReadOutput::Range(range) => {
-                        // Range containment is O(1) - check bounds and step alignment
-                        let range = range.get(vm.heap);
-                        let n = match item {
-                            Self::Int(i) => *i,
-                            Self::Bool(b) => i64::from(*b),
-                            Self::Float(f) => {
-                                if f.fract() != 0.0 {
-                                    return Ok(false);
-                                }
-                                let int_val = f.trunc();
-                                if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
-                                    return Ok(false);
-                                }
-                                #[expect(clippy::cast_possible_truncation)]
-                                let n = int_val as i64;
-                                n
-                            }
-                            _ => return Ok(false),
-                        };
-                        Ok(range.contains(n))
-                    }
-                    // `__contains__` first, iteration only as a fallback —
-                    // CPython's `sq_contains` precedes `tp_iter`.
-                    HeapReadOutput::Instance(_) => match instance_contains(*heap_id, item, vm)? {
-                        Some(found) => Ok(found),
-                        None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
-                        None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
-                    },
-                    // Everything else with no `__contains__` of its own — the
-                    // iterators, and any future iterable heap type — is consumed
-                    // by iteration, as CPython falls back to `tp_iter`.
-                    _ if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
-                    _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
-                }
-            }
+            Self::Ref(heap_id) => match vm.heap.read(*heap_id).py_contains_impl(*heap_id, item, vm)? {
+                Some(found) => Ok(found),
+                None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
+                None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
+            },
+            // Interned strings and bytes never reach the heap, so they answer here.
             Self::InternString(string_id) => {
                 let container_str = vm.interns.get_str(*string_id);
                 str_contains(container_str, item, vm.heap, vm.interns)
+            }
+            Self::InternBytes(bytes_id) => {
+                let container = vm.interns.get_bytes(*bytes_id);
+                bytes_contains(container, item, vm)
             }
             _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
         }
@@ -2388,58 +2280,6 @@ fn py_float_mod(a: f64, b: f64) -> f64 {
         r + b
     } else {
         r
-    }
-}
-
-/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
-///
-/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
-/// also accepts namedtuples of length two so tuple-like runtime values behave
-/// sensibly even though namedtuples are not modeled as a true tuple subclass.
-fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
-    let Value::Ref(heap_id) = item else {
-        return None;
-    };
-
-    match heap.heap().get(*heap_id) {
-        HeapData::Tuple(tuple) => {
-            let items = tuple.as_slice();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        HeapData::NamedTuple(namedtuple) => {
-            let items = namedtuple.as_vec();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Helper for substring containment check in strings.
-///
-/// Called by `py_contains` when the container is a string.
-/// The item must also be a string (either interned or heap-allocated).
-fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
-    match item {
-        Value::InternString(item_id) => {
-            let item_str = interns.get_str(*item_id);
-            Ok(container_str.contains(item_str))
-        }
-        Value::Ref(item_heap_id) => {
-            if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
-                Ok(container_str.contains(item_str.as_str()))
-            } else {
-                Err(ExcType::type_error("'in <str>' requires string as left operand"))
-            }
-        }
-        _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
 }
 

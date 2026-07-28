@@ -207,3 +207,60 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "argument for bytes() given by name ('encoding') and position (2)"
+
+# === `in` / `not in` ===
+# A bytes-like probe is a substring test; the empty probe is always present.
+assert b'ab' in b'abc'
+assert b'abc' in b'abc'
+assert b'' in b'abc'
+assert b'x' not in b'abc'
+assert b'abcd' not in b'abc'
+# An integer probe tests a single byte value; bools are ints.
+assert 97 in b'abc'
+assert 99 in b'abc'
+assert 100 not in b'abc'
+assert True in b'\x01'
+# Concatenation yields heap bytes, exercising the non-interned container path.
+heap_bytes = b'ab' + b'c'
+assert b'ab' in heap_bytes
+assert 99 in heap_bytes
+assert b'x' not in heap_bytes
+# Out-of-range integers are a ValueError, not simply absent.
+try:
+    256 in b'abc'
+    assert False, 'expected ValueError for a byte above 255'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+try:
+    -1 in b'abc'
+    assert False, 'expected ValueError for a negative byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+# Big integers are integer probes too, so they are out of range rather than TypeErrors.
+try:
+    2**100 in b'abc'
+    assert False, 'expected ValueError for a big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+try:
+    -(2**100) in heap_bytes
+    assert False, 'expected ValueError for a negative big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+big_base = 10
+try:
+    big_base**100 in heap_bytes
+    assert False, 'expected ValueError for a computed big int byte'
+except ValueError as exc:
+    assert str(exc) == 'byte must be in range(0, 256)'
+# Anything else is a TypeError -- being iterable does not make a valid probe.
+try:
+    'a' in b'abc'
+    assert False, 'expected TypeError for a str probe'
+except TypeError as exc:
+    assert str(exc) == "a bytes-like object is required, not 'str'"
+try:
+    1.0 in b'abc'
+    assert False, 'expected TypeError for a float probe'
+except TypeError as exc:
+    assert str(exc) == "a bytes-like object is required, not 'float'"
