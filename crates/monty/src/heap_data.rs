@@ -623,10 +623,17 @@ macro_rules! heap_read_output_py_trait_forward {
 /// `Ref` arm calls this instead of reading the heap itself.
 pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
     if matches!(vm.heap.get(id), HeapData::Dict(d) if d.is_defaultdict()) {
-        let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
-            unreachable!("a defaultdict is a dict");
+        // The read handle is scoped to the lookup: `defaultdict_missing` runs the
+        // factory, which re-enters the VM and can drop the last reference to this
+        // dict — and `dec_ref` asserts that an entry has no active readers when it
+        // is freed.
+        let found = {
+            let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
+                unreachable!("a defaultdict is a dict");
+            };
+            dict.dict_get(key, vm)?
         };
-        match dict.dict_get(key, vm)? {
+        match found {
             Some(value) => Ok(value),
             None => defaultdict_missing(id, key, vm),
         }
