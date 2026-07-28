@@ -287,6 +287,23 @@ pub(crate) trait PyTrait<'h> {
         self.py_repr(vm)
     }
 
+    /// Python unary minus (`__neg__`).
+    ///
+    /// `Ok(None)` — the default — means the type has no negation, so the VM
+    /// raises `TypeError`. `self_id` is this value's heap id, as for
+    /// [`py_add_impl`](Self::py_add_impl).
+    fn py_neg_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python unary plus (`__pos__`), with [`py_neg_impl`](Self::py_neg_impl)'s contract.
+    ///
+    /// Rarely a no-op: `+True` is `1`, and `+Counter(a=-1)` strips the
+    /// non-positive counts, so implementations return a value rather than `self`.
+    fn py_pos_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// One-sided implementation of Python addition (`__add__`).
     ///
     /// `self_id` is this value's own heap id, which types whose operator walks

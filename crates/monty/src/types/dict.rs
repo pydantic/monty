@@ -21,7 +21,7 @@ use crate::{
     modules::collections::{
         counter::{
             CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
-            counter_most_common, counter_order, counter_total, counter_update_method,
+            counter_most_common, counter_order, counter_total, counter_unary_op, counter_update_method,
         },
         defaultdict::defaultdict_missing,
     },
@@ -1165,6 +1165,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         }
     }
 
+    fn py_neg_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_unary(true, vm, self_id)
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_unary(false, vm, self_id)
+    }
+
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.counter_binary(other, CounterOp::Add, vm, self_id)
     }
@@ -1422,6 +1430,18 @@ impl<'h> HeapRead<'h, Dict> {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    /// Runs a unary `Counter` operator (`+c` / `-c`), which strips the counts
+    /// that are not positive (negating first for `-c`) into a fresh Counter.
+    ///
+    /// A plain dict has no unary form and reports `None` for the caller's
+    /// `TypeError`.
+    fn counter_unary(&self, negate: bool, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        match self_id {
+            Some(id) if self.get(vm.heap).is_counter() => Ok(Some(counter_unary_op(id, negate, vm)?)),
+            _ => Ok(None),
         }
     }
 

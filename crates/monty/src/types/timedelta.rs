@@ -360,6 +360,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         Ok(allocate_string(s, vm.heap)?)
     }
 
+    /// `-delta` — negation can overflow, since the range is not symmetric
+    /// (`-timedelta.min` has no representation), which `from_total_microseconds`
+    /// reports as CPython's `OverflowError`.
+    fn py_neg_impl(&self, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        let negated = from_total_microseconds(-total_microseconds(self.get(vm.heap)))?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(negated))?)))
+    }
+
     fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)?),

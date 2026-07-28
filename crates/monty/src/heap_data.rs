@@ -940,6 +940,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_mod_impl(other, vm), else Ok(None))
     }
 
+    fn py_neg_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_neg_impl(vm, self_id), else Ok(None))
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_pos_impl(vm, self_id), else Ok(None))
+    }
+
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
         heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm, self_id), else Ok(false))
     }

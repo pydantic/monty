@@ -611,6 +611,31 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_neg_impl(&self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
+        match self {
+            // `checked_neg` catches `i64::MIN`, whose negation only fits a LongInt.
+            Self::Int(n) => match n.checked_neg() {
+                Some(negated) => Ok(Some(Self::Int(negated))),
+                None => Ok(Some((-LongInt::from(*n)).into_value(vm.heap)?)),
+            },
+            Self::Float(f) => Ok(Some(Self::Float(-f))),
+            Self::Bool(b) => Ok(Some(Self::Int(if *b { -1 } else { 0 }))),
+            Self::Ref(id) => vm.heap.read(*id).py_neg_impl(vm, Some(*id)),
+            _ => Ok(None),
+        }
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
+        match self {
+            // `+x` leaves a number as it is; the clone is what the caller pushes
+            // in place of the operand it drops.
+            Self::Int(_) | Self::Float(_) => Ok(Some(self.clone_with_heap(vm.heap))),
+            Self::Bool(b) => Ok(Some(Self::Int(i64::from(*b)))),
+            Self::Ref(id) => vm.heap.read(*id).py_pos_impl(vm, Some(*id)),
+            _ => Ok(None),
+        }
+    }
+
     /// One-sided implementation of Python `+`.
     fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         let interns = vm.interns;

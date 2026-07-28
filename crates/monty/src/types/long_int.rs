@@ -442,6 +442,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         self.py_add_impl(other, vm, None)
     }
 
+    fn py_neg_impl(&self, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        let negated = -LongInt::new(self.get(vm.heap).inner().clone());
+        // A negated LongInt may fit back in an `i64`, which `into_value` demotes.
+        Ok(Some(negated.into_value(vm.heap)?))
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        // `+x` on an int is the identity, so hand back this same LongInt rather
+        // than allocating a copy of its digits.
+        Ok(self_id.map(|id| Value::Ref(id).clone_with_heap(vm.heap)))
+    }
+
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {

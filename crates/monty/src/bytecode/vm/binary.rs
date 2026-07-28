@@ -1,4 +1,4 @@
-//! Binary and in-place operation helpers for the VM.
+//! Unary, binary and in-place operation helpers for the VM.
 
 use super::VM;
 use crate::{
@@ -10,6 +10,17 @@ use crate::{
 };
 
 impl VM<'_> {
+    /// Unary minus (`-x`).
+    pub(super) fn unary_neg(&mut self) -> Result<(), RunError> {
+        self.unary_op(|value, vm| value.py_neg_impl(vm, value.ref_id()), "-")
+    }
+
+    /// Unary plus (`+x`) — an identity for numbers, but not for `bool`
+    /// (`+True` is `1`) or a `Counter` (which drops its non-positive counts).
+    pub(super) fn unary_pos(&mut self) -> Result<(), RunError> {
+        self.unary_op(|value, vm| value.py_pos_impl(vm, value.ref_id()), "+")
+    }
+
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))
@@ -123,6 +134,26 @@ impl VM<'_> {
     /// Binary matrix multiplication (`@` operator).
     pub(super) fn binary_matmul(&mut self) -> Result<(), RunError> {
         self.binary_op(|lhs, rhs, vm| lhs.py_matmul(rhs, vm))
+    }
+
+    /// Applies a unary operation while owning stack-value cleanup, raising
+    /// CPython's `TypeError` (naming `symbol`) when the type has no such form.
+    fn unary_op(
+        &mut self,
+        operation: impl FnOnce(&Value, &mut Self) -> RunResult<Option<Value>>,
+        symbol: &str,
+    ) -> Result<(), RunError> {
+        let this = self;
+
+        let value = this.pop();
+        defer_drop!(value, this);
+
+        if let Some(result) = operation(value, this)? {
+            this.push(result);
+            Ok(())
+        } else {
+            Err(ExcType::unary_type_error(symbol, &value.py_type_name(this)))
+        }
     }
 
     /// Applies a binary operation while owning stack-value cleanup.
