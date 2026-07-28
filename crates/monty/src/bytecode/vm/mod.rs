@@ -30,8 +30,9 @@ use crate::{
         code::{Code, LocationEntry},
         op::{Opcode, decode_assert_flags},
     },
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::{CellValue, Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
@@ -2367,8 +2368,8 @@ impl<'h> VM<'h> {
     fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
         let value = self.pop();
         // The guard will clean up the new value if we panic, or the old value if we swap
-        let mut guard = DropGuard::new(value, self);
-        let (value, this) = guard.as_parts_mut();
+        let this = self;
+        defer_drop_mut!(value, this);
 
         let cell_id = this.cell_id_from_local(cached_frame, slot);
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {

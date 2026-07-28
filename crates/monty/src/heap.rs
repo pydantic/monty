@@ -27,9 +27,9 @@ use crate::{
     modules::dataclasses::DataclassField,
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
-        NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
-        StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, ItertoolsIter, List,
+        LongInt, Module, NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice,
+        Str, StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
         list::ListIterator, timedelta, timezone,
     },
     value::Value,
@@ -40,6 +40,10 @@ mod stable_heap;
 use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
+///
+/// The ID does not encode ownership. Local IDs should normally be borrowed or
+/// wrapped immediately in `Value::Ref`; owned fields must document and release
+/// their reference through `HeapItem` or `DropWithContext` cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HeapId(usize);
 
@@ -242,6 +246,7 @@ pub enum HeapReadOutput<'a> {
     DictValueIterator(HeapRead<'a, DictValueIterator>),
     SetIterator(HeapRead<'a, SetIterator>),
     CallableIterator(HeapRead<'a, CallableIterator>),
+    Itertools(HeapRead<'a, ItertoolsIter>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
@@ -637,6 +642,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(base, iter, readers)),
             HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(base, iter, readers)),
             HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
+            HeapData::Itertools(i) => HeapReadOutput::Itertools(heap_read(base, i, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
@@ -1052,6 +1058,12 @@ impl Heap {
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
+    ///
+    /// This is the low-level release operation for an owned raw `HeapId`. Ordinary
+    /// control flow should instead keep local ownership in `Value::Ref` and use
+    /// `defer_drop!` or `DropGuard`. Heap-stored owners declare child references in
+    /// `HeapItem::py_dec_ref_ids`; direct calls are appropriate in cleanup for other
+    /// structures that own raw IDs.
     ///
     /// Uses an iterative work stack instead of recursion to avoid Rust stack overflow
     /// when freeing deeply nested containers (e.g., a list nested 10,000 levels deep).
@@ -1709,6 +1721,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
+        HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {
@@ -1842,6 +1855,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references

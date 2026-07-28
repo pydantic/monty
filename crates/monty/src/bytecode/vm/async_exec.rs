@@ -19,7 +19,7 @@ use crate::{
         GatherState, TaskId, awaited_state_size,
     },
     bytecode::vm::scheduler::{Scheduler, SerializedTaskFrame, TaskState},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::FunctionId,
@@ -835,27 +835,25 @@ impl<'h> VM<'h> {
     ///   `set_state(t, Ready)` before switching, since the exception is
     ///   propagated by the `Err` return rather than the state check.)
     /// - `None` if the terminal task is gone.
-    fn deliver_awaiter_failure(&mut self, mut awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+    fn deliver_awaiter_failure(&mut self, awaiter: Awaiter, error: RunError) -> Option<TaskId> {
+        let this = self;
+        defer_drop_mut!(awaiter, this);
         let target = loop {
-            match awaiter {
-                Awaiter::Task(t) => break t,
+            let next = match awaiter {
+                Awaiter::Task(t) => break *t,
                 Awaiter::GatherSlot { gather, .. } => {
-                    let HeapReadOutput::GatherFuture(mut outer) = self.heap.read(gather) else {
+                    let HeapReadOutput::GatherFuture(mut gather) = this.heap.read(*gather) else {
                         panic!("Awaiter::GatherSlot gather id is not a GatherFuture")
                     };
-                    let next = outer.fail(&mut self.scheduler, self.heap, &error);
-                    drop(outer);
-                    // Release the inc_ref the destructured awaiter owned on
-                    // `gather`; reassign to the next link in the chain.
-                    self.heap.dec_ref(gather);
-                    awaiter = next;
+                    gather.fail(&mut this.scheduler, this.heap, &error)
                 }
-            }
+            };
+            mem::replace(awaiter, next).drop_with(this);
         };
-        if !self.scheduler.has_task(target) {
+        if !this.scheduler.has_task(target) {
             return None;
         }
-        self.scheduler.fail_task(target, error, self.heap);
+        this.scheduler.fail_task(target, error, this.heap);
         Some(target)
     }
 

@@ -38,7 +38,23 @@ properties that real CPython does not provide, per the caveat above.
   or `MontyComplete`) for the caller to inspect, `dump()`, and `resume(...)`;
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
-  `MontyCrashedError`. The pool itself recovers by replacing the worker.
+  `MontyCrashedError` — which also carries a worker's own account when it
+  announced a `FatalError` before exiting (e.g. version skew), plus the exit
+  status when the process could be reaped. The pool itself recovers by
+  replacing the worker.
+- **WebSocket sessions are lost in two additional ways.** A connection that
+  closes mid-session raises `MontyDisconnectError`: the client cannot tell a
+  dead remote sandbox from a server-side policy drop (idle/session/turn
+  timeout, over capacity), so the error claims no more than that the
+  connection went away. A server that is shutting down instead answers the
+  session's next request with `MontyShutdown` — the request did **not** run,
+  and its `dump` (when present) restores the session onto a fresh checkout
+  via `session.load_session` / `session.load_snapshot`. If the interrupted
+  request was answering a suspension (external function or `os` callback),
+  the host already ran that call and the restored session re-announces it, so
+  it runs twice unless the callback is idempotent. Neither error occurs on
+  the local subprocess transport; a local child claiming shutdown is a
+  protocol violation.
 - **The session `Configure` request carries the parent's `monty_version`, and
   the worker rejects a mismatch.** The protocol has no in-band negotiation and
   assumes parent and child are deployed in lockstep, so a child whose version
@@ -47,7 +63,8 @@ properties that real CPython does not provide, per the caveat above.
   risk a frame desync. A local subprocess child is built in lockstep with the
   parent, so this mostly matters for the WebSocket transport, where the remote
   child is deployed separately — a remote child on a different version replies
-  `FatalError` and the pool surfaces it cleanly.
+  `FatalError` and the pool surfaces it as a `MontyCrashedError` carrying the
+  child's version-skew message.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.

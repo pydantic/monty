@@ -8,7 +8,7 @@ use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
 
-use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
+use crate::{CrashCause, PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
 /// Arguments for the REPL session a checkout creates — mirrors
 /// `MontyRepl`'s constructor surface.
@@ -205,6 +205,18 @@ impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
+        let request = request(pb::parent_request::Kind::Configure(pb::Configure {
+            script_name: repl.script_name.clone(),
+            limits: repl.limits.as_ref().map(Into::into),
+            type_check: repl.type_check,
+            type_check_stubs: repl.type_check_stubs.clone(),
+            assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
+            // This crate ships the matching `monty` binary, so our own
+            // version is always what the child expects. The child rejects a
+            // mismatch with a `FatalError` (relevant when a remote driver
+            // built against a different version reuses the wire format).
+            monty_version: MONTY_VERSION.to_owned(),
+        }));
         let mut this = Self {
             worker: Some(worker),
             pool,
@@ -214,20 +226,6 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
-        };
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
-                script_name: repl.script_name.clone(),
-                limits: repl.limits.as_ref().map(Into::into),
-                type_check: repl.type_check,
-                type_check_stubs: repl.type_check_stubs.clone(),
-                assert_message_annotations: Some(repl.assert_message_annotations.max_bytes()),
-                // This crate ships the matching `monty` binary, so our own
-                // version is always what the child expects. The child rejects a
-                // mismatch with a `FatalError` (relevant when a remote driver
-                // built against a different version reuses the wire format).
-                monty_version: MONTY_VERSION.to_owned(),
-            })),
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
@@ -271,9 +269,7 @@ impl Checkout {
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
         self.feed_mounts = build_mount_table(mounts)?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Load(pb::Load { state })),
-        };
+        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
@@ -309,19 +305,17 @@ impl Checkout {
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         self.feed_mounts = build_mount_table(mounts)?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
-                code: code.to_owned(),
-                inputs: inputs
-                    .into_iter()
-                    .map(|(name, value)| pb::NamedValue {
-                        name,
-                        value: Some(value.into()),
-                    })
-                    .collect(),
-                skip_type_check,
-            })),
-        };
+        let request = request(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            inputs: inputs
+                .into_iter()
+                .map(|(name, value)| pb::NamedValue {
+                    name,
+                    value: Some(value.into()),
+                })
+                .collect(),
+            skip_type_check,
+        }));
         self.expect_turn(&request, on_print)
     }
 
@@ -351,12 +345,10 @@ impl Checkout {
             ResumeValue::NotFound => pb::ext_function_result::Kind::NotFound(function_name),
             ResumeValue::NotHandled => pb::ext_function_result::Kind::NotHandled(pb::Unit {}),
         };
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
-                call_id,
-                result: Some(pb::ExtFunctionResult { kind: Some(result) }),
-            })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeCall(pb::ResumeCall {
+            call_id,
+            result: Some(pb::ExtFunctionResult { kind: Some(result) }),
+        }));
         // `pending` is deliberately NOT cleared here: an oversize answer is
         // rejected by `Worker::send` before any bytes reach the child, and
         // `request_turn` surfaces it with the suspension still answerable.
@@ -439,11 +431,9 @@ impl Checkout {
             Some(obj) => pb::resume_name_lookup::Kind::Value(obj.into()),
             None => pb::resume_name_lookup::Kind::Undefined(pb::Unit {}),
         };
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
-                kind: Some(kind),
-            })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeNameLookup(pb::ResumeNameLookup {
+            kind: Some(kind),
+        }));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
@@ -480,9 +470,7 @@ impl Checkout {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results })),
-        };
+        let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
         // `pending` left set — see the comment in [`Self::resume`]
         self.expect_turn(&request, on_print)
     }
@@ -515,11 +503,9 @@ impl Checkout {
         for requirement in &requirements {
             validate_requirement(requirement).map_err(invalid_requirement)?;
         }
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
-                requirements,
-            })),
-        };
+        let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+            requirements,
+        }));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
@@ -530,9 +516,7 @@ impl Checkout {
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
     pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Dump(pb::Dump {})),
-        };
+        let request = request(pb::parent_request::Kind::Dump(pb::Dump {}));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Dump(state) => Ok(state),
             other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
@@ -555,9 +539,7 @@ impl Checkout {
             }
             return Ok(());
         }
-        let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::Reset(pb::Reset {})),
-        };
+        let request = request(pb::parent_request::Kind::Reset(pb::Reset {}));
         match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => {
                 if let Some(mut worker) = self.worker.take() {
@@ -779,10 +761,26 @@ impl Checkout {
                 Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
                 Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
+                    break Err(self.fatal_error(&fatal.message));
+                }
+                Some(pb::child_event::Kind::Shutdown(shutdown)) => {
+                    // Only a serving relay sends this, never a child — so a
+                    // local subprocess claiming to shut down is a protocol
+                    // violation, not a shutdown. Accepting it would let the
+                    // child hand back a dump it minted itself, which the
+                    // caller would then restore as trusted session state.
+                    if !self.pool.config.transport.is_websocket() {
+                        return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+                    }
+                    // The serving side is shutting down and dropped this
+                    // request unexecuted; its worker is gone.
+                    //
+                    // NOTE(sign-dump): `dump` is server-minted and travels
+                    // back through this client into `Checkout::restore`; if
+                    // host-side dump signing lands it must pass the same
+                    // verification there as any other dump.
                     self.discard_worker();
-                    break Err(PoolError::Protocol(
-                        format!("worker reported fatal error: {}", fatal.message).into(),
-                    ));
+                    break Err(PoolError::Shutdown { dump: shutdown.dump });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -831,8 +829,42 @@ impl Checkout {
         PoolError::Protocol(context.into())
     }
 
+    /// Discards the worker after it announced a `FatalError`.
+    ///
+    /// The frame arrives on an intact stream, but it means the far end is
+    /// *gone*: a child writes it and exits immediately (version skew, frame
+    /// desync, panic), and a serving relay uses it to report that it could not
+    /// start a child at all. That is a crash with a reason attached rather
+    /// than a protocol disagreement, so it is reported as one — a caller that
+    /// handles crashes by starting a new session needs no extra arm, and the
+    /// worker's own account lands in [`CrashCause::Announced`].
+    fn fatal_error(&mut self, message: &str) -> PoolError {
+        let status = match self.worker.take() {
+            // the child exits right after the frame, so give it a moment to do
+            // so before killing: that is what surfaces e.g. the non-zero status
+            // of a version-skew exit, which a SIGKILL would replace with the
+            // signal and lose
+            Some(mut worker) => {
+                let status = worker.reap_or_kill(FATAL_EXIT_GRACE);
+                drop(worker);
+                self.pool.release_capacity();
+                status
+            }
+            None => None,
+        };
+        self.pending = None;
+        self.feed_mounts = None;
+        PoolError::Crashed {
+            status,
+            cause: CrashCause::Announced {
+                reason: message.to_owned(),
+            },
+        }
+    }
+
     /// Discards the worker after an I/O failure and classifies it as a
-    /// watchdog timeout or a crash.
+    /// watchdog timeout, a crash, or — on the WebSocket transport, where the
+    /// worker is a remote process this client cannot reap — a disconnect.
     fn poison(&mut self, context: &str) -> PoolError {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
@@ -847,17 +879,24 @@ impl Checkout {
             PoolError::Timeout {
                 timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
             }
+        } else if self.pool.config.transport.is_websocket() {
+            PoolError::Disconnected {
+                context: context.to_owned(),
+            }
         } else {
             PoolError::Crashed {
                 status,
-                context: context.to_owned(),
+                cause: CrashCause::Vanished {
+                    context: context.to_owned(),
+                },
             }
         }
     }
 
-    /// Discards the worker without crash classification (fatal-error frames
-    /// arrive on an intact stream, so this is a protocol failure, not a
-    /// crash).
+    /// Discards the worker without crash classification, for turn-enders
+    /// that are not crashes: protocol violations (the worker answered, just
+    /// wrongly) and server `Shutdown` replies. Fatal errors instead go
+    /// through [`Self::fatal_error`], which reaps and classifies.
     fn discard_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
             drop(worker);
@@ -887,6 +926,25 @@ enum ControlEvent {
     Turn(TurnEvent),
     Ok,
     Dump(Vec<u8>),
+}
+
+/// How long a child that announced a `FatalError` is given to exit on its own
+/// before it is killed. It writes the frame and exits immediately, so this is
+/// a scheduling allowance rather than a real wait — and it is only ever spent
+/// on a turn that has already failed.
+const FATAL_EXIT_GRACE: Duration = Duration::from_millis(100);
+
+/// Wraps a request kind in a `ParentRequest`.
+///
+/// The one place the pool builds a request, so `ParentRequest`'s
+/// message-level fields are decided here rather than at every callsite.
+/// `trace_parent` is left unset: the pool does not propagate a tracing
+/// context yet, and an absent one just means the child starts its own trace.
+pub(crate) fn request(kind: pb::parent_request::Kind) -> pb::ParentRequest {
+    pb::ParentRequest {
+        kind: Some(kind),
+        trace_parent: None,
+    }
 }
 
 /// Rejects values too deeply nested for the wire (see

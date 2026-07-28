@@ -9,7 +9,7 @@ use monty_proto::pb;
 
 use crate::{
     PoolConfig, PoolError,
-    checkout::{Checkout, ReplConfig},
+    checkout::{Checkout, ReplConfig, request},
     watchdog::Watchdog,
     worker::{Worker, lock_ignore_poison},
 };
@@ -104,8 +104,9 @@ impl Pool {
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh remote
-    /// one, waiting as capacity allows.
-    fn acquire_worker(&self) -> Result<Worker, PoolError> {
+    /// one, waiting as capacity allows. Also used by `Checkout`'s eviction
+    /// recovery to dial a replacement worker mid-checkout.
+    pub(crate) fn acquire_worker(&self) -> Result<Worker, PoolError> {
         // WebSocket connections are single-use and never pooled idle, so the
         // idle-reuse step is skipped and each acquisition dials a fresh worker.
         let websocket = self.config.transport.is_websocket();
@@ -178,9 +179,7 @@ impl PoolInner {
     fn shutdown_idle(&self) {
         let mut state = lock_ignore_poison(&self.state);
         for worker in &mut state.idle {
-            let _ = worker.send(&pb::ParentRequest {
-                kind: Some(pb::parent_request::Kind::Shutdown(pb::Shutdown {})),
-            });
+            let _ = worker.send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})));
         }
         // dropping the workers reaps them (kill is a no-op if Shutdown won)
         state.idle.clear();

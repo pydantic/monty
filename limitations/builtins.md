@@ -37,6 +37,14 @@ mechanism beyond dataclass field inheritance.
 
 ## Behavioural divergences
 
+- **`map` / `filter` / `enumerate` are eager, not lazy** — each drains its
+  source and returns a concrete result, where CPython returns a lazy iterator.
+  Observable three ways: a side-effecting callable runs for every item at the
+  call itself rather than as the result is consumed; the whole result is held
+  in memory at once; and applying them to an infinite iterator (e.g.
+  `map(f, itertools.count())`) never returns, running until a resource limit
+  trips. `zip` is unaffected — it stops at the shortest input. See
+  [itertools.md](itertools.md).
 - **Arity-error wording for some str/bytes methods** — a handful of
   keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
   equivalents) report too-many-arguments as `split expected at most 2

@@ -17,7 +17,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, HeapData},
+    heap::HeapData,
     types::{PyTrait, file::FileMode},
     value::Value,
 };
@@ -45,8 +45,7 @@ pub(crate) fn builtin_open(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallRe
 
     // `file` and the unsupported kwargs are raw `Value`s; `mode` holds a
     // borrowed str — all need cleanup on every path.
-    let mut file = DropGuard::new(file, vm);
-    let (file, vm) = file.as_parts_mut();
+    defer_drop!(file, vm);
     defer_drop!(mode, vm);
     defer_drop!(buffering, vm);
     defer_drop!(encoding, vm);

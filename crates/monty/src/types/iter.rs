@@ -9,8 +9,8 @@ use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{DropGuard, HeapData},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
+    heap::{DropGuard, DropWithContext, HeapData},
     resource_checks::check_estimated_size,
     types::{PyTrait, callable_iterator::CallableIterator},
     value::{VALUE_SIZE, Value, ValueRead},
@@ -49,45 +49,56 @@ struct IterArgs {
     sentinel: Option<Value>,
 }
 
+/// Largest iterator hint used to preallocate a native collection.
+const MAX_PREALLOCATION_HINT: usize = 65_536;
+
 /// Validates and clamps an iterator capacity hint before native allocation.
 pub(crate) fn checked_preallocation_hint(
     hint: usize,
     elem_size: usize,
     tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
-    const MAX_PREALLOCATION_HINT: usize = 65_536;
-
+    let hint = hint.min(MAX_PREALLOCATION_HINT);
     check_estimated_size(hint.saturating_mul(elem_size), tracker)?;
-    Ok(hint.min(MAX_PREALLOCATION_HINT))
+    Ok(hint)
 }
 
 /// Adapts a retained Python iterator to Rust's `Iterator` with memory checks.
 struct HeapedIterator<'this, 'h, I: CollectIter<'h>> {
     iter: &'this mut I,
     vm: &'this mut VM<'h>,
+    error: &'this mut Option<RunError>,
+    preallocation_hint: usize,
     yielded: usize,
 }
 
 impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
-    type Item = RunResult<Value>;
+    type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next_value(self.vm) {
             Ok(None) => None,
-            Err(error) => Some(Err(error)),
+            Err(error) => {
+                *self.error = Some(error);
+                None
+            }
             Ok(Some(value)) => {
                 self.yielded += 1;
                 let estimated = self.yielded.saturating_mul(VALUE_SIZE);
                 match check_estimated_size(estimated, self.vm.heap.tracker()) {
-                    Ok(()) => Some(Ok(value)),
-                    Err(error) => Some(Err(error.into())),
+                    Ok(()) => Some(value),
+                    Err(error) => {
+                        *self.error = Some(error.into());
+                        value.drop_with(self.vm);
+                        None
+                    }
                 }
             }
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.iter.remaining(self.vm);
+        let remaining = self.iter.remaining(self.vm).min(self.preallocation_hint);
         (remaining, Some(remaining))
     }
 }
@@ -118,21 +129,37 @@ pub fn collect_iterable(value: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Value>>
 }
 
 /// Collects every item yielded by an owned iterable into a target collection.
-pub(crate) fn collect_owned_iterable<T: FromIterator<Value>>(value: Value, vm: &mut VM<'_>) -> RunResult<T> {
+pub(crate) fn collect_owned_iterable<'h, T>(value: Value, vm: &mut VM<'h>) -> RunResult<T>
+where
+    T: Default + Extend<Value> + DropWithContext<VM<'h>>,
+{
     let iterator = value.into_py_iter(vm)?;
     collect_python_iterator(iterator, vm)
 }
 
 /// Drains an owned Python iterator with incremental allocation checks.
-fn collect_python_iterator<T: FromIterator<Value>>(iterator: Value, vm: &mut VM<'_>) -> RunResult<T> {
+fn collect_python_iterator<'h, T>(iterator: Value, vm: &mut VM<'h>) -> RunResult<T>
+where
+    T: Default + Extend<Value> + DropWithContext<VM<'h>>,
+{
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
-    HeapedIterator {
+    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, vm.heap.tracker())?;
+    let mut values_guard = DropGuard::new(T::default(), vm);
+    let (values, vm) = values_guard.as_parts_mut();
+    let mut error = None;
+    values.extend(HeapedIterator {
         iter: &mut iterator,
         vm,
+        error: &mut error,
+        preallocation_hint,
         yielded: 0,
+    });
+    if let Some(error) = error {
+        Err(error)
+    } else {
+        Ok(values_guard.into_inner())
     }
-    .collect()
 }
 
 /// Pulls at most `limit` items from an iterable, stopping early.
@@ -140,20 +167,15 @@ pub fn collect_iterable_bounded(value: &Value, limit: usize, vm: &mut VM<'_>) ->
     let iterator = value.py_iter(vm)?;
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
-    let mut items = Vec::new();
+    let mut items_guard = DropGuard::new(Vec::new(), vm);
+    let (items, vm) = items_guard.as_parts_mut();
     while items.len() < limit {
-        match iterator.py_next(vm) {
-            Ok(Some(value)) => items.push(value),
-            Ok(None) => break,
-            Err(error) => {
-                for item in items {
-                    item.drop_with(vm);
-                }
-                return Err(error);
-            }
+        match iterator.py_next(vm)? {
+            Some(value) => items.push(value),
+            None => break,
         }
     }
-    Ok(items)
+    Ok(items_guard.into_inner())
 }
 
 /// Implements Python's `next(iterator[, default])` semantics.

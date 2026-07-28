@@ -435,8 +435,20 @@ pub struct NamedValue {
     #[prost(message, optional, tag = "2")]
     pub value: ::core::option::Option<MontyObject>,
 }
+/// Tags 1-19 are reserved for `kind` arms and the message-level fields start
+/// at 20, mirroring `ChildEvent` — a oneof shares its field-number space with
+/// the enclosing message, so a new arm never has to jump the numbering. The
+/// same caveats apply: arms past 15 cost a two-byte key, and a forwarding
+/// server mirrors this numbering to classify frames without decoding them, so
+/// adding an arm degrades to "opaque" while renumbering one would misroute.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParentRequest {
+    /// W3C `traceparent` identifying the caller's span, so a child that exports
+    /// its own telemetry can attach its spans to the trace the request came
+    /// from. Purely additive context: the child's execution of the request must
+    /// not depend on it, and it is absent whenever the parent is not tracing.
+    #[prost(string, optional, tag = "20")]
+    pub trace_parent: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
@@ -577,6 +589,14 @@ pub struct InstallDependencies {
     #[prost(string, repeated, tag = "1")]
     pub requirements: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// A oneof shares its field-number space with the enclosing message, so tags
+/// 1-19 are reserved by convention for `kind` arms and the message-level
+/// fields start at 20 — a new arm then never has to jump the numbering. Note
+/// arms past 15 cost a two-byte key instead of one, which forwarding servers
+/// (which walk only field keys, on every frame) pay per event. Such a server
+/// mirrors this numbering to classify frames without decoding them; it treats
+/// a tag it does not know as opaque, so adding an arm degrades rather than
+/// misroutes, but renumbering an existing one would break it.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in
@@ -586,21 +606,21 @@ pub struct ChildEvent {
     /// while a session exists (zero on Print events and outside a session) so
     /// the parent can mirror the `max_duration` budget, e.g. to arm a watchdog
     /// backstop, without keeping a second clock.
-    #[prost(uint64, tag = "12")]
+    #[prost(uint64, tag = "20")]
     pub total_execution_micros: u64,
     /// The session's `max_duration` limit in microseconds, when one is
     /// configured. Reported alongside `total_execution_micros` so a parent that
     /// restored a session via `Load` (where the limits travel inside the opaque
     /// state bytes) still learns the budget.
-    #[prost(uint64, optional, tag = "13")]
+    #[prost(uint64, optional, tag = "21")]
     pub max_duration_micros: ::core::option::Option<u64>,
     /// The session's script name, surfaced on a `Load` reply so a parent that
     /// restored a session (whose script name, like the limits above, travels
     /// inside the opaque dump bytes) learns it without parsing the dump. Set only
     /// on a successful `Load` reply; unset on all other events.
-    #[prost(string, optional, tag = "14")]
+    #[prost(string, optional, tag = "22")]
     pub restored_script_name: ::core::option::Option<::prost::alloc::string::String>,
-    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[prost(oneof = "child_event::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: ::core::option::Option<child_event::Kind>,
 }
 /// Nested message and enum types in `ChildEvent`.
@@ -629,6 +649,8 @@ pub mod child_event {
         Ok(super::Ok),
         #[prost(message, tag = "11")]
         FatalError(super::FatalError),
+        #[prost(message, tag = "12")]
+        Shutdown(super::ShutdownDump),
     }
 }
 /// Streamed sandbox print() output. Zero or more of these precede each
@@ -864,6 +886,22 @@ pub struct Ok {}
 pub struct FatalError {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
+}
+/// Turn end: the serving relay (monty-server, never a child) is shutting down
+/// and did NOT run the request it is replying to. Sent only in reply to an
+/// in-flight request, so the client is always reading when it arrives.
+///
+/// Every other server policy action (idle/session/turn timeout, capacity) is
+/// just a dropped connection, which the client already classifies as a dead
+/// worker — only shutdown needs a message, because only shutdown has state to
+/// hand back.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ShutdownDump {
+    /// Session state captured immediately before shutdown (same bytes as
+    /// `DumpResult.state`), restorable into a fresh worker via `Load`. Absent
+    /// when there was no session yet or the dump itself failed.
+    #[prost(bytes = "vec", optional, tag = "1")]
+    pub dump: ::core::option::Option<::prost::alloc::vec::Vec<u8>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

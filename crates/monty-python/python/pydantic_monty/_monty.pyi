@@ -26,9 +26,11 @@ __all__ = [
     'Monty',
     'MontyConversionError',
     'MontyCrashedError',
+    'MontyDisconnectError',
     'MontyError',
     'MontyFileHandle',
     'MontySession',
+    'MontyShutdown',
     'MontySyntaxError',
     'MontyRuntimeError',
     'MontyTypingError',
@@ -286,12 +288,17 @@ class MontyFileHandle:
 
 @final
 class MontyCrashedError(MontyError):
-    """Raised when a worker process died or hit `request_timeout`.
+    """Raised when the sandbox is gone and the session with it.
 
-    This is the failure mode subprocess pools exist to contain: the sandbox
-    process is gone (segfault, allocator abort, external kill, or watchdog
-    timeout) but the host process is unharmed and the pool replaces the
-    worker. Catch this error to retry or report.
+    This is the failure mode subprocess pools exist to contain: the worker is
+    gone — segfault, allocator abort, external kill, `request_timeout`
+    watchdog, or a fatal error it announced before exiting — but the host
+    process is unharmed and the pool replaces it. A remote server also reports
+    its own failure to start a worker this way. Catch this error to retry or
+    report; the message says which happened.
+
+    `exit_status` is `None` whenever the process could not be reaped, which
+    includes every remote worker.
 
     Cannot be constructed directly from Python.
     """
@@ -303,6 +310,45 @@ class MontyCrashedError(MontyError):
     @property
     def exit_status(self) -> int | None:
         """Exit code of the dead worker when the OS reported one (signal deaths report `None`)."""
+
+@final
+class MontyDisconnectError(MontyError):
+    """Raised when a remote worker's connection closed mid-session (WebSocket transport only).
+
+    The local analogue is `MontyCrashedError`. The sandbox may have died, or
+    the server may have dropped the session by policy — an idle, session, or
+    turn timeout, or being over capacity. A client that only sees the
+    connection go away cannot tell those apart, so this error claims no more
+    than that. Retry on a fresh session.
+
+    Cannot be constructed directly from Python.
+    """
+
+@final
+class MontyShutdown(MontyError):
+    """Raised when the remote server is shutting down (WebSocket transport only).
+
+    Not an error in your code, which is why it is the one exception here
+    without an `Error` suffix; it still subclasses `MontyError`. The request
+    that raised it **did not run**, so re-running it on a fresh session is
+    safe.
+
+    `dump` carries the session state captured just before shutdown — restore
+    it on a new session to carry the session across a server restart, with
+    `session.load_session` (idle, between feeds) or `session.load_snapshot`
+    (suspended mid-feed).
+
+    One caveat: if the interrupted request was answering a suspension (an
+    external function or `os` callback), the host already ran that call and
+    the restored session re-announces it, so it runs again. Make such
+    callbacks idempotent if you intend to restore across a shutdown.
+
+    Cannot be constructed directly from Python.
+    """
+
+    @property
+    def dump(self) -> bytes | None:
+        """Restorable session dump, or `None` when nothing had run yet or the server's dump failed."""
 
 @final
 class Monty:
@@ -642,13 +688,21 @@ class AsyncMonty:
 class AsyncMontyWebsocket:
     """
     Async context manager owning a pool of remote `monty` workers reached over a
-    WebSocket. The dialed peer is the server side — a relay that pairs this
-    connection with a child dialing in from the other end, or any server that
-    accepts the connection and bridges to a worker.
+    WebSocket. The intended peer is `monty-server` (the production server: one
+    `monty subprocess` child per connection, plus capacity/timeout policy and
+    graceful drain), but any server that accepts the connection and bridges to
+    a worker fits — a relay pairing it with a child that dialed in from the
+    other end, or the dev relay `scripts/websocket_relay.py`.
 
     Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
     dials the configured URL. There is no sync counterpart — remote turns are
     network-bound. `checkout()` yields the same `AsyncMontySession`.
+
+    A `monty-server` enforces its own policy on top of the pool's. On SIGTERM
+    drain it answers the session's next request with `MontyShutdown`, whose
+    `dump` restores the session onto another server; every other server-side
+    drop (idle, session or turn timeout, capacity) closes the connection and
+    raises `MontyDisconnectError`.
 
     ```python
     async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:

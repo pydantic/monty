@@ -12,6 +12,7 @@ use super::JsonStringCache;
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::VM,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     heap::{ContainsHeap, DropGuard, HeapData, HeapReader},
     types::{
@@ -71,9 +72,8 @@ const JSON_RECURSION_LIMIT: usize = 200;
 /// and will raise `TypeError` if passed.
 pub(super) fn call_loads(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let JsonLoadsArgs { s } = JsonLoadsArgs::from_args(args, vm)?;
-    let mut data_guard = DropGuard::new(s, vm);
-    let (data, vm) = data_guard.as_parts_mut();
-    parse_json_input(data, vm)
+    defer_drop_mut!(s, vm);
+    parse_json_input(s, vm)
 }
 
 /// Argument shape for `json.loads(s)`.

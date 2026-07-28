@@ -126,17 +126,14 @@ impl<'h> HeapRead<'h, Dataclass> {
     /// Returns `FrozenInstanceError` if the dataclass is frozen.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
-            // Build the error message from the field name's repr (a heap `str`
-            // `Value`), dropping that temporary before dropping our own args.
+            defer_drop!(name, vm);
+            value.drop_with(vm);
             let name_repr = name.py_repr(vm)?;
             defer_drop!(name_repr, vm);
             let exc = SimpleException::new_msg(
                 ExcType::FrozenInstanceError,
                 format!("cannot assign to field {}", name_repr.to_str(vm)?),
             );
-            // Drop the values we were given ownership of
-            name.drop_with(vm);
-            value.drop_with(vm);
             return Err(exc.into());
         }
         self.attrs_mut().set(name, value, vm)

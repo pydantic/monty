@@ -440,10 +440,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
             return Ok(Some(false));
         };
-        let mut key_guard = DropGuard::new(key, vm);
-        let (key, vm) = key_guard.as_parts_mut();
-        let mut value_guard = DropGuard::new(value, vm);
-        let (value, vm) = value_guard.as_parts_mut();
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
             panic!("dict_items view must reference a dict");
         };
@@ -843,8 +841,7 @@ fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> 
 /// including one-shot iterator objects. Reusing the same collection path keeps
 /// binary operators and `isdisjoint(...)` consistent with each other.
 pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<Set, RunError> {
-    let mut value_guard = DropGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts();
+    defer_drop!(value, vm);
     let iter = value.py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);

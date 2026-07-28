@@ -25,7 +25,7 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 fn dump_header_rejects_incompatible_data() {
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let bytes = runner.dump().unwrap();
-    assert_eq!(&bytes[..9], b"MONTY\0\x01\x00\x00");
+    assert_eq!(&bytes[..9], b"MONTY\0\x02\x00\x00");
 
     let legacy = postcard::to_allocvec(&runner).unwrap();
     assert_eq!(
@@ -34,7 +34,7 @@ fn dump_header_rejects_incompatible_data() {
     );
 
     let mut wrong_version = bytes.clone();
-    wrong_version[6] = 2;
+    wrong_version[6] = 1;
     assert_eq!(
         MontyRun::load(&wrong_version).unwrap_err(),
         postcard::Error::DeserializeBadEncoding
@@ -244,6 +244,54 @@ fn run_progress_dump_load_multiple_calls() {
     // Resume second call to completion
     let result = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
+}
+
+/// Live `itertools` iterators on the heap survive a dump/load with their state
+/// intact — the only coverage that carries `HeapData::Itertools` through
+/// postcard, since a `MontyRun` dump holds compiled code and no heap at all.
+#[test]
+fn run_progress_dump_load_preserves_itertools_iterators() {
+    let code = r"
+import itertools
+
+c = itertools.count(10, 2)
+r = itertools.repeat('x', 3)
+next(c)
+next(r)
+ext_fn(0)
+[next(c), next(r), repr(c), repr(r)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with both iterators partly consumed and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let bytes = progress.dump().unwrap();
+
+    // Both adaptors kept their position: the count carries `current`/`step`,
+    // the repeat carries its object and remaining count.
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(12),
+        MontyObject::String("x".to_owned()),
+        MontyObject::String("count(14, 2)".to_owned()),
+        MontyObject::String("repeat('x', 1)".to_owned()),
+    ]);
+
+    // Both are resumed: an unresumed `RunProgress` leaves its globals' refs
+    // unreleased, aborting under `memory-model-checks`. Pre-existing and not
+    // itertools-specific (a plain `x = [1, 2]` global does it too).
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
 }
 
 #[test]

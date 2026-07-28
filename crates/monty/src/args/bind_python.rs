@@ -272,10 +272,8 @@ impl Signature {
         let keyword_args = keyword_args.into_iter();
         defer_drop_mut!(keyword_args, vm);
 
-        // Extract interns before guards since DropGuard borrows the full VM mutably
-        // but we only need mutable access to the heap portion.
-        let mut pos_iter_guard = DropGuard::new(pos_iter, vm);
-        let (pos_iter, vm) = pos_iter_guard.as_parts_mut();
+        // Keep unconsumed positional values guarded throughout binding.
+        defer_drop_mut!(pos_iter, vm);
 
         // Calculate how many positional params we have
         let pos_param_count = self.pos_arg_count();
