@@ -205,6 +205,10 @@ update-typeshed: ## Update vendored typeshed from upstream
 	uv run ruff format
 	uv run ruff check --fix --fix-only --silent
 
+.PHONY: check-typeshed
+check-typeshed: ## Check vendored typeshed stubs are in sync with upstream
+	uv run crates/monty-typeshed/check.py
+
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main

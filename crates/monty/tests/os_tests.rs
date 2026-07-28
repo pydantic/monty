@@ -693,6 +693,49 @@ fn os_unsupported_kwargs() {
     }
 }
 
+/// `bytes` paths and integer fds are the kinds CPython accepts and Monty
+/// never will, so the converter drops them from its accepted-types phrase
+/// rather than listing the type it just rejected. CPython accepts these
+/// calls, so they cannot dual-run in test_cases (see limitations/os.md).
+#[test]
+fn os_unsupported_path_kinds() {
+    let cases = [
+        (
+            "import os\nos.listdir(b'/x')",
+            "TypeError: listdir: path should be string, os.PathLike or None, not bytes",
+        ),
+        (
+            "import os\nos.listdir(1)",
+            "TypeError: listdir: path should be string, os.PathLike or None, not int",
+        ),
+        (
+            "import os\nos.stat(b'/x')",
+            "TypeError: stat: path should be string or os.PathLike, not bytes",
+        ),
+        (
+            "import os\nos.stat(1)",
+            "TypeError: stat: path should be string or os.PathLike, not int",
+        ),
+        (
+            "import os\nos.mkdir(b'/x')",
+            "TypeError: mkdir: path should be string or os.PathLike, not bytes",
+        ),
+        (
+            "import os\nos.rename('/a', b'/b')",
+            "TypeError: rename: dst should be string or os.PathLike, not bytes",
+        ),
+        // `os.remove` has no fd support in CPython either, so an int keeps the
+        // verbatim converter wording — it never listed `integer` to begin with.
+        (
+            "import os\nos.remove(1)",
+            "TypeError: remove: path should be string, bytes or os.PathLike, not int",
+        ),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(run_to_error(code), expected, "code: {code}");
+    }
+}
+
 #[test]
 fn os_listdir_rejected_in_sync_context_leaves_no_stale_effect() {
     // Regression: `map()` evaluates its function in a synchronous context

@@ -332,14 +332,20 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
     /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
     ///
+    /// Both C parsers insert `keyword ` before `argument` when the call passed
+    /// no positionals at all (`nargs == 0` in `vgetargskeywords` /
+    /// `vgetargskeywordsfast_impl`), so pass `all_keyword` accordingly:
+    /// `fspath() takes at most 1 keyword argument (2 given)`.
+    ///
     /// Use this instead of `type_error_at_most` for methods and type constructors that
     /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
     #[must_use]
-    fn type_error_method_at_most(name: &str, max: usize, actual: usize) -> RunError {
+    fn type_error_method_at_most(name: &str, max: usize, actual: usize, all_keyword: bool) -> RunError {
+        let kind = if all_keyword { "keyword " } else { "" };
         let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+            format!("{name}() takes at most {max} {kind}argument{plural} ({actual} given)"),
         )
         .into()
     }

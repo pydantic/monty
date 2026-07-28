@@ -143,7 +143,7 @@ fn bind_slow<const N: usize>(
         return Err(ExcType::type_error_at_most(spec.func_name, spec.n_positional, n_pos));
     }
     if spec.at_most_total && n_pos + n_kw > spec.n_positional {
-        return Err(total_overflow_error(spec, n_pos + n_kw));
+        return Err(total_overflow_error(spec, n_pos, n_kw));
     }
     if spec.uses_c_method_arity() && n_pos < spec.n_required_pos_only {
         return Err(ExcType::type_error_at_least_positional(
@@ -624,15 +624,19 @@ fn unpack_arity_error(spec: &ParamSpec, n_pos: usize) -> Option<RunError> {
 
 /// `at_most_total` pre-count error: `PyArg_ParseTupleAndKeywords`' total-count
 /// wording for the C families, the parenthesised method form otherwise.
+///
+/// The named families pivot to `keyword argument` when the call passed no
+/// positionals — the only overflow site that can see `n_pos == 0`.
 #[cold]
-fn total_overflow_error(spec: &ParamSpec, total: usize) -> RunError {
+fn total_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> RunError {
+    let total = n_pos + n_kw;
     match spec.family {
         ErrorFamily::C {
             positional_pivot: false,
         } => ExcType::type_error_c_at_most(spec.n_positional, total),
         ErrorFamily::C { positional_pivot: true } => ExcType::type_error_c_at_most_positional(spec.n_positional, total),
         // Clinic / CNamed (`def`/`unpack` reject the flag at derive time).
-        _ => ExcType::type_error_method_at_most(spec.func_name, spec.n_positional, total),
+        _ => ExcType::type_error_method_at_most(spec.func_name, spec.n_positional, total, n_pos == 0),
     }
 }
 
@@ -647,7 +651,7 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         // Unreachable: `def` defers, the unpack pre-check already covered both
         // directions. Match unpack's wording anyway rather than panicking.
         ErrorFamily::Def | ErrorFamily::Unpack => ExcType::type_error_at_most(spec.func_name, max, n_pos),
-        _ if spec.uses_c_method_arity() => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
+        _ if spec.uses_c_method_arity() => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw, false),
         ErrorFamily::C {
             positional_pivot: false,
         } => ExcType::type_error_c_at_most(max, n_pos + n_kw),
@@ -658,7 +662,7 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         }
         ErrorFamily::CNamed {
             positional_pivot: false,
-        } => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw),
+        } => ExcType::type_error_method_at_most(spec.func_name, max, n_pos + n_kw, false),
         // Same pivot as `C`, but named: `_PyArg_UnpackKeywords` says "exactly"
         // when every positional param is required (`os.stat`), "at most" when
         // some have defaults (`os.mkdir`), and falls back to the total-count
@@ -669,7 +673,7 @@ fn positional_overflow_error(spec: &ParamSpec, n_pos: usize, n_kw: usize) -> Run
         ErrorFamily::CNamed { positional_pivot: true } => {
             let total = n_pos + n_kw;
             if total > spec.params.len() {
-                ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total)
+                ExcType::type_error_method_at_most(spec.func_name, spec.params.len(), total, false)
             } else {
                 let exact = spec.n_required_positional == spec.n_positional;
                 ExcType::type_error_named_positional(spec.func_name, max, n_pos, exact)

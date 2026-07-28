@@ -146,6 +146,28 @@ try:
 except TypeError as e:
     assert str(e) == 'groupdict() takes at most 1 argument (2 given)', f'py-atmost-total-3: {e}'
 
+# === at_most_total: the all-keyword pivot ===
+# Both C parsers say "keyword argument" when the call passed no positionals
+# at all (the `nargs == 0` branch in vgetargskeywords /
+# vgetargskeywordsfast_impl); one positional is enough to drop it again.
+try:
+    'hello'.expandtabs(tabsize=8, bogus=1)
+    assert False, 'expandtabs all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'expandtabs() takes at most 1 keyword argument (2 given)', f'py-atmost-kw-1: {e}'
+
+try:
+    round(number=1, ndigits=2, bogus=3)
+    assert False, 'round all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'round() takes at most 2 keyword arguments (3 given)', f'named-atmost-kw: {e}'
+
+try:
+    int(x='1', base=10, bogus=2)
+    assert False, 'int all-keyword overflow should raise'
+except TypeError as e:
+    assert str(e) == 'int() takes at most 2 keyword arguments (3 given)', f'vectorcall-atmost-kw: {e}'
+
 # === Python: sorted() positional-arity wording (PyArg_UnpackTuple style) ===
 # `builtin_sorted` manually checks the positional iterator length and
 # emits CPython's `"sorted expected N argument(s), got M"` wording before

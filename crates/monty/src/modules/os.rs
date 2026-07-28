@@ -171,13 +171,7 @@ fn listdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     let path = if matches!(path, Value::None) {
         MontyPath::from(".")
     } else {
-        extract_os_path(
-            path,
-            "listdir",
-            "path",
-            "string, bytes, os.PathLike, integer or None",
-            vm,
-        )?
+        extract_os_path(path, "listdir", "path", PathAccepts::FdOrNone, vm)?
     };
     Ok(CallResult::OsCallWithEffect {
         call: OsFunctionCall::Iterdir(path),
@@ -208,7 +202,7 @@ fn stat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     } = StatArgs::from_args(args, vm)?;
     defer_drop!(path, vm);
     defer_drop!(dir_fd, vm);
-    let path = extract_os_path(path, "stat", "path", "string, bytes, os.PathLike or integer", vm)?;
+    let path = extract_os_path(path, "stat", "path", PathAccepts::Fd, vm)?;
     check_dir_fd(dir_fd, vm)?;
     if follow_symlinks.bool() {
         Ok(CallResult::OsCall(OsFunctionCall::Stat(path)))
@@ -236,7 +230,7 @@ fn mkdir(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
     defer_drop!(path, vm);
     defer_drop!(mode, vm);
     defer_drop!(dir_fd, vm);
-    let path = extract_os_path(path, "mkdir", "path", "string, bytes or os.PathLike", vm)?;
+    let path = extract_os_path(path, "mkdir", "path", PathAccepts::NoFd, vm)?;
     check_mode(mode, vm)?;
     check_dir_fd(dir_fd, vm)?;
     Ok(CallResult::OsCall(OsFunctionCall::Mkdir(MkdirCallArgs {
@@ -319,7 +313,7 @@ fn single_path_call(
 ) -> RunResult<CallResult> {
     defer_drop!(path, vm);
     defer_drop!(dir_fd, vm);
-    let path = extract_os_path(path, func, "path", "string, bytes or os.PathLike", vm)?;
+    let path = extract_os_path(path, func, "path", PathAccepts::NoFd, vm)?;
     check_dir_fd(dir_fd, vm)?;
     Ok(CallResult::OsCall(make_call(path)))
 }
@@ -402,8 +396,8 @@ fn rename_like(
     defer_drop!(dst, vm);
     defer_drop!(src_dir_fd, vm);
     defer_drop!(dst_dir_fd, vm);
-    let src = extract_os_path(src, func, "src", "string, bytes or os.PathLike", vm)?;
-    let dst = extract_os_path(dst, func, "dst", "string, bytes or os.PathLike", vm)?;
+    let src = extract_os_path(src, func, "src", PathAccepts::NoFd, vm)?;
+    let dst = extract_os_path(dst, func, "dst", PathAccepts::NoFd, vm)?;
     // Non-short-circuiting `|`: both fds are type-checked before either is
     // rejected as unsupported, matching CPython's converter ordering.
     if dir_fd_specified(src_dir_fd, vm)? | dir_fd_specified(dst_dir_fd, vm)? {
@@ -442,18 +436,54 @@ fn fspath(vm: &mut VM<'_>, args: ArgValues) -> RunResult<CallResult> {
 
 /// Extracts a virtual path from a `str`/`Path` value for an os function,
 /// raising the `path_t` converter TypeError
-/// (`{func}: {arg} should be {accepted}, not {type}`) for anything else —
-/// including `bytes` and fds, which CPython accepts but Monty does not.
+/// (`{func}: {arg} should be {accepted}, not {type}`) for anything else.
 fn extract_os_path(
     value: &Value,
     func: &'static str,
     arg: &'static str,
-    accepted: &'static str,
+    accepts: PathAccepts,
     vm: &VM<'_>,
 ) -> RunResult<MontyPath> {
     extract_path(value, vm, |type_name| {
-        ExcType::type_error_os_path(func, arg, accepted, type_name)
+        ExcType::type_error_os_path(func, arg, accepts.phrase_for(value, vm), type_name)
     })
+}
+
+/// Which `path_t` converter kinds an `os` function accepts in CPython.
+///
+/// Drives the accepted-types phrase in the converter TypeError. Monty takes
+/// only `str`/`Path`, so the phrase has two forms: CPython's verbatim (so
+/// types CPython also rejects get a byte-identical message) and a narrowed
+/// one used when the rejected value is a kind CPython *would* have taken —
+/// otherwise the error would list the very type it just refused.
+#[derive(Clone, Copy)]
+enum PathAccepts {
+    /// `path_t(allow_fd=False)` — `mkdir`, `remove`, `unlink`, `rmdir`, `rename`.
+    NoFd,
+    /// `path_t(allow_fd=True)` — `stat`.
+    Fd,
+    /// `path_t(nullable=True, allow_fd=True)` — `listdir`.
+    FdOrNone,
+}
+
+impl PathAccepts {
+    /// The accepted-types phrase for a value this converter is rejecting.
+    fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
+        // `bytes` paths and integer fds are the kinds CPython takes and Monty
+        // never will; everything else keeps CPython's wording exactly.
+        let refused = match value.py_type_heap(vm.heap) {
+            Type::Bytes => true,
+            Type::Int => matches!(self, Self::Fd | Self::FdOrNone),
+            _ => false,
+        };
+        match (self, refused) {
+            (Self::NoFd, false) => "string, bytes or os.PathLike",
+            (Self::Fd, false) => "string, bytes, os.PathLike or integer",
+            (Self::FdOrNone, false) => "string, bytes, os.PathLike, integer or None",
+            (Self::NoFd | Self::Fd, true) => "string or os.PathLike",
+            (Self::FdOrNone, true) => "string, os.PathLike or None",
+        }
+    }
 }
 
 /// Core `str`/`Path` → [`MontyPath`] extraction; `type_error` supplies the

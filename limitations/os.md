@@ -26,11 +26,16 @@ whether each call is permitted.
 
 ## Divergences from CPython
 
-- **No file descriptors.** Paths must be `str` or `pathlib.Path`. `bytes`
-  paths and integer fds raise the path-converter `TypeError` (whose wording
-  still lists `bytes`/`integer` for message parity with CPython). The
-  `os.listdir` wording always includes `integer` — POSIX CPython's phrasing —
-  even though Windows CPython omits it (no fd-based listdir there).
+- **No file descriptors, no `bytes` paths.** Paths must be `str` or
+  `pathlib.Path`. `bytes` paths and integer fds — which CPython accepts —
+  raise the path-converter `TypeError` with the accepted-types phrase
+  narrowed to what Monty takes, e.g.
+  `stat: path should be string or os.PathLike, not bytes`. For every other
+  rejected type the phrase is CPython's verbatim, so `os.stat(1.5)` still
+  says `should be string, bytes, os.PathLike or integer`. (Note `open()`
+  *does* accept `bytes` paths, decoding them as UTF-8; the `os` functions do
+  not.) The `os.listdir` wording always includes `integer` — POSIX CPython's
+  phrasing — even though Windows CPython omits it (no fd-based listdir there).
 - **No `__fspath__` protocol.** `os.fspath` (and every path-taking function)
   accepts only `str`, `bytes` (fspath only), and `pathlib.Path` — a
   user-defined class implementing `__fspath__` raises `TypeError` instead of
@@ -40,9 +45,18 @@ whether each call is permitted.
   `NotImplementedError` CPython uses on platforms without them
   (`dir_fd unavailable on this platform`). Non-int values raise the
   converter `TypeError` (`argument should be integer or None, not str`).
-- **`os.stat(..., follow_symlinks=False)`** raises
+- **`os.stat(..., follow_symlinks=...)`** raises
   `NotImplementedError: stat: follow_symlinks unavailable on this platform`
-  — there is no `lstat` behavior. `os.lstat` itself is not implemented.
+  for any *falsy* value — CPython truth-tests the argument, so `False`,
+  `None` and `0` all mean "lstat", which Monty has no behavior for.
+  `os.lstat` itself is not implemented.
+- **All-keyword calls that overflow the signature** are not always reported
+  the way CPython reports them. `os.fspath(path='a', foo=1)` and
+  `os.listdir(path='.', foo=1)` match (`takes at most 1 keyword argument
+  (2 given)`), but functions with keyword-only slots — `os.stat`, `os.mkdir`,
+  `os.remove`, `os.rmdir`, `os.rename` — report the first unknown keyword
+  (`stat() got an unexpected keyword argument 'foo'`) where CPython reports
+  the arity (`stat() takes at most 3 keyword arguments (4 given)`).
 - **No working directory.** `os.listdir()`'s default `'.'` (or any relative
   path) reaches the host unchanged; a mount table matches no mount and
   raises `PermissionError`.

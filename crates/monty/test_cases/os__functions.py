@@ -48,6 +48,12 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == 'fspath() takes at most 1 argument (2 given)'
+try:
+    # no positionals at all pivots the wording to "keyword argument"
+    os.fspath(path='a', foo=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'fspath() takes at most 1 keyword argument (2 given)'
 
 # === listdir argument errors ===
 try:
@@ -75,6 +81,11 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "listdir() got an unexpected keyword argument 'foo'"
+try:
+    os.listdir(path='.', foo=1)
+    assert False, 'expected TypeError'
+except TypeError as e:
+    assert str(e) == 'listdir() takes at most 1 keyword argument (2 given)'
 
 # === stat argument errors ===
 try:
