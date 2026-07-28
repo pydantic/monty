@@ -1,0 +1,21 @@
+crates/monty-pool/src/pool.rs
+  s_2fc6787e4d2e49::t_c87d3009685d4c 171
+crates/monty-runtime/src/telemetry.rs
+  s_2fc6787e4d2e49::t_07d6c560a557b7 259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "aeaa2074b35bbe4a89e240544c596953ef17d8a7",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6787e4d2e49": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "332cc9b9-df1e-44ad-ac16-ca7ed0678905",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}

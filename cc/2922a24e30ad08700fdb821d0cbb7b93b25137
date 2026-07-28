@@ -1,0 +1,19 @@
+crates/monty-runtime/src/telemetry.rs
+  s_2fc6787e4d2e49::t_07d6c560a557b7 276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cc2922a24e30ad08700fdb821d0cbb7b93b25137",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6787e4d2e49": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "332cc9b9-df1e-44ad-ac16-ca7ed0678905",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
