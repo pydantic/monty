@@ -58,8 +58,9 @@ pub(crate) fn checked_preallocation_hint(
     elem_size: usize,
     tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
+    let hint = hint.min(MAX_PREALLOCATION_HINT);
     check_estimated_size(hint.saturating_mul(elem_size), tracker)?;
-    Ok(hint.min(MAX_PREALLOCATION_HINT))
+    Ok(hint)
 }
 
 /// Adapts a retained Python iterator to Rust's `Iterator` with memory checks.
