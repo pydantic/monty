@@ -314,14 +314,14 @@ pub(crate) fn write_dataclass_repr<'h>(
             }
             f.write_str(", ")?;
         }
+        // Guarded before anything is written, so a formatter error on the name
+        // cannot strand the value the callback just cloned.
         let (field_name, value) = field(i, &mut *vm)?;
+        defer_drop!(value, vm);
         f.write_str(&field_name)?;
         f.write_char('=')?;
         match value {
-            Some(value) => {
-                defer_drop!(value, vm);
-                value.py_repr_fmt(f, vm, heap_ids)?;
-            }
+            Some(value) => value.py_repr_fmt(f, vm, heap_ids)?,
             None => f.write_str("<?>")?,
         }
     }

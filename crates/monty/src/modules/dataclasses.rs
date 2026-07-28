@@ -329,15 +329,16 @@ fn store_bound_fields(
     values: Vec<Value>,
 ) -> Result<(), RunError> {
     defer_drop_mut!(values, vm);
+    // Read once: the handle outlives the loop, so each field costs a `set_attr`
+    // and nothing more. A non-instance is unreachable (the caller just allocated
+    // it) but leaves the values to the guard rather than asserting.
+    let HeapReadOutput::Instance(mut instance) = vm.heap.read(instance_id) else {
+        return Ok(());
+    };
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(fields[i].0);
-        let replaced = if let HeapReadOutput::Instance(mut instance) = vm.heap.read(instance_id) {
-            instance.set_attr(name, value, vm)?
-        } else {
-            value.drop_with(vm);
-            None
-        };
+        let replaced = instance.set_attr(name, value, vm)?;
         replaced.drop_with(vm);
     }
     Ok(())
