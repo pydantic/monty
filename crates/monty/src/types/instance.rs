@@ -371,29 +371,20 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
-    // 1-2. Instance dict, then the class namespace (binding a method).
     if let Some(value) = instance_attr(self_id, attr_str, vm)? {
         Ok(CallResult::Value(value))
     } else {
         let class_id = instance_class(self_id, vm);
-        if attr_str == "__class__" {
-            // 3. `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
-            // Checked after the dict/namespace lookups so an explicit member of the
-            // same name wins, mirroring the `__name__` handling on class objects.
-            vm.heap.inc_ref(class_id);
-            Ok(CallResult::Value(Value::Ref(class_id)))
-        } else {
-            Err(ExcType::attribute_error(
-                class_name(class_id, vm.heap, vm.interns),
-                attr_str,
-            ))
-        }
+        Err(ExcType::attribute_error(
+            class_name(class_id, vm.heap, vm.interns),
+            attr_str,
+        ))
     }
 }
 
-/// The instance-dict-then-class-namespace half of [`instance_getattr`]: `None`
-/// when neither binds `attr`, leaving the `__class__` case and the
-/// `AttributeError` to the caller.
+/// The lookup half of [`instance_getattr`]: the instance `__dict__`, then the
+/// class namespace, then the `__class__` special case; `None` when nothing binds
+/// `attr`, leaving the `AttributeError` to the caller.
 ///
 /// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
 /// exactly as `self.field` does, binding a function-valued class member as a
@@ -419,7 +410,15 @@ pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> Run
             };
             Ok(Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))?)))
         }
-        member => Ok(member),
+        Some(member) => Ok(Some(member)),
+        // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
+        // Last, so an explicit member of the same name wins, mirroring the
+        // `__name__` handling on class objects.
+        None if attr == "__class__" => {
+            vm.heap.inc_ref(class_id);
+            Ok(Some(Value::Ref(class_id)))
+        }
+        None => Ok(None),
     }
 }
 

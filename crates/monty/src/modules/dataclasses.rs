@@ -15,9 +15,9 @@ use monty_types::ResourceError;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropWithContext, HeapData, HeapId, HeapReadOutput, HeapReader},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput, HeapReader},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
@@ -77,36 +77,15 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         ));
     }
     let cls = args.get_one_arg("dataclass", vm.heap)?;
-    // Match by reference so `cls` is not consumed — its reference is returned
-    // intact on the happy path (the decorator returns the same class object).
-    let class_id = match &cls {
+    // The decorator returns the class it was given, so `cls` is only released
+    // when something below rejects it — which the guard handles on every path.
+    let mut guard = DropGuard::new(cls, vm);
+    let (cls, vm) = guard.as_parts();
+    let class_id = match cls {
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => *id,
-        _ => {
-            let type_name = cls.py_type_name(vm);
-            cls.drop_with(vm);
-            return Err(SimpleException::new_msg(
-                ExcType::TypeError,
-                format!("dataclass() should be called on a class, not '{type_name}'"),
-            )
-            .into());
-        }
+        _ => return Err(non_class_error(cls, vm)),
     };
-    // Extract fields from `__annotations__`, then record the metadata. On a
-    // rejected class body the decorator's own reference must not leak.
-    let meta = match build_dataclass_meta(vm, class_id) {
-        Ok(meta) => meta,
-        Err(err) => {
-            cls.drop_with(vm);
-            return Err(err);
-        }
-    };
-    // Decoration grows the `Class` in place, after its allocation-time size was
-    // taken, so the metadata has to be charged explicitly.
-    if let Err(err) = vm.heap.track_growth(meta.estimate_size()) {
-        drop_captured_defaults(meta, vm);
-        cls.drop_with(vm);
-        return Err(err.into());
-    }
+    let meta = build_dataclass_meta(vm, class_id)?;
     let replaced = HeapReader::with(vm.heap, &mut (), |heap, ()| match heap.read(class_id) {
         HeapReadOutput::Class(mut class) => class.get_mut(heap).set_dataclass_meta(meta),
         _ => None,
@@ -114,19 +93,19 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Re-decorating discards the earlier metadata, which nothing else owns.
     if let Some(replaced) = replaced {
         vm.heap.track_shrink(replaced.estimate_size());
-        drop_captured_defaults(replaced, vm);
+        replaced.drop_with(vm);
     }
-    Ok(cls)
+    Ok(guard.into_inner())
 }
 
-/// Releases every default a [`DataclassMeta`] captured, for metadata that is
-/// being discarded rather than stored on a class.
-fn drop_captured_defaults(meta: DataclassMeta, vm: &mut VM<'_>) {
-    for field in meta.fields {
-        if let Some(default) = field.default {
-            default.drop_with(vm);
-        }
-    }
+/// `dataclass()` applied to something that is not a class.
+fn non_class_error(cls: &Value, vm: &VM<'_>) -> RunError {
+    let type_name = cls.py_type_name(vm);
+    SimpleException::new_msg(
+        ExcType::TypeError,
+        format!("dataclass() should be called on a class, not '{type_name}'"),
+    )
+    .into()
 }
 
 /// Builds [`DataclassMeta`] for `class_id` from its `__annotations__`: the
@@ -135,20 +114,22 @@ fn drop_captured_defaults(meta: DataclassMeta, vm: &mut VM<'_>) {
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
-/// (see `limitations/dataclasses.md`).
+/// (see `limitations/dataclasses.md`). The metadata is guarded throughout, so a
+/// rejection releases the defaults it had already captured.
 fn build_dataclass_meta(vm: &mut VM<'_>, class_id: HeapId) -> RunResult<DataclassMeta> {
+    let meta = DataclassMeta {
+        fields: collect_annotated_fields(vm, class_id),
+    };
+    let mut guard = DropGuard::new(meta, vm);
+    let (meta, vm) = guard.as_parts();
     // Field validation runs first, so a class CPython would reject reports
     // CPython's own message and the Monty-only guards can only fire after.
-    let fields = collect_annotated_fields(vm, class_id);
-    // `fields` owns a reference per captured default: release them if rejected.
-    let meta = DataclassMeta { fields };
-    match validate_fields(vm, &meta.fields).and_then(|()| reject_unsupported_members(vm, class_id)) {
-        Ok(()) => Ok(meta),
-        Err(e) => {
-            drop_captured_defaults(meta, vm);
-            Err(e)
-        }
-    }
+    validate_fields(vm, &meta.fields)?;
+    reject_unsupported_members(vm, class_id)?;
+    // Decoration grows the `Class` in place, after its allocation-time size was
+    // taken, so the metadata has to be charged explicitly.
+    vm.heap.track_growth(meta.estimate_size())?;
+    Ok(guard.into_inner())
 }
 
 /// Class-body members Monty does not dispatch, paired with what ignoring them
@@ -173,7 +154,7 @@ fn reject_unsupported_members(vm: &VM<'_>, class_id: HeapId) -> RunResult<()> {
 /// dropping `ClassVar` entries.
 ///
 /// Each captured default is an owned reference from here on, so a caller that
-/// discards the result must release them ([`drop_captured_defaults`]).
+/// discards the result must release them (`DataclassMeta`'s `drop_with`).
 fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return Vec::new();
@@ -329,45 +310,43 @@ pub(crate) fn dataclass_init(
         _ => unreachable!("dataclass_init called on a non-class"),
     };
 
-    let values = match bind_dataclass_fields(vm, class_id, &fields, args) {
-        Ok(values) => values,
-        Err(e) => {
-            Value::Ref(instance_id).drop_with(vm);
-            return Err(e);
-        }
-    };
+    // The instance is owned from here: the guard releases it if binding or
+    // storing fails, and hands it back to the caller when they succeed.
+    let mut guard = DropGuard::new(Value::Ref(instance_id), vm);
+    let vm = guard.ctx();
+    let values = bind_dataclass_fields(vm, class_id, &fields, args)?;
+    store_bound_fields(vm, instance_id, &fields, values)?;
+    Ok(CallResult::Value(guard.into_inner()))
+}
 
-    // Store each bound value on the instance `__dict__`. On the rare set
-    // failure (resource limit) drop the untouched tail and the instance.
-    let mut values = values;
+/// Stores one bound value per field on the instance `__dict__`, consuming
+/// `values`. A set failure (a resource limit) leaves the untouched tail to the
+/// guard; the caller owns the instance.
+fn store_bound_fields(
+    vm: &mut VM<'_>,
+    instance_id: HeapId,
+    fields: &[(StringId, bool)],
+    values: Vec<Value>,
+) -> Result<(), RunError> {
+    defer_drop_mut!(values, vm);
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(fields[i].0);
-        let set_result = if let HeapReadOutput::Instance(mut instance) = vm.heap.read(instance_id) {
-            instance.set_attr(name, value, vm)
+        let replaced = if let HeapReadOutput::Instance(mut instance) = vm.heap.read(instance_id) {
+            instance.set_attr(name, value, vm)?
         } else {
             value.drop_with(vm);
-            Ok(None)
+            None
         };
-        match set_result {
-            Ok(old) => old.drop_with(vm),
-            Err(e) => {
-                for v in values.drain(i + 1..) {
-                    v.drop_with(vm);
-                }
-                Value::Ref(instance_id).drop_with(vm);
-                return Err(e);
-            }
-        }
+        replaced.drop_with(vm);
     }
-
-    Ok(CallResult::Value(Value::Ref(instance_id)))
+    Ok(())
 }
 
 /// Binds `args` to one value per dataclass field, in field order.
 ///
-/// The first error is recorded and the remaining arguments still drained, so no
-/// path leaks a refcount. The instance is untouched; the caller owns it.
+/// Bound arguments are guarded, so an error on any path releases them and the
+/// unbound ones alike. The instance is untouched; the caller owns it.
 ///
 /// TODO(dataclass-keywords): a third binder alongside `args::bind_native` and
 /// `args::bind_python`, all three reproducing CPython's error wording and able
@@ -382,54 +361,41 @@ fn bind_dataclass_fields(
 ) -> Result<Vec<Value>, RunError> {
     let n_fields = fields.len();
     let init_name = format!("{}.__init__", class_name(class_id, vm.heap, vm.interns));
-
     let (pos_iter, kwargs) = args.into_parts();
-    let positionals: Vec<Value> = pos_iter.collect();
-    let n_pos = positionals.len();
 
-    // Materialize keyword pairs (name string + value); drop the key `Value`s.
-    // A non-string key outranks every arity error below — CPython raises it from
-    // the call machinery — but the mapping is drained first so nothing leaks.
-    let mut keywords: Vec<(String, Value)> = Vec::with_capacity(kwargs.len());
+    // Every bound argument lands in `values`, guarded so each error below is a
+    // plain `?` — nothing else holds an owned reference across them.
+    let values: Vec<Option<Value>> = (0..n_fields).map(|_| None).collect();
+    let mut guard = DropGuard::new(values, vm);
+    let (values, vm) = guard.as_parts_mut();
+
+    // Positionals fill the leftmost slots; one beyond the last field is dropped
+    // here and only counted, since CPython binds keywords first: `P(1, 2, 3,
+    // y=4)` is "multiple values for argument 'y'", not an arity error.
+    let mut n_pos = 0;
+    for (slot, value) in pos_iter.enumerate() {
+        n_pos += 1;
+        match values.get_mut(slot) {
+            Some(unbound) => *unbound = Some(value),
+            None => value.drop_with(vm),
+        }
+    }
+
+    // Keywords fill by name. The mapping is drained whatever happens, because a
+    // non-string key outranks every error here — CPython raises it from the call
+    // machinery, before the callee binds anything — so it cannot be reported
+    // until every key has been seen.
     let mut nonstring_key = false;
+    let mut kw_error: Option<RunError> = None;
     for (key, value) in kwargs {
-        if let Some(name) = key.as_either_str(vm.heap) {
-            let name = name.as_str(vm.interns).to_owned();
-            key.drop_with(vm);
-            keywords.push((name, value));
-        } else {
-            key.drop_with(vm);
-            value.drop_with(vm);
+        let Some(name) = key.as_either_str(vm.heap).map(|s| s.as_str(vm.interns).to_owned()) else {
+            (key, value).drop_with(vm);
             nonstring_key = true;
-        }
-    }
-
-    if nonstring_key {
-        for v in positionals {
-            v.drop_with(vm);
-        }
-        for (_, v) in keywords {
-            v.drop_with(vm);
-        }
-        return Err(ExcType::type_error_kwargs_nonstring_key());
-    }
-
-    // Positional arguments fill the leftmost slots; keywords fill by name. A
-    // positional beyond the last field is parked in `excess`, since CPython binds
-    // keywords first: `P(1, 2, 3, y=4)` is "multiple values for argument 'y'".
-    let mut values: Vec<Option<Value>> = (0..n_fields).map(|_| None).collect();
-    let mut excess: Vec<Value> = Vec::new();
-    for (slot, value) in positionals.into_iter().enumerate() {
-        if slot < n_fields {
-            values[slot] = Some(value);
-        } else {
-            excess.push(value);
-        }
-    }
-
-    let mut error: Option<RunError> = None;
-    for (name, value) in keywords {
-        if error.is_some() {
+            continue;
+        };
+        key.drop_with(vm);
+        // Past the first error the mapping is only drained, never bound.
+        if kw_error.is_some() {
             value.drop_with(vm);
             continue;
         }
@@ -437,20 +403,26 @@ fn bind_dataclass_fields(
             Some(idx) if values[idx].is_none() => values[idx] = Some(value),
             Some(_) => {
                 value.drop_with(vm);
-                error = Some(ExcType::type_error_duplicate_arg(&init_name, &name));
+                kw_error = Some(ExcType::type_error_duplicate_arg(&init_name, &name));
             }
             None => {
                 value.drop_with(vm);
-                error = Some(ExcType::type_error_unexpected_keyword(&init_name, &name));
+                kw_error = Some(ExcType::type_error_unexpected_keyword(&init_name, &name));
             }
         }
+    }
+    if nonstring_key {
+        return Err(ExcType::type_error_kwargs_nonstring_key());
+    }
+    if let Some(e) = kw_error {
+        return Err(e);
     }
 
     // Too many positionals (CPython counts `self`, so +1 each side), reported
     // only once keyword binding has had its say.
-    if error.is_none() && n_pos > n_fields {
+    if n_pos > n_fields {
         let required = fields.iter().filter(|(_, has_default)| !has_default).count();
-        error = Some(ExcType::type_error_too_many_positional_range(
+        return Err(ExcType::type_error_too_many_positional_range(
             &init_name,
             1 + required,
             1 + n_fields,
@@ -459,50 +431,41 @@ fn bind_dataclass_fields(
         ));
     }
 
-    // Fill unbound slots from the defaults captured at decoration time; collect
-    // names of missing fields.
-    if error.is_none() {
-        let mut missing: Vec<String> = Vec::new();
-        for (idx, (id, has_default)) in fields.iter().enumerate() {
-            if values[idx].is_some() {
-                continue;
-            }
-            if *has_default {
-                let name_str = vm.interns.get_str(*id);
-                let default = match vm.heap.get(class_id) {
-                    HeapData::Class(class) => class
-                        .dataclass_meta()
-                        .and_then(|meta| meta.fields.get(idx))
-                        .and_then(|field| field.default.as_ref())
-                        .map(|v| v.clone_with_heap(vm.heap)),
-                    _ => None,
-                };
-                match default {
-                    Some(v) => values[idx] = Some(v),
-                    None => missing.push(name_str.to_owned()),
-                }
-            } else {
-                missing.push(vm.interns.get_str(*id).to_owned());
-            }
+    // Unbound slots take the default captured at decoration time; a field with
+    // none is missing from the call.
+    let mut missing: Vec<String> = Vec::new();
+    for (idx, (id, _)) in fields.iter().enumerate() {
+        if values[idx].is_some() {
+            continue;
         }
-        if !missing.is_empty() {
-            let refs: Vec<&str> = missing.iter().map(String::as_str).collect();
-            error = Some(ExcType::type_error_missing_positional_with_names(&init_name, &refs));
+        match captured_default(vm, class_id, idx) {
+            Some(default) => values[idx] = Some(default),
+            None => missing.push(vm.interns.get_str(*id).to_owned()),
         }
+    }
+    if !missing.is_empty() {
+        let refs: Vec<&str> = missing.iter().map(String::as_str).collect();
+        return Err(ExcType::type_error_missing_positional_with_names(&init_name, &refs));
     }
 
-    // Excess positionals are never bound, so release them on every path.
-    for v in excess {
-        v.drop_with(vm);
-    }
+    Ok(guard
+        .into_inner()
+        .into_iter()
+        .map(|v| v.expect("all fields bound"))
+        .collect())
+}
 
-    if let Some(e) = error {
-        for v in values.into_iter().flatten() {
-            v.drop_with(vm);
-        }
-        return Err(e);
+/// A fresh reference to the default `@dataclass` captured for field `idx`, or
+/// `None` for a required field.
+fn captured_default(vm: &VM<'_>, class_id: HeapId, idx: usize) -> Option<Value> {
+    match vm.heap.get(class_id) {
+        HeapData::Class(class) => class
+            .dataclass_meta()
+            .and_then(|meta| meta.fields.get(idx))
+            .and_then(|field| field.default.as_ref())
+            .map(|v| v.clone_with_heap(vm.heap)),
+        _ => None,
     }
-    Ok(values.into_iter().map(|v| v.expect("all fields bound")).collect())
 }
 
 /// Field-wise `__eq__`: equal only to the *same* dataclass with equal fields.
@@ -529,32 +492,18 @@ pub(crate) fn dataclass_eq(
     }
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
+        // Each read is guarded before the next runs, so the second failing
+        // (binding a method allocates) cannot strand the first.
         let a = instance_attr(self_id, &field_name, vm)?;
-        // A failure here (binding a method can allocate) must not strand `a`.
-        let b = match instance_attr(other_id, &field_name, vm) {
-            Ok(b) => b,
-            Err(e) => {
-                a.drop_with(vm);
-                return Err(e);
-            }
-        };
+        defer_drop!(a, vm);
+        let b = instance_attr(other_id, &field_name, vm)?;
+        defer_drop!(b, vm);
         match (a, b) {
-            (Some(a), Some(b)) => {
-                defer_drop!(a, vm);
-                defer_drop!(b, vm);
-                if !a.py_eq_operator(b, vm)? {
-                    return Ok(Some(false));
-                }
-            }
-            (a, b) => {
-                // The generated `__eq__` reads each field as an attribute, so one
-                // that resolves nowhere raises rather than comparing unequal.
-                if let Some(a) = a {
-                    a.drop_with(vm);
-                }
-                if let Some(b) = b {
-                    b.drop_with(vm);
-                }
+            (Some(a), Some(b)) if !a.py_eq_operator(b, vm)? => return Ok(Some(false)),
+            (Some(_), Some(_)) => {}
+            // The generated `__eq__` reads each field as an attribute, so one
+            // that resolves nowhere raises rather than comparing unequal.
+            _ => {
                 let class_name = class_name(class_id, vm.heap, vm.interns).into_owned();
                 return Err(ExcType::attribute_error(&class_name, &field_name));
             }
@@ -575,28 +524,15 @@ pub(crate) fn dataclass_repr_fmt(
 ) -> RunResult<()> {
     let class_id = instance_class(self_id, vm);
     let name = class_name(class_id, vm.heap, vm.interns).to_string();
-    // The generated `__repr__` reads each field as an attribute, so one that
-    // resolves nowhere raises — resolved up front, before anything is written,
-    // so no partial repr is emitted.
-    let mut values: Vec<Value> = Vec::with_capacity(field_names.len());
-    for name_id in field_names {
-        let field_name = vm.interns.get_str(*name_id).to_owned();
-        match instance_attr(self_id, &field_name, vm) {
-            Ok(Some(value)) => values.push(value),
-            Ok(None) => {
-                values.drop_with(vm);
-                return Err(ExcType::attribute_error(&name, &field_name));
-            }
-            Err(e) => {
-                values.drop_with(vm);
-                return Err(e);
-            }
+    // Each field is read as an attribute at the point it is written, so a field
+    // whose `__repr__` mutates a later one is observed, exactly as CPython's
+    // generated f-string does. A field that resolves nowhere raises.
+    write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, vm| {
+        let field_name = vm.interns.get_str(field_names[i]).to_owned();
+        match instance_attr(self_id, &field_name, vm)? {
+            Some(value) => Ok((field_name, Some(value))),
+            None => Err(ExcType::attribute_error(&name, &field_name)),
         }
-    }
-    defer_drop!(values, vm);
-    write_dataclass_repr(f, &name, field_names.len(), vm, heap_ids, |i, heap, interns| {
-        let field_name = interns.get_str(field_names[i]).to_owned();
-        (field_name, Some(values[i].clone_with_heap(heap)))
     })
 }
 

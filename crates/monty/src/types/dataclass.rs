@@ -14,8 +14,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
-        heap_read_ref_as_field, heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
+        heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::Type,
@@ -211,14 +211,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         // Only declared fields are shown, not dynamically added attributes.
         let name = self.get(vm.heap).name(vm.interns).to_owned();
         let field_count = self.get(vm.heap).field_names.len();
-        write_dataclass_repr(f, &name, field_count, vm, heap_ids, |i, heap, interns| {
-            let dc = self.get(heap);
+        write_dataclass_repr(f, &name, field_count, vm, heap_ids, |i, vm| {
+            let dc = self.get(vm.heap);
             let field_name = dc.field_names[i].clone();
             let value = dc
                 .attrs
-                .get_by_str(&field_name, heap, interns)
-                .map(|v| v.clone_with_heap(heap));
-            (field_name, value)
+                .get_by_str(&field_name, vm.heap, vm.interns)
+                .map(|v| v.clone_with_heap(vm.heap));
+            Ok((field_name, value))
         })
     }
 
@@ -286,13 +286,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
 /// Each caller supplies its own field list via `field`, mapping an index to that
 /// field's name and a cloned value (dropped here). A cycle renders `...`, a
 /// `None` value `<?>`, and exhausting `max_duration` truncates `...[timeout]`.
+///
+/// `field` is resolved immediately before that field is written, never all up
+/// front, so a `__repr__` that mutates a later field is observed — matching the
+/// left-to-right evaluation of CPython's generated f-string.
 pub(crate) fn write_dataclass_repr<'h>(
     f: &mut impl Write,
     name: &str,
     field_count: usize,
     vm: &mut VM<'h>,
     heap_ids: &mut LazyHeapSet,
-    field: impl Fn(usize, &HeapReader<'h>, &Interns) -> (String, Option<Value>),
+    field: impl Fn(usize, &mut VM<'h>) -> RunResult<(String, Option<Value>)>,
 ) -> RunResult<()> {
     let Ok(mut guard) = vm.recursion_guard() else {
         return Ok(f.write_str("...")?);
@@ -310,7 +314,7 @@ pub(crate) fn write_dataclass_repr<'h>(
             }
             f.write_str(", ")?;
         }
-        let (field_name, value) = field(i, vm.heap, vm.interns);
+        let (field_name, value) = field(i, &mut *vm)?;
         f.write_str(&field_name)?;
         f.write_char('=')?;
         match value {

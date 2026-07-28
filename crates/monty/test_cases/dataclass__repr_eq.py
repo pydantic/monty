@@ -199,3 +199,37 @@ assert hooked == hooked
 # Only the stability of the rendering, since the two engines spell a bound
 # method differently (see limitations/dataclasses.md).
 assert repr(Hooked(1)) == repr(Hooked(1))
+
+
+# === Each field is read as it is written, not all up front ===
+# CPython's generated `__repr__` is an f-string evaluated left to right, so a
+# field whose `__repr__` mutates a later one shows the mutated value.
+class Mutator:
+    def __repr__(self) -> str:
+        mutated.b = 'mutated'
+        return 'M'
+
+
+@dataclass
+class Mutated:
+    a: object
+    b: object
+
+
+mutated = Mutated(Mutator(), 'original')
+assert repr(mutated) == "Mutated(a=M, b='mutated')"
+
+
+# === An unset `__class__` field resolves to the class object ===
+# `self.__class__` answers even with nothing in the instance dict or the class
+# namespace, and the generated methods use ordinary attribute access.
+@dataclass
+class Classy:
+    __class__: object
+
+    def __init__(self) -> None:
+        pass
+
+
+assert repr(Classy()) == 'Classy(__class__=' + repr(Classy) + ')'
+assert Classy() == Classy()

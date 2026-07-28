@@ -7,7 +7,9 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{BorrowedHeapReadMut, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    heap::{
+        BorrowedHeapReadMut, ContainsHeap, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut,
+    },
     intern::StringId,
     types::str::allocate_string,
     value::{EitherStr, Value},
@@ -69,6 +71,18 @@ impl DataclassMeta {
             Some(Value::Ref(id)) => Some(*id),
             _ => None,
         })
+    }
+}
+
+/// Releases the captured defaults, for metadata being discarded rather than
+/// stored on a `Class` — a rejected decoration, or the metadata a re-decoration
+/// replaced. Lets the decorator guard its work-in-progress metadata like any
+/// other owned value.
+impl<C: ContainsHeap> DropWithContext<C> for DataclassMeta {
+    fn drop_with(self, ctx: &mut C) {
+        for field in self.fields {
+            field.default.drop_with(ctx);
+        }
     }
 }
 
