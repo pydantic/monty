@@ -1228,8 +1228,10 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
-    /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
-    /// The message format is: "The monty syntax parser does not yet support {feature}"
+    /// For syntax Monty cannot parse ("The monty syntax parser does not yet support
+    /// {feature}") and for runtime features it refuses rather than approximates (a
+    /// `@dataclass` body it cannot honour). Reserve it for "Monty has not built this
+    /// yet" — a call CPython would also reject belongs in the matching CPython type.
     #[must_use]
     fn not_implemented(msg: impl fmt::Display) -> SimpleException {
         SimpleException::new_msg(ExcType::NotImplementedError, msg)

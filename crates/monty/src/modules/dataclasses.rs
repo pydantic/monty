@@ -72,9 +72,10 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // the bare decorator's arity check report a confusing "0 given".
     if matches!(args, ArgValues::Kwargs(_) | ArgValues::ArgsKargs { .. }) {
         args.drop_with(vm);
-        return Err(ExcType::type_error(
+        return Err(ExcType::not_implemented(
             "dataclass() keyword options (eq, order, frozen, unsafe_hash, ...) are not yet supported",
-        ));
+        )
+        .into());
     }
     let cls = args.get_one_arg("dataclass", vm.heap)?;
     // The decorator returns the class it was given, so `cls` is only released
@@ -143,9 +144,10 @@ fn reject_unsupported_members(vm: &VM<'_>, class_id: HeapId) -> RunResult<()> {
         .iter()
         .find(|&&(name, _)| class_defines(class_id, name, vm))
     {
-        Some((name, consequence)) => Err(ExcType::type_error(format!(
+        Some((name, consequence)) => Err(ExcType::not_implemented(format!(
             "dataclass() does not yet support {name} in a class body, {consequence}"
-        ))),
+        ))
+        .into()),
         None => Ok(()),
     }
 }
@@ -201,9 +203,10 @@ fn validate_fields(vm: &mut VM<'_>, fields: &[DataclassField]) -> RunResult<()> 
     for field in fields {
         let name = vm.interns.get_str(field.name).to_owned();
         if field.initvar {
-            return Err(ExcType::type_error(format!(
+            return Err(ExcType::not_implemented(format!(
                 "dataclass() does not yet support InitVar (field {name}), which would become an ordinary field"
-            )));
+            ))
+            .into());
         }
         if let Some(default) = &field.default {
             // CPython's rule is hashability, not a list/dict/set type check, so

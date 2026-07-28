@@ -8,19 +8,24 @@ are passed in and dispatch back to the host — see [classes.md](classes.md)).
 
 Only the bare `@dataclass` decorator and `is_dataclass` exist. Everything below
 **raises at decoration time** rather than producing a subtly wrong class, so a
-class body Monty cannot honour never silently misbehaves:
+class body Monty cannot honour never silently misbehaves.
+
+Each raises `NotImplementedError` — a feature Monty has not built yet, not a
+mistake in the calling code. CPython accepts all of them, so the exception type
+is a divergence in its own right: code catching `TypeError` around a decoration
+will not catch these.
 
 - **The `@dataclass(...)` keyword form** — `frozen`, `eq=False`, `order`,
   `unsafe_hash`, `kw_only` and the hashing/ordering they imply. Any keyword
-  raises `TypeError: dataclass() keyword options (eq, order, frozen,
+  raises `NotImplementedError: dataclass() keyword options (eq, order, frozen,
   unsafe_hash, ...) are not yet supported`. A dataclass is therefore always
   `eq=True, frozen=False`: instances are unhashable and unordered.
-- **`__post_init__`** — raises `TypeError: dataclass() does not yet support
-  __post_init__ in a class body, which would be silently skipped`.
-- **`InitVar[...]`** — raises `TypeError: dataclass() does not yet support
-  InitVar (field <name>), which would become an ordinary field`. Detected
-  textually, since annotations are never evaluated: the name need not be
-  imported to be rejected.
+- **`__post_init__`** — raises `NotImplementedError: dataclass() does not yet
+  support __post_init__ in a class body, which would be silently skipped`.
+- **`InitVar[...]`** — raises `NotImplementedError: dataclass() does not yet
+  support InitVar (field <name>), which would become an ordinary field`.
+  Detected textually, since annotations are never evaluated: the name need not
+  be imported to be rejected.
 - **`field()` / `default_factory` / `MISSING`** — `field(...)` in a class body
   raises `NameError`.
 - **Module helpers** — `fields`, `asdict`, `astuple`, `replace`.

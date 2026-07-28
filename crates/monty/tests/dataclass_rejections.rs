@@ -39,7 +39,7 @@ class R:
       File "test.py", line 4, in <module>
         @dataclass
          ~~~~~~~~~
-    TypeError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped
+    NotImplementedError: dataclass() does not yet support __post_init__ in a class body, which would be silently skipped
     "#);
 }
 
@@ -62,7 +62,7 @@ class Q:
       File "test.py", line 4, in <module>
         @dataclass
          ~~~~~~~~~
-    TypeError: dataclass() does not yet support InitVar (field tmp), which would become an ordinary field
+    NotImplementedError: dataclass() does not yet support InitVar (field tmp), which would become an ordinary field
     "#);
 }
 
@@ -83,7 +83,7 @@ class F:
       File "test.py", line 4, in <module>
         @dataclass(frozen=True)
          ~~~~~~~~~~~~~~~~~~~~~~
-    TypeError: dataclass() keyword options (eq, order, frozen, unsafe_hash, ...) are not yet supported
+    NotImplementedError: dataclass() keyword options (eq, order, frozen, unsafe_hash, ...) are not yet supported
     "#);
 }
 
