@@ -1,6 +1,11 @@
-# Cycle-collector interaction for the itertools iterators: these force a
-# collection, so `for_each_child_id` — the arm that silently under-traces when
-# missing — actually runs, which the refcount fixture alone never does.
+# Cycle-collector interaction for the itertools iterators: these drive a
+# collection over cycles the iterators take part in, so the collector traverses
+# these types rather than merely allocating them.
+#
+# This is smoke coverage, NOT a check that the trace hooks are complete — an
+# under-tracing `for_each_child_id` leaks silently and nothing here would
+# notice. `refcount__itertools_count_repeat.py` is what verifies the hooks,
+# via the strict unreachable walk that only the `# ref-counts=` marker enables.
 # `gc.collect()` returns different counts on CPython and Monty, so it isn't asserted.
 import gc
 
@@ -16,9 +21,8 @@ def repeat_cycle():
 
 
 def count_cycle():
-    # `count` is not itself GC-tracked (it only holds numbers) but is reachable
-    # as a CHILD of a tracked cycle, so the collector still traverses it. Both
-    # start AND step are big ints, so a hook walking only `current` is caught.
+    # `count` is not itself GC-tracked (it only holds numbers) but sits inside a
+    # tracked cycle, so the collector walks past it while condemning the list.
     items = []
     items.append(itertools.count(2**70, 2**70))
     items.append(items)
@@ -33,17 +37,6 @@ gc.collect()
 survivor = itertools.repeat('x', 2)
 gc.collect()
 assert list(survivor) == ['x', 'x']
-
-# Freeing an iterator outright must release what it holds (the `py_dec_ref_ids`
-# path, distinct from the tracing one above).
-payload = [1, 2]
-doomed = itertools.repeat(payload, 2)
-doomed = None
-counter = itertools.count(2**70)
-counter = None
-assert payload == [1, 2]
-assert doomed is None
-assert counter is None
 
 # Size hints: bounded `repeat` reports its remaining count to the collection
 # builders, while the infinite forms must report nothing usable.
