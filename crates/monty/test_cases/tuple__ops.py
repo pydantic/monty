@@ -147,3 +147,10 @@ assert 'two' in tu
 assert 9 not in tu
 assert () == ()
 assert 2 in (1, (2, 3))[1]
+# Members compare by value, across types where Python considers them equal.
+assert True in (1, 2)
+assert 1.0 in (1, 2)
+assert (2, 3) in (1, (2, 3))
+assert [2, 3] in (1, [2, 3])
+assert None in (None,)
+assert 1 not in ()

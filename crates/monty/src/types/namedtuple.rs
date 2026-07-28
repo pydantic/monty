@@ -267,6 +267,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         true
     }
 
+    /// Linear search by equality like [`Tuple`](super::Tuple) — a namedtuple is a
+    /// tuple subclass in CPython and inherits `tuplecontains`. Without this, `in`
+    /// falls back to iteration and allocates a heap `TupleIterator`, which can
+    /// trip the allocation limit on a tight heap.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(el) = iter.next(vm)? {
+            if el.py_eq(item, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::NamedTuple
     }

@@ -286,13 +286,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         true
     }
 
-    /// Linear search by equality; `TupleIter` owns each yielded item, so a user
+    /// Linear search by equality, stored element on the left of `==` as CPython's
+    /// `tuplecontains` does. `TupleIter` owns each yielded item, so a user
     /// `__eq__` re-entering the VM cannot invalidate the walk.
     fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let iter = self.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(el) = iter.next(vm)? {
-            if item.py_eq(el, vm)? {
+            if el.py_eq(item, vm)? {
                 return Ok(Some(true));
             }
         }

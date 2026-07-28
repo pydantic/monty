@@ -449,7 +449,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         };
         match dict.dict_get(key, vm) {
             Ok(Some(existing_value)) => {
-                let result = value.py_eq(&existing_value, vm);
+                // Stored value on the left, as CPython's `dictitems_contains` does.
+                let result = existing_value.py_eq(value, vm);
                 existing_value.drop_with(vm);
                 result.map(Some)
             }
@@ -606,7 +607,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         let iter = dict.iter(vm)?;
         defer_drop_mut!(iter, vm);
         while let Some(value) = iter.next_value(vm)? {
-            if item.py_eq(value, vm)? {
+            // Stored value on the left, matching CPython's iteration fallback.
+            if value.py_eq(item, vm)? {
                 return Ok(Some(true));
             }
         }
