@@ -1,0 +1,57 @@
+crates/monty-server/src/main.rs
+  s_ad954fca2eb54b::t_3fbfb69ebe6ad3 6
+  s_ad954fca2eb54b::t_5592ce24ced2a4 83-88
+  s_ad954fca2eb54b::t_4073ee2df7f5c5 53-59
+  s_ad954fca2eb54b::t_0b385d9a7c8880 78-82
+crates/monty-server/CLAUDE.md
+  s_ad954fca2eb54b::t_2305b7938ac148 75-77,92
+  s_ad954fca2eb54b::t_71641c7f540c2e 43-44,62-74
+crates/monty-server/src/lib.rs
+  s_ad954fca2eb54b::t_69d7f9e2fc3211 427
+  s_ad954fca2eb54b::t_78480de513564d 142,146
+  s_ad954fca2eb54b::t_3fbfb69ebe6ad3 25
+  s_ad954fca2eb54b::t_2eb63d114359ee 143-145,243,248
+  s_ad954fca2eb54b::t_e7ff60bdc07a93 249-250,252
+  s_ad954fca2eb54b::t_c9ea6d6f241efe 276,278,425-426,450,459-462
+crates/monty-server/src/telemetry.rs
+  s_ad954fca2eb54b::t_e272c08850bb88 8-13,15-19,27,46,70-72,78,80-97,101-120
+  s_ad954fca2eb54b::t_55f568f74a5e77 43-45,47-52
+  s_ad954fca2eb54b::t_2eb63d114359ee 23-26,54-58
+  s_ad954fca2eb54b::t_ddd59e629bac3e 28
+  s_ad954fca2eb54b::t_ba3ceb3cf7eed4 69,73,98
+  s_ad954fca2eb54b::t_525f3e6a84e477 76-77
+  s_ad954fca2eb54b::t_33850796b577fe 79
+  s_ad954fca2eb54b::t_e9c243a2b074fc 14,66-67,99-100,121
+  s_ad954fca2eb54b::t_8c3588d7ec414a 122
+  s_ad954fca2eb54b::t_3abe840eee541b 1-7,20-22,29-42,53,59-65
+  s_ad954fca2eb54b::t_1ea070d477ac52 68,74-75
+crates/monty-proto/src/peek.rs
+  s_ad954fca2eb54b::t_25505ad4e3ba0b 23-32,35-36,43-44
+crates/monty-server/README.md
+  s_ad954fca2eb54b::t_da514cfd18dc6e 107-108,112-116,119-131,137-140,158-161
+  s_ad954fca2eb54b::t_dd272e012fb53c 109-111,117-118
+  s_ad954fca2eb54b::t_2bbd7dbeb5721d 78,105-106,132-136,141-143
+crates/monty-proto/tests/frame.rs
+  s_ad954fca2eb54b::t_25505ad4e3ba0b 157-161,163,167,243-247,249,253
+crates/monty-server/src/session.rs
+  s_ad954fca2eb54b::t_e73c85ddea1a0a 19,21,42-66,68-69,71,84-95,172-175,177-193,216-218,239-244,346
+crates/monty-server/Cargo.toml
+  s_ad954fca2eb54b::t_dd5c0148d3fe36 21-24,26-27
+  s_ad954fca2eb54b::t_22140ec15347ef 18-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "85156646622d925cd4ce62bba9154536234b9dd9",
+  "prompts": {},
+  "sessions": {
+    "s_ad954fca2eb54b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "155e7484-ec4f-4f62-b16c-6e00f77abb21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
