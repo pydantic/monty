@@ -1,11 +1,7 @@
-# Cycle-collector interaction for the itertools iterators: these drive a
-# collection over cycles the iterators take part in, so the collector traverses
-# these types rather than merely allocating them.
-#
-# This is smoke coverage, NOT a check that the trace hooks are complete — an
-# under-tracing `for_each_child_id` leaks silently and nothing here would
-# notice. `refcount__itertools_count_repeat.py` is what verifies the hooks,
-# via the strict unreachable walk that only the `# ref-counts=` marker enables.
+# Cycle-collector interaction: these drive a collection over cycles the
+# iterators take part in, so the collector traverses these types. Smoke coverage
+# only — an under-tracing `for_each_child_id` leaks silently and nothing here
+# notices; `refcount__itertools_count_repeat.py` is what verifies the hooks.
 # `gc.collect()` returns different counts on CPython and Monty, so it isn't asserted.
 import gc
 

@@ -19,17 +19,15 @@ first = next(counter)
 cyclic = []
 cyclic.append(itertools.repeat(cyclic, 1))
 
-# The cases above all name the objects their iterators hold, so the strict
-# unreachable walk finds them by name and never needs the trace hooks. These
-# hold objects NOTHING else names, forcing the walk through
-# `for_each_child_id` — drop an arm and the object reads as leaked.
+# The cases above name everything their iterators hold, so the strict walk
+# reaches it all without the trace hooks. These hold objects nothing else names,
+# forcing the walk through `for_each_child_id`.
 held = itertools.repeat([1, 2], 2)
-# Both operands are unnamed heap `LongInt`s, so a hook walking only `current`
-# strands `step`.
+# Both operands unnamed, so a hook walking only `current` strands `step`.
 stepped = itertools.count(2**70, 2**70)
 
-# The freeing path rather than the tracing one: once the only binding goes, a
-# `py_dec_ref_ids` that skips `object` leaves the list alive with no referrer.
+# The freeing path: once the only binding goes, a `py_dec_ref_ids` that skips
+# `object` leaves the list alive with no referrer.
 dropped = itertools.repeat([3, 4], 1)
 dropped = None
 
