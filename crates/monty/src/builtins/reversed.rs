@@ -61,8 +61,6 @@ fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
             HeapData::List(_)
                 | HeapData::Tuple(_)
                 | HeapData::NamedTuple(_)
-                // A deque defines `__reversed__` in CPython; sets deliberately
-                // stay out, having no order to reverse.
                 | HeapData::Deque(_)
                 | HeapData::Str(_)
                 | HeapData::Bytes(_)

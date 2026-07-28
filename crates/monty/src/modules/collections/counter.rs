@@ -7,13 +7,14 @@
 //! missing-key read (`0`, no insert), `most_common`/`elements`/`total`/`update`/
 //! `subtract`, and the `+ - & |` algebra are added on top.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, mem};
 
 use smallvec::smallvec;
 
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     resource_checks::check_repeat_size,
@@ -224,16 +225,12 @@ pub(crate) fn counter_update(
         } else {
             // `_count_elements`: `self[elem] = self_get(elem, 0) + 1`, so the
             // existing count is the left operand here.
-            let items = collect_owned_iterable::<Vec<Value>>(source, vm)?;
-            let mut items = items.into_iter();
-            while let Some(item) = items.next() {
-                if let Err(e) = counter_bump(dict_id, item, Value::Int(1), subtract, false, vm) {
-                    // A bump can fail on an unhashable item — drop the rest.
-                    for rest in items {
-                        rest.drop_with(vm);
-                    }
-                    return Err(e);
-                }
+            let items = collect_owned_iterable::<Vec<Value>>(source, vm)?.into_iter();
+            // A bump can fail on an unhashable item; the guard releases the
+            // items it never reached.
+            defer_drop_mut!(items, vm);
+            for item in items.by_ref() {
+                counter_bump(dict_id, item, Value::Int(1), subtract, false, vm)?;
             }
         }
     }
@@ -334,24 +331,20 @@ pub(crate) fn counter_update_method(
 /// Sums with real numeric addition (CPython's `sum(self.values())`), so a
 /// float or big-int count is preserved in the total rather than truncated.
 pub(crate) fn counter_total(dict_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    let counts = counter_count_snapshot(dict_id, vm);
-    let mut sum = Value::Int(0);
-    let mut counts = counts.into_iter();
-    while let Some(count) = counts.next() {
-        let next = count_arith(&sum, &count, false, vm);
-        sum.drop_with(vm);
+    let counts = counter_count_snapshot(dict_id, vm).into_iter();
+    // A count that cannot be added raises mid-fold, so both the counts not yet
+    // folded in and the running total are held by guards that release them.
+    defer_drop_mut!(counts, vm);
+    let mut sum_guard = DropGuard::new(Value::Int(0), vm);
+    for count in counts.by_ref() {
+        let (sum, vm) = sum_guard.as_parts_mut();
+        let next = count_arith(sum, &count, false, vm);
         count.drop_with(vm);
-        match next {
-            Ok(next) => sum = next,
-            Err(e) => {
-                for rest in counts {
-                    rest.drop_with(vm);
-                }
-                return Err(e);
-            }
-        }
+        // The previous total is replaced rather than dropped in place, so the
+        // guard always owns exactly one value.
+        mem::replace(sum, next?).drop_with(vm);
     }
-    Ok(sum)
+    Ok(sum_guard.into_inner())
 }
 
 /// Orders entry indices for `most_common` / Counter repr: count descending,

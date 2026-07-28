@@ -159,7 +159,6 @@ from collections import deque
         datetime.timezone,
         re.Pattern,
         re.Match,
-        # deque lives in `collections`, not `builtins` — resolves via its own arm.
         collections.deque,
     ]
 

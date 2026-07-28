@@ -243,6 +243,13 @@ assert repr(Counter({'a': True})) == "Counter({'a': True})", 'a bool count is no
 assert Counter({'a': 1.5, 'b': 2}).total() == 3.5, 'total() adds floats as floats'
 assert Counter({'a': 2**70}).total() == 1180591620717411303424, 'total() preserves big ints'
 assert Counter().total() == 0, 'total() of an empty Counter is 0'
+# A count that cannot be added raises part-way through the fold, so the running
+# total and the counts after the bad one must not leak.
+try:
+    Counter({'a': 1, 'b': 'x', 'c': 2**70}).total()
+    assert False, 'expected an unaddable count to raise'
+except TypeError as e:
+    assert str(e) == "unsupported operand type(s) for +: 'int' and 'str'"
 
 # === Arithmetic uses real numeric addition ===
 assert dict(Counter({'a': 1.5}) + Counter({'a': 1.5})) == {'a': 3.0}, '+ adds floats'
