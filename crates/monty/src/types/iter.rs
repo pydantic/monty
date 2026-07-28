@@ -49,14 +49,15 @@ struct IterArgs {
     sentinel: Option<Value>,
 }
 
+/// Largest iterator hint used to preallocate a native collection.
+const MAX_PREALLOCATION_HINT: usize = 65_536;
+
 /// Validates and clamps an iterator capacity hint before native allocation.
 pub(crate) fn checked_preallocation_hint(
     hint: usize,
     elem_size: usize,
     tracker: &ResourceTracker,
 ) -> Result<usize, ResourceError> {
-    const MAX_PREALLOCATION_HINT: usize = 65_536;
-
     check_estimated_size(hint.saturating_mul(elem_size), tracker)?;
     Ok(hint.min(MAX_PREALLOCATION_HINT))
 }
@@ -66,6 +67,7 @@ struct HeapedIterator<'this, 'h, I: CollectIter<'h>> {
     iter: &'this mut I,
     vm: &'this mut VM<'h>,
     error: &'this mut Option<RunError>,
+    preallocation_hint: usize,
     yielded: usize,
 }
 
@@ -95,7 +97,7 @@ impl<'h, I: CollectIter<'h>> Iterator for HeapedIterator<'_, 'h, I> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.iter.remaining(self.vm);
+        let remaining = self.iter.remaining(self.vm).min(self.preallocation_hint);
         (remaining, Some(remaining))
     }
 }
@@ -141,6 +143,7 @@ where
 {
     defer_drop!(iterator, vm);
     let mut iterator = iterator.read(vm);
+    let preallocation_hint = checked_preallocation_hint(iterator.iter_size_hint(vm), VALUE_SIZE, vm.heap.tracker())?;
     let mut values_guard = DropGuard::new(T::default(), vm);
     let (values, vm) = values_guard.as_parts_mut();
     let mut error = None;
@@ -148,6 +151,7 @@ where
         iter: &mut iterator,
         vm,
         error: &mut error,
+        preallocation_hint,
         yielded: 0,
     });
     if let Some(error) = error {
