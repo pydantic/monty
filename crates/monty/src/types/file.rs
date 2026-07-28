@@ -77,6 +77,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    os_dispatch::PendingOsEffect,
     types::str::StringRepr,
     value::{EitherStr, Value},
 };
@@ -106,29 +107,6 @@ pub(crate) enum ReadSpec {
     /// bounds and resolve `SEEK_END`. After the load, `compute_slice` updates
     /// `position`/`eof` and returns the new position as an int.
     Seek { offset: i64, whence: i64 },
-}
-
-/// File-specific work to perform when a paused OS call resumes.
-///
-/// This generalizes the original buffered-read hook: both buffered reads and
-/// writes need to update [`OpenFile`] state only after the host reports a
-/// successful OS operation. Keeping them in one enum avoids adding another VM
-/// hook while preserving retry-safe exception behavior.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingFileEffect {
-    /// Store a full-file read result into the file buffer, then compute the
-    /// pending read/seek slice.
-    BufferStore { file_id: HeapId },
-    /// Advance the file's logical position by the successful write result.
-    WritePosition {
-        /// File whose position is updated.
-        file_id: HeapId,
-        /// Position before the write was dispatched, used to restore state if
-        /// the host raises before returning a count.
-        previous_position: u64,
-        /// Known file length before dispatch, restored on host exception.
-        previous_length: u64,
-    },
 }
 
 pub use monty_types::FileMode;
@@ -535,7 +513,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     ///
     /// If the buffer is already loaded, computes the slice synchronously.
     /// Otherwise records the spec on the file and yields a
-    /// [`CallResult::OsCallStoreBuffer`] so the host loads the full content
+    /// [`CallResult::OsCallWithEffect`] so the host loads the full content
     /// and the resume hook completes the operation.
     fn read_with_spec(&mut self, self_id: HeapId, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
         let (binary, buffer_loaded) = {
@@ -570,7 +548,10 @@ impl<'h> HeapRead<'h, OpenFile> {
             OsFunctionCall::ReadText(path)
         };
         inc_ref_for_pending_oscall(vm, self_id);
-        Ok(CallResult::OsCallStoreBuffer { call, file_id: self_id })
+        Ok(CallResult::OsCallWithEffect {
+            call,
+            effect: PendingOsEffect::BufferStore { file_id: self_id },
+        })
     }
 
     /// Implements `file.write(data)` as a one-shot OS write or append.
@@ -589,16 +570,18 @@ impl<'h> HeapRead<'h, OpenFile> {
             return Err(err);
         }
         let (path, append, binary) = {
-            let file = self.get_mut(vm.heap);
+            let file = self.get(vm.heap);
             if !file.mode.writable() {
                 let message = if file.mode.is_binary() { "write" } else { "not writable" };
                 data.drop_with(vm);
                 return Err(unsupported_operation(message));
             }
+            // `first_write_done` is flipped in `apply_write_position`, only once
+            // the host confirms the write — a rejected or host-failed write must
+            // not turn the next write into an append.
             let append = file.mode.is_append() || file.first_write_done;
             let binary = file.mode.is_binary();
             let path = file.path().to_owned();
-            file.first_write_done = true;
             (path, append, binary)
         };
 
@@ -628,12 +611,14 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         inc_ref_for_pending_oscall(vm, self_id);
-        vm.pending_file_effect = Some(PendingFileEffect::WritePosition {
+        // The effect travels with the call and is armed at dispatch, so a
+        // call rejected before dispatch cannot leave stale write state.
+        let effect = PendingOsEffect::WritePosition {
             file_id: self_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
-        });
-        Ok(CallResult::OsCall(call))
+        };
+        Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -732,11 +717,12 @@ impl OpenFile {
 ///
 /// The buffered read/write OS calls carry only the file's path, never a
 /// `Value::Ref` to the file object, so there is no argument ref to release at
-/// the host boundary. The single pin is owned by the VM's `pending_file_effect`
-/// slot and released by exactly one site per path: [`apply_buffer_store`] /
-/// [`apply_write_position`] (success), `resume_with_exception` (host raised),
-/// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before
-/// dispatch).
+/// the host boundary. The single pin travels in the returned
+/// `CallResult::OsCallWithEffect` until dispatch arms it on the VM's
+/// `pending_os_effect` slot, and is released by exactly one site per path:
+/// [`apply_buffer_store`] / [`apply_write_position`] (success),
+/// `resume_with_exception` (host raised), `VM::drop` (abandoned), or
+/// `CallResult`'s drop (call discarded before dispatch).
 fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
     vm.heap.inc_ref(file_id);
 }
@@ -800,7 +786,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId
 /// `readlines()` / `seek()`) should return.
 ///
 /// Called by the VM resume path when the paused OS call was emitted via
-/// [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer).
+/// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
 /// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
@@ -920,6 +906,10 @@ pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'
     f.position = new_position;
     f.file_length = f.file_length.max(new_position);
     f.eof = new_position >= f.file_length;
+    // The write is confirmed — subsequent writes append. Deliberately not set
+    // at dispatch time so a rejected or host-failed write leaves the file in
+    // its pre-call state (see `OpenFile::write`).
+    f.first_write_done = true;
     drop(file);
 
     Ok(result_guard.into_inner())

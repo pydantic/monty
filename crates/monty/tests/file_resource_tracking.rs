@@ -154,12 +154,13 @@ os.getenv('PROBE')
         limits,
     )
     .expect("should succeed");
-    // After close the buffer should be freed. The closed-file wrapper and
-    // the `f.read(5)` slice still live; both are << 1000 bytes. Setting
-    // the upper bound at 1500 leaves slack for incidental tracking
-    // (interpreter state) without re-admitting the 2600-byte buffer.
+    // After close the buffer should be freed. The closed-file wrapper, the
+    // `f.read(5)` slice, and the imported `os` module (whose function and
+    // constant attributes are tracked) still live. Setting the upper bound
+    // at 2000 leaves slack for incidental tracking without re-admitting the
+    // 2600-byte buffer.
     assert!(
-        mem_after_close < 1500,
+        mem_after_close < 2000,
         "expected buffer to be released, but {mem_after_close} bytes still tracked",
     );
 }

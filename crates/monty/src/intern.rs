@@ -765,6 +765,54 @@ pub enum StaticStrings {
     EllipsisRepr,
 
     // ==========================
+    // os module function/constant names. Appended at the enum end:
+    // discriminants are serialized `StringId`s, so mid-enum insertion would
+    // shift every later id. Constants reuse existing variants where the text
+    // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
+    // ids for `/`, `.`, `\n`).
+    /// `os.listdir()` function.
+    Listdir,
+    /// `os.makedirs()` function.
+    Makedirs,
+    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
+    #[strum(serialize = "fspath")]
+    OsFspath,
+    /// `os.altsep` constant name.
+    Altsep,
+    /// `os.extsep` constant name.
+    Extsep,
+    /// `os.curdir` constant name.
+    Curdir,
+    /// `os.pardir` constant name.
+    Pardir,
+    /// `os.linesep` constant name.
+    Linesep,
+    /// `os.devnull` constant name.
+    Devnull,
+    /// Value of `os.name`.
+    Posix,
+    /// Value of `os.pardir`.
+    #[strum(serialize = "..")]
+    ParentDirString,
+    /// Value of `os.devnull`.
+    #[strum(serialize = "/dev/null")]
+    DevNullString,
+    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
+    Path,
+    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
+    DirFd,
+    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
+    FollowSymlinks,
+    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
+    Src,
+    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
+    Dst,
+    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
+    SrcDirFd,
+    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
+    DstDirFd,
+
+    // ==========================
     // dataclasses module strings. Appended at the enum end: discriminants are
     // serialized `StringId`s, so mid-enum insertion would shift every later id.
     /// Module name for `import dataclasses`.

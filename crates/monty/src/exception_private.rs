@@ -329,14 +329,20 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
     /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
     ///
+    /// Both C parsers insert `keyword ` before `argument` when the call passed
+    /// no positionals at all (`nargs == 0` in `vgetargskeywords` /
+    /// `vgetargskeywordsfast_impl`), so pass `all_keyword` accordingly:
+    /// `fspath() takes at most 1 keyword argument (2 given)`.
+    ///
     /// Use this instead of `type_error_at_most` for methods and type constructors that
     /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
     #[must_use]
-    fn type_error_method_at_most(name: &str, max: usize, actual: usize) -> RunError {
+    fn type_error_method_at_most(name: &str, max: usize, actual: usize, all_keyword: bool) -> RunError {
+        let kind = if all_keyword { "keyword " } else { "" };
         let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+            format!("{name}() takes at most {max} {kind}argument{plural} ({actual} given)"),
         )
         .into()
     }
@@ -641,6 +647,84 @@ pub(crate) trait ExcTypeExt: Sized {
             format!("{name}() missing required argument '{arg_name}' (pos {pos})"),
         )
         .into()
+    }
+
+    /// Named positional-overflow wording used by clinic functions with
+    /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
+    /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
+    /// "exactly" when every positional param is required.
+    #[must_use]
+    fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
+        let qualifier = if exact { "exactly" } else { "at most" };
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError matching the `os` module's `path_t` converter:
+    /// `{func}: {arg} should be {accepted}, not {type}` — `accepted` is the
+    /// per-function accepted-types phrase (e.g. `string, bytes or os.PathLike`).
+    #[must_use]
+    fn type_error_os_path(func: &str, arg: &str, accepted: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{func}: {arg} should be {accepted}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
+    /// functions that call `fspath` internally (e.g. `os.makedirs`):
+    /// `expected str, bytes or os.PathLike object, not {type}`
+    #[must_use]
+    fn type_error_fspath(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("expected str, bytes or os.PathLike object, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `dir_fd` converter TypeError:
+    /// `argument should be integer or None, not {type}`
+    #[must_use]
+    fn type_error_dir_fd(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument should be integer or None, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the fd converter's OverflowError for fds above C `int` range:
+    /// `fd is greater than maximum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_maximum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is greater than maximum").into()
+    }
+
+    /// Creates the fd converter's OverflowError for fds below C `int` range:
+    /// `fd is less than minimum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_minimum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is less than minimum").into()
+    }
+
+    /// Creates the NotImplementedError CPython raises when an `os` argument is
+    /// unsupported on the platform (`argument_unavailable_error`):
+    /// `{func}: {arg} unavailable on this platform`, or just
+    /// `{arg} unavailable on this platform` when `func` is `None`.
+    /// Monty raises it for `dir_fd`/`follow_symlinks`, which it never supports.
+    #[must_use]
+    fn not_implemented_os_arg(func: Option<&str>, arg: &str) -> RunError {
+        let msg = match func {
+            Some(func) => format!("{func}: {arg} unavailable on this platform"),
+            None => format!("{arg} unavailable on this platform"),
+        };
+        Self::not_implemented(msg).into()
     }
 
     /// Creates a TypeError for a missing required argument without a position,

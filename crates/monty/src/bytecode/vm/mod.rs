@@ -36,10 +36,11 @@ use crate::{
     intern::{FunctionId, Interns, StaticStrings, StringId},
     modules::{StandardLib, json::JsonStringCache, re::RePatternCache},
     object_bridge::MontyObjectExt,
+    os_dispatch::{PendingOsEffect, listdir_names},
     parse::CodeRange,
     types::{
         Dict, LongInt, PyTrait,
-        file::{PendingFileEffect, apply_buffer_store, apply_write_position},
+        file::{apply_buffer_store, apply_write_position},
         timedelta,
     },
     value::{EitherStr, Value},
@@ -172,12 +173,12 @@ macro_rules! handle_call_result {
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall { function_call, call_id });
             }
-            Ok(CallResult::OsCallStoreBuffer { call, file_id }) => {
+            Ok(CallResult::OsCallWithEffect { call, effect }) => {
                 let call_id = $self.allocate_call_id();
-                // Record the pending-buffer-store hook for this call so the
-                // matching resume routes the OS result into the file's buffer
-                // instead of pushing it onto the operand stack.
-                $self.pending_file_effect = Some(PendingFileEffect::BufferStore { file_id });
+                // Arm the resume effect only here, at dispatch — a rejected
+                // and dropped `CallResult` must never leave a stale effect
+                // (see `CallResult::OsCallWithEffect`).
+                $self.pending_os_effect = Some(effect);
                 // Sync cached IP back to frame before snapshot for resume
                 $self.current_frame_mut().ip = $cached_frame.ip;
                 return Ok(FrameExit::OsCall {
@@ -619,10 +620,10 @@ pub struct VMSnapshot {
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
 
-    /// In-flight buffer-store target for the paused OS call, if any. See
-    /// [`VM::pending_file_effect`].
+    /// In-flight resume effect for the paused OS call, if any. See
+    /// [`VM::pending_os_effect`].
     #[serde(default)]
-    pending_file_effect: Option<PendingFileEffect>,
+    pending_os_effect: Option<PendingOsEffect>,
 }
 
 // ============================================================================
@@ -714,7 +715,7 @@ pub struct VM<'h> {
     /// VM is single-threaded and OS calls are strictly request/response — so a
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
-    pub(crate) pending_file_effect: Option<PendingFileEffect>,
+    pub(crate) pending_os_effect: Option<PendingOsEffect>,
 
     /// Current recursion depth — charged by function-call frames and by nested
     /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
@@ -770,7 +771,7 @@ impl<'h> VM<'h> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
-            pending_file_effect: None,
+            pending_os_effect: None,
             recursion_depth: 0,
             namespace_scratch: Vec::new(),
             run_reentry_depth: recursion::MAX_RUN_REENTRY_DEPTH,
@@ -841,7 +842,7 @@ impl<'h> VM<'h> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
-            pending_file_effect: snapshot.pending_file_effect,
+            pending_os_effect: snapshot.pending_os_effect,
             recursion_depth: current_frame_depth,
             namespace_scratch: Vec::new(),
             // Always default value at a restore boundary — see the `run_reentry_depth` field doc.
@@ -881,7 +882,7 @@ impl<'h> VM<'h> {
             exception_stack: mem::take(&mut self.exception_stack),
             instruction_ip: self.instruction_ip,
             scheduler: mem::take(&mut self.scheduler),
-            pending_file_effect: self.pending_file_effect.take(),
+            pending_os_effect: self.pending_os_effect.take(),
         }
     }
 
@@ -1840,10 +1841,21 @@ impl<'h> VM<'h> {
     ///
     /// Pushes the return value onto the stack and continues execution.
     ///
-    /// If the paused OS call has a pending file effect, the result is routed
-    /// through the corresponding file-state helper before it is pushed back to
-    /// Python.
+    /// If the paused OS call has a pending effect, the result is routed
+    /// through the corresponding helper (file-state update or `os.listdir`
+    /// name reduction) before it is pushed back to Python.
     pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+        // `ListdirNames` reshapes the raw host object *before* heap
+        // conversion — plain data in, plain data out, no refcounts involved.
+        let obj = if matches!(self.pending_os_effect, Some(PendingOsEffect::ListdirNames)) {
+            self.pending_os_effect = None;
+            match listdir_names(obj) {
+                Ok(obj) => obj,
+                Err(err) => return self.resume_with_exception(err),
+            }
+        } else {
+            obj
+        };
         // Surface resource-exhaustion failures from `to_value` (e.g. a host
         // string whose `heap.allocate` trips `max_memory`) as the same
         // `RunError::Resource` that pure-Monty allocations produce, so the
@@ -1855,10 +1867,12 @@ impl<'h> VM<'h> {
                 SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {other}"))).into()
             }
         })?;
-        if let Some(effect) = self.pending_file_effect.take() {
+        if let Some(effect) = self.pending_os_effect.take() {
             let result = match effect {
-                PendingFileEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
-                PendingFileEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+                PendingOsEffect::BufferStore { file_id } => apply_buffer_store(file_id, value, self),
+                PendingOsEffect::WritePosition { file_id, .. } => apply_write_position(file_id, value, self),
+                // Cleared above, before conversion.
+                PendingOsEffect::ListdirNames => unreachable!("ListdirNames is handled before heap conversion"),
             };
             match result {
                 Ok(value) => {
@@ -1890,16 +1904,16 @@ impl<'h> VM<'h> {
     /// Also clears any pending file effect so user code that catches a
     /// host-side OS exception can retry without stale in-flight state.
     pub fn resume_with_exception(&mut self, error: RunError) -> Result<FrameExit, RunError> {
-        if let Some(effect) = self.pending_file_effect.take() {
+        if let Some(effect) = self.pending_os_effect.take() {
             match effect {
-                PendingFileEffect::BufferStore { file_id } => {
+                PendingOsEffect::BufferStore { file_id } => {
                     if let HeapReadOutput::OpenFile(mut file) = self.heap.read(file_id) {
                         file.get_mut(self.heap).clear_pending_read();
                         drop(file);
                     }
                     self.heap.dec_ref(file_id);
                 }
-                PendingFileEffect::WritePosition {
+                PendingOsEffect::WritePosition {
                     file_id,
                     previous_position,
                     previous_length,
@@ -1911,6 +1925,8 @@ impl<'h> VM<'h> {
                     }
                     self.heap.dec_ref(file_id);
                 }
+                // Holds no state or heap references — nothing to roll back.
+                PendingOsEffect::ListdirNames => {}
             }
         }
         // Use the normal exception handling mechanism
@@ -2380,12 +2396,7 @@ impl ContainsHeap for VM<'_> {
 /// `take_globals`) are harmlessly drained as empty.
 impl Drop for VM<'_> {
     fn drop(&mut self) {
-        if let Some(effect) = self.pending_file_effect.take() {
-            let file_id = match effect {
-                PendingFileEffect::BufferStore { file_id } | PendingFileEffect::WritePosition { file_id, .. } => {
-                    file_id
-                }
-            };
+        if let Some(file_id) = self.pending_os_effect.take().and_then(PendingOsEffect::pinned_file) {
             self.heap.dec_ref(file_id);
         }
         self.exception_stack.drain(..).drop_with(self.heap);

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Update vendored typeshed files from the upstream repository.
 
 This script:

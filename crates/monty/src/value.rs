@@ -7,7 +7,7 @@ use std::{
 };
 
 use monty_types::ResourceError;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_traits::FromPrimitive;
 
 use crate::{
@@ -1690,6 +1690,20 @@ impl Value {
                 }
             }
             _ => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
+        }
+    }
+
+    /// True when this is a `LongInt`-valued int (interned or heap-allocated)
+    /// that is negative — lets fixed-width consumers pick the right overflow
+    /// direction/message (`round`'s i64 clamp, `os`'s fd converter). False for
+    /// every other value, `Int`/`Bool` included: pair it with
+    /// [`is_long_int`](crate::args::is_long_int) rather than using it alone to
+    /// classify an int.
+    pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
+        match self {
+            Self::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+            Self::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
+            _ => false,
         }
     }
 
