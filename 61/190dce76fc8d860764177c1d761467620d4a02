@@ -1,0 +1,20 @@
+crates/monty-proto/src/peek.rs
+  s_739b6e39771595::t_ee3ee0c042c9c6 33-40
+  s_739b6e39771595::t_1a019216d15bc2 141-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "61190dce76fc8d860764177c1d761467620d4a02",
+  "prompts": {},
+  "sessions": {
+    "s_739b6e39771595": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "17ab6a8a-3ec4-4c0a-a0c5-0c26abf75fd0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
