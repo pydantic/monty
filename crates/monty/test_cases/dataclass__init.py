@@ -83,6 +83,10 @@ expect_type_error(lambda: WithClassVar(7, 8), 'WithClassVar.__init__() takes 2 p
 # is entered, so it outranks every arity error.
 expect_type_error(lambda: Point(**{1: 2}), 'keywords must be strings')
 expect_type_error(lambda: Point(**{1: 2, 'x': 5}), 'keywords must be strings')
+# Every key is checked before any is bound, so a non-string key wins even when
+# an unbindable one comes first.
+expect_type_error(lambda: Point(**{'z': 1, 1: 2}), 'keywords must be strings')
+expect_type_error(lambda: Point(1, **{'x': 2, 1: 3}), 'keywords must be strings')
 expect_type_error(lambda: Point(1, 2, 3, **{1: 2}), 'keywords must be strings')
 
 

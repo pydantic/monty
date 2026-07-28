@@ -16,7 +16,7 @@ use monty_types::ResourceError;
 
 pub(crate) use self::field::DataclassField;
 use crate::{
-    args::ArgValues,
+    args::{ArgValues, KwargsValues},
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
@@ -428,6 +428,16 @@ fn bind_dataclass_fields<'h>(
 ) -> Result<Vec<Value>, RunError> {
     let n_fields = fields.len();
     let init_name = format!("{}.__init__", class.get(vm.heap).name().as_str(vm.interns));
+    // Up front, because the call machinery raises this before `__init__` binds
+    // anything: it outranks every error below whatever its position among the
+    // keys, and checking it here leaves the binding loop free to raise on the
+    // spot (see `KwargsValues::has_nonstring_key`).
+    if let ArgValues::Kwargs(kwargs) | ArgValues::ArgsKargs { kwargs, .. } = &args
+        && kwargs.has_nonstring_key(vm.heap)
+    {
+        args.drop_with(vm);
+        return Err(ExcType::type_error_kwargs_nonstring_key());
+    }
     let (pos_iter, kwargs) = args.into_parts();
 
     // Every bound argument lands in `values`, guarded so each error below is a
@@ -448,42 +458,7 @@ fn bind_dataclass_fields<'h>(
         }
     }
 
-    // Keywords fill by name. The mapping is drained whatever happens, because a
-    // non-string key outranks every error here — CPython raises it from the call
-    // machinery, before the callee binds anything — so it cannot be reported
-    // until every key has been seen.
-    let mut nonstring_key = false;
-    let mut kw_error: Option<RunError> = None;
-    for (key, value) in kwargs {
-        let Some(name) = key.as_either_str(vm.heap).map(|s| s.as_str(vm.interns).to_owned()) else {
-            (key, value).drop_with(vm);
-            nonstring_key = true;
-            continue;
-        };
-        key.drop_with(vm);
-        // Past the first error the mapping is only drained, never bound.
-        if kw_error.is_some() {
-            value.drop_with(vm);
-            continue;
-        }
-        match fields.iter().position(|(id, _)| vm.interns.get_str(*id) == name) {
-            Some(idx) if values[idx].is_none() => values[idx] = Some(value),
-            Some(_) => {
-                value.drop_with(vm);
-                kw_error = Some(ExcType::type_error_duplicate_arg(&init_name, &name));
-            }
-            None => {
-                value.drop_with(vm);
-                kw_error = Some(ExcType::type_error_unexpected_keyword(&init_name, &name));
-            }
-        }
-    }
-    if nonstring_key {
-        return Err(ExcType::type_error_kwargs_nonstring_key());
-    }
-    if let Some(e) = kw_error {
-        return Err(e);
-    }
+    bind_keyword_args(values, fields, kwargs, &init_name, vm)?;
 
     // Too many positionals (CPython counts `self`, so +1 each side), reported
     // only once keyword binding has had its say.
@@ -522,6 +497,39 @@ fn bind_dataclass_fields<'h>(
         .collect())
 }
 
+/// Fills the named slots of `values` from the keyword arguments.
+///
+/// The iterator is guarded, so an error mid-mapping raises on the spot and the
+/// pairs it never reached are still released. Keys are known to be strings —
+/// the caller rejects a non-string one before any binding happens.
+fn bind_keyword_args(
+    values: &mut [Option<Value>],
+    fields: &[(StringId, bool)],
+    kwargs: KwargsValues,
+    init_name: &str,
+    vm: &mut VM<'_>,
+) -> RunResult<()> {
+    let kwargs = kwargs.into_iter();
+    defer_drop_mut!(kwargs, vm);
+    for (key, value) in kwargs.by_ref() {
+        defer_drop!(key, vm);
+        let name = key
+            .as_either_str(vm.heap)
+            .expect("non-string keys are rejected before binding")
+            .as_str(vm.interns)
+            .to_owned();
+        // Resolved before the value is guarded, which borrows the VM.
+        let slot = fields.iter().position(|(id, _)| vm.interns.get_str(*id) == name);
+        let value = DropGuard::new(value, vm);
+        match slot {
+            Some(idx) if values[idx].is_none() => values[idx] = Some(value.into_inner()),
+            Some(_) => return Err(ExcType::type_error_duplicate_arg(init_name, &name)),
+            None => return Err(ExcType::type_error_unexpected_keyword(init_name, &name)),
+        }
+    }
+    Ok(())
+}
+
 /// A fresh reference to the default `@dataclass` captured for field `idx`, or
 /// `None` for a required field.
 fn captured_default(vm: &VM<'_>, fields_id: HeapId, idx: usize) -> Option<Value> {
@@ -552,10 +560,9 @@ pub(crate) fn dataclass_eq(
 ) -> RunResult<Option<bool>> {
     let class_id = instance_class(self_id, vm);
     // Only the same dataclass type can be equal; otherwise NotImplemented.
-    let Value::Ref(other_id) = other else {
+    let &Value::Ref(other_id) = other else {
         return Ok(None);
     };
-    let other_id = *other_id;
     if !matches!(vm.heap.get(other_id), HeapData::Instance(inst) if inst.class() == class_id) {
         return Ok(None);
     }
