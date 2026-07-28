@@ -1,0 +1,25 @@
+crates/monty-js/ts/pool.ts
+  s_566de2f74937d0::t_3a2ec75faa9462 47-56,119
+crates/monty-js/src/pool.rs
+  s_566de2f74937d0::t_3a2ec75faa9462 86-88,146
+crates/monty-js/README.md
+  s_566de2f74937d0::t_3a2ec75faa9462 321,329-335
+CLAUDE.md
+  s_566de2f74937d0::t_3a2ec75faa9462 653-665
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f8b149404bafbda2e87c4c8079626a0a91b17d76",
+  "prompts": {},
+  "sessions": {
+    "s_566de2f74937d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99021b4c-fa86-43b4-96aa-bc5604a0593f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
