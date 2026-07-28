@@ -526,7 +526,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
         let Value::Ref(other_id) = other else {
             return Ok(false);
         };

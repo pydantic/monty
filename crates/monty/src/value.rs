@@ -6,7 +6,6 @@ use std::{
     str::FromStr,
 };
 
-use monty_types::ResourceError;
 use num_bigint::{BigInt, Sign};
 use num_traits::FromPrimitive;
 
@@ -565,7 +564,7 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iadd_impl(other, vm, Some(*id))
         } else {

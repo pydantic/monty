@@ -85,10 +85,9 @@ impl VM<'_> {
     ///
     /// CPython's `deque.__iadd__` *is* `extend`, so any iterable works
     /// (`d += [1, 2]`, `d += 'ab'`) and a non-iterable raises `TypeError` from the
-    /// iterator protocol rather than falling back to `+`'s concatenation error —
-    /// which is why this cannot ride the `py_iadd_impl` trait method (that returns
-    /// only a `ResourceError`). Peeks the left operand so a non-deque leaves the
-    /// stack untouched; returns whether it was handled.
+    /// iterator protocol rather than falling back to `+`'s concatenation error.
+    /// Peeks the left operand so a non-deque leaves the stack untouched; returns
+    /// whether it was handled.
     fn try_inplace_deque(&mut self) -> RunResult<bool> {
         let len = self.stack.len();
         let Some(&Value::Ref(deque_id)) = self.stack.get(len - 2) else {

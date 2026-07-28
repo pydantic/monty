@@ -12,7 +12,7 @@ use ahash::AHashSet;
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use monty_types::{OsFunctionCall, ResourceError};
+use monty_types::OsFunctionCall;
 
 use super::{Type, allocate_string};
 use crate::{
@@ -399,18 +399,11 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// # Returns
     ///
-    /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported,
-    /// or `Err(ResourceError)` if allocation fails.
-    ///
-    /// A container whose `+=` is `extend` (e.g. `deque`) needs to raise from the
-    /// iterator protocol, which this signature cannot express, so those types are
-    /// special-cased in the VM (`try_inplace_deque`) rather than here.
-    fn py_iadd_impl(
-        &mut self,
-        _other: &Value,
-        _vm: &mut VM<'h>,
-        _self_id: Option<HeapId>,
-    ) -> Result<bool, ResourceError> {
+    /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported
+    /// (the VM then falls back to `py_add`), or `Err` if the operation raised — including
+    /// types whose `+=` is `extend` (e.g. `deque`), which raise `TypeError` from the
+    /// iterator protocol rather than a `ResourceError`.
+    fn py_iadd_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
         Ok(false)
     }
 
