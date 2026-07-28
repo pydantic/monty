@@ -112,13 +112,8 @@ pub enum PoolError {
     Crashed {
         /// Exit status, when the process could be reaped.
         status: Option<ExitStatus>,
-        /// What the pool was doing when the death was observed.
-        context: String,
-        /// What the worker said before dying, when it announced a
-        /// `FatalError` rather than simply vanishing. Takes the place of
-        /// `context` in the message: the worker's own account of why it died
-        /// beats the pool's note of what it happened to be doing.
-        reason: Option<String>,
+        /// How the pool learned of the death, and what it can say about it.
+        cause: CrashCause,
     },
     /// The watchdog killed the worker after `request_timeout` elapsed.
     Timeout {
@@ -163,19 +158,44 @@ pub enum PoolError {
     },
 }
 
+/// How the pool learned a worker had died — the two are mutually exclusive,
+/// which is why they are one field rather than two `Option`s: a worker that
+/// states its own reason makes the pool's note of what it was doing
+/// redundant, and the message uses one or the other, never both.
+///
+/// Orthogonal to [`PoolError::Crashed`]'s `status`, which is present or not
+/// in either case (a worker can announce a reason *and* be reaped for its
+/// exit code — the usual shape of a version-skew death).
+#[derive(Debug)]
+pub enum CrashCause {
+    /// It vanished — segfault, abort, external kill, EOF on its pipes — so
+    /// all the pool can say is what it was doing at the time.
+    Vanished {
+        /// What the pool was doing when the death was observed.
+        context: String,
+    },
+    /// It announced a `FatalError` and exited, so its own account replaces
+    /// the pool's. A serving relay also uses this to report that it could not
+    /// start a worker at all.
+    Announced {
+        /// What the worker said before dying.
+        reason: String,
+    },
+}
+
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Crashed {
-                status,
-                context,
-                reason,
-            } => match (reason, status) {
-                (Some(reason), Some(status)) => write!(f, "monty worker crashed: {reason} ({status})"),
-                (Some(reason), None) => write!(f, "monty worker crashed: {reason}"),
-                (None, Some(status)) => write!(f, "monty worker crashed while {context}: {status}"),
-                (None, None) => write!(f, "monty worker crashed while {context}"),
-            },
+            Self::Crashed { status, cause } => {
+                match cause {
+                    CrashCause::Announced { reason } => write!(f, "monty worker crashed: {reason}")?,
+                    CrashCause::Vanished { context } => write!(f, "monty worker crashed while {context}")?,
+                }
+                match status {
+                    Some(status) => write!(f, " ({status})"),
+                    None => Ok(()),
+                }
+            }
             Self::Timeout { timeout } => {
                 write!(f, "monty worker killed after exceeding request timeout of {timeout:?}")
             }
@@ -209,8 +229,9 @@ impl From<io::Error> for PoolError {
     fn from(err: io::Error) -> Self {
         Self::Crashed {
             status: None,
-            context: format!("performing I/O: {err}"),
-            reason: None,
+            cause: CrashCause::Vanished {
+                context: format!("performing I/O: {err}"),
+            },
         }
     }
 }

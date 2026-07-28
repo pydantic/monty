@@ -8,7 +8,7 @@ use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
 
-use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
+use crate::{CrashCause, PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
 /// Arguments for the REPL session a checkout creates — mirrors
 /// `MontyRepl`'s constructor surface.
@@ -829,7 +829,7 @@ impl Checkout {
     /// start a child at all. That is a crash with a reason attached rather
     /// than a protocol disagreement, so it is reported as one — a caller that
     /// handles crashes by starting a new session needs no extra arm, and the
-    /// worker's own account lands in `reason`.
+    /// worker's own account lands in [`CrashCause::Announced`].
     fn fatal_error(&mut self, message: &str) -> PoolError {
         let status = match self.worker.take() {
             // the child exits right after the frame, so this reap is what
@@ -846,8 +846,9 @@ impl Checkout {
         self.feed_mounts = None;
         PoolError::Crashed {
             status,
-            context: "waiting for a reply".to_owned(),
-            reason: Some(message.to_owned()),
+            cause: CrashCause::Announced {
+                reason: message.to_owned(),
+            },
         }
     }
 
@@ -875,8 +876,9 @@ impl Checkout {
         } else {
             PoolError::Crashed {
                 status,
-                context: context.to_owned(),
-                reason: None,
+                cause: CrashCause::Vanished {
+                    context: context.to_owned(),
+                },
             }
         }
     }

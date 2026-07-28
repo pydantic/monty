@@ -601,23 +601,20 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 timed_out: true,
                 exit_status: None,
             },
-            Err(err @ PoolError::Crashed { .. }) => {
-                let exit_status = match &err {
-                    PoolError::Crashed { status, .. } => status.map(|status| status.to_string()),
-                    _ => None,
-                };
-                // the error's own Display picks between "while <doing X>" and
-                // the worker's stated reason; don't re-derive it here
-                Self::Crashed {
-                    message: err.to_string(),
-                    timed_out: false,
-                    exit_status,
-                }
-            }
-            // WebSocket-only; unreachable here (the napi binding is
-            // subprocess-only) but mapped to its local analogue rather than
-            // falling through to a misleading protocol error.
-            Err(err @ PoolError::Disconnected { .. }) => Self::Crashed {
+            // `status` is `Copy`, so it can be reported *and* handed back to
+            // the error, whose own Display picks between "while <doing X>"
+            // and the worker's stated reason — don't re-derive that here.
+            Err(PoolError::Crashed { status, cause }) => Self::Crashed {
+                exit_status: status.map(|status| status.to_string()),
+                message: PoolError::Crashed { status, cause }.to_string(),
+                timed_out: false,
+            },
+            // WebSocket-only, so both are unreachable here (the napi binding
+            // is subprocess-only). Mapped to their local analogue anyway
+            // rather than falling through to a misleading protocol error: a
+            // dropped connection and a server shutdown both mean the session
+            // is gone, which is what `Crashed` tells the caller.
+            Err(err @ (PoolError::Disconnected { .. } | PoolError::Shutdown { .. })) => Self::Crashed {
                 message: err.to_string(),
                 timed_out: false,
                 exit_status: None,
