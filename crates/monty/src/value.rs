@@ -157,8 +157,6 @@ impl<'h> ValueRead<'h, '_> {
                 value: HeapReadOutput::SetIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
-            // Reports 0 for the infinite adaptors — `list(count())` must not be
-            // handed a preallocation hint it can never satisfy.
             Self::Heap {
                 value: HeapReadOutput::Itertools(iter),
                 ..

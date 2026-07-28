@@ -34,8 +34,7 @@ impl Repeat {
     }
 
     /// Returns the exact number of values not yet yielded, and `0` when
-    /// unbounded — a preallocation hint must never be driven by an infinite
-    /// iterator (see `checked_preallocation_hint`).
+    /// unbounded (see [`ItertoolsIter::size_hint`]).
     pub(crate) fn size_hint(&self) -> usize {
         self.remaining.unwrap_or(0)
     }

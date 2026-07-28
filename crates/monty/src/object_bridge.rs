@@ -445,9 +445,8 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::DictValueIterator(_) => Self::Repr("<dict_valueiterator object>".to_owned()),
                     HeapReadOutput::SetIterator(_) => Self::Repr("<set_iterator object>".to_owned()),
                     HeapReadOutput::CallableIterator(_) => Self::Repr("<callable_iterator object>".to_owned()),
-                    // A placeholder like the rest, despite the real in-sandbox repr
-                    // (`count(0)`): rendering it would recurse into `repeat`'s
-                    // arbitrary object, which these arms exist to avoid.
+                    // A placeholder despite the real in-sandbox repr (`count(0)`),
+                    // which would recurse into `repeat`'s arbitrary object.
                     HeapReadOutput::Itertools(iter) => {
                         Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
                     }

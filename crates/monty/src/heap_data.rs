@@ -185,8 +185,6 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
-            // Decided per adaptor: `count` holds only numbers and can never
-            // close a cycle, `repeat` holds an arbitrary object and can.
             Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::List(_)
             | Self::Tuple(_)

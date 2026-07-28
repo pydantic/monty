@@ -800,8 +800,6 @@ pub enum MontyType {
     DictValueIterator,
     #[strum(serialize = "set_iterator")]
     SetIterator,
-    /// `itertools.count` — named for CPython's dotted `tp_name`, as reported by
-    /// `repr(type(...))` and error messages.
     #[strum(serialize = "itertools.count")]
     ItertoolsCount,
     #[strum(serialize = "itertools.repeat")]

@@ -8,7 +8,10 @@ use serde::{Serialize, de::DeserializeOwned};
 const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the postcard schema shared by all interpreter dump kinds.
-pub(crate) const VERSION: u16 = 1;
+///
+/// Bump this whenever a serialized discriminant can shift, so older dumps are
+/// rejected instead of decoding as their neighbour.
+pub(crate) const VERSION: u16 = 2;
 
 /// Number of bytes before the postcard payload.
 const HEADER_LEN: usize = MAGIC.len() + size_of::<u16>() + size_of::<u8>();

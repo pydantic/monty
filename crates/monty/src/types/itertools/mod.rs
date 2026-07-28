@@ -66,11 +66,8 @@ impl ItertoolsIter {
         }
     }
 
-    /// Whether this adaptor can take part in a reference cycle.
-    ///
-    /// Answered per adaptor rather than for the family: `count` holds only
-    /// numbers, so tracking it would cost GC work for a type that can never
-    /// close a cycle.
+    /// Whether this adaptor can take part in a reference cycle — answered per
+    /// adaptor rather than for the family.
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
             // Only ever holds numbers, whose refs point at `LongInt` leaves.
@@ -92,8 +89,6 @@ impl ItertoolsIter {
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
-    ///
-    /// Exhaustive with no wildcard: a new adaptor must state its edges.
     pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(HeapId)) {
         match self {
             Self::Count(count) => count.for_each_child_id(on_child),
@@ -107,8 +102,7 @@ impl HeapItem for ItertoolsIter {
         mem::size_of::<Self>()
     }
 
-    /// Exhaustive with no wildcard, for the same reason as `for_each_child_id`;
-    /// the two must stay in sync.
+    /// Mirrors [`ItertoolsIter::for_each_child_id`] — the two must stay in sync.
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         match self {
             Self::Count(count) => count.py_dec_ref_ids(stack),

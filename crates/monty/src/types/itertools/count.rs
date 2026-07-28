@@ -8,7 +8,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{HeapId, HeapRead},
+    heap::{DropGuard, HeapId, HeapRead},
     types::{LazyHeapSet, PyTrait, itertools::ItertoolsIter},
     value::Value,
 };
@@ -67,24 +67,19 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             count.step.clone_with_heap(vm.heap),
         )
     };
-    let advanced = {
-        defer_drop!(step, vm);
-        item.py_add(step, vm)
+    defer_drop!(step, vm);
+    // `item` needs a guard rather than `defer_drop!`: a failed `py_add` must
+    // release it, but the success path hands it back to the caller.
+    let mut item_guard = DropGuard::new(item, vm);
+    let (item, vm) = item_guard.as_parts();
+    let next = item.py_add(step, vm)?;
+
+    let ItertoolsIter::Count(count) = iter.get_mut(vm.heap) else {
+        unreachable!("dispatched on Kind::Count")
     };
-    match advanced {
-        Ok(next) => {
-            let ItertoolsIter::Count(count) = iter.get_mut(vm.heap) else {
-                unreachable!("dispatched on Kind::Count")
-            };
-            let previous = mem::replace(&mut count.current, next);
-            previous.drop_with(vm);
-            Ok(Some(item))
-        }
-        Err(error) => {
-            item.drop_with(vm);
-            Err(error)
-        }
-    }
+    let previous = mem::replace(&mut count.current, next);
+    previous.drop_with(vm);
+    Ok(Some(item_guard.into_inner()))
 }
 
 /// Matches CPython's `count_repr`: the step is shown unless it is an *integer*
