@@ -764,8 +764,16 @@ impl Checkout {
                     break Err(self.fatal_error(&fatal.message));
                 }
                 Some(pb::child_event::Kind::Shutdown(shutdown)) => {
-                    // The serving side (never a child) is shutting down and
-                    // dropped this request unexecuted; its worker is gone.
+                    // Only a serving relay sends this, never a child — so a
+                    // local subprocess claiming to shut down is a protocol
+                    // violation, not a shutdown. Accepting it would let the
+                    // child hand back a dump it minted itself, which the
+                    // caller would then restore as trusted session state.
+                    if !self.pool.config.transport.is_websocket() {
+                        return Err(self.protocol_violation("subprocess worker sent a ShutdownDump"));
+                    }
+                    // The serving side is shutting down and dropped this
+                    // request unexecuted; its worker is gone.
                     //
                     // NOTE(sign-dump): `dump` is server-minted and travels
                     // back through this client into `Checkout::restore`; if
@@ -832,10 +840,12 @@ impl Checkout {
     /// worker's own account lands in [`CrashCause::Announced`].
     fn fatal_error(&mut self, message: &str) -> PoolError {
         let status = match self.worker.take() {
-            // the child exits right after the frame, so this reap is what
-            // surfaces e.g. the non-zero status of a version-skew exit
+            // the child exits right after the frame, so give it a moment to do
+            // so before killing: that is what surfaces e.g. the non-zero status
+            // of a version-skew exit, which a SIGKILL would replace with the
+            // signal and lose
             Some(mut worker) => {
-                let status = worker.kill_and_reap();
+                let status = worker.reap_or_kill(FATAL_EXIT_GRACE);
                 drop(worker);
                 self.pool.release_capacity();
                 status
@@ -917,6 +927,12 @@ enum ControlEvent {
     Ok,
     Dump(Vec<u8>),
 }
+
+/// How long a child that announced a `FatalError` is given to exit on its own
+/// before it is killed. It writes the frame and exits immediately, so this is
+/// a scheduling allowance rather than a real wait — and it is only ever spent
+/// on a turn that has already failed.
+const FATAL_EXIT_GRACE: Duration = Duration::from_millis(100);
 
 /// Wraps a request kind in a `ParentRequest`.
 ///

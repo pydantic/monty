@@ -20,8 +20,16 @@
 //! The tag constants below duplicate the oneof numbering in
 //! `proto/monty/v1/monty.proto`; `tests/frame.rs` pins them to the generated
 //! code, exhaustively, so adding an arm without a tag here fails to compile.
-//! An unrecognised tag is always reported as `None`, which callers must treat
-//! as "opaque — forward verbatim, never intercept".
+//!
+//! Classification reports the arm's *tag number*, not a known-kind enum, so
+//! two things mean "opaque — forward verbatim, never intercept" and callers
+//! must treat them alike: `None`, and a number with no `PARENT_REQUEST_*` /
+//! `CHILD_EVENT_*` constant in this build. Matching the reserved range rather
+//! than only the known constants is deliberate — an arm added to the schema
+//! later must report *itself*, not the last arm this build happens to
+//! recognise. A frame carrying `[Feed, <new arm>]` decodes as the new arm, and
+//! a classifier that answered `Feed` would intercept a request the endpoint
+//! never saw.
 
 use std::ops::RangeInclusive;
 
@@ -82,20 +90,26 @@ const PARENT_REQUEST_ONEOF: RangeInclusive<u32> = 1..=19;
 /// and need no change here.
 const CHILD_EVENT_ONEOF: RangeInclusive<u32> = 1..=19;
 
-/// Field number of the encoded `ParentRequest.kind` oneof arm, or `None` for
-/// an empty, malformed, or unknown-arm frame.
+/// Field number of the encoded `ParentRequest.kind` oneof arm, or `None` when
+/// the frame is empty, malformed, or carries no arm in the reserved range.
 ///
-/// Callers must treat `None` as "opaque — forward verbatim, never intercept".
+/// A returned tag is not necessarily one this build knows: an arm added to
+/// the schema later reports its own number. Callers must treat `None` *and*
+/// any tag without a `PARENT_REQUEST_*` constant as "opaque — forward
+/// verbatim, never intercept".
 #[must_use]
 pub fn parent_request_kind(frame: &[u8]) -> Option<u32> {
     last_oneof_arm(frame, PARENT_REQUEST_ONEOF)
 }
 
-/// Field number of the encoded `ChildEvent.kind` oneof arm, or `None` for an
-/// empty, malformed, or unknown-arm frame. Message-level fields (20+) are
-/// skipped without being read.
+/// Field number of the encoded `ChildEvent.kind` oneof arm, or `None` when
+/// the frame is empty, malformed, or carries no arm in the reserved range.
+/// Message-level fields (20+) are skipped without being read.
 ///
-/// Callers must treat `None` as "opaque — forward verbatim, never intercept".
+/// A returned tag is not necessarily one this build knows: an arm added to
+/// the schema later reports its own number. Callers must treat `None` *and*
+/// any tag without a `CHILD_EVENT_*` constant as "opaque — forward verbatim,
+/// never intercept". For an event that means "not a turn-ender I can act on".
 #[must_use]
 pub fn child_event_kind(frame: &[u8]) -> Option<u32> {
     last_oneof_arm(frame, CHILD_EVENT_ONEOF)

@@ -373,4 +373,19 @@ fn peek_rejects_empty_and_malformed_frames() {
     })
     .unwrap();
     assert_eq!(peek::child_event_kind(&no_kind), None);
+    // an arm whose declared length runs past the end of the buffer: prost
+    // rejects the frame, so classification must not report the arm either
+    for (tag, peeked) in [
+        (
+            peek::PARENT_REQUEST_FEED,
+            peek::parent_request_kind as fn(&[u8]) -> Option<u32>,
+        ),
+        (peek::CHILD_EVENT_COMPLETE, peek::child_event_kind),
+    ] {
+        let mut truncated = Vec::new();
+        encode_key(tag, WireType::LengthDelimited, &mut truncated);
+        encode_varint(64, &mut truncated); // claims 64 bytes, supplies none
+        assert!(pb::ParentRequest::decode(truncated.as_slice()).is_err());
+        assert_eq!(peeked(&truncated), None);
+    }
 }

@@ -2103,7 +2103,6 @@ dependencies = [
 name = "monty-pool"
 version = "0.0.19"
 dependencies = [
- "insta",
  "monty-fs",
  "monty-proto",
  "monty-types",
