@@ -18,9 +18,10 @@ use crate::{
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
-    modules::{ModuleFunctions, collections::defaultdict::defaultdict_missing},
+    modules::ModuleFunctions,
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
@@ -1259,28 +1260,9 @@ impl<'h> PyTrait<'h> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            Self::Ref(id) => {
-                // A defaultdict/Counter miss is not a plain `KeyError`: a
-                // defaultdict inserts `factory()` (mutating the dict, so it can't
-                // use the immutable `PyTrait::py_getitem`), and a Counter yields
-                // `0` without inserting.
-                if let HeapData::Dict(d) = vm.heap.get(*id) {
-                    let (is_defaultdict, is_counter) = (d.is_defaultdict(), d.is_counter());
-                    if is_defaultdict || is_counter {
-                        let id = *id;
-                        let found = match vm.heap.read(id) {
-                            HeapReadOutput::Dict(dict) => dict.dict_get(key, vm)?,
-                            _ => unreachable!("defaultdict/Counter is a dict"),
-                        };
-                        return match found {
-                            Some(value) => Ok(value),
-                            None if is_defaultdict => defaultdict_missing(id, key, vm),
-                            None => Ok(Self::Int(0)),
-                        };
-                    }
-                }
-                vm.heap.read(*id).py_getitem(key, vm)
-            }
+            // `heap_subscript` owns the one case a heap read cannot: a
+            // defaultdict miss, which calls its factory and re-enters the VM.
+            Self::Ref(id) => heap_subscript(*id, key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key

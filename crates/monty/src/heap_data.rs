@@ -17,7 +17,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
-    modules::dataclasses::DataclassField,
+    modules::{collections::defaultdict::defaultdict_missing, dataclasses::DataclassField},
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Deque, Dict, DictItemIterator, DictItemsView,
         DictKeyIterator, DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance,
@@ -611,6 +611,28 @@ macro_rules! heap_read_output_py_trait_forward {
             | Self::ExternalFuture(_) => $fallback,
         }
     };
+}
+
+/// Subscripts the heap value `id`, routing a `defaultdict` miss through
+/// `__missing__` and everything else — Counter included — to `py_getitem`.
+///
+/// A defaultdict's miss stores `factory()`, and calling the factory re-enters
+/// the VM, which is impossible both while a `HeapRead` handle is alive and
+/// behind [`PyTrait::py_getitem`]'s `&self`. Taking the [`HeapId`] here keeps
+/// that one mutating case out of the read-only trait; `Value::py_getitem`'s
+/// `Ref` arm calls this instead of reading the heap itself.
+pub(crate) fn heap_subscript(id: HeapId, key: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
+    if matches!(vm.heap.get(id), HeapData::Dict(d) if d.is_defaultdict()) {
+        let HeapReadOutput::Dict(dict) = vm.heap.read(id) else {
+            unreachable!("a defaultdict is a dict");
+        };
+        match dict.dict_get(key, vm)? {
+            Some(value) => Ok(value),
+            None => defaultdict_missing(id, key, vm),
+        }
+    } else {
+        vm.heap.read(id).py_getitem(key, vm)
+    }
 }
 
 impl<'h> PyTrait<'h> for HeapReadOutput<'h> {

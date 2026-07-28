@@ -1248,9 +1248,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         }
     }
 
+    /// A Counter reads a missing key as `0` *without* inserting it. A
+    /// defaultdict's miss inserts `factory()` instead, which re-enters the VM
+    /// and so cannot happen behind this `&self` — see `heap_data::heap_subscript`.
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
         match self.dict_get(key, vm)? {
             Some(value) => Ok(value),
+            None if self.get(vm.heap).is_counter() => Ok(Value::Int(0)),
             None => Err(ExcType::key_error(key, vm)),
         }
     }
