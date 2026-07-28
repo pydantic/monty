@@ -350,7 +350,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternBytes(id) => vm.interns.get_bytes(*id),
             Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),

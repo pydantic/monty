@@ -15,10 +15,14 @@ use crate::{
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
+    expressions::CmpOperator,
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
     modules::collections::{
-        counter::{counter_elements, counter_most_common, counter_order, counter_total, counter_update_method},
+        counter::{
+            CounterCmp, CounterOp, counter_binary_op, counter_compare, counter_elements, counter_inplace_op,
+            counter_most_common, counter_order, counter_total, counter_update_method,
+        },
         defaultdict::defaultdict_missing,
     },
     types::Type,
@@ -1136,6 +1140,63 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         !self.get(vm.heap).is_empty()
     }
 
+    /// Two Counters compare as multisets; every other pairing defers to `py_cmp`,
+    /// which has no dict ordering and so raises `TypeError` — CPython's
+    /// `Counter.__lt__` likewise returns `NotImplemented` for a non-Counter,
+    /// which is why `Counter(a=1) < {'a': 2}` never becomes a dict comparison.
+    fn py_cmp_op(
+        &self,
+        other: &Value,
+        op: CmpOperator,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        let cmp = match op {
+            CmpOperator::Lt => CounterCmp::Lt,
+            CmpOperator::LtE => CounterCmp::Le,
+            CmpOperator::Gt => CounterCmp::Gt,
+            CmpOperator::GtE => CounterCmp::Ge,
+            // Only the four ordering operators reach `py_cmp_op`.
+            _ => return Ok(None),
+        };
+        match (self_id, other.ref_id()) {
+            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_compare(l, r, cmp, vm)?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Add, vm, self_id)
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Sub, vm, self_id)
+    }
+
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::And, vm, self_id)
+    }
+
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        self.counter_binary(other, CounterOp::Or, vm, self_id)
+    }
+
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Add, vm, self_id)
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Sub, vm, self_id)
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::And, vm, self_id)
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        self.counter_inplace(other, CounterOp::Or, vm, self_id)
+    }
+
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         // A defaultdict renders as `defaultdict(<factory repr>, <dict repr>)`.
         if self.get(vm.heap).is_defaultdict() {
@@ -1317,6 +1378,56 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             }
         };
         value.map(CallResult::Value)
+    }
+}
+
+impl<'h> HeapRead<'h, Dict> {
+    /// Runs a binary `Counter` operator (`+ - & |`), which needs *both* operands
+    /// to be Counters.
+    ///
+    /// Any other pairing reports `None` so the caller raises its ordinary
+    /// `TypeError`, matching CPython: `Counter.__add__` returns `NotImplemented`
+    /// for a non-Counter, and a plain dict has no `+` of its own.
+    fn counter_binary(
+        &self,
+        other: &Value,
+        op: CounterOp,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<Value>> {
+        match (self_id, other.ref_id()) {
+            (Some(l), Some(r)) if self.both_counters(r, vm) => Ok(Some(counter_binary_op(l, r, op, vm)?)),
+            _ => Ok(None),
+        }
+    }
+
+    /// Runs an in-place `Counter` operator (`+= -= &= |=`), which needs only the
+    /// *left* operand to be a Counter, mutating it and reporting `true`.
+    ///
+    /// CPython's `__iadd__`/etc. accept any mapping on the right (`c += {'a': 2}`)
+    /// and reject a non-mapping with whatever the underlying `other.items()` /
+    /// `other[elem]` raises — so once the left is a Counter this owns the
+    /// operation, error paths included. A plain dict reports `false`, falling
+    /// back to the binary operator.
+    fn counter_inplace(
+        &mut self,
+        other: &Value,
+        op: CounterOp,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<bool> {
+        match self_id {
+            Some(l) if self.get(vm.heap).is_counter() => {
+                counter_inplace_op(l, other, op, vm)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether this dict and the heap value `other_id` are both Counters.
+    fn both_counters(&self, other_id: HeapId, vm: &VM<'h>) -> bool {
+        self.get(vm.heap).is_counter() && matches!(vm.heap.get(other_id), HeapData::Dict(d) if d.is_counter())
     }
 }
 

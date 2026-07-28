@@ -204,15 +204,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 
@@ -486,15 +486,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 

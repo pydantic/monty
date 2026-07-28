@@ -484,7 +484,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     /// `deque + deque` — concatenation, keeping the LEFT operand's `maxlen`
     /// (so the result can truncate). Any non-deque right operand returns `None`,
     /// yielding CPython's "can only concatenate deque" `TypeError`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Deque(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -497,6 +497,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         }
         let id = vm.heap.allocate(HeapData::Deque(deque))?;
         Ok(Some(Value::Ref(id)))
+    }
+
+    /// `deque += <iterable>` — CPython's `deque.__iadd__` *is* `extend`, so any
+    /// iterable works (`d += [1, 2]`, `d += 'ab'`) and a non-iterable raises the
+    /// iterator protocol's `TypeError` rather than falling back to `+`'s
+    /// concatenation error. The deque keeps its identity, so aliases see the
+    /// update.
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        let Some(self_id) = self_id else {
+            return Ok(false);
+        };
+        // `deque_extend` consumes the iterable, so hand it an owned clone.
+        let iterable = other.clone_with_heap(vm.heap);
+        deque_extend(self_id, iterable, vm)?;
+        Ok(true)
     }
 
     /// `deque * int` — repetition that keeps the deque's `maxlen`, so a bounded
@@ -963,11 +978,9 @@ fn bound_arg(value: Option<Value>, default: usize, len: usize, vm: &mut VM<'_>) 
     Ok(usize::try_from(normalized).expect("bound clamped non-negative"))
 }
 
-/// Extends `deque_id` in place by every item of `iterable` — CPython's
-/// `deque.__iadd__` (`+=` *is* `extend`).
+/// Extends `deque_id` in place by every item of `iterable` — `deque.extend`,
+/// which is also CPython's `deque.__iadd__` (`+=` *is* `extend`).
 ///
-/// Driven from the VM rather than `py_iadd_impl` so a non-iterable raises the
-/// iterator protocol's `TypeError` (the trait can only surface `ResourceError`).
 /// Items are collected *before* appending so `d += d` extends by the original
 /// items and never invalidates the source iterator.
 pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {

@@ -391,7 +391,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     /// `namedtuple + tuple-like` — concatenation into a plain tuple, as in
     /// CPython (the field names describe one instance only, so they cannot
     /// survive concatenation). A non-tuple-like right operand returns `None`.
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(mut other_items) = cloned_tuple_like_items(other, vm) else {
             return Ok(None);
         };

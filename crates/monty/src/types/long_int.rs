@@ -425,7 +425,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(allocate_string(value.to_string(), vm.heap)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() + rhs,
@@ -438,10 +438,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
     }
 
     fn py_radd_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        self.py_add_impl(other, vm)
+        // `+` is commutative here, and the id is unused by the direct form.
+        self.py_add_impl(other, vm, None)
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let lhs = self.get(vm.heap);
         let result = match other {
             Value::Int(rhs) => lhs.inner() - rhs,
@@ -611,7 +612,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         }
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.bitwise_value(other, vm, |lhs, rhs| lhs & rhs)
     }
 
@@ -619,7 +620,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         self.bitwise_value(other, vm, |lhs, rhs| rhs & lhs)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.bitwise_value(other, vm, |lhs, rhs| lhs | rhs)
     }
 

@@ -438,7 +438,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

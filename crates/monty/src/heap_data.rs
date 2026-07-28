@@ -13,6 +13,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState, awaited_state_size},
     bytecode::{CallResult, VM},
     exception_private::{ExcTypeExt, RunError, RunResult, SimpleException},
+    expressions::CmpOperator,
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
@@ -692,16 +693,16 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rpow_impl(other, modulus, vm), else Ok(None))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm), else Ok(None))
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_and_impl(other, vm, self_id), else Ok(None))
     }
 
     fn py_rand_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         heap_read_output_py_trait_forward!(self, |value| value.py_rand_impl(other, vm), else Ok(None))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm), else Ok(None))
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_or_impl(other, vm, self_id), else Ok(None))
     }
 
     fn py_ror_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -927,12 +928,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm), else Ok(None))
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_add_impl(other, vm, self_id), else Ok(None))
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
-        heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm), else Ok(None))
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_sub_impl(other, vm, self_id), else Ok(None))
     }
 
     fn py_mod_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
@@ -941,6 +942,28 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
 
     fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
         heap_read_output_py_trait_forward!(self, |value| value.py_iadd_impl(other, vm, self_id), else Ok(false))
+    }
+
+    fn py_isub_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_isub_impl(other, vm, self_id), else Ok(false))
+    }
+
+    fn py_iand_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_iand_impl(other, vm, self_id), else Ok(false))
+    }
+
+    fn py_ior_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_ior_impl(other, vm, self_id), else Ok(false))
+    }
+
+    fn py_cmp_op(
+        &self,
+        other: &Value,
+        op: CmpOperator,
+        vm: &mut VM<'h>,
+        self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        heap_read_output_py_trait_forward!(self, |value| value.py_cmp_op(other, op, vm, self_id), else Ok(None))
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {

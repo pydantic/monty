@@ -14,6 +14,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int},
     heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
@@ -572,8 +573,46 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_isub_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_isub_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_iand_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_ior_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_ior_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_cmp_op(
+        &self,
+        other: &Self,
+        op: CmpOperator,
+        vm: &mut VM<'_>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_cmp_op(other, op, vm, Some(*id))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// One-sided implementation of Python `+`.
-    fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
@@ -606,7 +645,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::InternBytes(lhs), Self::Ref(rhs)) if let HeapData::Bytes(rhs) = vm.heap.get(*rhs) => {
                 Ok(Some(concat_bytes(interns.get_bytes(*lhs), rhs.as_slice(), vm.heap)?))
             }
-            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm),
+            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm, Some(*id)),
             _ => Ok(None),
         }
     }
@@ -621,7 +660,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `-`.
-    fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         match (self, other) {
             // Int - Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -636,7 +675,7 @@ impl<'h> PyTrait<'h> for Value {
             // Int - Float and Float - Int
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
-            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm),
+            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm, Some(*id)),
             _ => Ok(None),
         }
     }
@@ -1064,13 +1103,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `&`.
-    fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
             Ok(Some(Self::Bool(*lhs && *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs & rhs)))
         } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_and_impl(other, vm)
+            vm.heap.read(*id).py_and_impl(other, vm, Some(*id))
         } else {
             Ok(None)
         }
@@ -1086,13 +1125,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `|`.
-    fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
             Ok(Some(Self::Bool(*lhs || *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs | rhs)))
         } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_or_impl(other, vm)
+            vm.heap.read(*id).py_or_impl(other, vm, Some(*id))
         } else {
             Ok(None)
         }
@@ -1823,7 +1862,7 @@ impl Value {
 
     /// Tries direct and reflected addition without producing the final type error.
     pub(crate) fn py_add_result(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Some(result) = self.py_add_impl(other, vm)? {
+        if let Some(result) = self.py_add_impl(other, vm, self.ref_id())? {
             Ok(Some(result))
         } else {
             other.py_radd_impl(self, vm)
@@ -1835,7 +1874,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_sub_impl(other, vm),
+            |vm| self.py_sub_impl(other, vm, self.ref_id()),
             |vm| other.py_rsub_impl(self, vm),
             "-",
         )
@@ -1912,7 +1951,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_and_impl(other, vm),
+            |vm| self.py_and_impl(other, vm, self.ref_id()),
             |vm| other.py_rand_impl(self, vm),
             "&",
         )
@@ -1923,7 +1962,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_or_impl(other, vm),
+            |vm| self.py_or_impl(other, vm, self.ref_id()),
             |vm| other.py_ror_impl(self, vm),
             "|",
         )

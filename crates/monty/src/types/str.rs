@@ -342,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),

@@ -4,117 +4,20 @@ use super::VM;
 use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, HeapData},
-    modules::collections::counter::{CounterOp, counter_binary_op, counter_inplace_op},
-    types::{PyTrait, deque::deque_extend},
+    heap::DropGuard,
+    types::PyTrait,
     value::Value,
 };
 
 impl VM<'_> {
-    /// Handles a binary `Counter` operator (`+ - & |`) when both operands are
-    /// Counters, returning the result. Any other operand pair returns `None` so
-    /// the caller falls through to its normal numeric/dict/set dispatch.
-    fn binary_counter_op(&mut self, lhs: &Value, rhs: &Value, op: CounterOp) -> RunResult<Option<Value>> {
-        let (Value::Ref(l), Value::Ref(r)) = (lhs, rhs) else {
-            return Ok(None);
-        };
-        let (l, r) = (*l, *r);
-        let both_counters = matches!(self.heap.get(l), HeapData::Dict(d) if d.is_counter())
-            && matches!(self.heap.get(r), HeapData::Dict(d) if d.is_counter());
-        if both_counters {
-            Ok(Some(counter_binary_op(l, r, op, self)?))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Runs a binary operator, first giving `Counter` a chance to handle it when
-    /// both operands are Counters, and otherwise applying the generic dispatcher.
-    fn binary_op_counter(
-        &mut self,
-        op: CounterOp,
-        operation: impl FnOnce(&Value, &Value, &mut Self) -> RunResult<Value>,
-    ) -> Result<(), RunError> {
-        let this = self;
-
-        let rhs = this.pop();
-        defer_drop!(rhs, this);
-        let lhs = this.pop();
-        defer_drop!(lhs, this);
-
-        if let Some(result) = this.binary_counter_op(lhs, rhs, op)? {
-            this.push(result);
-            return Ok(());
-        }
-
-        let result = operation(lhs, rhs, this)?;
-        this.push(result);
-        Ok(())
-    }
-
-    /// Handles an in-place `Counter` operator (`+= -= &= |=`) when the *left*
-    /// operand is a Counter, mutating it and leaving it on the stack.
-    ///
-    /// Only the left operand must be a Counter: CPython's `__iadd__`/etc. accept
-    /// any mapping on the right (`c += {'a': 2}`) and reject a non-mapping with
-    /// whatever the underlying `other.items()` / `other[elem]` raises — so once
-    /// the left is a Counter this owns the operation, error paths included.
-    /// Peeks the left operand so a non-Counter left leaves the stack untouched
-    /// for the caller's binary fallback; returns whether it was handled.
-    fn try_inplace_counter(&mut self, op: CounterOp) -> RunResult<bool> {
-        let len = self.stack.len();
-        let Some(&Value::Ref(l)) = self.stack.get(len - 2) else {
-            return Ok(false);
-        };
-        if !matches!(self.heap.get(l), HeapData::Dict(d) if d.is_counter()) {
-            return Ok(false);
-        }
-        let rhs = self.pop();
-        let mut lhs_guard = DropGuard::new(self.pop(), self);
-        let (_, this) = lhs_guard.as_parts_mut();
-        let outcome = counter_inplace_op(l, &rhs, op, this);
-        rhs.drop_with(this);
-        outcome?;
-        // The left operand keeps its identity, so an alias sees the update.
-        let (lhs, this) = lhs_guard.into_parts();
-        this.push(lhs);
-        Ok(true)
-    }
-
-    /// Handles `deque += <iterable>` in place, mutating the left deque.
-    ///
-    /// CPython's `deque.__iadd__` *is* `extend`, so any iterable works
-    /// (`d += [1, 2]`, `d += 'ab'`) and a non-iterable raises `TypeError` from the
-    /// iterator protocol rather than falling back to `+`'s concatenation error.
-    /// Peeks the left operand so a non-deque leaves the stack untouched; returns
-    /// whether it was handled.
-    fn try_inplace_deque(&mut self) -> RunResult<bool> {
-        let len = self.stack.len();
-        let Some(&Value::Ref(deque_id)) = self.stack.get(len - 2) else {
-            return Ok(false);
-        };
-        if !matches!(self.heap.get(deque_id), HeapData::Deque(_)) {
-            return Ok(false);
-        }
-        let rhs = self.pop();
-        let mut lhs_guard = DropGuard::new(self.pop(), self);
-        let (_, this) = lhs_guard.as_parts_mut();
-        // `extend` consumes `rhs`, raising `TypeError` if it is not iterable.
-        deque_extend(deque_id, rhs, this)?;
-        // The left operand keeps its identity, so an alias sees the update.
-        let (lhs, this) = lhs_guard.into_parts();
-        this.push(lhs);
-        Ok(true)
-    }
-
     /// Binary addition.
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
-        self.binary_op_counter(CounterOp::Add, |lhs, rhs, vm| lhs.py_add(rhs, vm))
+        self.binary_op(|lhs, rhs, vm| lhs.py_add(rhs, vm))
     }
 
     /// Binary subtraction.
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
-        self.binary_op_counter(CounterOp::Sub, |lhs, rhs, vm| lhs.py_sub(rhs, vm))
+        self.binary_op(|lhs, rhs, vm| lhs.py_sub(rhs, vm))
     }
 
     /// Binary multiplication.
@@ -145,12 +48,12 @@ impl VM<'_> {
 
     /// Binary `&`.
     pub(super) fn binary_and(&mut self) -> Result<(), RunError> {
-        self.binary_op_counter(CounterOp::And, |lhs, rhs, vm| lhs.py_and(rhs, vm))
+        self.binary_op(|lhs, rhs, vm| lhs.py_and(rhs, vm))
     }
 
     /// Binary `|`.
     pub(super) fn binary_or(&mut self) -> Result<(), RunError> {
-        self.binary_op_counter(CounterOp::Or, |lhs, rhs, vm| lhs.py_or(rhs, vm))
+        self.binary_op(|lhs, rhs, vm| lhs.py_or(rhs, vm))
     }
 
     /// Binary `^`.
@@ -168,74 +71,53 @@ impl VM<'_> {
         self.binary_op(|lhs, rhs, vm| lhs.py_rshift(rhs, vm))
     }
 
-    /// `-=` — an in-place Counter subtraction, or ordinary binary subtraction.
-    pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
-        if self.try_inplace_counter(CounterOp::Sub)? {
-            Ok(())
-        } else {
-            self.binary_sub()
-        }
-    }
-
-    /// `&=` — an in-place Counter intersection, or ordinary binary `&`.
-    pub(super) fn inplace_and(&mut self) -> Result<(), RunError> {
-        if self.try_inplace_counter(CounterOp::And)? {
-            Ok(())
-        } else {
-            self.binary_and()
-        }
-    }
-
-    /// `|=` — an in-place Counter union, or ordinary binary `|`.
-    pub(super) fn inplace_or(&mut self) -> Result<(), RunError> {
-        if self.try_inplace_counter(CounterOp::Or)? {
-            Ok(())
-        } else {
-            self.binary_or()
-        }
-    }
-
-    /// In-place addition (uses py_iadd for mutable containers, falls back to py_add).
+    /// In-place addition.
     ///
-    /// A Counter (`+=` adds counts) and a deque (`+=` is extend) are handled first
-    /// because their in-place forms diverge from a plain binary `+`. For everything
-    /// else, mutable types like lists mutate in place via `py_iadd_impl` (returning
-    /// `true`), while immutable types fall back to regular addition.
-    ///
-    /// Uses lazy type capture: only calls `py_type()` in error paths.
+    /// Mutable types (a list, a `Counter`, a `deque` whose `+=` is `extend`)
+    /// mutate through `py_iadd_impl` and keep their identity, so an alias sees
+    /// the update; immutable ones fall back to ordinary addition. Uses lazy type
+    /// capture: only calls `py_type()` in error paths.
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
-        if self.try_inplace_counter(CounterOp::Add)? {
-            return Ok(());
-        }
-        if self.try_inplace_deque()? {
-            return Ok(());
-        }
-        let this = self;
+        self.inplace_op(
+            |lhs, rhs, vm| lhs.py_iadd_impl(rhs, vm, lhs.ref_id()),
+            |lhs, rhs, vm| {
+                if let Some(value) = lhs.py_add_result(rhs, vm)? {
+                    Ok(value)
+                } else {
+                    let lhs_type = lhs.py_type(vm);
+                    Err(ExcType::binary_type_error(
+                        "+=",
+                        lhs_type,
+                        lhs.py_type_name(vm),
+                        rhs.py_type_name(vm),
+                    ))
+                }
+            },
+        )
+    }
 
-        let rhs = this.pop();
-        defer_drop!(rhs, this);
-        // Use DropGuard because inplace addition will push lhs back on the stack if successful
-        let mut lhs_guard = DropGuard::new(this.pop(), this);
-        let (lhs, this) = lhs_guard.as_parts_mut();
+    /// `-=` — an in-place mutation (a `Counter` subtracts counts), or binary `-`.
+    pub(super) fn inplace_sub(&mut self) -> Result<(), RunError> {
+        self.inplace_op(
+            |lhs, rhs, vm| lhs.py_isub_impl(rhs, vm, lhs.ref_id()),
+            |lhs, rhs, vm| lhs.py_sub(rhs, vm),
+        )
+    }
 
-        if lhs.py_iadd_impl(rhs, this, lhs.ref_id())? {
-            let (lhs, this) = lhs_guard.into_parts();
-            this.push(lhs);
-            return Ok(());
-        }
+    /// `&=` — an in-place mutation (a `Counter` intersects counts), or binary `&`.
+    pub(super) fn inplace_and(&mut self) -> Result<(), RunError> {
+        self.inplace_op(
+            |lhs, rhs, vm| lhs.py_iand_impl(rhs, vm, lhs.ref_id()),
+            |lhs, rhs, vm| lhs.py_and(rhs, vm),
+        )
+    }
 
-        if let Some(value) = lhs.py_add_result(rhs, this)? {
-            this.push(value);
-            Ok(())
-        } else {
-            let lhs_type = lhs.py_type(this);
-            Err(ExcType::binary_type_error(
-                "+=",
-                lhs_type,
-                lhs.py_type_name(this),
-                rhs.py_type_name(this),
-            ))
-        }
+    /// `|=` — an in-place mutation (a `Counter` unions counts), or binary `|`.
+    pub(super) fn inplace_or(&mut self) -> Result<(), RunError> {
+        self.inplace_op(
+            |lhs, rhs, vm| lhs.py_ior_impl(rhs, vm, lhs.ref_id()),
+            |lhs, rhs, vm| lhs.py_or(rhs, vm),
+        )
     }
 
     /// Binary matrix multiplication (`@` operator).
@@ -258,5 +140,36 @@ impl VM<'_> {
         let result = operation(lhs, rhs, this)?;
         this.push(result);
         Ok(())
+    }
+
+    /// Applies an in-place operation, offering the left operand `inplace` (its
+    /// `py_i*_impl` hook) first and otherwise falling back to `binary`.
+    ///
+    /// A hook reporting `true` has mutated the left operand, which is pushed
+    /// back so it keeps its identity; `false` means the type has no in-place
+    /// form and the ordinary binary operator produces a fresh value.
+    fn inplace_op(
+        &mut self,
+        inplace: impl FnOnce(&mut Value, &Value, &mut Self) -> RunResult<bool>,
+        binary: impl FnOnce(&Value, &Value, &mut Self) -> RunResult<Value>,
+    ) -> Result<(), RunError> {
+        let this = self;
+
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        // A `DropGuard` rather than `defer_drop!`: a successful in-place operation
+        // reclaims the left operand to push it back onto the stack.
+        let mut lhs_guard = DropGuard::new(this.pop(), this);
+        let (lhs, this) = lhs_guard.as_parts_mut();
+
+        if inplace(lhs, rhs, this)? {
+            let (lhs, this) = lhs_guard.into_parts();
+            this.push(lhs);
+            Ok(())
+        } else {
+            let result = binary(lhs, rhs, this)?;
+            this.push(result);
+            Ok(())
+        }
     }
 }

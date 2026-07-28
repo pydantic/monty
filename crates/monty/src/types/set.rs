@@ -1016,7 +1016,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         !self.get(vm.heap).is_empty()
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1024,7 +1024,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1032,7 +1032,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1356,7 +1356,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         !self.get(vm.heap).is_empty()
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1364,7 +1364,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1372,7 +1372,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
