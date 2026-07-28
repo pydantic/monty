@@ -30,6 +30,14 @@
 //! recognise. A frame carrying `[Feed, <new arm>]` decodes as the new arm, and
 //! a classifier that answered `Feed` would intercept a request the endpoint
 //! never saw.
+//!
+//! The flip side of that choice: *this* build's prost skips an unknown
+//! reserved tag as an unknown field, so `[Feed, <unknown tag>]` decodes as
+//! `Feed` here while classifying as the unknown tag — opaque. No canonical
+//! sender produces such a frame (prost never emits tags it doesn't know), so
+//! only a hostile or non-prost peer can force the divergence, and the worst
+//! it yields is a missed interception or turn-ender — callers' session
+//! deadlines must bound that, they are the enforcement backstop.
 
 use std::ops::RangeInclusive;
 
@@ -130,11 +138,17 @@ pub fn child_event_kind(frame: &[u8]) -> Option<u32> {
 ///
 /// Values are skipped with prost's own [`skip_field`] — the same routine its
 /// decoder applies to unknown fields — and an arm that is not
-/// length-delimited (which fails prost's decode) is `None` here too. The
-/// guarantee is one-directional: every frame that *decodes* classifies
-/// identically; a frame prost would reject may still report an arm (e.g. a
-/// wire-type mismatch on a non-oneof field peek doesn't model), which is
-/// harmless because the endpoint rejects the frame itself.
+/// length-delimited (which fails prost's decode) is `None` here too.
+///
+/// The agreement guarantee is one-directional and holds for frames whose
+/// reserved-range tags are all arms this build knows: those classify exactly
+/// as prost decodes them. Two escapes exist, harmless to callers that treat
+/// unclassified frames as opaque and lean on session deadlines: a frame prost
+/// would reject may still report an arm (e.g. a wire-type mismatch on a
+/// non-oneof field peek doesn't model — the endpoint rejects the frame
+/// itself), and a frame pairing a known arm with an *unknown* reserved tag
+/// reports the unknown tag while this build's prost skips it and decodes the
+/// known arm (see the module docs on why the reserved range wins).
 fn last_oneof_arm(frame: &[u8], oneof: RangeInclusive<u32>) -> Option<u32> {
     let mut buf = frame;
     let mut arm = None;
