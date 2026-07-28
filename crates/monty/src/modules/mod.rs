@@ -62,8 +62,14 @@ pub(crate) enum StandardLib {
     ///
     /// The variant is gated rather than left as a permanent unused entry so the
     /// `from_repr` <-> discriminant mapping doesn't carry a hole on production
-    /// builds. Because it's the last variant, gating it has no effect on the
-    /// numeric discriminants of any other module.
+    /// builds.
+    ///
+    /// Gated variants go LAST because they are the only ones allowed to move:
+    /// discriminants are baked into dumps as the `LoadModule` operand, and a
+    /// `test-hooks` dump never leaves the build that wrote it. Ungated ids are
+    /// wire-stable, so a new module is appended HERE, ahead of this block —
+    /// which does shift `Gc`, and that is fine. Appending after it instead
+    /// would make the new module's own id depend on the feature.
     #[cfg(feature = "test-hooks")]
     Gc,
 }
@@ -126,7 +132,9 @@ pub(crate) enum ModuleFunctions {
     Unicodedata(unicodedata::UnicodedataFunctions),
     Itertools(itertools::ItertoolsFunctions),
     /// `gc` module functions — only present under the `test-hooks` feature.
-    /// See [`gc`] for why we keep this gated rather than always-on.
+    /// See [`gc`] for why we keep this gated rather than always-on. As in
+    /// [`StandardLib`], the gated block goes last and new functions are
+    /// appended ahead of it; these ids are postcard variant indices.
     #[cfg(feature = "test-hooks")]
     Gc(gc::GcFunctions),
     /// `sys` module functions — only present under the `test-hooks` feature.
