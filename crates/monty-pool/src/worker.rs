@@ -83,17 +83,19 @@ impl WebSocketWorker {
     /// Sends one event as a single binary WebSocket message (no length prefix), and
     /// flushes — the protocol is strict alternation, so the frame must hit the wire.
     fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+        // encode first: an oversize frame must be rejected before any I/O so the
+        // worker stays synced (see `request_turn`)
         let body = encode_to_capped_vec(request)?;
         self.socket
             .write(Message::Binary(body.into()))
             .map_err(ws_to_frame_error)?;
-        self.socket.flush().map_err(ws_to_frame_error)?;
-        Ok(())
+        self.socket.flush().map_err(ws_to_frame_error)
     }
 
     /// Reads one `ChildEvent` from the WebSocket, skipping control frames. A
-    /// close/EOF *without* a prior turn-ender means the child died — surfaced as
-    /// [`FrameError::Truncated`], mirroring the stdio crash contract.
+    /// close/EOF *without* a prior turn-ender means the remote worker is gone —
+    /// surfaced as [`FrameError::Truncated`], which the checkout classifies as
+    /// [`crate::PoolError::Disconnected`].
     fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         loop {
             match self.socket.read() {

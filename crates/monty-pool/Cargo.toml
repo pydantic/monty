@@ -28,6 +28,7 @@ tungstenite = { workspace = true }
 rustls = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

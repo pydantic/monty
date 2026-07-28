@@ -104,8 +104,9 @@ impl Pool {
 
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh remote
-    /// one, waiting as capacity allows.
-    fn acquire_worker(&self) -> Result<Worker, PoolError> {
+    /// one, waiting as capacity allows. Also used by `Checkout`'s eviction
+    /// recovery to dial a replacement worker mid-checkout.
+    pub(crate) fn acquire_worker(&self) -> Result<Worker, PoolError> {
         // WebSocket connections are single-use and never pooled idle, so the
         // idle-reuse step is skipped and each acquisition dials a fresh worker.
         let websocket = self.config.transport.is_websocket();

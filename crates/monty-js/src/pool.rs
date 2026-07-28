@@ -601,10 +601,26 @@ impl From<StdResult<TurnEvent, PoolError>> for TurnOutcome {
                 timed_out: true,
                 exit_status: None,
             },
-            Err(PoolError::Crashed { status, context }) => Self::Crashed {
-                message: format!("monty worker crashed while {context}"),
+            Err(err @ PoolError::Crashed { .. }) => {
+                let exit_status = match &err {
+                    PoolError::Crashed { status, .. } => status.map(|status| status.to_string()),
+                    _ => None,
+                };
+                // the error's own Display picks between "while <doing X>" and
+                // the worker's stated reason; don't re-derive it here
+                Self::Crashed {
+                    message: err.to_string(),
+                    timed_out: false,
+                    exit_status,
+                }
+            }
+            // WebSocket-only; unreachable here (the napi binding is
+            // subprocess-only) but mapped to its local analogue rather than
+            // falling through to a misleading protocol error.
+            Err(err @ PoolError::Disconnected { .. }) => Self::Crashed {
+                message: err.to_string(),
                 timed_out: false,
-                exit_status: status.map(|status| status.to_string()),
+                exit_status: None,
             },
             Err(other) => Self::Protocol(other.to_string()),
         }

@@ -152,6 +152,9 @@ impl DecodedChildEvent {
             Kind::DumpResult(value) => (9, value.encode_to_vec()),
             Kind::Ok(value) => (10, value.encode_to_vec()),
             Kind::FatalError(value) => (11, value.encode_to_vec()),
+            // only fabricated by serving relays (monty-server), never by a
+            // child — mapped anyway so this stays total; tag mirrors the oneof
+            Kind::Shutdown(value) => (12, value.encode_to_vec()),
         };
         Some(Self { kind, bytes })
     }

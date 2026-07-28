@@ -205,16 +205,6 @@ impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
     pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
-        let mut this = Self {
-            worker: Some(worker),
-            pool,
-            pending: None,
-            duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
-            reported_execution: Duration::ZERO,
-            armed_deadline: None,
-            restored_script_name: None,
-            feed_mounts: None,
-        };
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Configure(pb::Configure {
                 script_name: repl.script_name.clone(),
@@ -228,6 +218,16 @@ impl Checkout {
                 // built against a different version reuses the wire format).
                 monty_version: MONTY_VERSION.to_owned(),
             })),
+        };
+        let mut this = Self {
+            worker: Some(worker),
+            pool,
+            pending: None,
+            duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
+            reported_execution: Duration::ZERO,
+            armed_deadline: None,
+            restored_script_name: None,
+            feed_mounts: None,
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
@@ -779,10 +779,18 @@ impl Checkout {
                 Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
                 Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
+                    break Err(self.fatal_error(&fatal.message));
+                }
+                Some(pb::child_event::Kind::Shutdown(shutdown)) => {
+                    // The serving side (never a child) is shutting down and
+                    // dropped this request unexecuted; its worker is gone.
+                    //
+                    // NOTE(sign-dump): `dump` is server-minted and travels
+                    // back through this client into `Checkout::restore`; if
+                    // host-side dump signing lands it must pass the same
+                    // verification there as any other dump.
                     self.discard_worker();
-                    break Err(PoolError::Protocol(
-                        format!("worker reported fatal error: {}", fatal.message).into(),
-                    ));
+                    break Err(PoolError::Shutdown { dump: shutdown.dump });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
@@ -831,8 +839,39 @@ impl Checkout {
         PoolError::Protocol(context.into())
     }
 
+    /// Discards the worker after it announced a `FatalError`.
+    ///
+    /// The frame arrives on an intact stream, but it means the far end is
+    /// *gone*: a child writes it and exits immediately (version skew, frame
+    /// desync, panic), and a serving relay uses it to report that it could not
+    /// start a child at all. That is a crash with a reason attached rather
+    /// than a protocol disagreement, so it is reported as one — a caller that
+    /// handles crashes by starting a new session needs no extra arm, and the
+    /// worker's own account lands in `reason`.
+    fn fatal_error(&mut self, message: &str) -> PoolError {
+        let status = match self.worker.take() {
+            // the child exits right after the frame, so this reap is what
+            // surfaces e.g. the non-zero status of a version-skew exit
+            Some(mut worker) => {
+                let status = worker.kill_and_reap();
+                drop(worker);
+                self.pool.release_capacity();
+                status
+            }
+            None => None,
+        };
+        self.pending = None;
+        self.feed_mounts = None;
+        PoolError::Crashed {
+            status,
+            context: "waiting for a reply".to_owned(),
+            reason: Some(message.to_owned()),
+        }
+    }
+
     /// Discards the worker after an I/O failure and classifies it as a
-    /// watchdog timeout or a crash.
+    /// watchdog timeout, a crash, or — on the WebSocket transport, where the
+    /// worker is a remote process this client cannot reap — a disconnect.
     fn poison(&mut self, context: &str) -> PoolError {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
@@ -847,10 +886,15 @@ impl Checkout {
             PoolError::Timeout {
                 timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
             }
+        } else if self.pool.config.transport.is_websocket() {
+            PoolError::Disconnected {
+                context: context.to_owned(),
+            }
         } else {
             PoolError::Crashed {
                 status,
                 context: context.to_owned(),
+                reason: None,
             }
         }
     }

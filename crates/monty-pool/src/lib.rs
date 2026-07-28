@@ -105,13 +105,20 @@ impl PoolConfig {
 /// Why a pool operation failed.
 #[derive(Debug)]
 pub enum PoolError {
-    /// The worker process died (segfault, abort, external kill, or EOF on
-    /// its pipes). The worker has been discarded; the pool stays usable.
+    /// The worker is gone: it died (segfault, abort, external kill, or EOF on
+    /// its pipes), or it announced a `FatalError` and exited — which a serving
+    /// relay also uses to report that it could not start a worker at all. The
+    /// worker has been discarded; the pool stays usable.
     Crashed {
         /// Exit status, when the process could be reaped.
         status: Option<ExitStatus>,
         /// What the pool was doing when the death was observed.
         context: String,
+        /// What the worker said before dying, when it announced a
+        /// `FatalError` rather than simply vanishing. Takes the place of
+        /// `context` in the message: the worker's own account of why it died
+        /// beats the pool's note of what it happened to be doing.
+        reason: Option<String>,
     },
     /// The watchdog killed the worker after `request_timeout` elapsed.
     Timeout {
@@ -135,14 +142,39 @@ pub enum PoolError {
     Spawn(String),
     /// The checkout was already finished or its worker already discarded.
     Finished,
+    /// The remote worker's connection dropped without a turn-ending event
+    /// (WebSocket transport only — the local analogue is [`Self::Crashed`]).
+    /// The sandbox may have died, or the server may have dropped the session
+    /// by policy (idle/session/turn timeout, capacity); the two are
+    /// indistinguishable to a client that only learns of the close, so this
+    /// deliberately says no more than "the connection went away".
+    Disconnected {
+        /// What the pool was doing when the disconnect was observed.
+        context: String,
+    },
+    /// The remote server is shutting down and did **not** run the request —
+    /// re-running it on a fresh session is safe. `dump` carries the session
+    /// state captured just before shutdown, restorable via
+    /// [`Checkout::restore`] on a fresh checkout.
+    Shutdown {
+        /// Restorable session dump, absent when there was no session yet or
+        /// the server's dump failed.
+        dump: Option<Vec<u8>>,
+    },
 }
 
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Crashed { status, context } => match status {
-                Some(status) => write!(f, "monty worker crashed while {context}: {status}"),
-                None => write!(f, "monty worker crashed while {context}"),
+            Self::Crashed {
+                status,
+                context,
+                reason,
+            } => match (reason, status) {
+                (Some(reason), Some(status)) => write!(f, "monty worker crashed: {reason} ({status})"),
+                (Some(reason), None) => write!(f, "monty worker crashed: {reason}"),
+                (None, Some(status)) => write!(f, "monty worker crashed while {context}: {status}"),
+                (None, None) => write!(f, "monty worker crashed while {context}"),
             },
             Self::Timeout { timeout } => {
                 write!(f, "monty worker killed after exceeding request timeout of {timeout:?}")
@@ -153,6 +185,13 @@ impl fmt::Display for PoolError {
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
+            Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
+            Self::Shutdown { dump } => match dump {
+                Some(_) => {
+                    f.write_str("monty server is shutting down; the request did not run (session dump attached)")
+                }
+                None => f.write_str("monty server is shutting down; the request did not run"),
+            },
         }
     }
 }
@@ -171,6 +210,7 @@ impl From<io::Error> for PoolError {
         Self::Crashed {
             status: None,
             context: format!("performing I/O: {err}"),
+            reason: None,
         }
     }
 }

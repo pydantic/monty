@@ -11,7 +11,9 @@
 //! ├── MontySyntaxError         # Raised when syntax is invalid or Monty can't parse the code
 //! ├── MontyRuntimeError        # Raised when code fails during execution
 //! ├── MontyTypingError         # Raised when type checking finds errors in the code
-//! ├── MontyCrashedError        # Raised when a worker process dies or times out
+//! ├── MontyCrashedError        # Raised when the sandbox dies or times out
+//! ├── MontyDisconnectError     # A remote worker's connection closed (websocket only)
+//! ├── MontyShutdown            # The remote server is shutting down (websocket only)
 //! └── MontyConversionError     # A host value that can't be converted into the sandbox
 //! ```
 
@@ -334,12 +336,16 @@ impl MontyRuntimeError {
     }
 }
 
-/// Raised when a worker process died (segfault, abort, external kill) or
-/// was killed by the pool's request-timeout watchdog.
+/// Raised when the sandbox is gone: the worker process died (segfault, abort,
+/// external kill), the pool's request-timeout watchdog killed it, or it
+/// announced a fatal error and exited — which a serving server also uses to
+/// report that it could not start a worker at all.
 ///
 /// This is exactly the failure mode subprocess pools exist to contain: the
 /// sandbox process is gone, but the host process is unharmed and the pool
-/// replaces the worker — catch this error and retry or report.
+/// replaces the worker — catch this error and retry or report. The session is
+/// lost in every case, which is why they share one type; the message says
+/// which happened.
 #[pyclass(extends=MontyError, module="pydantic_monty")]
 pub struct MontyCrashedError {
     /// `True` when the pool's `request_timeout` watchdog killed the worker.
@@ -374,6 +380,92 @@ impl MontyCrashedError {
     #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
     fn __repr__(slf: PyRef<'_, Self>) -> String {
         format!("MontyCrashedError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when a remote worker's connection closed without ending its turn
+/// (WebSocket transport only — the local analogue is `MontyCrashedError`).
+///
+/// The sandbox may have died, or the server may have dropped the session by
+/// policy: an idle/session/turn timeout, or being over capacity. A client that
+/// only sees the connection go away cannot tell those apart, so this error
+/// deliberately claims no more than that. Retry on a fresh session.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyDisconnectError {}
+
+impl MontyDisconnectError {
+    /// Creates a `MontyDisconnectError` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self {});
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyDisconnectError {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyDisconnectError({})", slf.as_super().message().unwrap_or_default())
+    }
+}
+
+/// Raised when the remote server is shutting down (WebSocket transport only).
+///
+/// Not an error in your code, which is why it is the one exception here
+/// without an `Error` suffix — it still subclasses `MontyError`, so a generic
+/// `except MontyError` catches it. The request that triggered it **did not
+/// run**, so re-running it against a fresh session is safe.
+///
+/// `dump` holds the session state captured just before shutdown; pass it to
+/// `session.load` / `session.load_snapshot` on a new session to carry the
+/// session over. It is `None` when nothing had run yet or the server's dump
+/// failed.
+///
+/// One caveat when the interrupted request was answering a suspension (an
+/// external function or `os` callback): the host already ran that call, and
+/// the restored session re-announces it, so it runs a second time. Make such
+/// callbacks idempotent if you intend to restore across a shutdown.
+#[pyclass(extends=MontyError, module="pydantic_monty")]
+pub struct MontyShutdown {
+    /// Restorable session dump, or `None` when the server had no session to
+    /// dump or the dump failed.
+    #[pyo3(get)]
+    dump: Option<Vec<u8>>,
+}
+
+impl MontyShutdown {
+    /// Creates a `MontyShutdown` with the given description.
+    #[must_use]
+    pub fn new_err(py: Python<'_>, message: String, dump: Option<Vec<u8>>) -> PyErr {
+        let base = MontyError::new(MontyException::new(ExcType::RuntimeError, Some(message)));
+        let init = PyClassInitializer::from(base).add_subclass(Self { dump });
+        match Py::new(py, init) {
+            Ok(err) => PyErr::from_value(err.into_bound(py).into_any()),
+            Err(e) => e,
+        }
+    }
+}
+
+#[pymethods]
+impl MontyShutdown {
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __str__(slf: PyRef<'_, Self>) -> String {
+        slf.as_super().message().unwrap_or_default().to_owned()
+    }
+
+    #[expect(clippy::needless_pass_by_value, reason = "required by macro")]
+    fn __repr__(slf: PyRef<'_, Self>) -> String {
+        format!("MontyShutdown({})", slf.as_super().message().unwrap_or_default())
     }
 }
 

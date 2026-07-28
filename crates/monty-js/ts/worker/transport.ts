@@ -69,6 +69,8 @@ const Ev = {
   DumpResult: 9,
   Ok: 10,
   FatalError: 11,
+  // 12 (ShutdownDump) is only ever fabricated by a serving relay, never by a
+  // worker, so this transport has no arm for it.
 }
 
 export class WorkerTransport {
@@ -366,13 +368,18 @@ function decodeChildEvents(reply: Uint8Array): ChildEventFrame[] {
   return [...deframe(reply)].map(readChildEvent)
 }
 
-/** Extracts the single oneof kind (1..=11) from a `ChildEvent`, ignoring timing. */
+/**
+ * Extracts the single oneof kind from a `ChildEvent`, ignoring the
+ * message-level timing/name fields. Tags 1-19 are reserved for oneof arms and
+ * the message's own fields start at 20 (see `monty.proto`), so this range
+ * needs no change when an arm is added.
+ */
 function readChildEvent(frameBytes: Uint8Array): ChildEventFrame {
   const reader = new Reader(frameBytes)
   let event: ChildEventFrame | null = null
   while (!reader.done) {
     const f = reader.next()
-    if (f.field >= 1 && f.field <= 11) event = { kind: f.field, bytes: f.bytes }
+    if (f.field >= 1 && f.field <= 19) event = { kind: f.field, bytes: f.bytes }
   }
   if (!event) throw new Error('ChildEvent carried no kind')
   return event

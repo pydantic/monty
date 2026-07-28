@@ -49,7 +49,7 @@ use tokio::task::{JoinSet, spawn_blocking};
 use crate::{
     async_dispatch::{dispatch_function_call, join_error_to_py, spawn_coroutine_task, wait_for_futures},
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
-    exceptions::{MontyCrashedError, MontyError, MontyTypingError},
+    exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_method_call},
     get_not_handled,
     limits::extract_limits,
@@ -547,9 +547,10 @@ impl PyAsyncMonty {
 }
 
 /// Async context manager owning a pool of remote `monty` workers reached over a
-/// WebSocket. The dialed peer is the server side: a relay that pairs this
-/// connection with a child dialing in from the other end, or any server that
-/// bridges to a worker.
+/// WebSocket. The intended peer is `monty-server` (one child per connection
+/// plus timeout/capacity/drain policy); any server that bridges to a worker fits,
+/// e.g. a relay pairing this connection with a child that dialed in from the
+/// other end, or the dev relay script.
 ///
 /// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
 /// checkout dials the configured URL; `checkout()` yields the same
@@ -1550,6 +1551,8 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
             MontyCrashedError::new_err(py, message, false, status.and_then(|s| s.code()))
         }
         PoolError::Timeout { .. } => MontyCrashedError::new_err(py, message, true, None),
+        PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
+        PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
         PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),
     }
