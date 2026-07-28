@@ -3,7 +3,7 @@
 use num_bigint::BigInt;
 
 use crate::{
-    args::{ArgValues, FromArgs, is_long_int, long_int_is_negative},
+    args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
@@ -49,11 +49,7 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // A genuine int wider than i64: clamp by sign — the saturating paths
         // below then return the number unchanged (huge positive) or 0 / ±0.0
         // (huge negative), matching CPython's `Py_ssize_t` clamp for floats.
-        v if is_long_int(v, vm) => Some(if long_int_is_negative(v, vm) {
-            i64::MIN
-        } else {
-            i64::MAX
-        }),
+        v if is_long_int(v, vm) => Some(if v.long_int_is_negative(vm) { i64::MIN } else { i64::MAX }),
         v => {
             let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(

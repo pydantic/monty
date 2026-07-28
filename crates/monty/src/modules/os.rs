@@ -19,7 +19,7 @@
 use monty_types::{GetenvArgs, MkdirCallArgs, MontyObject, MontyPath, OsFunctionCall, RenameCallArgs, ResourceError};
 
 use crate::{
-    args::{ArgValues, FromArgs, LaxBool, long_int_is_negative},
+    args::{ArgValues, FromArgs, LaxBool},
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
@@ -521,7 +521,7 @@ fn dir_fd_specified(value: &Value, vm: &VM<'_>) -> RunResult<bool> {
         },
         _ => match value.py_type_heap(vm.heap) {
             // Big ints (`LongInt`) are outside i64, so far outside C int.
-            Type::Int if long_int_is_negative(value, vm) => Err(ExcType::overflow_fd_minimum()),
+            Type::Int if value.long_int_is_negative(vm) => Err(ExcType::overflow_fd_minimum()),
             Type::Int => Err(ExcType::overflow_fd_maximum()),
             other => Err(ExcType::type_error_dir_fd(&other.name(vm.heap, vm.interns))),
         },

@@ -7,7 +7,7 @@ use std::{
 };
 
 use monty_types::ResourceError;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
 use smallvec::SmallVec;
@@ -2038,6 +2038,20 @@ impl Value {
         }
     }
 
+    /// True when this is a `LongInt`-valued int (interned or heap-allocated)
+    /// that is negative — lets fixed-width consumers pick the right overflow
+    /// direction/message (`round`'s i64 clamp, `os`'s fd converter). False for
+    /// every other value, `Int`/`Bool` included: pair it with
+    /// [`is_long_int`](crate::args::is_long_int) rather than using it alone to
+    /// classify an int.
+    pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
+        match self {
+            Self::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+            Self::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
+            _ => false,
+        }
+    }
+
     /// Performs a binary bitwise operation on two values.
     ///
     /// Python only supports bitwise operations on integers (and bools, which coerce to int).
@@ -2076,7 +2090,7 @@ impl Value {
                         // Check size before computing to prevent DoS
                         check_lshift_size(l.bits(), shift_u64, vm.heap.tracker())?;
                         l << shift_u64
-                    } else if r.sign() == num_bigint::Sign::Minus {
+                    } else if r.sign() == Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
                     } else {
                         // Shift amount too large to fit in i64 - this would be astronomically large
@@ -2094,11 +2108,11 @@ impl Value {
                         #[expect(clippy::cast_sign_loss)]
                         let shift_u64 = shift as u64;
                         l >> shift_u64
-                    } else if r.sign() == num_bigint::Sign::Minus {
+                    } else if r.sign() == Sign::Minus {
                         return Err(ExcType::value_error_negative_shift_count());
                     } else {
                         // Shift amount too large - result is 0 or -1 depending on sign
-                        if l.sign() == num_bigint::Sign::Minus {
+                        if l.sign() == Sign::Minus {
                             BigInt::from(-1)
                         } else {
                             BigInt::from(0)
