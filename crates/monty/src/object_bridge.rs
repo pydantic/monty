@@ -445,6 +445,12 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::DictValueIterator(_) => Self::Repr("<dict_valueiterator object>".to_owned()),
                     HeapReadOutput::SetIterator(_) => Self::Repr("<set_iterator object>".to_owned()),
                     HeapReadOutput::CallableIterator(_) => Self::Repr("<callable_iterator object>".to_owned()),
+                    // A placeholder like the rest, despite the real in-sandbox repr
+                    // (`count(0)`): rendering it would recurse into `repeat`'s
+                    // arbitrary object, which these arms exist to avoid.
+                    HeapReadOutput::Itertools(iter) => {
+                        Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                    }
                     HeapReadOutput::LongInt(li) => Self::BigInt(li.get(vm.heap).inner().clone()),
                     HeapReadOutput::Module(m) => {
                         Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
@@ -539,6 +545,8 @@ impl MontyTypeExt for MontyType {
             Self::DictValueIterator => Some(Type::DictValueIterator),
             Self::SetIterator => Some(Type::SetIterator),
             Self::CallableIterator => Some(Type::CallableIterator),
+            Self::ItertoolsCount => Some(Type::ItertoolsCount),
+            Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -603,6 +611,8 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::ItertoolsCount => Self::ItertoolsCount,
+            Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,

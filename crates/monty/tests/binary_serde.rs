@@ -246,6 +246,55 @@ fn run_progress_dump_load_multiple_calls() {
     assert_eq!(result.into_complete().unwrap(), MontyObject::Int(30)); // 10 + 20
 }
 
+/// Live `itertools` iterators on the heap survive a dump/load with their state
+/// intact — the only coverage that carries `HeapData::Itertools` (and the boxed
+/// `ItertoolsIter` inside it) through postcard, since a `MontyRun` dump holds
+/// compiled code and no heap at all.
+#[test]
+fn run_progress_dump_load_preserves_itertools_iterators() {
+    let code = r"
+import itertools
+
+c = itertools.count(10, 2)
+r = itertools.repeat('x', 3)
+next(c)
+next(r)
+ext_fn(0)
+[next(c), next(r), repr(c), repr(r)]
+"
+    .to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+
+    // Suspend at `ext_fn` with both iterators partly consumed and still live.
+    let progress = runner
+        .start(vec![], ResourceTracker::default(), PrintWriter::Stdout)
+        .unwrap();
+    let progress = resolve_name_lookups(progress).unwrap();
+    let bytes = progress.dump().unwrap();
+
+    // Both adaptors kept their position: the count carries `current`/`step`,
+    // the repeat carries its object and remaining count.
+    let expected = MontyObject::List(vec![
+        MontyObject::Int(12),
+        MontyObject::String("x".to_owned()),
+        MontyObject::String("count(14, 2)".to_owned()),
+        MontyObject::String("repeat('x', 1)".to_owned()),
+    ]);
+
+    // Both are resumed: an unresumed `RunProgress` leaves its globals' refs
+    // unreleased, aborting under `memory-model-checks`. Pre-existing and not
+    // itertools-specific (a plain `x = [1, 2]` global does it too).
+    let original = progress.into_function_call().expect("should be at function call");
+    assert_eq!(original.function_name, "ext_fn");
+    let from_original = original.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_original.into_complete().unwrap(), expected);
+
+    let loaded: RunProgress = RunProgress::load(&bytes).unwrap();
+    let call = loaded.into_function_call().expect("should be at function call");
+    let from_loaded = call.resume(MontyObject::Int(0), PrintWriter::Stdout).unwrap();
+    assert_eq!(from_loaded.into_complete().unwrap(), expected);
+}
+
 #[test]
 fn run_progress_complete_roundtrip() {
     // When execution completes, we can still dump/load the Complete variant

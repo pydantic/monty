@@ -5,7 +5,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     marker::PhantomData,
-    mem::ManuallyDrop,
+    mem::{self, ManuallyDrop},
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
     sync::Arc,
@@ -26,9 +26,9 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
-        NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
-        StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, ItertoolsIter, List,
+        LongInt, Module, NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice,
+        Str, StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
         list::ListIterator, timedelta, timezone,
     },
     value::Value,
@@ -240,6 +240,7 @@ pub enum HeapReadOutput<'a> {
     DictValueIterator(HeapRead<'a, DictValueIterator>),
     SetIterator(HeapRead<'a, SetIterator>),
     CallableIterator(HeapRead<'a, CallableIterator>),
+    Itertools(HeapRead<'a, ItertoolsIter>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
     Coroutine(HeapRead<'a, Coroutine>),
@@ -559,7 +560,14 @@ impl<'a> HeapPtr<'a> {
         fn heap_read<'a, T>(base: *mut HeapData, field: &T, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
             let base_addr = base as usize;
             let field_addr = ptr::from_ref(field) as usize;
-            let offset = field_addr - base_addr;
+            let offset = field_addr.wrapping_sub(base_addr);
+            // A boxed payload is a SEPARATE allocation, so `field` would sit
+            // outside the enum and the `byte_add` below would be out-of-bounds
+            // UB — silent, since `&Box<T>` deref-coerces to `&T`.
+            debug_assert!(
+                offset < mem::size_of::<HeapData>(),
+                "heap_read called on a field outside HeapData — boxed variants must use heap_read_boxed"
+            );
             HeapRead {
                 // SAFETY: The pointer is derived from the UnsafeCell's `*mut` via byte
                 // offset, preserving the `SharedReadWrite` permission. No reference retag
@@ -634,6 +642,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(base, iter, readers)),
             HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(base, iter, readers)),
             HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
+            HeapData::Itertools(i) => HeapReadOutput::Itertools(heap_read_boxed(i, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
@@ -1696,6 +1705,7 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
         HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
         HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
+        HeapData::Itertools(iter) => iter.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
             if !m.has_refs() {
@@ -1828,6 +1838,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::Itertools(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {
             // Decrement ref count for namespace values that are heap references
@@ -1915,7 +1926,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        types::{List, callable_iterator::CallableIterator},
+        types::{
+            List,
+            callable_iterator::CallableIterator,
+            itertools::{ItertoolsIter, Repeat},
+        },
         value::Value,
     };
 
@@ -2097,6 +2112,31 @@ mod tests {
             // Read through the now-invalidated `SharedReadWrite` raw pointer.
             // Miri's aliasing model fails here.
             let _ = list.get(heap).as_slice().len();
+        });
+    }
+
+    /// Boxed variants (`Itertools`, `RePattern`) must use `heap_read_boxed`: the
+    /// inline path offsets the entry pointer, which is out-of-bounds UB when the
+    /// payload is a separate allocation. The bad pointer still lands on the
+    /// payload, so only `heap_read`'s `debug_assert` and Miri catch it — and this
+    /// test is what makes `make miri` walk a boxed read at all.
+    #[test]
+    fn boxed_variant_is_read_through_its_own_allocation() {
+        let mut heap = Heap::new(16, ResourceTracker::default());
+        // `Value::Int` holds no ref, keeping the test to the pointer
+        // derivation with no refcount bookkeeping of its own.
+        let repeat = Repeat::new(Value::Int(7), Some(3));
+        let id = heap
+            .allocate(HeapData::Itertools(Box::new(ItertoolsIter::Repeat(repeat))))
+            .unwrap();
+
+        HeapReader::with(&mut heap, &mut (), |heap, ()| {
+            let HeapReadOutput::Itertools(iter) = heap.read(id) else {
+                unreachable!()
+            };
+            // Dereferencing is what turns a mis-derived pointer into a read
+            // through the wrong allocation.
+            assert_eq!(iter.get(heap).size_hint(), 3);
         });
     }
 

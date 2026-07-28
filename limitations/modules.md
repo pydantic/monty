@@ -10,6 +10,7 @@ and no way for sandboxed code to load additional modules.
 | ---------- | ------------------------------------ |
 | `asyncio`  | [asyncio.md](asyncio.md)             |
 | `datetime` | [datetime.md](datetime.md)           |
+| `itertools`| [itertools.md](itertools.md)         |
 | `json`     | [json.md](json.md)                   |
 | `math`     | [math.md](math.md)                   |
 | `os`       | [os.md](os.md)                       |
@@ -17,6 +18,7 @@ and no way for sandboxed code to load additional modules.
 | `re`       | [re.md](re.md)                       |
 | `sys`      | [sys.md](sys.md)                     |
 | `typing`   | [typing.md](typing.md)               |
+| `unicodedata` | [unicodedata.md](unicodedata.md)  |
 
 A `gc` module exposing `collect()` / `enable()` / `disable()` is compiled
 in only under the `test-hooks` Cargo feature for use by Monty's own test
@@ -30,7 +32,7 @@ Common modules that are *not* importable in Monty (non-exhaustive):
 as a builtin, not via `collections`), `contextlib`, `copy`, `csv`,
 `ctypes`, `dataclasses` (the `@dataclass` decorator is built in; the
 module is not importable), `decimal`, `enum`, `fractions`, `functools`,
-`hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`, `itertools`,
+`hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`,
 `logging`, `multiprocessing`, `operator`, `pickle`, `queue`, `random`,
 `socket`, `string`, `struct`, `subprocess`, `tempfile`, `threading`,
 `time`, `traceback`, `unittest`, `urllib`, `uuid`, `warnings`, `weakref`,
@@ -38,5 +40,10 @@ module is not importable), `decimal`, `enum`, `fractions`, `functools`,
 
 Many of these are deliberately excluded (`socket`, `subprocess`,
 `multiprocessing`, `threading`, `ctypes`) because they would breach the
-sandbox. Others (`itertools`, `functools`, `collections`, `enum`) are
-simply unimplemented; they may appear over time.
+sandbox. Others (`functools`, `collections`, `enum`) are simply
+unimplemented; they may appear over time.
+
+Some available modules cover only part of their CPython surface — `itertools`
+implements just `count` and `repeat` so far. The absent names are missing from
+the module namespace rather than stubbed, so they fail type checking as well as
+raising `AttributeError` at runtime; see each module's page for the specifics.

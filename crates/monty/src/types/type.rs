@@ -156,6 +156,13 @@ pub enum Type {
     DictValueIterator,
     #[strum(serialize = "set_iterator")]
     SetIterator,
+    /// `itertools.count` — named for CPython's `tp_name`, which is the dotted
+    /// form used in error messages and `repr(type(...))` (`__name__` is bare
+    /// `count`). Same for every other `itertools` iterator.
+    #[strum(serialize = "itertools.count")]
+    ItertoolsCount,
+    #[strum(serialize = "itertools.repeat")]
+    ItertoolsRepeat,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -286,6 +293,8 @@ impl Type {
                 | Self::DictValueIterator
                 | Self::SetIterator
                 | Self::CallableIterator
+                | Self::ItertoolsCount
+                | Self::ItertoolsRepeat
         )
     }
 

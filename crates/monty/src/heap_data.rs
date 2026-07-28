@@ -18,10 +18,10 @@ use crate::{
     intern::FunctionId,
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
-        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, LazyHeapSet, List, LongInt,
-        Module, NamedTuple, OpenFile, Path, PyTrait, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice,
-        Str, StringIterator, Tuple, TupleIterator, Type, callable_iterator::CallableIterator, date, datetime,
-        list::ListIterator, str::allocate_string, timedelta, timezone,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, ItertoolsIter, LazyHeapSet,
+        List, LongInt, Module, NamedTuple, OpenFile, Path, PyTrait, Range, RangeIterator, ReMatch, RePattern, Set,
+        SetIterator, Slice, Str, StringIterator, Tuple, TupleIterator, Type, callable_iterator::CallableIterator, date,
+        datetime, list::ListIterator, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -162,6 +162,13 @@ pub(crate) enum HeapData {
     TimeDelta(timedelta::TimeDelta),
     /// A fixed-offset `datetime.timezone` value.
     TimeZone(timezone::TimeZone),
+    // Append-only: this enum is dumped as part of the heap, so a mid-enum
+    // insertion makes every later variant decode as its neighbour.
+    /// Any `itertools` iterator (`count`, `repeat`, ...).
+    ///
+    /// One variant for the whole family — nothing outside `types::itertools`
+    /// dispatches on which adaptor it is. Boxed so adaptors never grow the entry.
+    Itertools(Box<ItertoolsIter>),
 }
 
 impl HeapData {
@@ -178,6 +185,9 @@ impl HeapData {
     #[inline]
     pub(crate) fn is_gc_tracked(&self) -> bool {
         match self {
+            // Decided per adaptor: `count` holds only numbers and can never
+            // close a cycle, `repeat` holds an arbitrary object and can.
+            Self::Itertools(iter) => iter.is_gc_tracked(),
             Self::List(_)
             | Self::Tuple(_)
             | Self::NamedTuple(_)
@@ -289,6 +299,7 @@ impl HeapData {
             Self::DictValueIterator(_) => Type::DictValueIterator,
             Self::SetIterator(_) => Type::SetIterator,
             Self::CallableIterator(_) => Type::CallableIterator,
+            Self::Itertools(i) => i.py_type(),
         }
     }
 
@@ -339,6 +350,7 @@ impl HeapData {
             Self::DictValueIterator(d) => d.py_estimate_size(),
             Self::SetIterator(d) => d.py_estimate_size(),
             Self::CallableIterator(d) => d.py_estimate_size(),
+            Self::Itertools(d) => d.py_estimate_size(),
         }
     }
 }
@@ -532,6 +544,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::DictValueIterator($value) => $body,
             Self::SetIterator($value) => $body,
             Self::CallableIterator($value) => $body,
+            Self::Itertools($value) => $body,
             Self::Tuple($value) => $body,
             Self::NamedTuple($value) => $body,
             Self::Dict($value) => $body,
@@ -950,6 +963,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_iter(self_id, vm),
             Self::SetIterator(value) => value.py_iter(self_id, vm),
             Self::CallableIterator(value) => value.py_iter(self_id, vm),
+            Self::Itertools(value) => value.py_iter(self_id, vm),
             Self::Tuple(value) => value.py_iter(self_id, vm),
             Self::NamedTuple(value) => value.py_iter(self_id, vm),
             Self::Dict(value) => value.py_iter(self_id, vm),
@@ -1002,6 +1016,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DictValueIterator(value) => value.py_next(self_id, vm),
             Self::SetIterator(value) => value.py_next(self_id, vm),
             Self::CallableIterator(value) => value.py_next(self_id, vm),
+            Self::Itertools(value) => value.py_next(self_id, vm),
             Self::Tuple(value) => value.py_next(self_id, vm),
             Self::NamedTuple(value) => value.py_next(self_id, vm),
             Self::Dict(value) => value.py_next(self_id, vm),

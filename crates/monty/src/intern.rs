@@ -811,6 +811,15 @@ pub enum StaticStrings {
     SrcDirFd,
     /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
     DstDirFd,
+
+    // itertools module strings; `count`, `start`, `step` and `object` reuse the
+    // existing variants of the same name. Appended, per the rule above.
+    /// Module name for `import itertools`.
+    Itertools,
+    /// `itertools.repeat()` function.
+    Repeat,
+    /// `times` keyword argument of `itertools.repeat()`.
+    Times,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.
