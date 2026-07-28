@@ -20,13 +20,13 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
-    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapRead, HeapReadOutput},
     intern::{StaticStrings, StringId},
     modules::ModuleFunctions,
     types::{
-        Dict, LazyHeapSet, Module,
+        Class, Dict, Instance, LazyHeapSet, Module,
         dataclass::write_dataclass_repr,
-        instance::{class_defines, class_name, instance_attr},
+        instance::{class_name, instance_attr},
     },
     value::Value,
 };
@@ -86,12 +86,16 @@ fn dataclass_decorator(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // when something below rejects it — which the guard handles on every path.
     let mut guard = DropGuard::new(cls, vm);
     let (cls, vm) = guard.as_parts();
-    let class_id = match cls {
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => *id,
-        _ => return Err(non_class_error(cls, vm)),
+    // Read once and pass the handle down: everything below then works from a
+    // value already known to be a class, and the guard's reference keeps it alive.
+    let Value::Ref(class_id) = cls else {
+        return Err(non_class_error(cls, vm));
     };
-    let fields = build_dataclass_fields(vm, class_id)?;
-    store_dataclass_fields(vm, class_id, fields)?;
+    let HeapReadOutput::Class(mut class) = vm.heap.read(*class_id) else {
+        return Err(non_class_error(cls, vm));
+    };
+    let fields = build_dataclass_fields(&class, vm)?;
+    store_dataclass_fields(&mut class, fields, vm)?;
     Ok(guard.into_inner())
 }
 
@@ -105,23 +109,22 @@ fn non_class_error(cls: &Value, vm: &VM<'_>) -> RunError {
     .into()
 }
 
-/// Builds the `name -> Field` mapping for `class_id` from its
-/// `__annotations__`: the annotated names in definition order, minus `ClassVar`
-/// entries, each owning the default the class namespace bound for it
-/// (`y: int = 5`).
+/// Builds the `name -> Field` mapping for `class` from its `__annotations__`:
+/// the annotated names in definition order, minus `ClassVar` entries, each
+/// owning the default the class namespace bound for it (`y: int = 5`).
 ///
 /// Also where a class body Monty cannot yet honour is rejected, so an
 /// unimplemented feature raises rather than producing a subtly wrong class
 /// (see `limitations/dataclasses.md`). The fields are guarded throughout, so a
 /// rejection releases the defaults already captured.
-fn build_dataclass_fields(vm: &mut VM<'_>, class_id: HeapId) -> RunResult<Value> {
-    let fields = collect_annotated_fields(vm, class_id);
+fn build_dataclass_fields<'h>(class: &HeapRead<'h, Class>, vm: &mut VM<'h>) -> RunResult<Value> {
+    let fields = collect_annotated_fields(class, vm);
     let mut guard = DropGuard::new(fields, vm);
     let (fields, vm) = guard.as_parts();
     // Field validation runs first, so a class CPython would reject reports
     // CPython's own message and the Monty-only guards can only fire after.
     validate_fields(vm, fields)?;
-    reject_unsupported_members(vm, class_id)?;
+    reject_unsupported_members(class, vm)?;
     let (fields, vm) = guard.into_parts();
     allocate_fields_dict(vm, fields)
 }
@@ -150,10 +153,7 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResu
 /// Writes `__dataclass_fields__` into the class namespace, taking ownership of
 /// `fields`. Re-decorating replaces the previous mapping, which nothing else
 /// owns once it is out of the namespace.
-fn store_dataclass_fields(vm: &mut VM<'_>, class_id: HeapId, fields: Value) -> RunResult<()> {
-    let HeapReadOutput::Class(mut class) = vm.heap.read(class_id) else {
-        unreachable!("the caller checked this is a class")
-    };
+fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm: &mut VM<'h>) -> RunResult<()> {
     let replaced = class.set_attr(StaticStrings::DataclassFields.into(), fields, vm)?;
     replaced.drop_with(vm);
     Ok(())
@@ -165,10 +165,11 @@ fn store_dataclass_fields(vm: &mut VM<'_>, class_id: HeapId, fields: Value) -> R
 const UNSUPPORTED_MEMBERS: [(&str, &str); 1] = [("__post_init__", "which would be silently skipped")];
 
 /// Rejects a class body defining any of [`UNSUPPORTED_MEMBERS`].
-fn reject_unsupported_members(vm: &VM<'_>, class_id: HeapId) -> RunResult<()> {
+fn reject_unsupported_members<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> RunResult<()> {
+    let namespace = class.get(vm.heap).namespace();
     match UNSUPPORTED_MEMBERS
         .iter()
-        .find(|&&(name, _)| class_defines(class_id, name, vm))
+        .find(|&&(name, _)| namespace.get_by_str(name, vm.heap, vm.interns).is_some())
     {
         Some((name, consequence)) => Err(ExcType::not_implemented(format!(
             "dataclass() does not yet support {name} in a class body, {consequence}"
@@ -183,11 +184,8 @@ fn reject_unsupported_members(vm: &VM<'_>, class_id: HeapId) -> RunResult<()> {
 ///
 /// Each field owns its annotation and captured default from here on, so a
 /// caller that discards the result must release them (`drop_with`).
-fn collect_annotated_fields(vm: &VM<'_>, class_id: HeapId) -> Vec<DataclassField> {
-    let HeapData::Class(class) = vm.heap.get(class_id) else {
-        return Vec::new();
-    };
-    let namespace = class.namespace();
+fn collect_annotated_fields<'h>(class: &HeapRead<'h, Class>, vm: &VM<'h>) -> Vec<DataclassField> {
+    let namespace = class.get(vm.heap).namespace();
     let ann_id = match namespace.get_by_str("__annotations__", vm.heap, vm.interns) {
         Some(Value::Ref(id)) => *id,
         _ => return Vec::new(),
@@ -305,20 +303,24 @@ fn annotation_head(annotation: &str, name: &str) -> bool {
     head.rsplit('.').next() == Some(name)
 }
 
-/// The `__dataclass_fields__` dict of a class, or `None` for a plain one.
+/// The `__dataclass_fields__` dict a class namespace holds, or `None` when the
+/// class is not a dataclass.
 ///
-/// Every reader goes through the class namespace, so a class whose
+/// Every reader goes through the namespace, so a class whose
 /// `__dataclass_fields__` sandboxed code overwrote simply stops being a
 /// dataclass rather than reading metadata the class no longer advertises.
-fn fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
-    let HeapData::Class(class) = vm.heap.get(class_id) else {
-        return None;
-    };
-    match class
-        .namespace()
-        .get_by_str(StaticStrings::DataclassFields.into(), vm.heap, vm.interns)
-    {
+fn fields_dict_id(namespace: &Dict, vm: &VM<'_>) -> Option<HeapId> {
+    match namespace.get_by_str(StaticStrings::DataclassFields.into(), vm.heap, vm.interns) {
         Some(Value::Ref(id)) if matches!(vm.heap.get(*id), HeapData::Dict(_)) => Some(*id),
+        _ => None,
+    }
+}
+
+/// [`fields_dict_id`] for the callers holding only a class `HeapId` — the
+/// generic `Instance` code, which reaches a class through its instance.
+fn class_fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
+    match vm.heap.get(class_id) {
+        HeapData::Class(class) => fields_dict_id(class.namespace(), vm),
         _ => None,
     }
 }
@@ -326,7 +328,7 @@ fn fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
 /// Dataclass field names in definition order, or `None` for a plain class —
 /// the `Some`/`None` split the generic `Instance` code branches on.
 pub(crate) fn dataclass_fields(class_id: HeapId, vm: &VM<'_>) -> Option<Vec<StringId>> {
-    let fields_id = fields_dict_id(class_id, vm)?;
+    let fields_id = class_fields_dict_id(class_id, vm)?;
     Some(field_specs(fields_id, vm).into_iter().map(|(name, _)| name).collect())
 }
 
@@ -350,49 +352,54 @@ fn field_specs(fields_id: HeapId, vm: &VM<'_>) -> Vec<(StringId, bool)> {
 
 /// Whether `class_id` names a dataclass, when the field names aren't needed.
 pub(crate) fn is_dataclass_class(class_id: HeapId, vm: &VM<'_>) -> bool {
-    fields_dict_id(class_id, vm).is_some()
+    class_fields_dict_id(class_id, vm).is_some()
 }
 
-/// Constructs a dataclass instance by binding `args` to the recorded fields.
+/// Constructs a dataclass instance by binding `args` to the recorded fields,
+/// taking ownership of the freshly allocated `instance`.
 ///
 /// No bytecode is generated: arguments bind natively as CPython's synthesized
 /// `__init__(self, f1, f2=default, ...)` would, filling unbound fields from the
 /// defaults captured at decoration time. Drops the instance on error.
-pub(crate) fn dataclass_init(
-    vm: &mut VM<'_>,
-    class_id: HeapId,
-    instance_id: HeapId,
+pub(crate) fn dataclass_init<'h>(
+    vm: &mut VM<'h>,
+    class: &HeapRead<'h, Class>,
+    instance: Value,
     args: ArgValues,
 ) -> Result<CallResult, RunError> {
-    let fields_id = fields_dict_id(class_id, vm).expect("dataclass_init requires __dataclass_fields__");
+    let fields_id =
+        fields_dict_id(class.get(vm.heap).namespace(), vm).expect("dataclass_init requires __dataclass_fields__");
     // Owned field metadata (name + has-default), releasing the heap borrow.
     let fields = field_specs(fields_id, vm);
 
     // The instance is owned from here: the guard releases it if binding or
     // storing fails, and hands it back to the caller when they succeed.
-    let mut guard = DropGuard::new(Value::Ref(instance_id), vm);
-    let vm = guard.ctx();
-    let values = bind_dataclass_fields(vm, class_id, fields_id, &fields, args)?;
-    store_bound_fields(vm, instance_id, &fields, values)?;
+    let mut guard = DropGuard::new(instance, vm);
+    let (instance, vm) = guard.as_parts();
+    // Read once for the whole construction. The handle is declared after the
+    // guard so it is released first — a guard that frees the instance must not
+    // find a live reader.
+    let Value::Ref(instance_id) = instance else {
+        unreachable!("the caller just allocated the instance")
+    };
+    let HeapReadOutput::Instance(mut instance) = vm.heap.read(*instance_id) else {
+        unreachable!("the caller just allocated the instance")
+    };
+    let values = bind_dataclass_fields(vm, class, fields_id, &fields, args)?;
+    store_bound_fields(&mut instance, &fields, values, vm)?;
     Ok(CallResult::Value(guard.into_inner()))
 }
 
 /// Stores one bound value per field on the instance `__dict__`, consuming
 /// `values`. A set failure (a resource limit) leaves the untouched tail to the
 /// guard; the caller owns the instance.
-fn store_bound_fields(
-    vm: &mut VM<'_>,
-    instance_id: HeapId,
+fn store_bound_fields<'h>(
+    instance: &mut HeapRead<'h, Instance>,
     fields: &[(StringId, bool)],
     values: Vec<Value>,
+    vm: &mut VM<'h>,
 ) -> Result<(), RunError> {
     defer_drop_mut!(values, vm);
-    // Read once: the handle outlives the loop, so each field costs a `set_attr`
-    // and nothing more. A non-instance is unreachable (the caller just allocated
-    // it) but leaves the values to the guard rather than asserting.
-    let HeapReadOutput::Instance(mut instance) = vm.heap.read(instance_id) else {
-        return Ok(());
-    };
     for i in 0..values.len() {
         let value = mem::replace(&mut values[i], Value::None);
         let name = Value::InternString(fields[i].0);
@@ -412,15 +419,15 @@ fn store_bound_fields(
 /// to drift. Fold into `Signature::bind` when the `@dataclass(...)` keyword form
 /// lands — not a drop-in, as that fills a `&mut Vec<Value>` from `&[Value]`
 /// defaults where this needs owned clones of the captured ones.
-fn bind_dataclass_fields(
-    vm: &mut VM<'_>,
-    class_id: HeapId,
+fn bind_dataclass_fields<'h>(
+    vm: &mut VM<'h>,
+    class: &HeapRead<'h, Class>,
     fields_id: HeapId,
     fields: &[(StringId, bool)],
     args: ArgValues,
 ) -> Result<Vec<Value>, RunError> {
     let n_fields = fields.len();
-    let init_name = format!("{}.__init__", class_name(class_id, vm.heap, vm.interns));
+    let init_name = format!("{}.__init__", class.get(vm.heap).name().as_str(vm.interns));
     let (pos_iter, kwargs) = args.into_parts();
 
     // Every bound argument lands in `values`, guarded so each error below is a
