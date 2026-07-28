@@ -1,0 +1,46 @@
+crates/monty/test_cases/os__functions.py
+  s_4a2a8462550d05::t_e2d6da5621eeb6 51-56
+  s_4a2a8462550d05::t_bb81a8f00a7522 84-88
+crates/monty/src/modules/os.rs
+  s_4a2a8462550d05::t_a7a9207476ef7f 439,444,448,452-486
+  s_4a2a8462550d05::t_02f5ada9a05141 174,205,233,316,399-400
+crates/monty-typeshed/check.py
+  s_4a2a8462550d05::t_b442ab944ce3a8 1-24,31-44
+  s_4a2a8462550d05::t_4632c3ce108786 25-30
+crates/monty/test_cases/args__macro_errors.py
+  s_4a2a8462550d05::t_2654dd8cacf9eb 149-170
+limitations/os.md
+  s_4a2a8462550d05::t_a1c88fa486c0e0 29-38
+  s_4a2a8462550d05::t_286942d9069460 48,50-59
+crates/monty/src/exception_private.rs
+  s_4a2a8462550d05::t_d7b7d70e432f7b 335-339,343-344,348
+crates/monty/src/args/bind_native.rs
+  s_4a2a8462550d05::t_2406c35263c629 627-629,631-632,639
+  s_4a2a8462550d05::t_255b930aedcadb 146
+  s_4a2a8462550d05::t_52160ecde0e62c 654,665,676
+.pre-commit-config.yaml
+  s_4a2a8462550d05::t_aa3216d6da55d6 60
+  s_4a2a8462550d05::t_8da574909c21a3 61-62,64-66
+.github/workflows/ci.yml
+  s_4a2a8462550d05::t_9fd2e9e170a42b 86,88
+crates/monty/src/builtins/enumerate.rs
+  s_4a2a8462550d05::t_79bd509cfa8b7f 98-99
+crates/monty/tests/os_tests.rs
+  s_4a2a8462550d05::t_145af00ddce801 696-738
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9838648c13ef10329114d37ddfc7a5ee6ee77298",
+  "prompts": {},
+  "sessions": {
+    "s_4a2a8462550d05": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "78347401-e980-4192-a49e-c3688f3e2232",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
