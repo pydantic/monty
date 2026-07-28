@@ -427,9 +427,9 @@ impl MontyDisconnectError {
 /// run**, so re-running it against a fresh session is safe.
 ///
 /// `dump` holds the session state captured just before shutdown; pass it to
-/// `session.load` / `session.load_snapshot` on a new session to carry the
-/// session over. It is `None` when nothing had run yet or the server's dump
-/// failed.
+/// `session.load_session` (idle, between feeds) or `session.load_snapshot`
+/// (suspended mid-feed) on a new session to carry the session over. It is
+/// `None` when nothing had run yet or the server's dump failed.
 ///
 /// One caveat when the interrupted request was answering a suspension (an
 /// external function or `os` callback): the host already ran that call, and

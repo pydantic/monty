@@ -484,7 +484,7 @@ pub struct InstallDependencies {
 /// 1-19 are reserved by convention for `kind` arms and the message-level
 /// fields start at 20 — a new arm then never has to jump the numbering. Note
 /// arms past 15 cost a two-byte key instead of one, which forwarding servers
-/// (which read only leading keys, on every frame) pay per event. Such a server
+/// (which walk only field keys, on every frame) pay per event. Such a server
 /// mirrors this numbering to classify frames without decoding them; it treats
 /// a tag it does not know as opaque, so adding an arm degrades rather than
 /// misroutes, but renumbering an existing one would break it.

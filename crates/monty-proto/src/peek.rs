@@ -4,9 +4,18 @@
 //! `monty-server`) must know *which kind* of request/event a frame carries —
 //! to spot turn-enders and to intercept requests during drain — but decoding
 //! whole frames just for that would validate and materialize payloads of up
-//! to [`crate::MAX_FRAME_LEN`] bytes per frame. These helpers read only the
-//! leading field keys, so classification is O(header bytes) regardless of
-//! payload size and the payload itself is never touched.
+//! to [`crate::MAX_FRAME_LEN`] bytes per frame. These helpers walk only the
+//! field keys, skipping payloads by their length, so classification is
+//! O(field count) regardless of payload size and no payload byte is ever
+//! examined.
+//!
+//! Classification must agree with what a prost endpoint decodes from the
+//! same bytes — a frame the relay reads one way and the client another is a
+//! desync a hostile child could mint deliberately. So the walk mirrors
+//! prost's `merge` semantics exactly: the *last* oneof arm wins, values are
+//! skipped with the same routine prost uses for unknown fields, and any
+//! frame prost would reject (wire-type mismatch on an arm, truncated value)
+//! reports `None`.
 //!
 //! The tag constants below duplicate the oneof numbering in
 //! `proto/monty/v1/monty.proto`; `tests/frame.rs` pins them to the generated
@@ -16,7 +25,7 @@
 
 use std::ops::RangeInclusive;
 
-use prost::encoding::{WireType, decode_key, decode_varint};
+use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
 
 /// `ChildEvent` oneof tag for `Print` — the only non-turn-ending event.
 pub const CHILD_EVENT_PRINT: u32 = 1;
@@ -65,8 +74,8 @@ pub const PARENT_REQUEST_RESET: u32 = 9;
 pub const PARENT_REQUEST_SHUTDOWN: u32 = 10;
 
 /// Field numbers reserved for `ParentRequest.kind` arms. The message is
-/// nothing *but* the oneof, so this mirrors the range `ChildEvent` reserves
-/// and new arms land inside it without a change here.
+/// nothing *but* the oneof today, so this mirrors the range `ChildEvent`
+/// reserves and new arms land inside it without a change here.
 const PARENT_REQUEST_ONEOF: RangeInclusive<u32> = 1..=19;
 /// Field numbers reserved for `ChildEvent.kind` arms. The message's own
 /// fields start at 20 (see the schema), so new arms land inside this range
@@ -76,46 +85,46 @@ const CHILD_EVENT_ONEOF: RangeInclusive<u32> = 1..=19;
 /// Field number of the encoded `ParentRequest.kind` oneof arm, or `None` for
 /// an empty, malformed, or unknown-arm frame.
 ///
-/// `ParentRequest` contains *only* the oneof and every arm is a message
-/// (length-delimited), so the discriminant is simply the first field key.
 /// Callers must treat `None` as "opaque — forward verbatim, never intercept".
 #[must_use]
 pub fn parent_request_kind(frame: &[u8]) -> Option<u32> {
-    let mut buf = frame;
-    let (field, wire_type) = decode_key(&mut buf).ok()?;
-    (wire_type == WireType::LengthDelimited && PARENT_REQUEST_ONEOF.contains(&field)).then_some(field)
+    last_oneof_arm(frame, PARENT_REQUEST_ONEOF)
 }
 
 /// Field number of the encoded `ChildEvent.kind` oneof arm, or `None` for an
-/// empty, malformed, or unknown-arm frame.
+/// empty, malformed, or unknown-arm frame. Message-level fields (20+, which
+/// prost emits *before* the oneof) are skipped without being read.
 ///
-/// Unlike `ParentRequest`, `ChildEvent` carries message-level fields (20+)
-/// that prost emits *before* the oneof, so this walks field keys — skipping
-/// non-oneof fields by wire type — until it hits an arm. The walk touches
-/// only header bytes and varints, never a payload; it is bounded by the
-/// handful of known non-oneof fields plus one arm.
+/// Callers must treat `None` as "opaque — forward verbatim, never intercept".
 #[must_use]
 pub fn child_event_kind(frame: &[u8]) -> Option<u32> {
+    last_oneof_arm(frame, CHILD_EVENT_ONEOF)
+}
+
+/// Walks every field key in `frame` and returns the last oneof arm, matching
+/// prost's merge semantics (each occurrence of a oneof field replaces the
+/// previous one) so a relay classifying by peek and a client decoding with
+/// prost can never disagree about a frame that decodes.
+///
+/// Values are skipped with prost's own [`skip_field`] — the same routine its
+/// decoder applies to unknown fields — and an arm that is not
+/// length-delimited (which fails prost's decode) is `None` here too. The
+/// guarantee is one-directional: every frame that *decodes* classifies
+/// identically; a frame prost would reject may still report an arm (e.g. a
+/// wire-type mismatch on a non-oneof field peek doesn't model), which is
+/// harmless because the endpoint rejects the frame itself.
+fn last_oneof_arm(frame: &[u8], oneof: RangeInclusive<u32>) -> Option<u32> {
     let mut buf = frame;
+    let mut arm = None;
     while !buf.is_empty() {
         let (field, wire_type) = decode_key(&mut buf).ok()?;
-        if CHILD_EVENT_ONEOF.contains(&field) {
-            return (wire_type == WireType::LengthDelimited).then_some(field);
-        }
-        // a non-oneof field (timing/script-name today, anything additive
-        // tomorrow): skip its value and keep walking
-        match wire_type {
-            WireType::Varint => {
-                decode_varint(&mut buf).ok()?;
+        if oneof.contains(&field) {
+            if wire_type != WireType::LengthDelimited {
+                return None;
             }
-            WireType::LengthDelimited => {
-                let len = usize::try_from(decode_varint(&mut buf).ok()?).ok()?;
-                buf = buf.get(len..)?;
-            }
-            WireType::ThirtyTwoBit => buf = buf.get(4..)?,
-            WireType::SixtyFourBit => buf = buf.get(8..)?,
-            WireType::StartGroup | WireType::EndGroup => return None,
+            arm = Some(field);
         }
+        skip_field(wire_type, field, &mut buf, DecodeContext::default()).ok()?;
     }
-    None
+    arm
 }

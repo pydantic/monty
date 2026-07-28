@@ -5,7 +5,10 @@ use monty_proto::{
     pb::{child_event::Kind as EventKind, parent_request::Kind as RequestKind},
     peek, write_frame,
 };
-use prost::encoding::{WireType, encode_key, encode_varint};
+use prost::{
+    Message,
+    encoding::{WireType, encode_key, encode_varint},
+};
 
 /// A reader that returns at most one byte per `read` call, exercising the
 /// partial-read loop in the frame reader.
@@ -257,6 +260,51 @@ fn peek_tags_are_distinct_and_within_the_reserved_range() {
     sorted.dedup();
     assert_eq!(sorted.len(), tags.len(), "duplicate ChildEvent tag");
     assert!(tags.iter().all(|tag| (1..=19).contains(tag)));
+}
+
+#[test]
+fn peek_matches_prost_when_a_frame_carries_two_arms() {
+    // protobuf message concatenation merges, and prost's oneof merge is
+    // last-arm-wins — peek must agree, or a hostile child could mint a frame
+    // that a peek-classifying relay and a prost-decoding client read as two
+    // different kinds
+    let mut frame = event_frame(EventKind::Complete(pb::Complete::default()));
+    frame.extend(event_frame(EventKind::Print(pb::Print::default())));
+    let decoded = pb::ChildEvent::decode(frame.as_slice()).expect("concatenated events decode");
+    assert!(matches!(decoded.kind, Some(EventKind::Print(_))));
+    assert_eq!(peek::child_event_kind(&frame), Some(peek::CHILD_EVENT_PRINT));
+
+    let mut frame = request_frame(RequestKind::Feed(pb::Feed::default()));
+    frame.extend(request_frame(RequestKind::Reset(pb::Reset {})));
+    let decoded = pb::ParentRequest::decode(frame.as_slice()).expect("concatenated requests decode");
+    assert!(matches!(decoded.kind, Some(RequestKind::Reset(_))));
+    assert_eq!(peek::parent_request_kind(&frame), Some(peek::PARENT_REQUEST_RESET));
+}
+
+#[test]
+fn peek_rejects_a_non_message_arm_like_prost() {
+    // an in-range field with a varint wire type fails prost's oneof decode,
+    // so peek reports the frame opaque rather than as that kind
+    let mut frame = Vec::new();
+    encode_key(peek::CHILD_EVENT_COMPLETE, WireType::Varint, &mut frame);
+    encode_varint(1, &mut frame);
+    assert!(pb::ChildEvent::decode(frame.as_slice()).is_err());
+    assert_eq!(peek::child_event_kind(&frame), None);
+    assert!(pb::ParentRequest::decode(frame.as_slice()).is_err());
+    assert_eq!(peek::parent_request_kind(&frame), None);
+}
+
+#[test]
+fn peek_skips_unknown_leading_fields_like_prost() {
+    // a message-level field added to ParentRequest tomorrow (tag 20+) must
+    // not stop classification: prost skips unknown fields, so peek does too
+    let mut frame = Vec::new();
+    encode_key(20, WireType::Varint, &mut frame);
+    encode_varint(7, &mut frame);
+    frame.extend(request_frame(RequestKind::Dump(pb::Dump {})));
+    let decoded = pb::ParentRequest::decode(frame.as_slice()).expect("unknown field is skipped");
+    assert!(matches!(decoded.kind, Some(RequestKind::Dump(_))));
+    assert_eq!(peek::parent_request_kind(&frame), Some(peek::PARENT_REQUEST_DUMP));
 }
 
 #[test]

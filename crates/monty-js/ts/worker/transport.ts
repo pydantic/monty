@@ -369,17 +369,22 @@ function decodeChildEvents(reply: Uint8Array): ChildEventFrame[] {
 }
 
 /**
- * Extracts the single oneof kind from a `ChildEvent`, ignoring the
- * message-level timing/name fields. Tags 1-19 are reserved for oneof arms and
- * the message's own fields start at 20 (see `monty.proto`), so this range
- * needs no change when an arm is added.
+ * Extracts the oneof kind from a `ChildEvent`, ignoring the message-level
+ * timing/name fields. Tags 1-19 are reserved for oneof arms and the message's
+ * own fields start at 20 (see `monty.proto`), so this range needs no change
+ * when an arm is added. Mirrors prost's decode: the last arm wins, and an arm
+ * that is not a length-delimited message is rejected rather than surfaced
+ * with an empty payload.
  */
 function readChildEvent(frameBytes: Uint8Array): ChildEventFrame {
   const reader = new Reader(frameBytes)
   let event: ChildEventFrame | null = null
   while (!reader.done) {
     const f = reader.next()
-    if (f.field >= 1 && f.field <= 19) event = { kind: f.field, bytes: f.bytes }
+    if (f.field >= 1 && f.field <= 19) {
+      if (f.wire !== Wire.LengthDelimited) throw new Error(`ChildEvent kind ${f.field} is not a message`)
+      event = { kind: f.field, bytes: f.bytes }
+    }
   }
   if (!event) throw new Error('ChildEvent carried no kind')
   return event

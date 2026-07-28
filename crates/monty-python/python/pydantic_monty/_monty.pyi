@@ -334,8 +334,9 @@ class MontyShutdown(MontyError):
     safe.
 
     `dump` carries the session state captured just before shutdown — restore
-    it with `session.load` / `session.load_snapshot` on a new session to carry
-    the session across a server restart.
+    it on a new session to carry the session across a server restart, with
+    `session.load_session` (idle, between feeds) or `session.load_snapshot`
+    (suspended mid-feed).
 
     One caveat: if the interrupted request was answering a suspension (an
     external function or `os` callback), the host already ran that call and

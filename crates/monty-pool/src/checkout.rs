@@ -899,9 +899,10 @@ impl Checkout {
         }
     }
 
-    /// Discards the worker without crash classification (fatal-error frames
-    /// arrive on an intact stream, so this is a protocol failure, not a
-    /// crash).
+    /// Discards the worker without crash classification, for turn-enders
+    /// that are not crashes: protocol violations (the worker answered, just
+    /// wrongly) and server `Shutdown` replies. Fatal errors instead go
+    /// through [`Self::fatal_error`], which reaps and classifies.
     fn discard_worker(&mut self) {
         if let Some(worker) = self.worker.take() {
             drop(worker);
