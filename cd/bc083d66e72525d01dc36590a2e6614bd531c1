@@ -1,0 +1,30 @@
+crates/monty-pool/src/lib.rs
+  s_ad954fca2eb54b::t_83b3ca586c4a0f 189-198
+  s_ad954fca2eb54b::t_49332ed4ec7e4f 161-185
+  s_ad954fca2eb54b::t_8437c15435dd08 115-116
+  s_ad954fca2eb54b::t_fae7d07eac209f 232-234
+crates/monty-pool/src/checkout.rs
+  s_ad954fca2eb54b::t_77b03d0a472fe2 879-881
+  s_ad954fca2eb54b::t_55c65b6029b97f 832
+  s_ad954fca2eb54b::t_570dba383af740 849-851
+  s_ad954fca2eb54b::t_d25c84b9af3123 11
+crates/monty-js/src/pool.rs
+  s_ad954fca2eb54b::t_1038f30c0eb71b 604-611
+  s_ad954fca2eb54b::t_d339efb92e28e2 612-617
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cdbc083d66e72525d01dc36590a2e6614bd531c1",
+  "prompts": {},
+  "sessions": {
+    "s_ad954fca2eb54b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "155e7484-ec4f-4f62-b16c-6e00f77abb21",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
