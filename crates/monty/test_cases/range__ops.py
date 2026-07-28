@@ -274,3 +274,19 @@ assert hash(range(0, 1, 1)) == hash(range(0, 2, 2))
 assert hash(range(0, 0)) == hash(range(5, 5))
 assert hash(range(0, 4, 2)) == hash(range(0, 3, 2))
 assert {range(0, 1, 1): 'a'}[range(0, 2, 2)] == 'a'
+
+# A float probe at the i64 boundary must not saturate into the range: 2**63 has
+# no i64 representation, so a naive bounds check truncates it onto the first member.
+big_desc = range(2**63 - 1, 2**63 - 4, -1)
+assert len(big_desc) == 3
+assert (2**63 - 1) in big_desc
+assert 2.0**63 not in big_desc
+assert 9223372036854775808.0 not in big_desc
+# Bools are ints, so they follow the integer fast path.
+assert True in range(3)
+assert False in range(3)
+assert True not in range(2, 5)
+# Other non-numeric probes are absent rather than a TypeError.
+assert None not in range(5)
+assert (1,) not in range(5)
+assert [1] not in range(5)

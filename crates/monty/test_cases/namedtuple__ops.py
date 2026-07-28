@@ -38,3 +38,13 @@ assert r.endswith(')'), f'namedtuple repr ends with paren, {r!r}'
 assert vi.major in vi
 assert vi.minor in vi
 assert 9999 not in vi
+# Membership uses tuple-style containment, allocating no iterator.
+assert vi.micro in vi
+assert 'not-a-field-value' not in vi
+# The str field exercises the non-integer comparison path.
+assert vi.releaselevel in vi
+assert vi.serial in vi
+# A probe that is a container is compared by value, not unpacked.
+assert None not in vi
+assert (vi.major, vi.minor) not in vi
+assert [vi.major] not in vi

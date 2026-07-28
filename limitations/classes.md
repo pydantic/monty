@@ -101,6 +101,9 @@ order and error wording, but with these divergences:
 - **Equality and hashing are identity-only**: a user `__eq__`/`__hash__` is
   not dispatched. `a == b` is true only when `a is b`; instances hash by
   identity. Instances are always truthy (no `__bool__`/`__len__` dispatch).
+  This extends to membership: `obj in container` compares the elements of a
+  list/tuple/namedtuple/`dict.values()` by identity, so an instance whose
+  `__eq__` would match in CPython is reported absent.
 - **Bound methods compare and hash by identity**: each `obj.method` access
   creates a fresh object, so `obj.method == obj.method` is `False` and two
   accesses hash differently. CPython compares/hashes bound methods by

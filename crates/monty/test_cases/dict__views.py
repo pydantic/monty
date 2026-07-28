@@ -280,3 +280,32 @@ assert 9 not in view_source.values()
 assert ('a', 1) in view_source.items()
 assert ('a', 2) not in view_source.items()
 assert 'a' not in view_source.items()
+
+# The values view is a linear scan comparing by value.
+nested_view = {'a': [1, 2], 'b': (3, 4), 'c': 1}
+assert [1, 2] in nested_view.values()
+assert (3, 4) in nested_view.values()
+assert [1, 3] not in nested_view.values()
+assert 1.0 in nested_view.values()
+assert True in nested_view.values()
+assert None not in nested_view.values()
+# Duplicate values are found once each.
+dupe_view = {'a': 1, 'b': 1}
+assert 1 in dupe_view.values()
+assert 2 not in dupe_view.values()
+# The items view looks the key up, then compares the stored value.
+assert ('a', [1, 2]) in nested_view.items()
+assert ('a', [1, 3]) not in nested_view.items()
+assert ('z', [1, 2]) not in nested_view.items()
+assert ('c', True) in nested_view.items()
+assert ('c', 1.0) in nested_view.items()
+# Probes that are not a 2-item pair can never be members.
+assert ('a', [1, 2], 'extra') not in nested_view.items()
+assert ('a',) not in nested_view.items()
+assert ['a', [1, 2]] not in nested_view.items()
+# Keys view membership rejects an unhashable probe, as dict lookup does.
+try:
+    [1] in nested_view.keys()
+    assert False, 'expected TypeError for an unhashable keys probe'
+except TypeError as exc:
+    assert str(exc) == "cannot use 'list' as a dict key (unhashable type: 'list')"

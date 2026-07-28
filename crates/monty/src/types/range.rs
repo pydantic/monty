@@ -203,7 +203,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
                     return Ok(Some(false));
                 }
                 let int_val = f.trunc();
-                if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
+                // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
+                // `int_val as i64` would saturate back down to `i64::MAX`.
+                if int_val < i64::MIN as f64 || int_val >= i64::MAX as f64 {
                     return Ok(Some(false));
                 }
                 #[expect(clippy::cast_possible_truncation)]
