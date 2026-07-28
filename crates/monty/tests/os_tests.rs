@@ -716,6 +716,16 @@ fn os_unsupported_path_kinds() {
             "import os\nos.stat(1)",
             "TypeError: stat: path should be string or os.PathLike, not int",
         ),
+        // Bools fd-convert in CPython too (with a RuntimeWarning), so they are
+        // narrowed exactly like ints where the converter allows fds.
+        (
+            "import os\nos.stat(True)",
+            "TypeError: stat: path should be string or os.PathLike, not bool",
+        ),
+        (
+            "import os\nos.listdir(True)",
+            "TypeError: listdir: path should be string, os.PathLike or None, not bool",
+        ),
         (
             "import os\nos.mkdir(b'/x')",
             "TypeError: mkdir: path should be string or os.PathLike, not bytes",

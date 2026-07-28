@@ -23,7 +23,7 @@ use std::{
 ///
 /// This type is used for `sys.version_info` and similar structured tuples where
 /// named access improves usability and readability.
-use super::PyTrait;
+use super::{PyTrait, tuple::TupleIterator};
 use crate::{
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
@@ -269,6 +269,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::NamedTuple
+    }
+
+    fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
+        TupleIterator::from_named_tuple(self_id.expect("heap values have an id"), vm)
     }
 
     fn py_len(&self, vm: &VM<'h>) -> Option<usize> {

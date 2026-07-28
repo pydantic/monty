@@ -198,14 +198,14 @@ impl FromStr for FileMode {
         if binary && text {
             return Err("can't have text and binary mode at once".into());
         }
+        let Some(action) = action else {
+            return Err("Must have exactly one of create/read/write/append mode and at most one plus".into());
+        };
 
-        // A mode with no `r`/`w`/`a` action (`''`, `'b'`, `'t'`) gets
-        // CPython's capitalized missing-action message, mirrored verbatim.
-        match action {
-            Some('w') => Ok(Self::Write(binary)),
-            Some('a') => Ok(Self::Append(binary)),
-            Some(_) => Ok(Self::Read(binary)),
-            None => Err("Must have exactly one of create/read/write/append mode and at most one plus".into()),
-        }
+        Ok(match action {
+            'w' => Self::Write(binary),
+            'a' => Self::Append(binary),
+            _ => Self::Read(binary),
+        })
     }
 }

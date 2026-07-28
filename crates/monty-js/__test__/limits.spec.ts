@@ -69,12 +69,8 @@ for i in range(1000):
 len(result)
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 100 } }), isRuntimeError)
-  t.is(
-    error.message,
-    kind === 'browser'
-      ? 'MemoryError: memory limit exceeded: 180 bytes > 100 bytes'
-      : 'MemoryError: memory limit exceeded: 120 bytes > 100 bytes',
-  )
+  const allocated = kind === 'browser' ? 156 : 180
+  t.is(error.message, `MemoryError: memory limit exceeded: ${allocated} bytes > 100 bytes`)
 })
 
 test('memory limit accepts values above u32 max', async () => {

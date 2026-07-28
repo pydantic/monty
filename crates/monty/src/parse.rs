@@ -894,7 +894,7 @@ impl<'a> Parser<'a> {
                     }) = *target
                     {
                         let ident = self.identifier(&id, name_range);
-                        annotations.push(self.parse_class_annotation(ident, &mut annotation));
+                        annotations.push(self.parse_class_annotation(ident, &mut annotation)?);
                         if let Some(value) = value {
                             self.parse_class_var(ident, *value, &mut members, &mut body)?;
                         }
@@ -1024,13 +1024,17 @@ impl<'a> Parser<'a> {
     /// The annotation is stringized rather than evaluated (see
     /// `limitations/typing.md`); [`stringize_annotation`] owns rendering it back
     /// to the text CPython would store.
-    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> DictItem {
+    ///
+    /// The annotation never reaches [`Parser::parse_expression`], so the depth
+    /// check guarding stringization's two recursive passes is made here.
+    fn parse_class_annotation(&mut self, ident: Identifier, annotation: &mut AstExpr) -> Result<DictItem, ParseError> {
+        self.check_expression_depth(annotation)?;
         let ann_range = annotation.range();
         let ann_id = self.interner.intern(&stringize_annotation(annotation));
-        DictItem::Pair(
+        Ok(DictItem::Pair(
             ExprLoc::new(ident.position, Expr::Literal(Literal::Str(ident.name_id))),
             ExprLoc::new(self.convert_range(ann_range), Expr::Literal(Literal::Str(ann_id))),
-        )
+        ))
     }
 
     /// Parses a class-variable value and records the binding: rejects class-scope
@@ -1059,7 +1063,10 @@ impl<'a> Parser<'a> {
     /// binding would be silently dropped — reject the syntax until class-scope
     /// walrus is implemented. A walrus inside a lambda *body* binds in the
     /// lambda's own scope and is allowed (see [`contains_class_scope_walrus`]).
+    /// The depth check comes first: the search recurses over the raw ruff AST,
+    /// which `parse_expression` has not yet bounded.
     fn reject_class_body_walrus(&self, expr: &AstExpr) -> Result<(), ParseError> {
+        self.check_expression_depth(expr)?;
         if contains_class_scope_walrus(expr) {
             Err(ParseError::not_implemented(
                 "assignment expressions (`:=`) in class bodies",
@@ -1372,7 +1379,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::SetComp(ast::ExprSetComp {
@@ -1382,7 +1393,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::SetComp { elt, generators },
+                    Expr::SetComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::DictComp(ast::ExprDictComp {
@@ -1408,7 +1423,12 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::DictComp { key, value, generators },
+                    Expr::DictComp {
+                        key,
+                        value,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Generator(ast::ExprGenerator {
@@ -1421,7 +1441,11 @@ impl<'a> Parser<'a> {
                 let generators = self.parse_comprehension_generators(generators)?;
                 Ok(ExprLoc::new(
                     self.convert_range(range),
-                    Expr::ListComp { elt, generators },
+                    Expr::ListComp {
+                        elt,
+                        generators,
+                        captured_slots: Vec::new(),
+                    },
                 ))
             }
             AstExpr::Await(a) => {
@@ -2143,6 +2167,51 @@ impl<'a> Parser<'a> {
         } else {
             let position = self.convert_range(get_range());
             Err(ParseError::syntax("Source is too deeply nested", position))
+        }
+    }
+
+    /// Rejects an expression nested deeper than the remaining budget, without
+    /// consuming any of it — for callers that walk a raw ruff expression
+    /// recursively *before* [`Parser::parse_expression`] can bound it.
+    ///
+    /// Ruff builds deeply nested ASTs from flat source (long attribute chains)
+    /// without recursing itself, so such a walk can overflow the host stack at
+    /// compile time. The check stops descending once the budget is exhausted, so
+    /// its own depth is bounded by [`MAX_NESTING_DEPTH`].
+    fn check_expression_depth(&self, expr: &AstExpr) -> Result<(), ParseError> {
+        /// Expression visitor that reports whether the walk ever ran out of budget.
+        struct DepthCheck {
+            remaining: u16,
+            too_deep: bool,
+        }
+        impl<'a> Visitor<'a> for DepthCheck {
+            fn visit_expr(&mut self, expr: &'a AstExpr) {
+                // Nothing is pruned (not even lambda bodies): the guarded walks
+                // reach everywhere, so the bound must too.
+                match self.remaining.checked_sub(1) {
+                    _ if self.too_deep => {}
+                    None => self.too_deep = true,
+                    Some(remaining) => {
+                        self.remaining = remaining;
+                        walk_expr(self, expr);
+                        self.remaining += 1;
+                    }
+                }
+            }
+        }
+
+        let mut check = DepthCheck {
+            remaining: self.depth_remaining,
+            too_deep: false,
+        };
+        check.visit_expr(expr);
+        if check.too_deep {
+            Err(ParseError::syntax(
+                "Source is too deeply nested",
+                self.convert_range(expr.range()),
+            ))
+        } else {
+            Ok(())
         }
     }
 }

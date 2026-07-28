@@ -469,11 +469,12 @@ enum PathAccepts {
 impl PathAccepts {
     /// The accepted-types phrase for a value this converter is rejecting.
     fn phrase_for(self, value: &Value, vm: &VM<'_>) -> &'static str {
-        // `bytes` paths and integer fds are the kinds CPython takes and Monty
-        // never will; everything else keeps CPython's wording exactly.
+        // `bytes` paths and integer fds (bools included — CPython fd-converts
+        // them with only a RuntimeWarning) are the kinds CPython takes and
+        // Monty never will; everything else keeps CPython's wording exactly.
         let refused = match value.py_type_heap(vm.heap) {
             Type::Bytes => true,
-            Type::Int => matches!(self, Self::Fd | Self::FdOrNone),
+            Type::Int | Type::Bool => matches!(self, Self::Fd | Self::FdOrNone),
             _ => false,
         };
         match (self, refused) {

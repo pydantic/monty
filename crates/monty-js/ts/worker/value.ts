@@ -8,11 +8,10 @@
 // lists and `__monty_type__` marks types with no JS equivalent.
 //
 // Scope: scalars, containers, the datetime family, named tuples (→ plain
-// tuple), dataclasses, function values (→ name), and the marker types. File
-// handles are NOT ported — convert.rs renders them as a Rust-side repr string
-// this layer cannot reproduce — and throw a clear error rather than producing a
-// wrong value. See `convert.rs` for the full mapping (plan item: TS decoder).
+// tuple), dataclasses, file handles, function values (→ name), and the marker
+// types. See `convert.rs` for the full mapping.
 
+import { MontyFileHandle, canonicalFileMode, validateFilePosition } from '../types.js'
 import { Reader, Writer, bitsToDouble, readInt32, unzigzag } from './proto.js'
 
 // MontyObject oneof field numbers (monty.v1.MontyObject).
@@ -39,6 +38,7 @@ const Tag = {
   Type: 20,
   BuiltinFunction: 21,
   Path: 22,
+  FileHandle: 23,
   Dataclass: 24,
   Function: 25,
   Repr: 26,
@@ -130,6 +130,9 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
     case 'Dataclass':
       w.lengthDelimited(Tag.Dataclass, encodeDataclass(obj))
       break
+    case 'FileHandle':
+      w.lengthDelimited(Tag.FileHandle, encodeFileHandle(obj))
+      break
     case 'Type':
       w.string(Tag.Type, String(obj.value))
       break
@@ -137,8 +140,22 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
       w.string(Tag.BuiltinFunction, String(obj.value))
       break
     default:
-      throw unsupported(`marked value ${String(type)}`)
+      throw new TypeError(`Unknown Monty marker type: ${String(type)}`)
   }
+}
+
+function encodeFileHandle(obj: Record<string, unknown>): Uint8Array {
+  if (typeof obj.path !== 'string') throw new TypeError('MontyFileHandle path must be a string')
+  if (typeof obj.mode !== 'string') throw new TypeError('MontyFileHandle mode must be a string')
+  const mode = canonicalFileMode(obj.mode)
+  const position = obj.position === undefined ? 0 : obj.position
+  validateFilePosition(position)
+
+  const w = new Writer()
+  w.string(1, obj.path)
+  w.string(2, mode)
+  if (position !== 0) w.uint(3, position)
+  return w.finish()
 }
 
 function encodeFunction(value: { name?: string }): Uint8Array {
@@ -295,6 +312,8 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
       return decodeTimeZone(f.bytes)
     case Tag.Exception:
       return decodeException(f.bytes)
+    case Tag.FileHandle:
+      return decodeFileHandle(f.bytes)
     case Tag.Dataclass:
       return decodeDataclass(f.bytes)
     case Tag.Type:
@@ -308,6 +327,23 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
     default:
       throw unsupported(`MontyObject kind field ${f.field}`)
   }
+}
+
+function decodeFileHandle(bytes: Uint8Array): MontyFileHandle {
+  let path = ''
+  let mode = ''
+  let position = 0n
+  const reader = new Reader(bytes)
+  while (!reader.done) {
+    const f = reader.next()
+    if (f.field === 1) path = decodeString(f.bytes)
+    else if (f.field === 2) mode = decodeString(f.bytes)
+    else if (f.field === 3) position = f.value
+  }
+  if (position > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new TypeError("MontyFileHandle position exceeds JavaScript's maximum safe integer")
+  }
+  return new MontyFileHandle(path, mode, { position: Number(position) })
 }
 
 function decodeNamedTupleValues(bytes: Uint8Array): unknown[] {
@@ -538,7 +574,7 @@ function num(value: unknown): number {
 }
 
 function unsupported(what: string): Error {
-  return new Error(`monty wasm transport does not support ${what} (file handles are not yet ported)`)
+  return new Error(`monty wasm transport does not support ${what}`)
 }
 
 function jsType(value: unknown): string {

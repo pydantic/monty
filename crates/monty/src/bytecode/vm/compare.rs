@@ -17,8 +17,8 @@ impl VM<'_> {
         match op {
             CmpOperator::Eq => lhs.py_eq(rhs, self),
             CmpOperator::NotEq => Ok(!lhs.py_eq(rhs, self)?),
-            CmpOperator::Is => Ok(lhs.is(rhs, self)),
-            CmpOperator::IsNot => Ok(!lhs.is(rhs, self)),
+            CmpOperator::Is => Ok(lhs.is(rhs)),
+            CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
             CmpOperator::In => rhs.py_contains(lhs, self),
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
@@ -52,8 +52,8 @@ impl VM<'_> {
     /// The const operator lets dispatch specialize the implementation per opcode.
     fn compare_op<const OP: u8>(&mut self) -> Result<(), RunError> {
         // Rejects a bad `OP` at compile time, which makes the `else` dead.
-        const { assert!(CmpOperator::from_operand(OP).is_some(), "invalid CmpOperator operand") };
-        let op = CmpOperator::from_operand(OP).expect("invalid CmpOperator operand");
+        const { assert!(CmpOperator::from_repr(OP).is_some(), "invalid CmpOperator operand") };
+        let op = CmpOperator::from_repr(OP).expect("invalid CmpOperator operand");
         let this = self;
 
         let rhs = this.pop();
@@ -64,18 +64,6 @@ impl VM<'_> {
         let result = this.cmp_values(op, lhs, rhs)?;
         this.push(Value::Bool(result));
         Ok(())
-    }
-
-    /// Executes the legacy modulo-equality opcode as its component operations.
-    ///
-    /// TODO: remove this opcode once serialized bytecode compatibility no longer
-    /// requires it; new compilation should emit the three ordinary operations.
-    pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
-        let this = self;
-
-        this.binary_mod()?;
-        this.push(k.clone_with_heap(this.heap));
-        this.compare_eq()
     }
 }
 

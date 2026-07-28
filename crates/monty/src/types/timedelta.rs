@@ -21,7 +21,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{CmpOrder, LazyHeapSet, PyTrait, Type, str::allocate_string},
+    types::{CmpOrder, LazyHeapSet, PyTrait, Type, date, datetime, str::allocate_string},
     value::{EitherStr, Value},
 };
 
@@ -358,6 +358,80 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
             format!("{days} {day_word}, {time}")
         };
         Ok(allocate_string(s, vm.heap)?)
+    }
+
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        match other.read_heap(vm) {
+            Some(HeapReadOutput::Date(other)) => Ok(date::py_add(*other.get(vm.heap), *self.get(vm.heap), vm.heap)?),
+            Some(HeapReadOutput::DateTime(other)) => {
+                let other = other.get(vm.heap).clone();
+                let value = *self.get(vm.heap);
+                Ok(datetime::py_add(&other, &value, vm.heap)?)
+            }
+            Some(HeapReadOutput::TimeDelta(other)) => {
+                let total = total_microseconds(self.get(vm.heap)).checked_add(total_microseconds(other.get(vm.heap)));
+                let Some(total) = total else { return Ok(None) };
+                let Ok(result) = from_total_microseconds(total) else {
+                    return Ok(None);
+                };
+                Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let Some(HeapReadOutput::TimeDelta(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        let total = total_microseconds(self.get(vm.heap)).checked_sub(total_microseconds(other.get(vm.heap)));
+        let Some(total) = total else { return Ok(None) };
+        let Ok(result) = from_total_microseconds(total) else {
+            return Ok(None);
+        };
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
+    }
+
+    fn py_mul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let multiplier = match other {
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(value) => i128::from(*value),
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap))
+            .checked_mul(multiplier)
+            .ok_or_else(|| SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow"))?;
+        let result = from_total_microseconds(total)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
+    }
+
+    fn py_rmul_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        self.py_mul_impl(other, vm)
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let divisor = match other {
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(true) => 1,
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap));
+        let result = div_microseconds_round_ties_even(total, divisor);
+        let result = from_total_microseconds(result)?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
+    }
+
+    fn py_floordiv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let divisor = match other {
+            Value::Int(0) | Value::Bool(false) => return Err(ExcType::zero_division().into()),
+            Value::Int(value) => i128::from(*value),
+            Value::Bool(true) => 1,
+            _ => return Ok(None),
+        };
+        let total = total_microseconds(self.get(vm.heap));
+        let result = from_total_microseconds(total.div_euclid(divisor))?;
+        Ok(Some(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(result))?)))
     }
 
     fn py_call_attr(

@@ -305,20 +305,20 @@ impl Path {
 
 /// Extracts a string from a Value for use as a path.
 fn extract_path_string<'a>(val: &Value, vm: &'a VM<'_>) -> RunResult<&'a str> {
+    value_as_path_str(val, vm.heap, vm.interns)
+        .ok_or_else(|| ExcType::type_error(format!("expected str or Path, got {}", val.py_type_name(vm))))
+}
+
+/// Extracts a path-like operand (`str` or `Path`) as a string slice, `None` otherwise.
+fn value_as_path_str<'a>(val: &Value, heap: &'a Heap, interns: &'a Interns) -> Option<&'a str> {
     match val {
-        Value::InternString(string_id) => Ok(vm.interns.get_str(*string_id)),
-        Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-            HeapData::Str(s) => Ok(s.as_str()),
-            HeapData::Path(p) => Ok(p.as_str()),
-            _ => Err(ExcType::type_error(format!(
-                "expected str or Path, got {}",
-                val.py_type_name(vm)
-            ))),
+        Value::InternString(string_id) => Some(interns.get_str(*string_id)),
+        Value::Ref(heap_id) => match heap.get(*heap_id) {
+            HeapData::Str(s) => Some(s.as_str()),
+            HeapData::Path(p) => Some(p.as_str()),
+            _ => None,
         },
-        _ => Err(ExcType::type_error(format!(
-            "expected str or Path, got {}",
-            val.py_type_name(vm)
-        ))),
+        _ => None,
     }
 }
 
@@ -329,29 +329,21 @@ fn fold_joinpath(mut path: Path, parts: &[Value], vm: &VM<'_>) -> RunResult<Path
     Ok(path)
 }
 
-/// Handles the `/` operator for Path objects (path concatenation).
-///
-/// In Python, `Path('/usr') / 'bin'` produces `Path('/usr/bin')`.
-pub(crate) fn path_div(path_id: HeapId, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
-    // Extract the right-hand side as a string
-    let other_str = match other {
-        Value::InternString(string_id) => interns.get_str(*string_id).to_owned(),
-        Value::Ref(other_id) => match heap.get(*other_id) {
-            HeapData::Str(s) => s.as_str().to_owned(),
-            HeapData::Path(p) => p.as_str().to_owned(),
-            _ => return Ok(None),
-        },
-        _ => return Ok(None),
+/// Joins a `Path` with a path-like right operand for `Path.__truediv__`.
+fn path_div(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
+    let Some(other) = value_as_path_str(other, heap, interns) else {
+        return Ok(None);
     };
+    let result = path.joinpath(other);
+    Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
+}
 
-    // Get the path string
-    let path_str = match heap.get(path_id) {
-        HeapData::Path(p) => p.as_str().to_owned(),
-        _ => return Ok(None),
+/// Prepends a path-like left operand for `Path.__rtruediv__`.
+fn path_rdiv(path: &Path, other: &Value, heap: &Heap, interns: &Interns) -> RunResult<Option<Value>> {
+    let Some(base) = value_as_path_str(other, heap, interns) else {
+        return Ok(None);
     };
-
-    // Perform path concatenation
-    let result = Path::new(path_str).joinpath(&other_str);
+    let result = Path::new(base.to_owned()).joinpath(path.as_str());
     Ok(Some(Value::Ref(heap.allocate(HeapData::Path(Path::new(result)))?)))
 }
 
@@ -480,6 +472,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
         // Paths are always truthy (even empty paths)
         true
+    }
+
+    fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        path_div(self.get(vm.heap), other, vm.heap, vm.interns)
+    }
+
+    fn py_rtruediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        path_rdiv(self.get(vm.heap), other, vm.heap, vm.interns)
+    }
+
+    fn py_str(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

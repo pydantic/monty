@@ -1,10 +1,14 @@
+#[cfg(feature = "ref-count-return")]
+use std::collections::HashSet;
 use std::{
     cell::{Cell, UnsafeCell},
+    collections::BTreeMap,
     fmt,
     marker::PhantomData,
     mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use monty_types::{ResourceError, ResourceTracker};
@@ -14,14 +18,18 @@ use serde::ser::SerializeStruct;
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
 pub(crate) use crate::heap_traits::{ContainsHeap, DropGuard, DropWithContext, HeapItem};
+#[cfg(feature = "ref-count-return")]
+use crate::types::Type;
 use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, callable_iterator::CallableIterator, date, datetime, list::ListIterator, timedelta, timezone,
+        BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
+        DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
+        NamedTuple, OpenFile, Path, Range, RangeIterator, ReMatch, RePattern, Set, SetIterator, Slice, Str,
+        StringIterator, TimeZone, Tuple, TupleIterator, callable_iterator::CallableIterator, date, datetime,
+        list::ListIterator, timedelta, timezone,
     },
     value::Value,
 };
@@ -213,7 +221,7 @@ pub enum HeapReadOutput<'a> {
     FrozenSet(HeapRead<'a, FrozenSet>),
     Closure(HeapRead<'a, Closure>),
     FunctionDefaults(HeapRead<'a, FunctionDefaults>),
-    ExtFunction(HeapRead<'a, String>),
+    ExtFunction(HeapRead<'a, ExtFunction>),
     Cell(HeapRead<'a, CellValue>),
     Range(HeapRead<'a, Range>),
     Slice(HeapRead<'a, Slice>),
@@ -222,8 +230,15 @@ pub enum HeapReadOutput<'a> {
     Class(HeapRead<'a, Class>),
     Instance(HeapRead<'a, Instance>),
     BoundMethod(HeapRead<'a, BoundMethod>),
-    Iter(HeapRead<'a, MontyIter>),
     ListIterator(HeapRead<'a, ListIterator>),
+    TupleIterator(HeapRead<'a, TupleIterator>),
+    StringIterator(HeapRead<'a, StringIterator>),
+    BytesIterator(HeapRead<'a, BytesIterator>),
+    RangeIterator(HeapRead<'a, RangeIterator>),
+    DictKeyIterator(HeapRead<'a, DictKeyIterator>),
+    DictItemIterator(HeapRead<'a, DictItemIterator>),
+    DictValueIterator(HeapRead<'a, DictValueIterator>),
+    SetIterator(HeapRead<'a, SetIterator>),
     CallableIterator(HeapRead<'a, CallableIterator>),
     LongInt(HeapRead<'a, LongInt>),
     Module(HeapRead<'a, Module>),
@@ -609,8 +624,15 @@ impl<'a> HeapPtr<'a> {
             HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
-            HeapData::Iter(monty_iter) => HeapReadOutput::Iter(heap_read(base, monty_iter, readers)),
-            HeapData::ListIterator(list_iter) => HeapReadOutput::ListIterator(heap_read(base, list_iter, readers)),
+            HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
+            HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(base, iter, readers)),
+            HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(base, iter, readers)),
+            HeapData::BytesIterator(iter) => HeapReadOutput::BytesIterator(heap_read(base, iter, readers)),
+            HeapData::RangeIterator(iter) => HeapReadOutput::RangeIterator(heap_read(base, iter, readers)),
+            HeapData::DictKeyIterator(iter) => HeapReadOutput::DictKeyIterator(heap_read(base, iter, readers)),
+            HeapData::DictItemIterator(iter) => HeapReadOutput::DictItemIterator(heap_read(base, iter, readers)),
+            HeapData::DictValueIterator(iter) => HeapReadOutput::DictValueIterator(heap_read(base, iter, readers)),
+            HeapData::SetIterator(iter) => HeapReadOutput::SetIterator(heap_read(base, iter, readers)),
             HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
@@ -767,6 +789,10 @@ pub(crate) struct Heap {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
+    /// Live external functions indexed by name without owning heap references.
+    ///
+    /// Uses `BTreeMap` to avoid large residual capacity from spikes of `ExtFunction` allocations.
+    ext_function_cache: BTreeMap<Arc<str>, HeapId>,
 }
 
 impl serde::Serialize for Heap {
@@ -795,14 +821,25 @@ impl<'de> serde::Deserialize<'de> for Heap {
             timezone_utc: Option<HeapId>,
         }
         let fields = HeapFields::deserialize(deserializer)?;
+        let mut entries = fields.entries;
+        let mut ext_function_cache = BTreeMap::new();
+        for index in 0..entries.len() {
+            let id = HeapId::from_index(index);
+            if let Some(mut entry) = entries.entry(id)
+                && let HeapData::ExtFunction(function) = entry.get_mut().data.0.get_mut()
+            {
+                ext_function_cache.insert(function.cache_key(), id);
+            }
+        }
         Ok(Self {
-            entries: fields.entries,
+            entries,
             tracker: fields.tracker,
             purple_count: fields.purple_count,
             allocations_since_gc: Cell::new(fields.allocations_since_gc),
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
+            ext_function_cache,
         })
     }
 }
@@ -835,6 +872,7 @@ impl Heap {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
+            ext_function_cache: BTreeMap::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -958,6 +996,31 @@ impl Heap {
         Value::Ref(EMPTY_TUPLE_ID)
     }
 
+    /// Returns the external function for `name`, reusing a live object when possible.
+    ///
+    /// The cache holds no reference count of its own. Its entry is removed when the
+    /// last owning reference is dropped, before the heap slot can be reused.
+    pub fn get_ext_function(&mut self, name: &str) -> Result<Value, ResourceError> {
+        if let Some(id) = self.ext_function_cache.get(name).copied() {
+            self.inc_ref(id);
+            Ok(Value::Ref(id))
+        } else {
+            let function = ExtFunction::new(name);
+            let cache_key = function.cache_key();
+            let id = self.allocate(HeapData::ExtFunction(function))?;
+            let previous = self.ext_function_cache.insert(cache_key, id);
+            debug_assert!(previous.is_none());
+            Ok(Value::Ref(id))
+        }
+    }
+
+    /// Removes `id` from the weak cache without disturbing a duplicate-name winner.
+    fn remove_ext_function_cache_entry(cache: &mut BTreeMap<Arc<str>, HeapId>, name: &str, id: HeapId) {
+        if cache.get(name) == Some(&id) {
+            cache.remove(name);
+        }
+    }
+
     /// Returns the cached `datetime.timezone.utc` singleton, lazily creating it on first access.
     ///
     /// The returned `Value::Ref` has its refcount incremented so the caller can drop
@@ -1041,6 +1104,17 @@ impl Heap {
                     if heap_entry.color.get() == CcColor::Purple {
                         reader.heap.purple_count -= 1;
                     }
+                    // Remove weak-cache entries before the slot becomes available for reuse.
+                    let ext_function_name = match ptr.data(reader) {
+                        HeapData::ExtFunction(function) => Some(function.cache_key()),
+                        _ => None,
+                    };
+                    // Clear the cache (only if it points to this exact function, it's possible for
+                    // snapshot deserialization to create duplicate functions with the same name)
+                    if let Some(name) = ext_function_name {
+                        Self::remove_ext_function_cache_entry(&mut reader.heap.ext_function_cache, &name, current_id);
+                    }
+
                     // It is not possible to free from `HeapPtr` because it is created through
                     // a &self borrow on `StableHeap`. At least this repeated lookup is already
                     // on the slow path.
@@ -1213,6 +1287,10 @@ impl Heap {
                 heap_entry.readers.get(),
             );
             let mut value = entry.free();
+            // Clear weak entries before freeing their slots, just as `dec_ref`.
+            if let HeapData::ExtFunction(function) = value.data.0.get_mut() {
+                Self::remove_ext_function_cache_entry(&mut self.ext_function_cache, &function.cache_key(), id);
+            }
             self.tracker.on_free(|| value.data.0.get_mut().py_estimate_size());
             freed += 1;
             // Walk children, marking child `Value::Ref`s as `Dereferenced`
@@ -1385,6 +1463,58 @@ impl<'a> HeapReader<'a> {
     }
 }
 
+/// Leak detection for reference-counting tests.
+///
+/// Implemented on [`HeapReader`] because reading an entry's children needs
+/// [`HeapPtr::data`]. It borrows the cycle collector's [`for_each_child_id`] to
+/// walk edges but is not part of collection: nothing here mutates the heap, and
+/// it is reached only from `run_ref_counts`, never from [`Heap::collect_cycles`].
+#[cfg(feature = "ref-count-return")]
+impl HeapReader<'_> {
+    /// Returns live heap entries unreachable from `roots`, with each entry's type
+    /// so callers holding `Interns` can name it ([`Type::name`]).
+    ///
+    /// `run_ref_counts` uses this to prove a test leaked nothing: an entry that
+    /// is alive but reachable from no named variable is a missed `drop_with`.
+    /// The walk is transitive, so an object owned by another object — a class's
+    /// `__annotations__`, a nested list, an instance attribute — is accounted
+    /// for by its owner and need not be bound to a name by the test itself.
+    ///
+    /// Unlike the cycle collector's [`mark_gray`](Self::mark_gray) this touches
+    /// no colors or refcounts, so it cannot perturb the state under test.
+    pub(crate) fn unreachable_entries(&self, roots: impl IntoIterator<Item = HeapId>) -> Vec<(HeapId, Type)> {
+        let mut seen: HashSet<HeapId> = HashSet::new();
+        let mut work_stack: Vec<HeapId> = Vec::new();
+        for root in roots {
+            if seen.insert(root) {
+                work_stack.push(root);
+            }
+        }
+
+        // A root's subtree is live by construction, but `try_entry` keeps the
+        // walk total in case a test observes the heap mid-teardown.
+        while let Some(id) = work_stack.pop() {
+            let ptr = self.read_ptr(id);
+            if ptr.try_entry(self).is_none() {
+                continue;
+            }
+            for_each_child_id(ptr.data(self), |child_id| {
+                if seen.insert(child_id) {
+                    work_stack.push(child_id);
+                }
+            });
+        }
+
+        self.entries
+            .iter()
+            // The empty tuple singleton is an internal optimisation that is
+            // always live and never named, so it is not a leak. See `entry_count`.
+            .filter(|(id, _)| *id != EMPTY_TUPLE_ID && !seen.contains(id))
+            .map(|(id, _)| (id, self.read_ptr(id).data(self).py_type()))
+            .collect()
+    }
+}
+
 // With `memory-model-checks` enabled, need to manually clean up the heap to avoid the
 // bookkeeping causing panics at shutdown.
 #[cfg(feature = "memory-model-checks")]
@@ -1548,13 +1678,23 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
         }
-        HeapData::Iter(iter) => {
-            // Iterator holds a reference to the iterable being iterated
-            if let Value::Ref(id) = iter.value() {
-                on_child(*id);
+        HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::TupleIterator(iter) => on_child(iter.source_id()),
+        HeapData::StringIterator(iter) => {
+            if let Some(id) = iter.source_id() {
+                on_child(id);
             }
         }
-        HeapData::ListIterator(iter) => on_child(iter.list_id()),
+        HeapData::BytesIterator(iter) => {
+            if let Some(id) = iter.source_id() {
+                on_child(id);
+            }
+        }
+        HeapData::RangeIterator(_) => {}
+        HeapData::DictKeyIterator(iter) => on_child(iter.source_id()),
+        HeapData::DictItemIterator(iter) => on_child(iter.source_id()),
+        HeapData::DictValueIterator(iter) => on_child(iter.source_id()),
+        HeapData::SetIterator(iter) => on_child(iter.source_id()),
         HeapData::CallableIterator(iter) => iter.for_each_child_id(on_child),
         HeapData::Module(m) => {
             // Module attrs can contain references to heap values
@@ -1678,8 +1818,15 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
-        HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::StringIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::BytesIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::RangeIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictKeyIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictItemIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::DictValueIterator(iter) => iter.py_dec_ref_ids(stack),
+        HeapData::SetIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::CallableIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),
         HeapData::Coroutine(coro) => {

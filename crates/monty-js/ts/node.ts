@@ -35,7 +35,8 @@ export {
   type MontyDate,
   type MontyDateTime,
   type MontyException,
-  type MontyFileHandle,
+  MontyFileHandle,
+  type MontyFileHandleOptions,
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'

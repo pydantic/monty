@@ -104,6 +104,35 @@ len(result)
     );
 }
 
+/// Test that GC traces sources retained by tuple and dictionary iterators.
+#[test]
+#[cfg(feature = "ref-count-return")]
+fn gc_collects_concrete_iterator_cycles() {
+    let code = r"
+for i in range(100001):
+    container = []
+    source = (container,)
+    iterator = iter(source)
+    container.append(iterator)
+
+    mapping = {}
+    iterator = iter(mapping)
+    mapping['iterator'] = iterator
+
+result = [1, 2, 3]
+len(result)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let output = ex.run_ref_counts(vec![]).expect("should succeed");
+
+    assert!(
+        output.heap_count < 40,
+        "GC should collect concrete iterator cycles: {} heap objects (expected < 40)",
+        output.heap_count
+    );
+}
+
 /// Cycles through `callable_iterator` / `list_iterator` must be collected even
 /// when the iterator is the last external reference dropped.
 #[test]
@@ -118,20 +147,16 @@ roots = []
 for i in range(2000):
     o = Src()
     it = iter(o.step, 0)
-    o.it = it         # cycle: instance -> attrs -> callable_iterator -> bound method
-    roots.append(it)  # ... rooted ONLY through the iterator
+    o.it = it
+    roots.append(it)
 
     a = []
     li = iter(a)
-    a.append(li)      # cycle: list -> list_iterator
-    roots.append(li)  # ... likewise rooted only through the iterator
+    a.append(li)
+    roots.append(li)
 
-# Dropping `roots` decrements every cycle member exactly once, and the only
-# member holding a surviving refcount at that point is the iterator.
 roots = None
 
-# Churn so the collector keeps firing afterwards; the cycles above must be
-# reclaimed by one of these passes.
 for i in range(2000):
     d = {}
     d['self'] = d
@@ -141,12 +166,9 @@ result
 ";
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
 
-    // Small interval so a collection fires while the cycles are still rooted,
-    // clearing the `Purple` flags earlier decrements left on the other members.
     let tracker = ResourceTracker::new(ResourceLimits::default().gc_interval(500));
     let output = ex.run_ref_counts_with_tracker(vec![], tracker).expect("should succeed");
 
-    // 7 survive here; untracked iterators leak the 4000 cycles instead (~9995).
     assert!(
         output.heap_count < 20,
         "GC should collect iterator-rooted cycles: {} heap objects (expected < 20)",
@@ -338,7 +360,7 @@ result
 /// must be rejected *during* collection, near the configured memory limit —
 /// not after the entire native buffer has been built.
 ///
-/// `MontyIter::collect` builds the result in a native `Vec` that is invisible
+/// Iterator collection builds the result in a native `Vec` that is invisible
 /// to the resource tracker until the finished object reaches the heap. Before
 /// the incremental check, `range(10**9)` would allocate ~16 GiB of native
 /// buffer before any limit check, OOM-killing or aborting the host (an
@@ -782,6 +804,31 @@ recurse(1000)
         exc.message().is_some_and(|m| m.contains("memory limit exceeded")),
         "expected memory limit error, got: {exc}"
     );
+}
+
+/// String and bytes concatenation must be rejected before building an untracked buffer.
+#[test]
+fn sequence_concatenation_prechecks_memory_limit() {
+    for code in ["part = 'x' * 400000\npart + part", "part = b'x' * 400000\npart + part"] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+        let limits = ResourceLimits::default().max_memory(700_000);
+        let exc = ex
+            .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+            .unwrap_err();
+        assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    }
+}
+
+/// A boolean shifted by a heap-backed count must reach integer size validation.
+#[test]
+fn bool_lshift_longint_respects_memory_limit() {
+    let code = "True << (2 ** 63)";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_memory(1_000_000);
+    let exc = ex
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
 }
 
 // === BigInt large result pre-check tests ===
@@ -1369,7 +1416,7 @@ fn tuple_mult_within_limit() {
 // within builtin functions. Previously, builtins like sum(), sorted(), min(), max()
 // ran Rust loops entirely within a single bytecode instruction, bypassing the VM's
 // per-instruction timeout check. The fix adds `heap.check_time()` calls inside
-// `MontyIter::for_next()` and other non-iterator loops.
+// Python iterator advancement and other non-iterator loops.
 
 /// Helper: runs code with a short time limit and asserts it produces a TimeoutError promptly.
 fn assert_timeout_in_builtin(code: &str, label: &str) {
@@ -1403,7 +1450,7 @@ fn timeout_in_sum_builtin() {
 
 /// Test that `list(range(huge))` respects the time limit.
 ///
-/// The `list()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `list()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
@@ -1458,7 +1505,7 @@ fn timeout_in_any_builtin() {
 
 /// Test that `tuple(range(huge))` respects the time limit.
 ///
-/// The `tuple()` constructor collects via `MontyIter::collect()` -> `for_next()`.
+/// The `tuple()` constructor drains its concrete Python iterator.
 #[test]
 fn timeout_in_tuple_constructor() {
     assert_timeout_in_builtin("tuple(range(10**18))", "tuple(range(10**18))");
@@ -2468,4 +2515,35 @@ fn finditer_shares_subject_memory() {
         result.expect("finditer over a large subject must stay within the memory limit"),
         MontyObject::Int(4000)
     );
+}
+
+/// A resource limit hit *inside* a user `__next__` must terminate the run, not
+/// be mistaken for iterator exhaustion.
+///
+/// `py_next` turns a raised `StopIteration` into `Ok(None)` and propagates
+/// everything else, so the budget breach has to escape the loop. (It does not
+/// exercise `is_stop_iteration`'s `Exc`-only check, which is unreachable while
+/// resource errors are never typed `StopIteration` — see its docstring.)
+#[test]
+fn resource_limit_in_user_next_is_not_exhaustion() {
+    let code = r"
+class Spin:
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        x = 0
+        for i in range(100000000):
+            x = x + 1
+        return x
+
+for _v in Spin():
+    pass
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let limits = ResourceLimits::default().max_duration(Duration::from_millis(50));
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    let exc = result.expect_err("the time limit must terminate the run");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }

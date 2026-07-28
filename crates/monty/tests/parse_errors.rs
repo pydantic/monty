@@ -806,6 +806,52 @@ fn moderate_bool_op_chain_within_limit() {
     assert!(result.is_ok(), "moderate bool-op chain should succeed: {result:?}");
 }
 
+/// A flat-looking expression ruff parses without recursing, so only an explicit
+/// depth check stops a later recursive walk overflowing the host stack.
+fn deep_attribute_chain() -> String {
+    let mut chain = "a".to_owned();
+    for _ in 0..2_000 {
+        chain.push_str(".x");
+    }
+    chain
+}
+
+#[test]
+fn deeply_nested_class_annotation_exceeds_limit() {
+    // Stringized, never parsed, so `parse_expression`'s budget never sees it.
+    let code = format!("class C:\n    y: {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_class_var_value_exceeds_limit() {
+    // The class-scope walrus search walks the value before it is parsed.
+    let code = format!("class C:\n    y = {}\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn deeply_nested_method_default_exceeds_limit() {
+    // Parameter defaults go through the same pre-parse walrus search.
+    let code = format!("class C:\n    def m(self, x={}): pass\n", deep_attribute_chain());
+    let err = get_parse_err(code);
+    assert_eq!(err.exc_type(), ExcType::SyntaxError);
+    assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
+}
+
+#[test]
+fn moderate_class_annotation_within_limit() {
+    // The new checks must not reject annotations of ordinary depth.
+    let code = "class C:\n    y: dict[str, list[int]]\n    z: a.b.c = 1\n\
+                assert C.__annotations__ == {'y': 'dict[str, list[int]]', 'z': 'a.b.c'}\n";
+    let result = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default());
+    assert!(result.is_ok(), "ordinary class annotations should compile: {result:?}");
+}
+
 #[test]
 fn function_with_too_many_locals_and_except_as_returns_syntax_error() {
     let mut code = "def f():\n".to_owned();

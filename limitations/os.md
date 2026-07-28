@@ -27,7 +27,8 @@ whether each call is permitted.
 ## Divergences from CPython
 
 - **No file descriptors, no `bytes` paths.** Paths must be `str` or
-  `pathlib.Path`. `bytes` paths and integer fds — which CPython accepts —
+  `pathlib.Path`. `bytes` paths and integer fds (bools included — CPython
+  fd-converts them with only a `RuntimeWarning`) — which CPython accepts —
   raise the path-converter `TypeError` with the accepted-types phrase
   narrowed to what Monty takes, e.g.
   `stat: path should be string or os.PathLike, not bytes`. For every other

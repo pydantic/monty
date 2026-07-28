@@ -22,6 +22,40 @@ fn resolve_name_lookups(mut progress: RunProgress) -> Result<RunProgress, MontyE
 // === MontyRun dump/load Tests ===
 
 #[test]
+fn dump_header_rejects_incompatible_data() {
+    let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+    let bytes = runner.dump().unwrap();
+    assert_eq!(&bytes[..9], b"MONTY\0\x01\x00\x00");
+
+    let legacy = postcard::to_allocvec(&runner).unwrap();
+    assert_eq!(
+        MontyRun::load(&legacy).unwrap_err(),
+        postcard::Error::DeserializeBadEncoding
+    );
+
+    let mut wrong_version = bytes.clone();
+    wrong_version[6] = 2;
+    assert_eq!(
+        MontyRun::load(&wrong_version).unwrap_err(),
+        postcard::Error::DeserializeBadEncoding
+    );
+
+    let mut trailing_data = bytes.clone();
+    trailing_data.push(0);
+    assert_eq!(
+        MontyRun::load(&trailing_data).unwrap_err(),
+        postcard::Error::DeserializeBadEncoding
+    );
+
+    let mut wrong_kind = bytes;
+    wrong_kind[8] = 2;
+    assert_eq!(
+        MontyRun::load(&wrong_kind).unwrap_err(),
+        postcard::Error::DeserializeBadEncoding
+    );
+}
+
+#[test]
 fn monty_run_dump_load_simple() {
     // Create a runner, dump it, load it, and verify it produces the same result
     let runner = MontyRun::new("1 + 2".to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
@@ -99,6 +133,19 @@ result
         MontyObject::Int(34),
     ]);
     assert_eq!(result, expected);
+}
+
+/// Captured comprehension cells and their closure metadata survive code serialization.
+#[test]
+fn monty_run_dump_load_comprehension_closure() {
+    let code = "funcs = [lambda: item for item in ['first', 'second']]\nfuncs[0]()".to_owned();
+    let runner = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).unwrap();
+    let loaded = MontyRun::load(&runner.dump().unwrap()).unwrap();
+
+    assert_eq!(
+        loaded.run_no_limits(vec![]).unwrap(),
+        MontyObject::String("second".to_owned())
+    );
 }
 
 #[test]

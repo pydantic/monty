@@ -56,22 +56,9 @@ pub fn builtin_sum(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
 
-        // Try to add the item to accumulator
-        if let Some(new_value) = accumulator.py_add(item, vm)? {
-            // Replace the old accumulator with the new value, dropping the old one
-            let old = mem::replace(accumulator, new_value);
-            old.drop_with(vm);
-        } else {
-            // Types don't support addition
-            let acc_type = accumulator.py_type(vm);
-            let acc_name = acc_type.name(vm.heap, vm.interns);
-            return Err(ExcType::binary_type_error(
-                "+",
-                acc_type,
-                acc_name,
-                item.py_type_name(vm),
-            ));
-        }
+        let new_value = accumulator.py_add(item, vm)?;
+        let old = mem::replace(accumulator, new_value);
+        old.drop_with(vm);
     }
 
     Ok(acc_guard.into_inner())

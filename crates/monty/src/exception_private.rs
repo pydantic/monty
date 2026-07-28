@@ -170,15 +170,12 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
-    /// Creates a TypeError for unhashable types used as set elements.
-    ///
-    /// This matches Python 3.14's error message:
-    /// `TypeError: cannot use 'list' as a set element (unhashable type: 'list')`
+    /// Creates a TypeError for an unhashable value used as a set element.
     #[must_use]
-    fn type_error_unhashable_set_element(type_: &str) -> RunError {
+    fn type_error_unhashable_set_element(element_type: &str, unhashable_type: &str) -> RunError {
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("cannot use '{type_}' as a set element (unhashable type: '{type_}')"),
+            format!("cannot use '{element_type}' as a set element (unhashable type: '{unhashable_type}')"),
         )
         .into()
     }
@@ -911,12 +908,50 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
+    /// Creates a TypeError for the right operand of `in` / `not in` supporting
+    /// neither `__contains__` nor iteration.
+    ///
+    /// Matches CPython's format: `TypeError: argument of type '{type}' is not a
+    /// container or iterable`
+    #[must_use]
+    fn type_error_not_container(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument of type '{type_}' is not a container or iterable"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a class opting out of `in` with
+    /// `__contains__ = None`.
+    ///
+    /// Matches CPython's `slot_sq_contains` format: `TypeError: '{type}' object
+    /// is not a container` — deliberately distinct from
+    /// [`type_error_not_container`], which covers a type that never had
+    /// `__contains__` at all.
+    #[must_use]
+    fn type_error_object_not_container(type_: &str) -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not a container")).into()
+    }
+
     /// Creates a TypeError when `next()` receives a non-iterator.
     ///
     /// Matches CPython's format: `TypeError: '{type}' object is not an iterator`
     #[must_use]
     fn type_error_not_iterator(type_: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not an iterator")).into()
+    }
+
+    /// Creates a TypeError for a user `__iter__` returning a non-iterator.
+    ///
+    /// Matches CPython's format: `TypeError: iter() returned non-iterator of type '{type}'`
+    #[must_use]
+    fn type_error_iter_returned_non_iterator(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("iter() returned non-iterator of type '{type_}'"),
+        )
+        .into()
     }
 
     /// Creates a TypeError for non-iterable type in PEP 448 `*value` literal unpack.
@@ -1032,24 +1067,6 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn type_error_not_reversible(type_: &str) -> RunError {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not reversible")).into()
-    }
-
-    /// Creates a RuntimeError for an over-deep iterator delegation chain.
-    ///
-    /// Monty-specific (CPython builds no delegation chain at all) — see
-    /// `limitations/builtins.md`.
-    #[must_use]
-    fn runtime_error_iter_delegation_too_deep() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegation nested too deeply").into()
-    }
-
-    /// Creates a RuntimeError for a delegating iterator pointing at a non-iterator.
-    ///
-    /// Unreachable from Python; only a malformed snapshot can produce it. Raised
-    /// rather than panicking so untrusted snapshot data cannot abort the process.
-    #[must_use]
-    fn runtime_error_iter_delegation_invalid() -> RunError {
-        SimpleException::new_msg(ExcType::RuntimeError, "iterator delegates to a non-iterator").into()
     }
 
     /// Creates a RuntimeError for set mutation during iteration.
@@ -1419,6 +1436,28 @@ pub(crate) trait ExcTypeExt: Sized {
     #[must_use]
     fn overflow_exponent_too_large() -> RunError {
         SimpleException::new_msg(ExcType::OverflowError, "exponent too large").into()
+    }
+
+    /// Creates an OverflowError when an integer cannot be represented as a float.
+    #[must_use]
+    fn overflow_int_to_float() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "int too large to convert to float").into()
+    }
+
+    /// Creates a ValueError for a zero modulus passed to `pow`.
+    #[must_use]
+    fn value_error_pow_modulus_zero() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "pow() 3rd argument cannot be 0").into()
+    }
+
+    /// Creates a ValueError for a negative exponent passed to modular `pow`.
+    #[must_use]
+    fn value_error_pow_negative_exponent() -> RunError {
+        SimpleException::new_msg(
+            ExcType::ValueError,
+            "pow() 2nd argument cannot be negative when 3rd argument specified",
+        )
+        .into()
     }
 
     /// Creates a ZeroDivisionError for divmod by zero (both integer and float).
@@ -2236,6 +2275,17 @@ impl From<fmt::Error> for RunError {
 }
 
 impl RunError {
+    /// Whether this is a catchable `StopIteration`, i.e. a `__next__` reporting
+    /// exhaustion.
+    ///
+    /// Excluding `UncatchableExc` is defensive — it is only ever built from a
+    /// `ResourceError` — but spelled out so a future uncatchable variant cannot
+    /// read as "the iterator finished", letting sandboxed code absorb its own
+    /// limit breach.
+    pub(crate) fn is_stop_iteration(&self) -> bool {
+        matches!(self, Self::Exc(raise) if matches!(raise.exc.exc_type(), ExcType::StopIteration))
+    }
+
     /// Converts this runtime error to a `MontyException` for the public API.
     ///
     /// Internal errors are converted to `RuntimeError` exceptions with no traceback.

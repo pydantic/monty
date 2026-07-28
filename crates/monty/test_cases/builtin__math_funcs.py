@@ -165,6 +165,13 @@ assert pow(2, 10, 1000) == 24
 assert pow(3, 4, 5) == 1
 assert pow(7, 256, 13) == 9
 
+# Modular exponentiation with heap-backed integers
+big = 2**63
+assert pow(big, 3, 7) == 1
+assert pow(2, big, 7) == 4
+assert pow(2, 3, big + 1) == 8
+assert pow(big, 3, -(big + 1)) == -1
+
 # Modular exponentiation edge cases
 assert pow(2, 0, 5) == 1
 assert pow(0, 5, 3) == 0

@@ -294,9 +294,10 @@ properties that real CPython does not provide, per the caveat above.
 
 ## JavaScript client (`@pydantic/monty`)
 
-The npm package implements the same parent side of the protocol in pure
-TypeScript (`crates/monty-js`) — no Rust in the package; workers are `monty`
-binaries shipped in platform npm packages. Everything above applies, plus:
+The Node.js npm package implements the same parent side of the protocol through
+a napi-rs binding over `monty-pool`; platform npm packages ship both the native
+addon and the `monty` worker binary. The browser entry point implements the
+same protocol in TypeScript over a WASM worker. Everything above applies, plus:
 
 - **Dataclass method calls are unsupported.** JS has no dataclass registry,
   so a sandbox call to a method on a host dataclass (`method_call` on the

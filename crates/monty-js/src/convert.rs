@@ -23,18 +23,23 @@
 //! - `MontyObject::Type` → `{ __monty_type__: 'Type', value }`
 //! - `MontyObject::BuiltinFunction` → `{ __monty_type__: 'BuiltinFunction', value }`
 //! - `MontyObject::Dataclass` → `{ __monty_type__: 'Dataclass', name, fields, ... }`
+//! - `MontyObject::FileHandle` ↔ `{ __monty_type__: 'FileHandle', path, mode, position }`
 //! - `MontyObject::Repr` → plain `string`
 //! - `MontyObject::Cycle` → placeholder `string`
 
-use std::{collections::HashMap, ptr};
+use std::{borrow::Cow, collections::HashMap, ptr};
 
-use monty_types::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty_types::{
+    DictPairs, ExcType, FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone,
+};
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
 
 /// JavaScript safe integer range: -(2^53) to 2^53.
 const JS_SAFE_INT_MIN: i64 = -(1_i64 << 53);
 const JS_SAFE_INT_MAX: i64 = 1_i64 << 53;
+const JS_MAX_SAFE_POSITION: u64 = (1_u64 << 53) - 1;
+const JS_MAX_SAFE_POSITION_F64: f64 = 9_007_199_254_740_991.0;
 
 /// Wrapper letting `monty_to_js` return a dynamically typed JS value from a
 /// napi function.
@@ -81,9 +86,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
-        // A Monty file object has no faithful JS representation (it is not a
-        // real OS file): expose its repr string.
-        MontyObject::FileHandle { .. } => env.create_string(obj.py_repr())?.into_unknown(env)?,
+        MontyObject::FileHandle(handle) => create_js_file_handle(handle, env)?,
         MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
@@ -310,6 +313,50 @@ fn create_js_builtin_function_marker<'e>(func_str: &str, env: &'e Env) -> Result
     let mut obj = Object::new(env)?;
     obj.set_named_property("__monty_type__", "BuiltinFunction")?;
     obj.set_named_property("value", func_str)?;
+    obj.into_unknown(env)
+}
+
+/// Creates a JS marker object representing a sandbox file handle.
+fn create_js_file_handle<'e>(handle: &MontyFileHandle, env: &'e Env) -> Result<Unknown<'e>> {
+    if handle.position > JS_MAX_SAFE_POSITION {
+        return Err(Error::from_reason(
+            "MontyFileHandle position exceeds JavaScript's maximum safe integer",
+        ));
+    }
+
+    let mut obj = Object::new(env)?;
+    obj.set_named_property("path", handle.path.as_str())?;
+    obj.set_named_property("mode", handle.mode.as_str())?;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "position is within JavaScript's safe integer range"
+    )]
+    obj.set_named_property("position", handle.position as f64)?;
+
+    let marker = env.create_string("FileHandle")?;
+    let binary = create_js_bool(handle.mode.is_binary(), env)?;
+    let readable = create_js_bool(handle.mode.readable(), env)?;
+    let writable = create_js_bool(handle.mode.writable(), env)?;
+    let hidden = PropertyAttributes::empty();
+    obj.define_properties(&[
+        Property::new()
+            .with_utf8_name("__monty_type__")?
+            .with_value(&marker)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("binary")?
+            .with_value(&binary)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("readable")?
+            .with_value(&readable)
+            .with_property_attributes(hidden),
+        Property::new()
+            .with_utf8_name("writable")?
+            .with_value(&writable)
+            .with_property_attributes(hidden),
+    ])?;
+    obj.freeze()?;
     obj.into_unknown(env)
 }
 
@@ -627,6 +674,15 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
             let value: String = obj.get_named_property("value")?;
             Ok(MontyObject::Repr(format!("<built-in function {value}>")))
         }
+        "FileHandle" => {
+            let path = get_required_string_property(obj, "path", "MontyFileHandle")?;
+            let mode = get_required_string_property(obj, "mode", "MontyFileHandle")?;
+            let mode: FileMode = mode
+                .parse()
+                .map_err(|error: Cow<'static, str>| Error::from_reason(error.into_owned()))?;
+            let position = get_file_handle_position(obj)?;
+            Ok(MontyObject::FileHandle(MontyFileHandle { path, mode, position }))
+        }
         "Dataclass" => {
             let name: String = obj.get_named_property("name")?;
 
@@ -667,10 +723,51 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
                 frozen,
             })
         }
-        _ => {
-            // Unknown marker type, treat as dict
-            js_object_to_monty_dict(*obj, env)
-        }
+        _ => Err(Error::from_reason(format!("Unknown Monty marker type: {monty_type}"))),
+    }
+}
+
+/// Reads and validates the optional JavaScript-safe file position.
+fn get_file_handle_position(obj: &Object) -> Result<u64> {
+    if !obj.has_named_property("position")? {
+        return Ok(0);
+    }
+
+    let value: Unknown = obj.get_named_property("position")?;
+    if value.get_type()? == ValueType::Undefined {
+        return Ok(0);
+    }
+    if value.get_type()? != ValueType::Number {
+        return Err(Error::from_reason(
+            "MontyFileHandle position must be a non-negative safe integer",
+        ));
+    }
+
+    let position = value.coerce_to_number()?.get_double()?;
+    if position.is_finite() && position.fract() == 0.0 && (0.0..=JS_MAX_SAFE_POSITION_F64).contains(&position) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "validated as a non-negative safe integer"
+        )]
+        Ok(position as u64)
+    } else {
+        Err(Error::from_reason(
+            "MontyFileHandle position must be a non-negative safe integer",
+        ))
+    }
+}
+
+/// Reads a required string field from a marked object without coercion.
+fn get_required_string_property(obj: &Object, name: &str, marker: &str) -> Result<String> {
+    if !obj.has_named_property(name)? {
+        return Err(Error::from_reason(format!("{marker} {name} must be a string")));
+    }
+    let value: Unknown = obj.get_named_property(name)?;
+    if value.get_type()? == ValueType::String {
+        value.coerce_to_string()?.into_utf8()?.into_owned()
+    } else {
+        Err(Error::from_reason(format!("{marker} {name} must be a string")))
     }
 }
 

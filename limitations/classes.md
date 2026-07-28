@@ -186,10 +186,30 @@ e.g. return a `dict` of the fields.
   are all unavailable (`cls.__name__` and `cls.__annotations__` work — the
   latter with stringized values, see [typing.md](typing.md)).
 - Dunder protocols other than `__init__`, `__repr__`, `__str__`,
-  `__enter__`, and `__exit__`: `__new__`, `__call__`, `__iter__`,
-  `__next__`, `__getitem__`, `__setitem__`, `__contains__`, `__add__`,
-  `__eq__`, `__hash__`, `__bool__`, etc. are not dispatched for
-  user-defined instances.
+  `__enter__`, `__exit__`, `__iter__`, `__next__`, and `__contains__`:
+  `__new__`, `__call__`, `__getitem__`, `__setitem__`, `__add__`, `__eq__`,
+  `__hash__`, `__bool__`, etc. are not dispatched for user-defined instances.
+- `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
+  `__repr__`/`__str__` they run synchronously, so one that calls an external or
+  OS function cannot suspend and raises `NotImplementedError`. Two related
+  protocols are still not dispatched, so a class relying on either is not
+  iterable:
+  - the legacy `__getitem__`-only fallback — CPython iterates a class defining
+    `__getitem__` but not `__iter__` from index 0 until `IndexError`, while
+    Monty reports it as not iterable. (Note `monty -t` accepts `iter(obj)` for
+    such a class, so this fails only at runtime — see [iter.md](iter.md).)
+  - `__reversed__` — so `reversed(obj)` on any user instance raises
+    `TypeError: '{cls}' object is not reversible`. That matches CPython for a
+    class defining neither `__reversed__` nor `__len__` + `__getitem__`, and
+    diverges for one that does.
+- `__next__` is looked up on the class only, never the instance `__dict__`, and
+  a `StopIteration` raised anywhere inside it ends the iteration — including one
+  that propagates out of a nested call, where CPython's PEP 479 protections
+  apply only to generators, which Monty does not have.
+- **A `__contains__` returning a user instance is always `True`.** The result is
+  coerced by Monty's truthiness, which reports every instance as truthy (see
+  above), where CPython's `PyObject_IsTrue` consults the returned object's
+  `__bool__`/`__len__`. Every other return type coerces as CPython does.
 - Attribute-access hooks are **never** dispatched: `__getattr__`,
   `__getattribute__`, `__setattr__`, `__delattr__`, and `__del__`. A missing
   attribute always raises the default `AttributeError` even when the class

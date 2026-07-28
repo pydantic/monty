@@ -20,6 +20,8 @@ mod vm;
 
 pub use code::Code;
 pub use compiler::Compiler;
+#[cfg(test)]
+pub(crate) use op::opcode_fingerprint;
 pub(crate) use vm::{CallResult, ContainsVM, RecursionToken};
 pub use vm::{FrameExit, VM, VMSnapshot};
 

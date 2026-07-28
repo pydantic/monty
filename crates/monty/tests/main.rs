@@ -128,6 +128,33 @@ fn external_function_as_init_raises_not_implemented() {
     );
 }
 
+/// A user `__next__` calling an external function cannot suspend: like
+/// `__repr__`/`__str__` it runs synchronously via `evaluate_function`, so the
+/// call raises `NotImplementedError` (see `limitations/classes.md`). Rust-side
+/// for the same reason as `external_function_as_init_raises_not_implemented`:
+/// on CPython the external is a real function and the loop would succeed.
+#[test]
+fn external_function_in_next_raises_not_implemented() {
+    let code = "class Foo:\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return ext_fn()\n\nfor _x in Foo():\n    pass";
+    let ex = MontyRun::new(
+        code.to_owned(),
+        "test.py",
+        vec!["ext_fn".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let err = ex
+        .run_no_limits(vec![MontyObject::Function {
+            name: "ext_fn".to_owned(),
+            docstring: None,
+        }])
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Traceback (most recent call last):\n  File \"test.py\", line 8, in <module>\n    for _x in Foo():\n              ~~~~~\nNotImplementedError: __next__: external function 'ext_fn' is not yet supported in this context"
+    );
+}
+
 /// The 3-arg `type()` form rejects non-empty bases because Monty classes
 /// cannot inherit (documented in `limitations/classes.md`). Kept as a
 /// Rust-side test because CPython accepts bases, so the comparative
