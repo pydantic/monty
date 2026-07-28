@@ -277,9 +277,7 @@ fn call_findall(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     defer_drop!(string, vm);
     let resolved = resolve_pattern(pattern, flags, vm)?;
     defer_drop!(resolved, vm);
-    let findall = resolved.get(vm.heap).prepare_findall();
-    let text = subject_str(string, vm)?.to_owned();
-    findall.run(&text, vm)
+    resolved.get(vm.heap).findall(subject_str(string, vm)?, vm.heap)
 }
 
 /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches with a replacement.

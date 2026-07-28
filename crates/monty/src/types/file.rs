@@ -746,14 +746,14 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
     let file = Value::Ref(file_id);
     defer_drop!(file, vm);
 
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
+
     let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
         return Err(RunError::internal(
             "apply_buffer_store: file_id does not point to an OpenFile",
         ));
     };
-
-    let mut result_guard = DropGuard::new(result, vm);
-    let (result, vm) = result_guard.as_parts_mut();
 
     // Stage 1: drain `pending_read` from the file.
     let Some(spec) = file.get_mut(vm.heap).pending_read.take() else {
