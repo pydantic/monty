@@ -13,7 +13,7 @@ use crate::{
     bytecode::{ContainsVM, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapRead, HeapReadOutput},
     sorting::{apply_permutation, sort_indices},
     types::{Dict, PyTrait, long_int::check_bigint_str_digits_limit, str::allocate_string},
     value::Value,
@@ -142,22 +142,16 @@ pub(super) fn call_dumps(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let macro_args = JsonDumpsArgs::from_args(args, vm)?;
     let (obj, config) = JsonDumpsConfig::from_macro_args(macro_args, vm)?;
 
-    let mut obj_guard = DropGuard::new(obj, vm);
+    defer_drop!(obj, vm);
     let mut output = String::new();
     let mut active_containers = Vec::new();
-    {
-        let (obj, vm) = obj_guard.as_parts_mut();
-        let mut encoder = Encoder {
-            out: &mut output,
-            config: &config,
-            active_containers: &mut active_containers,
-            vm,
-        };
-        encoder.serialize_value(obj, 0)?;
-    }
-
-    let (obj, vm) = obj_guard.into_parts();
-    obj.drop_with(vm);
+    let mut encoder = Encoder {
+        out: &mut output,
+        config: &config,
+        active_containers: &mut active_containers,
+        vm,
+    };
+    encoder.serialize_value(obj, 0)?;
     Ok(allocate_string(output, vm.heap)?)
 }
 
@@ -207,8 +201,7 @@ fn apply_bool_flag(flags: u8, bit: u8, value: Value, vm: &mut VM<'_>) -> u8 {
 /// only pretty printing), and
 /// strings are repeated once per depth level exactly like CPython.
 fn parse_indent_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<String>> {
-    let mut value_guard = DropGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts_mut();
+    defer_drop!(value, vm);
 
     match value {
         Value::None => Ok(None),
@@ -246,8 +239,7 @@ fn spaces_from_indent_count(count: i64) -> RunResult<Option<String>> {
 /// `None` leaves the default separators intact. Otherwise the value must be a
 /// two-item list or tuple of strings representing the item and key separators.
 fn parse_separators_value(value: Value, vm: &mut VM<'_>) -> RunResult<Option<(String, String)>> {
-    let mut value_guard = DropGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts_mut();
+    defer_drop!(value, vm);
 
     if matches!(value, Value::None) {
         return Ok(None);
@@ -597,20 +589,15 @@ impl<'h> Encoder<'_, 'h> {
 fn sort_dict_entries(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) -> RunResult<()> {
     let mut indices: Vec<usize> = (0..entries.len()).collect();
     let compare_values: Vec<Value> = entries.iter().map(|(key, _)| key.clone_with_heap(vm)).collect();
-    let mut compare_values_guard = DropGuard::new(compare_values, vm);
-    let (compare_values, vm) = compare_values_guard.as_parts_mut();
+    defer_drop!(compare_values, vm);
     sort_indices(&mut indices, compare_values.as_slice(), false, vm)?;
     apply_permutation(entries.as_mut_slice(), &mut indices);
     Ok(())
 }
 
 /// Removes dict entries whose keys are not JSON-serializable, preserving order.
-///
-/// `skipkeys=True` must drop invalid entries without disturbing the relative
-/// order of the retained pairs. A two-pointer compaction avoids the repeated
-/// shifting cost of `Vec::remove(i)` while still cleaning up skipped `Value`
-/// references with `drop_with`.
 fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>) {
+    // Use two pointers to preserve relative order
     let mut write = 0;
     for read in 0..entries.len() {
         if is_json_key_allowed(&entries[read].0, vm) {
@@ -621,10 +608,8 @@ fn skip_disallowed_dict_keys(entries: &mut Vec<(Value, Value)>, vm: &mut VM<'_>)
         }
     }
 
-    for (key, value) in entries.drain(write..) {
-        key.drop_with(vm);
-        value.drop_with(vm);
-    }
+    // Drain the disallowed entries
+    entries.drain(write..).drop_with(vm);
 }
 
 /// Returns whether a value is an allowed JSON object key type.

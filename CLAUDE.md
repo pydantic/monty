@@ -248,7 +248,9 @@ while let Some(item) = iter.for_next(vm)? { ... }
 
 #### 2. `DropGuard` (when you need control over the value's fate)
 
-Use `DropGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `DropGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths:
+Use `DropGuard` directly when `defer_drop!` is too restrictive — specifically when you need to conditionally extract the value instead of dropping it. `DropGuard` provides `into_inner()` and `into_parts()` to reclaim ownership, while its `Drop` impl still guarantees cleanup on all other paths.
+
+Do not use `DropGuard` when the value is never moved back out of it. A guard used only through `as_parts()` or `as_parts_mut()` must be replaced with `defer_drop!` or `defer_drop_mut!`; explicit guards are reserved for code that later calls `into_inner()` or `into_parts()`. This keeps the ownership intent visible and avoids unnecessary guard bookkeeping:
 
 ```rust
 // DropGuard needed here because on success we push lhs back onto the stack
@@ -266,14 +268,19 @@ if lhs.py_iadd(rhs, this.heap)? {
 
 #### 3. Manual `drop_with` (for trivially simple cases)
 
-For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with` call is fine:
+For very simple cases with a single linear code path and no branching between acquiring and releasing the value, a direct `drop_with` call is acceptable as long as it produces more concise code than `defer_drop!`:
 
 ```rust
 let iter = self.pop();
 iter.drop_with(self); // single path, no branching
 ```
 
-Avoid manual `drop_with` whenever there are multiple code paths (branching, `?`, `continue`, early returns) between acquiring and releasing the value — that is exactly where `defer_drop!` or `DropGuard` prevent leaks by guaranteeing cleanup on every path.
+`drop_with` should be used **only** when it is genuinely simpler than `defer_drop!` or `DropGuard`. The latter two are safer and more maintainable, especially in complex control flow. Multiple manual cleanup calls for the same owned value are a poor substitute for a guard.
+
+**Do not use `drop_with` if any of the following are true:**
+- The same value has `drop_with` called in multiple places (e.g. a loop with `continue` or `?` in the middle). This implies `defer_drop!` or `DropGuard` will be easier to read.
+- The explicit call to `drop_with` produces more lines of code than `defer_drop!` or `DropGuard` would. The latter often avoid rightward drift and make the cleanup logic easier.
+- The value is part of a container (e.g. `Vec<Value>`). Ideally the container itself implements `DropWithContext` and so `defer_drop` or `DropGuard` can be used on the whole container. Consider if a `DropWithContext` implementation for the container might be missing.
 
 ### Resource-tracked string construction (`StringBuilder`)
 
@@ -718,6 +725,18 @@ Heap-allocated values (`Value::Ref`) use manual reference counting. Key rules:
 - **Dropping**: Call `drop_with(ctx)` (the [`DropWithContext`] method) when discarding a `Value` that may be a `Ref`.
 
 Container types (`List`, `Tuple`, `Dict`) also have `clone_with_heap()` methods.
+
+### Raw `HeapId` ownership
+
+`HeapId` does not encode whether a reference is owned or borrowed. Locally owned IDs should typically be wrapped in `Value::Ref` immediately so `defer_drop!` and `DropGuard` can manage cleanup; a local raw `HeapId` should otherwise be presumed borrowed.
+
+Owned `HeapId` fields remain the preferred representation where a structure needs the raw ID, such as `ListIterator::list`. Such fields must be documented as owned and cleaned up exactly once:
+
+- Heap-stored `HeapItem` implementations must push every owned ID from `py_dec_ref_ids`; this is preferred to calling `Heap::dec_ref` directly because destruction uses the heap's iterative cleanup stack.
+- Non-`HeapItem` owners should release owned IDs through their `DropWithContext` implementation, where a direct `dec_ref` is acceptable.
+- Direct `dec_ref` in ordinary control flow is discouraged. As with `drop_with`, never scatter cleanup for the same owned reference across branches; use an owning `Value` and a guard instead.
+
+Raw ownership is also acceptable when immediately transferred into a documented owned field or across an API whose contract explicitly transfers ownership.
 
 **Mutability of the heap parameter is asymmetric** — do not assume the two methods take the same kind of borrow:
 

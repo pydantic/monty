@@ -1676,8 +1676,7 @@ fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
             HeapData::NamedTuple(namedtuple) => namedtuple.as_vec()[index].clone_with_heap(vm.heap),
             _ => unreachable!("tuple-like heap value changed type"),
         };
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
+        defer_drop!(item, vm);
         if item.py_hash(vm)?.is_none() {
             return unhashable_type_name(item, vm);
         }

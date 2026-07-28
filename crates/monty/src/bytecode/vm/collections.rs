@@ -115,27 +115,28 @@ impl VM<'_> {
                 ExcType::type_error_value_after_star(&type_)
             });
         }
-        let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
 
-        // Check if any copied items are refs (for updating contains_refs)
-        let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
+        {
+            let copied_items: Vec<Value> = collect_iterable(iterable, this)?;
+            defer_drop_mut!(copied_items, this);
 
-        // Check memory limit before growing the list
-        if let Value::Ref(_) = list_ref {
-            this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
-        }
+            // Check if any copied items are refs (for updating contains_refs)
+            let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
 
-        // Extend the list
-        if let Value::Ref(id) = list_ref {
-            let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
-                panic!("list_extend: expected List on heap");
-            };
-            let list = list.get_mut(this.heap);
-            // Update contains_refs before extending
-            if has_refs {
-                list.set_contains_refs();
+            // Extend the list
+            if let Value::Ref(id) = list_ref {
+                this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
+
+                let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
+                    panic!("list_extend: expected List on heap");
+                };
+                let list = list.get_mut(this.heap);
+                // Update contains_refs before extending
+                if has_refs {
+                    list.set_contains_refs();
+                }
+                list.as_vec_mut().append(copied_items);
             }
-            list.as_vec_mut().extend(copied_items);
         }
 
         // Push list_ref back on the stack (don't drop it)
@@ -227,39 +228,43 @@ impl VM<'_> {
             return Err(RunError::internal("DictMerge: expected dict ref"));
         };
 
-        for (key, value) in copied_items {
-            // Validate key is a string (InternString or heap-allocated Str)
-            let is_string = match &key {
-                Value::InternString(_) => true,
-                Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
-                _ => false,
-            };
-            if !is_string {
-                key.drop_with(this);
-                value.drop_with(this);
-                return Err(ExcType::type_error_kwargs_nonstring_key());
-            }
-
-            // Get the string key for error messages (needed before moving key into closure)
-            let key_str = match &key {
-                Value::InternString(id) => this.interns.get_str(*id).to_string(),
-                Value::Ref(id) => {
-                    if let HeapData::Str(s) = this.heap.get(*id) {
-                        s.as_str().to_string()
-                    } else {
-                        "<unknown>".to_string()
-                    }
+        {
+            let copied_items = copied_items.into_iter();
+            defer_drop_mut!(copied_items, this);
+            for (key, value) in copied_items {
+                // Validate key is a string (InternString or heap-allocated Str)
+                let is_string = match &key {
+                    Value::InternString(_) => true,
+                    Value::Ref(id) => matches!(this.heap.get(*id), HeapData::Str(_)),
+                    _ => false,
+                };
+                if !is_string {
+                    key.drop_with(this);
+                    value.drop_with(this);
+                    return Err(ExcType::type_error_kwargs_nonstring_key());
                 }
-                _ => "<unknown>".to_string(),
-            };
 
-            let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
-                unreachable!("DictMerge: entry is not a Dict")
-            };
+                // Get the string key for error messages (needed before moving key into closure)
+                let key_str = match &key {
+                    Value::InternString(id) => this.interns.get_str(*id).to_string(),
+                    Value::Ref(id) => {
+                        if let HeapData::Str(s) = this.heap.get(*id) {
+                            s.as_str().to_string()
+                        } else {
+                            "<unknown>".to_string()
+                        }
+                    }
+                    _ => "<unknown>".to_string(),
+                };
 
-            if let Some(old_value) = dict.set(key, value, this)? {
-                old_value.drop_with(this);
-                return Err(ExcType::type_error_multiple_values(func_name, &key_str));
+                let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
+                    unreachable!("DictMerge: entry is not a Dict")
+                };
+
+                if let Some(old_value) = dict.set(key, value, this)? {
+                    old_value.drop_with(this);
+                    return Err(ExcType::type_error_multiple_values(func_name, &key_str));
+                }
             }
         }
 
@@ -315,6 +320,8 @@ impl VM<'_> {
             unreachable!("DictUpdate: target is always a Ref — compiler invariant")
         };
 
+        let copied_items = copied_items.into_iter();
+        defer_drop_mut!(copied_items, this);
         for (key, value) in copied_items {
             let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
                 unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
@@ -362,6 +369,8 @@ impl VM<'_> {
             unreachable!("SetExtend: target is always a Ref — compiler invariant")
         };
 
+        let copied_items = copied_items.into_iter();
+        defer_drop_mut!(copied_items, this);
         for item in copied_items {
             let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
                 unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
@@ -493,6 +502,7 @@ impl VM<'_> {
         // draining it — CPython stops consuming there too, which is why every
         // other type has no total to report.
         let items = collect_iterable_bounded(value, count + 1, this)?;
+        defer_drop_mut!(items, this);
         if items.len() != count {
             let err = if items.len() > count {
                 match total {
@@ -504,14 +514,11 @@ impl VM<'_> {
                 // length is known whether or not the type could report one.
                 unpack_size_error(count, items.len())
             };
-            for item in items {
-                item.drop_with(this);
-            }
             return Err(err);
         }
 
         // Push items in reverse order so first item is on top
-        for item in items.into_iter().rev() {
+        for item in items.drain(..).rev() {
             this.push(item);
         }
         Ok(())
@@ -538,15 +545,13 @@ impl VM<'_> {
         // Drained in full: a starred target consumes everything, so unlike
         // `unpack_sequence` there is no bound to stop at — and therefore always
         // a true total to report when there are too few values.
-        let items = collect_iterable(value, this)?;
+        let mut items_guard = DropGuard::new(collect_iterable(value, this)?, this);
+        let (items, _) = items_guard.as_parts();
         if items.len() < min_items {
-            let err = unpack_ex_too_few_error(min_items, items.len());
-            for item in items {
-                item.drop_with(this);
-            }
-            return Err(err);
+            return Err(unpack_ex_too_few_error(min_items, items.len()));
         }
 
+        let (items, this) = items_guard.into_parts();
         this.push_unpack_ex_results(items, before, after)
     }
 

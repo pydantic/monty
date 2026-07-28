@@ -36,8 +36,9 @@ use std::{mem, ptr};
 use crate::{
     args::{ArgPosIter, ArgValues, KwargsValues, KwargsValuesIter},
     bytecode::VM,
+    defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{ContainsHeap, DropGuard, DropWithContext},
+    heap::{ContainsHeap, DropWithContext},
     intern::{Interns, StringId},
     value::{EitherStr, Value},
 };
@@ -109,8 +110,7 @@ fn bind_slow<const N: usize>(
     // values already moved into `bound` are covered by the *caller's* guard
     // around the slots struct, so no error arm needs manual drops beyond
     // values it has already pulled out of an iterator.
-    let mut guard = DropGuard::new(state, vm);
-    let (state, vm) = guard.as_parts_mut();
+    defer_drop_mut!(state, vm);
 
     if spec.kwargs_not_supported_yet && state.kwargs.len() > 0 {
         return Err(ExcType::kwargs_not_implemented(spec.func_name));

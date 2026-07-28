@@ -1348,6 +1348,23 @@ impl Value {
         }
     }
 
+    /// Consumes this Value as a reference, returning the contained HeapId otherwise returns None.
+    ///
+    /// The caller is responsible for ensuring the `HeapId` is properly decref'd.
+    pub fn into_ref_id(self) -> Option<HeapId> {
+        match self {
+            Self::Ref(id) => {
+                #[cfg(feature = "memory-model-checks")]
+                {
+                    // Mark the value as dereferenced to prevent double-free
+                    mem::forget(self);
+                }
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the module name if this value is a module, otherwise returns "<unknown>".
     ///
     /// Used for error messages in `from module import name` when the name doesn't exist.
@@ -1920,7 +1937,9 @@ impl Value {
     ///
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
-    /// a value to prevent memory leaks.
+    /// a value to prevent memory leaks. Call it directly only on a simple, linear
+    /// cleanup path; use `defer_drop!` or `DropGuard` when any branch or `?` could
+    /// bypass cleanup.
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with(self, heap: &mut impl ContainsHeap) {

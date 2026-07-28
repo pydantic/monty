@@ -39,6 +39,10 @@ mod stable_heap;
 use stable_heap::StableHeap;
 
 /// Unique identifier for values stored inside the heap arena.
+///
+/// The ID does not encode ownership. Local IDs should normally be borrowed or
+/// wrapped immediately in `Value::Ref`; owned fields must document and release
+/// their reference through `HeapItem` or `DropWithContext` cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct HeapId(usize);
 
@@ -1049,6 +1053,12 @@ impl Heap {
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
+    ///
+    /// This is the low-level release operation for an owned raw `HeapId`. Ordinary
+    /// control flow should instead keep local ownership in `Value::Ref` and use
+    /// `defer_drop!` or `DropGuard`. Heap-stored owners declare child references in
+    /// `HeapItem::py_dec_ref_ids`; direct calls are appropriate in cleanup for other
+    /// structures that own raw IDs.
     ///
     /// Uses an iterative work stack instead of recursion to avoid Rust stack overflow
     /// when freeing deeply nested containers (e.g., a list nested 10,000 levels deep).

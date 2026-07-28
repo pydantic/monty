@@ -580,18 +580,14 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// lands in the range error, not `OverflowError`; non-integers raise
 /// `TypeError` before the range is checked.
 fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
-    let n = match &base {
+    defer_drop!(base, vm);
+    let n = match base {
         Value::Bool(b) => i64::from(*b),
         Value::Int(i) => *i,
         // Clamped by PyNumber_AsSsize_t: any i64-overflowing int is out of range.
-        _ if is_long_int(&base, vm) => i64::MAX,
-        _ => {
-            let err = ExcType::type_error_not_integer(&base.py_type_name(vm));
-            base.drop_with(vm);
-            return Err(err);
-        }
+        _ if is_long_int(base, vm) => i64::MAX,
+        _ => return Err(ExcType::type_error_not_integer(&base.py_type_name(vm))),
     };
-    base.drop_with(vm);
     match u32::try_from(n) {
         Ok(0) => Ok(0),
         Ok(b @ 2..=36) => Ok(b),

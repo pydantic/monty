@@ -20,7 +20,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource_checks::check_estimated_size,
@@ -70,6 +70,52 @@ pub(crate) struct RePattern {
     /// unanchored still fits anchored). `None` = the engine's default limit. Not
     /// serialized — restored patterns recompile at the default limit.
     delegate_size_limit: Option<usize>,
+}
+
+/// Owned regex state for `findall`, detached from any heap borrow.
+pub(crate) struct FindallPattern {
+    compiled: Regex,
+}
+
+impl FindallPattern {
+    /// Returns all non-overlapping matches while guarding partial results.
+    pub fn run(&self, text: &str, vm: &mut VM<'_>) -> RunResult<Value> {
+        let cap_count = self.compiled.captures_len();
+        let mut results_guard = DropGuard::new(Vec::new(), vm);
+        let (results, vm) = results_guard.as_parts_mut();
+
+        match cap_count {
+            0 | 1 => {
+                for m in self.compiled.find_iter(text) {
+                    let val = m.map_err(ExcType::re_pattern_error)?.as_str();
+                    results.push(allocate_string(val, vm.heap)?);
+                }
+            }
+            2 => {
+                for caps in self.compiled.captures_iter(text) {
+                    let caps = caps.map_err(ExcType::re_pattern_error)?;
+                    let val = caps.get(1).map_or("", |m| m.as_str());
+                    results.push(allocate_string(val, vm.heap)?);
+                }
+            }
+            _ => {
+                for caps in self.compiled.captures_iter(text) {
+                    let caps = caps.map_err(ExcType::re_pattern_error)?;
+                    let mut elements_guard = DropGuard::new(SmallVec::<[Value; 3]>::new(), vm);
+                    let (elements, vm) = elements_guard.as_parts_mut();
+                    for cap in caps.iter().skip(1) {
+                        let val = cap.map_or("", |m| m.as_str());
+                        elements.push(allocate_string(val, vm.heap)?);
+                    }
+                    let (elements, vm) = elements_guard.into_parts();
+                    results.push(allocate_tuple(elements, vm.heap)?);
+                }
+            }
+        }
+
+        let (results, vm) = results_guard.into_parts();
+        Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(results)))?))
+    }
 }
 
 impl PartialEq for RePattern {
@@ -224,48 +270,11 @@ impl RePattern {
         }
     }
 
-    /// `pattern.findall(string)` — return all non-overlapping matches.
-    ///
-    /// Follows CPython's semantics:
-    /// - No capture groups: returns a list of matched strings
-    /// - One capture group: returns a list of the group's matched strings
-    /// - Multiple capture groups: returns a list of tuples of matched strings
-    pub fn findall(&self, text: &str, heap: &Heap) -> RunResult<Value> {
-        let cap_count = self.compiled.captures_len();
-        let mut results = Vec::new();
-
-        match cap_count {
-            // No capture groups — return list of full match strings
-            0 | 1 => {
-                for m in self.compiled.find_iter(text) {
-                    let val = m.map_err(ExcType::re_pattern_error)?.as_str();
-                    results.push(allocate_string(val, heap)?);
-                }
-            }
-            // One capture group — return list of the group's strings
-            2 => {
-                for caps in self.compiled.captures_iter(text) {
-                    let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let val = caps.get(1).map_or("", |m| m.as_str());
-                    results.push(allocate_string(val, heap)?);
-                }
-            }
-            // Multiple capture groups — return list of tuples
-            _ => {
-                for caps in self.compiled.captures_iter(text) {
-                    let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
-                    for cap in caps.iter().skip(1) {
-                        let val = cap.map_or("", |m| m.as_str());
-                        elements.push(allocate_string(val, heap)?);
-                    }
-                    results.push(allocate_tuple(elements, heap)?);
-                }
-            }
+    /// Detaches the compiled regex so `findall` can clean up partial results.
+    pub fn prepare_findall(&self) -> FindallPattern {
+        FindallPattern {
+            compiled: self.compiled.clone(),
         }
-
-        let list = List::new(results);
-        Ok(Value::Ref(heap.allocate(HeapData::List(list))?))
     }
 
     /// `pattern.sub(repl, string, count=0)` — substitute matches with a replacement.
@@ -439,8 +448,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
             Some(StaticStrings::Findall) => {
                 let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
                 defer_drop!(arg, vm);
-                let text = arg.to_str(vm)?;
-                self.get(vm.heap).findall(text, vm.heap)
+                let findall = self.get(vm.heap).prepare_findall();
+                let text = arg.to_str(vm)?.to_owned();
+                findall.run(&text, vm)
             }
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
             Some(StaticStrings::Split) => call_pattern_split(self, args, vm),

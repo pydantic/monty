@@ -523,9 +523,7 @@ impl Executor {
                 .map_err(|e| e.into_python_exception(&executor.interns, |_| Some(executor.code.as_str())))?;
 
             // Drop globals with proper ref counting
-            for value in globals {
-                value.drop_with(vm.heap);
-            }
+            globals.drop_with(vm.heap);
 
             let allocations_since_gc = vm.heap.get_allocations_since_gc();
 

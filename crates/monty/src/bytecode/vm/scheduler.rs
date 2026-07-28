@@ -97,12 +97,8 @@ pub(crate) struct Task {
 
 impl<C: ContainsHeap> DropWithContext<C> for Task {
     fn drop_with(mut self, heap: &mut C) {
-        for value in self.stack.drain(..) {
-            value.drop_with(heap);
-        }
-        for value in self.exception_stack.drain(..) {
-            value.drop_with(heap);
-        }
+        self.stack.drain(..).drop_with(heap);
+        self.exception_stack.drain(..).drop_with(heap);
         self.state.drop_with(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
             heap.heap_mut().dec_ref(coro_id);

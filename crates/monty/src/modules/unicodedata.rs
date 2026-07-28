@@ -33,7 +33,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
-    heap::{Heap, HeapData, HeapId},
+    heap::{DropGuard, Heap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
     string_builder::StringBuilder,
@@ -123,28 +123,14 @@ fn uni_name(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         default: default_val,
     } = NameArgs::from_args(args, vm)?;
     defer_drop!(chr_val, vm);
-
-    // `default_val` is not covered by `defer_drop!` (it's an `Option` we may
-    // return by value), so drop it explicitly on every path that doesn't.
-    let c = match single_char(chr_val, "name", Some(1), vm) {
-        Ok(c) => c,
-        Err(e) => {
-            if let Some(d) = default_val {
-                d.drop_with(vm);
-            }
-            return Err(e);
-        }
-    };
+    let mut default_guard = DropGuard::new(default_val, vm);
+    let vm = default_guard.ctx();
+    let c = single_char(chr_val, "name", Some(1), vm)?;
 
     match unicode_names2::name(c) {
-        Some(name) => {
-            if let Some(d) = default_val {
-                d.drop_with(vm);
-            }
-            Ok(allocate_string(name.to_string(), vm.heap)?)
-        }
-        None => match default_val {
-            Some(d) => Ok(d),
+        Some(name) => Ok(allocate_string(name.to_string(), vm.heap)?),
+        None => match default_guard.into_inner() {
+            Some(default) => Ok(default),
             None => Err(SimpleException::new_msg(ExcType::ValueError, "no such name").into()),
         },
     }

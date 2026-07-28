@@ -103,42 +103,27 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     let GatherArgs { awaitables } = GatherArgs::from_args(args, vm)?;
     defer_drop_mut!(awaitables, vm);
 
-    // Validate all positional args are awaitable and collect their heap ids.
-    // Both coroutines and external futures live on the heap; transfer
-    // ownership of each arg's HeapId into `items` and forget the `Value` so
-    // its `Drop` doesn't dec_ref the entry we just handed to the gather.
-    let mut items: Vec<HeapId> = Vec::new();
-
-    #[cfg_attr(not(feature = "memory-model-checks"), expect(unused_mut))]
-    for mut arg in awaitables.drain(..) {
-        let id = match &arg {
+    // Validate every argument before transferring any references to the gather,
+    // so an invalid later argument needs no raw-HeapId rollback.
+    for arg in awaitables.iter() {
+        if !matches!(
+            arg,
             Value::Ref(id)
                 if matches!(
                     vm.heap.get(*id),
                     HeapData::Coroutine(_) | HeapData::ExternalFuture(_) | HeapData::GatherFuture(_)
-                ) =>
-            {
-                Some(*id)
-            }
-            _ => None,
-        };
-
-        if let Some(id) = id {
-            items.push(id);
-            // Transfer ownership of the heap ref to the gather.
-            #[cfg(feature = "memory-model-checks")]
-            arg.dec_ref_forget();
-        } else {
-            arg.drop_with(vm.heap);
-            for id in items {
-                vm.heap.dec_ref(id);
-            }
+                )
+        ) {
             return Err(ExcType::type_error(
                 "An asyncio.Future, a coroutine or an awaitable is required",
             ));
         }
     }
 
+    let items = awaitables
+        .drain(..)
+        .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
+        .collect();
     let gather_future = GatherFuture::new(items);
     let id = vm.heap.allocate(HeapData::GatherFuture(gather_future))?;
     Ok(Value::Ref(id))
