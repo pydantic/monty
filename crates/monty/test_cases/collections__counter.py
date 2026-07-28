@@ -295,6 +295,27 @@ for big_count in (2**63, 2**70, -(2**63) - 1, -(2**70)):
     except OverflowError as e:
         assert str(e) == 'Python int too large to convert to C ssize_t'
 
+# === repeated bumps of the same key hand the key to the dict ===
+# Keys and counts built at runtime are heap values rather than interned ones, so
+# a bump that replaces an existing entry has to release exactly the old count —
+# leaking it, or dropping the key it just stored, shows up here.
+bump_key = 'k' + str(1)
+bumped = Counter()
+bumped.update({bump_key: 2**70})  # into an empty Counter: the value is stored as-is
+bumped.update({bump_key: 2**70})  # into a non-empty one: the count is replaced
+assert bumped[bump_key] == 2361183241434822606848
+bumped.subtract({bump_key: 2**70})
+assert bumped[bump_key] == 1180591620717411303424
+assert dict(bumped) == {'k1': 1180591620717411303424}
+
+# counting elements repeats the same transfer, one increment at a time
+assert dict(Counter(['x' + str(i % 2) for i in range(5)])) == {'x0': 3, 'x1': 2}
+
+# a Counter updated from itself reads every count before writing any of them
+self_update = Counter({'a' + str(2): 3})
+self_update.update(self_update)
+assert dict(self_update) == {'a2': 6}
+
 # === copy() returns a working Counter ===
 # `dict.copy` builds a fresh dict, so it has to carry the Counter tag across or
 # the result silently degrades to a plain dict.

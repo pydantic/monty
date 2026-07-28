@@ -139,7 +139,8 @@ fn count_repeat_len(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 }
 
 /// Adds `delta` to the count for `key` in the Counter `dict_id` (creating the
-/// key at `0 + delta` if absent). Takes ownership of `key` and `delta`.
+/// key at `0 + delta` if absent). Takes ownership of `key`, which the dict keeps
+/// on success; `delta` is only read, so the caller retains it.
 ///
 /// `delta_first` selects the operand order for the addition: CPython's mapping
 /// update computes `count + self.get(elem, 0)` while element counting computes
@@ -149,7 +150,7 @@ fn count_repeat_len(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
 fn counter_bump(
     dict_id: HeapId,
     key: Value,
-    delta: Value,
+    delta: &Value,
     subtract: bool,
     delta_first: bool,
     vm: &mut VM<'_>,
@@ -157,31 +158,20 @@ fn counter_bump(
     let HeapReadOutput::Dict(mut dict) = vm.heap.read(dict_id) else {
         unreachable!("counter_bump on a non-dict heap entry");
     };
-    // `dict_get` hashes the key and can fail for an unhashable key (e.g.
-    // `Counter([[1]])`); own that error path and drop the key and delta.
-    let base = match dict.dict_get(&key, vm) {
-        Ok(Some(existing)) => existing,
-        Ok(None) => Value::Int(0),
-        Err(e) => {
-            key.drop_with(vm);
-            delta.drop_with(vm);
-            return Err(e);
-        }
-    };
+    // Either failure below — `dict_get` hashing an unhashable key (e.g.
+    // `Counter([[1]])`), or the arithmetic on a non-numeric count — releases the
+    // key through the guard; only the store at the end takes it out again.
+    let mut key_guard = DropGuard::new(key, vm);
+    let (key, vm) = key_guard.as_parts_mut();
+    let base = dict.dict_get(key, vm)?.unwrap_or(Value::Int(0));
     let total = if subtract || !delta_first {
-        count_arith(&base, &delta, subtract, vm)
+        count_arith(&base, delta, subtract, vm)
     } else {
-        count_arith(&delta, &base, false, vm)
+        count_arith(delta, &base, false, vm)
     };
     base.drop_with(vm);
-    delta.drop_with(vm);
-    let total = match total {
-        Ok(total) => total,
-        Err(e) => {
-            key.drop_with(vm);
-            return Err(e);
-        }
-    };
+    let total = total?;
+    let (key, vm) = key_guard.into_parts();
     if let Some(old) = dict.set(key, total, vm)? {
         old.drop_with(vm);
     }
@@ -230,7 +220,7 @@ pub(crate) fn counter_update(
             // items it never reached.
             defer_drop_mut!(items, vm);
             for item in items.by_ref() {
-                counter_bump(dict_id, item, Value::Int(1), subtract, false, vm)?;
+                counter_bump(dict_id, item, &Value::Int(1), subtract, false, vm)?;
             }
         }
     }
@@ -265,10 +255,14 @@ fn counter_merge_mapping(
     };
     let mut pairs = pairs.into_iter();
     while let Some((key, count)) = pairs.next() {
+        // The fast path stores `count` itself, while a bump only reads it — so
+        // that branch owns the release.
         let outcome = if is_empty && !subtract {
             counter_set(dict_id, key, count, vm)
         } else {
-            counter_bump(dict_id, key, count, subtract, true, vm)
+            let outcome = counter_bump(dict_id, key, &count, subtract, true, vm);
+            count.drop_with(vm);
+            outcome
         };
         if let Err(e) = outcome {
             // A merge can fail on an unhashable key or a non-numeric count —
@@ -960,11 +954,11 @@ pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> Run
 fn counter_bump_all(id: HeapId, pairs: Vec<(Value, Value)>, subtract: bool, vm: &mut VM<'_>) -> RunResult<()> {
     let mut pairs = pairs.into_iter();
     while let Some((key, delta)) = pairs.next() {
-        if let Err(e) = counter_bump(id, key, delta, subtract, false, vm) {
-            for (key, delta) in pairs {
-                key.drop_with(vm);
-                delta.drop_with(vm);
-            }
+        // `counter_bump` borrows the delta, so each one is released here.
+        let outcome = counter_bump(id, key, &delta, subtract, false, vm);
+        delta.drop_with(vm);
+        if let Err(e) = outcome {
+            drain_pairs(pairs, vm);
             return Err(e);
         }
     }
