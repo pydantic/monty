@@ -1,0 +1,30 @@
+crates/monty-runtime/README.md
+  s_566de2f74937d0::t_1b010e28d94875 47
+  s_566de2f74937d0::t_835cf0c5fd34e7 45-46
+crates/monty-runtime/Cargo.toml
+  s_566de2f74937d0::t_764286928abefd 30-33
+  s_566de2f74937d0::t_e4f998b9a6ad79 37-38
+crates/monty-pool/src/lib.rs
+  s_566de2f74937d0::t_1b010e28d94875 74
+  s_566de2f74937d0::t_c23551d27dd1d6 75-76
+crates/monty-runtime/src/telemetry.rs
+  s_566de2f74937d0::t_f58671b90ea95f 15-17,23,61-64,66-68,74
+  s_566de2f74937d0::t_c4d906769c6459 20-21
+  s_566de2f74937d0::t_21eb05b40fc577 50-53,65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "44b367707aab44c8811fa027a1191b6c67fe9b17",
+  "prompts": {},
+  "sessions": {
+    "s_566de2f74937d0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "99021b4c-fa86-43b4-96aa-bc5604a0593f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
