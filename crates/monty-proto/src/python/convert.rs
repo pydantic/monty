@@ -450,6 +450,7 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::BufferedWriter => cached!("io", "BufferedWriter"),
         MontyType::BufferedRandom => cached!("io", "BufferedRandom"),
         MontyType::SpecialForm => cached!("typing", "_SpecialForm"),
+        MontyType::Field => cached!("dataclasses", "Field"),
         // `NoneType` and `ellipsis` aren't `builtins` attributes; take them from
         // the singletons (`type(None)` / `type(...)`).
         MontyType::NoneType => Ok(py.None().bind(py).get_type().into_any().unbind()),

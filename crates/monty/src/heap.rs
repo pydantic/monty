@@ -24,6 +24,7 @@ use crate::{
     asyncio::{Awaiter, Coroutine, ExternalFuture, ExternalFutureState, GatherFuture, GatherState},
     exception_private::SimpleException,
     heap_data::{CellValue, Closure, FunctionDefaults},
+    modules::dataclasses::DataclassField,
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
         DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, List, LongInt, Module,
@@ -230,6 +231,7 @@ pub enum HeapReadOutput<'a> {
     Class(HeapRead<'a, Class>),
     Instance(HeapRead<'a, Instance>),
     BoundMethod(HeapRead<'a, BoundMethod>),
+    DataclassField(HeapRead<'a, DataclassField>),
     ListIterator(HeapRead<'a, ListIterator>),
     TupleIterator(HeapRead<'a, TupleIterator>),
     StringIterator(HeapRead<'a, StringIterator>),
@@ -624,6 +626,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
+            HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(base, field, readers)),
             HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
             HeapData::TupleIterator(iter) => HeapReadOutput::TupleIterator(heap_read(base, iter, readers)),
             HeapData::StringIterator(iter) => HeapReadOutput::StringIterator(heap_read(base, iter, readers)),
@@ -1657,13 +1660,6 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                     on_child(*id);
                 }
             }
-            // A `@dataclass` also owns each field's captured default, which can
-            // reach back to the class (`x: object = SomeInstanceOfIt`).
-            if let Some(meta) = class.dataclass_meta() {
-                for id in meta.ref_children() {
-                    on_child(id);
-                }
-            }
         }
         HeapData::Instance(instance) => {
             // An instance references its class plus its attribute dict's entries.
@@ -1682,6 +1678,16 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(*id);
             }
             if let Value::Ref(id) = &bm.func {
+                on_child(*id);
+            }
+        }
+        HeapData::DataclassField(field) => {
+            // A captured default can reach back to the class the field belongs
+            // to (`x: object = SomeInstanceOfIt`), closing a cycle.
+            if let Value::Ref(id) = field.annotation() {
+                on_child(*id);
+            }
+            if let Some(Value::Ref(id)) = field.default() {
                 on_child(*id);
             }
         }
@@ -1825,6 +1831,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::Class(class) => class.py_dec_ref_ids(stack),
         HeapData::Instance(instance) => instance.py_dec_ref_ids(stack),
         HeapData::BoundMethod(bm) => bm.py_dec_ref_ids(stack),
+        HeapData::DataclassField(field) => field.py_dec_ref_ids(stack),
         HeapData::ListIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::TupleIterator(iter) => iter.py_dec_ref_ids(stack),
         HeapData::StringIterator(iter) => iter.py_dec_ref_ids(stack),

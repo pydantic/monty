@@ -821,6 +821,10 @@ pub enum StaticStrings {
     Dataclass,
     /// `dataclasses.is_dataclass()` function.
     IsDataclass,
+    /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
+    /// name -> `Field` mapping that drives every synthesized dunder.
+    #[strum(serialize = "__dataclass_fields__")]
+    DataclassFields,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

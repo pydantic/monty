@@ -1,9 +1,10 @@
-# `@dataclass` captures each field's default at decoration time, so the metadata
-# holds an owned reference alongside the class namespace's own. After decoration
-# `shared` is referenced by the module global, the class namespace entry
-# `Defaults.b`, and the captured default. `nested` is referenced by its own
-# module global and by `shared`, and by nothing the decorator adds — capturing a
-# default clones the reference to `shared` itself, not those inside it.
+# `@dataclass` captures each field's default at decoration time, so the `Field`
+# in `__dataclass_fields__` holds an owned reference alongside the class
+# namespace's own. After decoration `shared` is referenced by the module global,
+# the class namespace entry `Defaults.b`, and the `Field`. `nested` is
+# referenced by its own module global and by `shared`, and by nothing the
+# decorator adds — capturing a default clones the reference to `shared` itself,
+# not those inside it.
 from dataclasses import dataclass
 
 nested = (3, 4)

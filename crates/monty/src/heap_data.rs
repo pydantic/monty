@@ -16,6 +16,7 @@ use crate::{
     hash::{HashValue, identity_hash},
     heap::{DropWithContext, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
+    modules::dataclasses::DataclassField,
     types::{
         BoundMethod, Bytes, BytesIterator, Class, Dataclass, Dict, DictItemIterator, DictItemsView, DictKeyIterator,
         DictKeysView, DictValueIterator, DictValuesView, ExtFunction, FrozenSet, Instance, LazyHeapSet, List, LongInt,
@@ -84,6 +85,9 @@ pub(crate) enum HeapData {
     Instance(Instance),
     /// A method bound to an instance, produced by `obj.method` without calling it.
     BoundMethod(BoundMethod),
+    /// One `dataclasses.Field` of a `@dataclass`, held by the class's
+    /// `__dataclass_fields__` dict.
+    DataclassField(DataclassField),
     /// `list_iterator` object.
     ListIterator(ListIterator),
     /// `tuple_iterator` object.
@@ -194,6 +198,7 @@ impl HeapData {
             | Self::Class(_)
             | Self::Instance(_)
             | Self::BoundMethod(_)
+            | Self::DataclassField(_)
             | Self::ListIterator(_)
             | Self::TupleIterator(_)
             | Self::DictKeyIterator(_)
@@ -268,6 +273,7 @@ impl HeapData {
             Self::Class(_) => Type::Type,
             Self::Instance(instance) => Type::Instance(instance.class()),
             Self::BoundMethod(_) => Type::Function,
+            Self::DataclassField(_) => Type::DataclassField,
             Self::LongInt(_) => Type::Int,
             Self::Module(_) => Type::Module,
             Self::Coroutine(_) | Self::GatherFuture(_) | Self::ExternalFuture(_) => Type::Coroutine,
@@ -315,6 +321,7 @@ impl HeapData {
             Self::Class(class) => class.py_estimate_size(),
             Self::Instance(instance) => instance.py_estimate_size(),
             Self::BoundMethod(bm) => bm.py_estimate_size(),
+            Self::DataclassField(field) => field.py_estimate_size(),
             Self::LongInt(li) => li.py_estimate_size(),
             Self::Module(m) => m.py_estimate_size(),
             Self::Coroutine(coro) => coro.py_estimate_size(),
@@ -546,6 +553,7 @@ macro_rules! heap_read_output_py_trait_forward {
             Self::Class($value) => $body,
             Self::Instance($value) => $body,
             Self::BoundMethod($value) => $body,
+            Self::DataclassField($value) => $body,
             Self::LongInt($value) => $body,
             Self::Path($value) => $body,
             Self::OpenFile($value) => $body,
@@ -964,6 +972,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(value) => value.py_iter(self_id, vm),
             Self::Instance(value) => value.py_iter(self_id, vm),
             Self::BoundMethod(value) => value.py_iter(self_id, vm),
+            Self::DataclassField(value) => value.py_iter(self_id, vm),
             Self::Path(value) => value.py_iter(self_id, vm),
             Self::OpenFile(value) => value.py_iter(self_id, vm),
             Self::ReMatch(value) => value.py_iter(self_id, vm),
@@ -1016,6 +1025,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Class(value) => value.py_next(self_id, vm),
             Self::Instance(value) => value.py_next(self_id, vm),
             Self::BoundMethod(value) => value.py_next(self_id, vm),
+            Self::DataclassField(value) => value.py_next(self_id, vm),
             Self::Path(value) => value.py_next(self_id, vm),
             Self::OpenFile(value) => value.py_next(self_id, vm),
             Self::ReMatch(value) => value.py_next(self_id, vm),

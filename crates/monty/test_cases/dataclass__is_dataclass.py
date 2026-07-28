@@ -35,3 +35,40 @@ assert is_dataclass(e), 'an instance of a dataclass is itself a dataclass'
 
 # === The decorated class is unchanged as a class object ===
 assert Point.__name__ == 'Point'
+
+# === __dataclass_fields__ ===
+# Decoration records a `name -> Field` mapping on the class, in definition order.
+assert list(Point.__dataclass_fields__) == ['x', 'y']
+assert list(Empty.__dataclass_fields__) == []
+assert not hasattr(Plain, '__dataclass_fields__'), 'a plain class has no field mapping'
+# Instances read it through the class, so both see the same object.
+assert e.__dataclass_fields__ is Empty.__dataclass_fields__
+
+
+@dataclass
+class Defaulted:
+    a: int
+    b: str = 'hi'
+
+
+# === Field objects ===
+b = Defaulted.__dataclass_fields__['b']
+assert type(b).__name__ == 'Field'
+assert b.name == 'b'
+assert b.default == 'hi'
+# Monty stores annotations as source text where CPython evaluates them.
+assert b.type in ('str', str)
+# Every field Monty builds carries the decorator defaults: `field()` and
+# `@dataclass(...)`, the forms that vary these, are not supported.
+assert b.init is True
+assert b.repr is True
+assert b.compare is True
+assert b.kw_only is False
+assert b.hash is None
+assert b.doc is None
+
+try:
+    b.nope
+    assert False, 'expected AttributeError'
+except AttributeError as exc:
+    assert str(exc) == "'Field' object has no attribute 'nope'"

@@ -36,7 +36,7 @@ pub mod tuple;
 pub mod r#type;
 
 pub(crate) use bytes::{Bytes, BytesIterator};
-pub(crate) use class::{Class, DataclassField, DataclassMeta};
+pub(crate) use class::Class;
 pub(crate) use dataclass::Dataclass;
 pub(crate) use dict::{Dict, DictItemIterator, DictKeyIterator, DictValueIterator};
 pub(crate) use dict_view::{DictItemsView, DictKeysView, DictValuesView};

@@ -156,6 +156,10 @@ pub enum Type {
     DictValueIterator,
     #[strum(serialize = "set_iterator")]
     SetIterator,
+    /// A `dataclasses.Field` from a class's `__dataclass_fields__` — displays
+    /// as "Field", the name CPython's `Field.__name__` reports.
+    #[strum(serialize = "Field")]
+    DataclassField,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)

@@ -27,7 +27,12 @@ will not catch these.
   Detected textually, since annotations are never evaluated: the name need not
   be imported to be rejected.
 - **`field()` / `default_factory` / `MISSING`** — `field(...)` in a class body
-  raises `NameError`.
+  raises `NameError`. There is no `MISSING` object, so the `Field` attributes
+  whose value would be one raise `NotImplementedError: Field.default is not yet
+  supported, dataclasses.MISSING is not implemented` (likewise
+  `default_factory`, and `default` only for a field that has none).
+  `Field.metadata` and `Field._field_type` raise the same way, for
+  `types.MappingProxyType` and `dataclasses._FIELD`.
 - **Module helpers** — `fields`, `asdict`, `astuple`, `replace`.
 
 Mutable defaults are rejected as CPython rejects them
@@ -41,7 +46,21 @@ default_factory`), and so is a non-default field after a defaulted one
   `__annotations__`, which Monty stores as never-evaluated source text (always
   PEP 563) — see [typing.md](typing.md#class-annotations-are-stringized). Field
   discovery and the generated methods are unaffected, the field *type* being
-  inert metadata, but `fields(C)[i].type` would be a string, not a type object.
+  inert metadata, but `C.__dataclass_fields__['x'].type` is the string `'int'`,
+  not the `int` type object.
+- **`__dataclass_fields__` holds only real fields.** CPython keeps `ClassVar`
+  (and `InitVar`) entries in the mapping, marked `_FIELD_CLASSVAR`, and filters
+  them in `fields()`. Monty has no field kinds — the mapping *is* the field
+  list — so class variables never appear in it.
+- **`Field` renders differently.** `repr(field)` follows CPython's layout but
+  writes `MISSING` where CPython writes `<dataclasses._MISSING_TYPE object at
+  0x..>`, and the stringized `type`. `repr(type(field))` is `<class 'Field'>`,
+  not `<class 'dataclasses.Field'>` (`Field.__name__` matches either way, so
+  attribute errors read the same).
+- **Overwriting `__dataclass_fields__` un-marks the class.** Every dunder reads
+  the mapping from the class namespace, so `C.__dataclass_fields__ = 5` makes
+  `is_dataclass(C)` false and `C(...)` construct like a plain class. CPython
+  keeps its generated methods and still calls `C` a dataclass.
 - **`ClassVar` / `InitVar` detection is purely textual.** Monty matches the
   annotation text (bare, dotted, subscripted, or quoted) without checking that
   the name is actually imported, where CPython resolves a *string* annotation
