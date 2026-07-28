@@ -510,7 +510,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         };
         // `deque_extend` consumes the iterable, so hand it an owned clone.
         let iterable = other.clone_with_heap(vm.heap);
-        deque_extend(self_id, iterable, vm)?;
+        deque_extend(self_id, iterable, ExtendEnd::Right, vm)?;
         Ok(true)
     }
 
@@ -552,7 +552,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
 
     fn py_call_attr(
         &mut self,
-        _self_id: HeapId,
+        self_id: HeapId,
         vm: &mut VM<'h>,
         attr: &EitherStr,
         args: ArgValues,
@@ -561,7 +561,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
             args.drop_with(vm);
             return Err(ExcType::attribute_error(Type::Deque, attr.as_str(vm.interns)));
         };
-        call_deque_method(self, method, args, vm).map(CallResult::Value)
+        call_deque_method(self, self_id, method, args, vm).map(CallResult::Value)
     }
 }
 
@@ -703,6 +703,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DequeIterator> {
 /// does not). The messages are reproduced verbatim.
 fn call_deque_method<'h>(
     deque: &mut HeapRead<'h, Deque>,
+    self_id: HeapId,
     method: StaticStrings,
     args: ArgValues,
     vm: &mut VM<'h>,
@@ -771,19 +772,13 @@ fn call_deque_method<'h>(
         }
         StaticStrings::Extend => {
             let iterable = args.get_one_arg("deque.extend", vm.heap)?;
-            let items: Vec<Value> = collect_owned_iterable(iterable, vm)?;
-            for item in items {
-                deque.append(vm, item)?;
-            }
+            deque_extend(self_id, iterable, ExtendEnd::Right, vm)?;
             Ok(Value::None)
         }
         StaticStrings::Extendleft => {
             let iterable = args.get_one_arg("deque.extendleft", vm.heap)?;
-            let items: Vec<Value> = collect_owned_iterable(iterable, vm)?;
             // extendleft REVERSES the input: each item is pushed to the front in turn.
-            for item in items {
-                deque.appendleft(vm, item)?;
-            }
+            deque_extend(self_id, iterable, ExtendEnd::Left, vm)?;
             Ok(Value::None)
         }
         StaticStrings::Rotate => rotate(deque, args, vm),
@@ -978,20 +973,70 @@ fn bound_arg(value: Option<Value>, default: usize, len: usize, vm: &mut VM<'_>) 
     Ok(usize::try_from(normalized).expect("bound clamped non-negative"))
 }
 
-/// Extends `deque_id` in place by every item of `iterable` — `deque.extend`,
-/// which is also CPython's `deque.__iadd__` (`+=` *is* `extend`).
+/// Which end [`deque_extend`] appends each item to.
+#[derive(Clone, Copy)]
+pub(crate) enum ExtendEnd {
+    /// `extend` / `+=` — append to the right, in source order.
+    Right,
+    /// `extendleft` — push each item to the front in turn, which reverses the input.
+    Left,
+}
+
+/// Extends `deque_id` in place by every item of `iterable` — `deque.extend`
+/// and `extendleft`, and CPython's `deque.__iadd__` (`+=` *is* `extend`).
 ///
-/// Items are collected *before* appending so `d += d` extends by the original
-/// items and never invalidates the source iterator.
-pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, vm: &mut VM<'_>) -> RunResult<()> {
-    let items: Vec<Value> = collect_owned_iterable(iterable, vm)?;
+/// Each item is appended as the source yields it, so an iterator that raises
+/// part-way leaves the earlier items in the deque, and a bounded deque consumes
+/// a long source without ever holding more than it keeps.
+///
+/// Extending a deque *by itself* is the one case that cannot append while it
+/// iterates, or it would chase its own tail; it snapshots the original items
+/// first, as CPython does.
+///
+/// The deque is re-read for each append rather than held across the loop: the
+/// source's `__next__` can run sandbox code, and a live read handle would block
+/// the heap from freeing the entry.
+pub(crate) fn deque_extend(deque_id: HeapId, iterable: Value, end: ExtendEnd, vm: &mut VM<'_>) -> RunResult<()> {
+    if iterable.ref_id() == Some(deque_id) {
+        let items = deque_snapshot(deque_id, vm).into_iter();
+        iterable.drop_with(vm);
+        defer_drop_mut!(items, vm);
+        for item in items.by_ref() {
+            deque_push(deque_id, item, end, vm)?;
+        }
+        Ok(())
+    } else {
+        let iter = iterable.into_py_iter(vm)?;
+        defer_drop!(iter, vm);
+        let mut iter = iter.read(vm);
+        while let Some(item) = iter.py_next(vm)? {
+            deque_push(deque_id, item, end, vm)?;
+        }
+        Ok(())
+    }
+}
+
+/// Clones every item of the deque `deque_id`, for the self-extension case.
+fn deque_snapshot(deque_id: HeapId, vm: &mut VM<'_>) -> Vec<Value> {
+    let HeapReadOutput::Deque(deque) = vm.heap.read(deque_id) else {
+        unreachable!("deque id must reference a deque");
+    };
+    deque
+        .get(vm.heap)
+        .iter()
+        .map(|item| item.clone_with_heap(vm.heap))
+        .collect()
+}
+
+/// Appends one item to whichever end of `deque_id` the extension targets.
+fn deque_push(deque_id: HeapId, item: Value, end: ExtendEnd, vm: &mut VM<'_>) -> RunResult<()> {
     let HeapReadOutput::Deque(mut deque) = vm.heap.read(deque_id) else {
         unreachable!("deque id must reference a deque");
     };
-    for item in items {
-        deque.append(vm, item)?;
+    match end {
+        ExtendEnd::Right => deque.append(vm, item),
+        ExtendEnd::Left => deque.appendleft(vm, item),
     }
-    Ok(())
 }
 
 /// Builds `deque * count`, honoring the deque's `maxlen`.

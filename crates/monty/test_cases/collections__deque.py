@@ -632,3 +632,72 @@ assert repr(d2) == 'deque([1, [...]])', 'a self-reference alongside a plain item
 d3 = deque()
 d3.append([d3])
 assert repr(d3) == 'deque([[[...]]])', 'a self-reference nested in a list'
+
+
+# === Extending appends as it consumes, so a mid-iteration raise keeps what arrived ===
+# CPython's `extend` (and `__iadd__`, which *is* extend) appends each item as the
+# source yields it, rather than draining the source first — so an iterator that
+# raises part-way leaves the earlier items in the deque.
+class Raiser:
+    def __init__(self, stop):
+        self.n = 0
+        self.stop = stop
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.n += 1
+        if self.n > self.stop:
+            raise ValueError('boom')
+        return self.n
+
+
+d = deque([0])
+try:
+    d += Raiser(2)
+    assert False, 'expected the iterator to raise'
+except ValueError:
+    pass
+assert list(d) == [0, 1, 2]
+
+d = deque([0])
+try:
+    d.extend(Raiser(2))
+    assert False, 'expected the iterator to raise'
+except ValueError:
+    pass
+assert list(d) == [0, 1, 2]
+
+# extendleft pushes each item to the front in turn, so a partial run reverses too
+d = deque([0])
+try:
+    d.extendleft(Raiser(2))
+    assert False, 'expected the iterator to raise'
+except ValueError:
+    pass
+assert list(d) == [2, 1, 0]
+
+# a bounded deque evicts while it consumes, so only the surviving window remains
+b = deque([9], maxlen=2)
+try:
+    b += Raiser(3)
+    assert False, 'expected the iterator to raise'
+except ValueError:
+    pass
+assert list(b) == [2, 3]
+
+# === Self-extension still uses the original items ===
+# Appending while iterating the same deque must not chase its own tail.
+s = deque([1, 2])
+s += s
+assert list(s) == [1, 2, 1, 2]
+s2 = deque([1, 2])
+s2.extend(s2)
+assert list(s2) == [1, 2, 1, 2]
+s3 = deque([1, 2])
+s3.extendleft(s3)
+assert list(s3) == [2, 1, 1, 2]
+s4 = deque([1, 2, 3], maxlen=4)
+s4 += s4
+assert list(s4) == [3, 1, 2, 3]

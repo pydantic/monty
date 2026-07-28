@@ -36,6 +36,13 @@ too, rather than something that type-checks and then fails at runtime.
   `iter()`/`next()` detect it exactly as CPython does.
 - `d += <any iterable>` works (it is `extend`), even though `list`'s `+=` still
   accepts only another list.
+- **Extending from an eager builtin loses the partial result when it raises** —
+  `extend`/`extendleft`/`+=` append each item as the source yields it, so an
+  iterator raising part-way leaves the earlier items in place, as in CPython.
+  But `map`/`filter`/`zip`/`enumerate` are eager (see
+  [builtins.md](builtins.md)), so `d += map(f, xs)` with a raising `f` raises
+  before the extend begins and appends nothing, where CPython appends whatever
+  was yielded first.
 
 `del d[i]` and subclassing (`class Q(deque)`) both fail at *compile* time — the
 `del` statement and class inheritance are unimplemented Monty-wide (see
