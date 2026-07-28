@@ -450,8 +450,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
 
     fn py_pos_impl(&self, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         // `+x` on an int is the identity, so hand back this same LongInt rather
-        // than allocating a copy of its digits.
-        Ok(self_id.map(|id| Value::Ref(id).clone_with_heap(vm.heap)))
+        // than allocating a copy of its digits. The caller owns the returned
+        // value, hence the extra reference.
+        Ok(self_id.map(|id| {
+            vm.heap.inc_ref(id);
+            Value::Ref(id)
+        }))
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
