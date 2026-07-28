@@ -167,8 +167,8 @@ pub(crate) enum HeapData {
     /// Any `itertools` iterator (`count`, `repeat`, ...).
     ///
     /// One variant for the whole family — nothing outside `types::itertools`
-    /// dispatches on which adaptor it is. Boxed so adaptors never grow the entry.
-    Itertools(Box<ItertoolsIter>),
+    /// dispatches on which adaptor it is.
+    Itertools(ItertoolsIter),
 }
 
 impl HeapData {

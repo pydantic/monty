@@ -1,9 +1,9 @@
 //! Iterator types produced by the `itertools` module.
 //!
 //! Each callable gets its own struct in its own file, but the family shares one
-//! `HeapData::Itertools(Box<ItertoolsIter>)` variant: nothing outside this
-//! module dispatches on *which* adaptor an iterator is. Python-visible
-//! distinctions (`type()` name, error messages) live in [`Type`] instead.
+//! `HeapData::Itertools(ItertoolsIter)` variant: nothing outside this module
+//! dispatches on *which* adaptor an iterator is. Python-visible distinctions
+//! (`type()` name, error messages) live in [`Type`] instead.
 //!
 //! - Missing GC wiring is a compile error, not a leak — [`ItertoolsIter`]'s
 //!   walkers are exhaustive with no wildcard, unlike `heap.rs`'s `_ => {}`.
@@ -29,7 +29,12 @@ use crate::{
 
 /// The state of one `itertools` iterator, whichever adaptor produced it.
 ///
-/// Boxed inside `HeapData` so adding adaptors never grows the arena entry.
+/// Held inline in `HeapData`, which is sized by `ReMatch` at 160 bytes — the
+/// widest adaptor in the API (`groupby`, `permutations`) needs 88, so the whole
+/// family fits with room to spare. If one ever did exceed the budget, box that
+/// adaptor's struct in its variant here rather than boxing at the `HeapData`
+/// boundary: a boxed payload cannot use `heap_read`, and the `heap_read_boxed`
+/// path is only sound for reads.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) enum ItertoolsIter {
     Count(Count),

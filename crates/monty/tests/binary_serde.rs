@@ -247,9 +247,8 @@ fn run_progress_dump_load_multiple_calls() {
 }
 
 /// Live `itertools` iterators on the heap survive a dump/load with their state
-/// intact — the only coverage that carries `HeapData::Itertools` (and the boxed
-/// `ItertoolsIter` inside it) through postcard, since a `MontyRun` dump holds
-/// compiled code and no heap at all.
+/// intact — the only coverage that carries `HeapData::Itertools` through
+/// postcard, since a `MontyRun` dump holds compiled code and no heap at all.
 #[test]
 fn run_progress_dump_load_preserves_itertools_iterators() {
     let code = r"

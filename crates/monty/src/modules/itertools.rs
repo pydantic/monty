@@ -79,7 +79,7 @@ fn call_count(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Rejecting here means `py_next` can add without a defined-ness check.
     if is_number(&start, vm) && is_number(&step, vm) {
         let iter = ItertoolsIter::Count(Count::new(normalize_bool(start), normalize_bool(step)));
-        Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(Box::new(iter)))?))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
     } else {
         start.drop_with(vm);
         step.drop_with(vm);
@@ -118,7 +118,7 @@ fn call_repeat(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         }
     };
     let iter = ItertoolsIter::Repeat(Repeat::new(object, remaining));
-    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(Box::new(iter)))?))
+    Ok(Value::Ref(vm.heap.allocate(HeapData::Itertools(iter))?))
 }
 
 /// Whether `value` satisfies CPython's `PyNumber_Check` for `count()`.
