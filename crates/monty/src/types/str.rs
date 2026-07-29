@@ -6,6 +6,7 @@ use std::{cell::Cell, fmt::Write, mem, ops};
 /// operations like length and equality comparison.
 use monty_types::ResourceError;
 pub use monty_types::{StringRepr, string_repr_fmt};
+use ruff_python_stdlib::{identifiers::is_identifier, keyword::is_keyword};
 use smallvec::smallvec;
 
 use super::{Bytes, CmpOrder, PyTrait};
@@ -17,7 +18,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, hash_python_str},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
-    intern::{StaticStrings, StringId},
+    intern::{Interns, StaticStrings, StringId},
     resource_checks::{check_repeat_size, check_replace_size},
     string_builder::StringBuilder,
     types::{
@@ -267,6 +268,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         true
     }
 
+    /// Substring search; `in` on a str requires a str on the left.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let container = self.get(vm.heap).as_str();
+        str_contains(container, item, vm.heap, vm.interns).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Str
     }
@@ -335,7 +342,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_string(self.get(vm.heap).as_str(), vm.heap)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternString(id) => vm.interns.get_str(*id),
             Value::Ref(id) if let HeapData::Str(value) = vm.heap.get(*id) => value.as_str(),
@@ -1966,37 +1973,19 @@ struct EncodeArgs {
 /// Returns True if the string is a valid Python identifier according to
 /// the language definition (starts with letter or underscore, followed by
 /// letters, digits, or underscores). Empty strings return False.
-fn str_isidentifier(s: &str) -> bool {
-    if s.is_empty() {
-        return false;
-    }
-
-    let mut chars = s.chars();
-
-    // First character must be a letter (Unicode) or underscore
-    let first = chars.next().unwrap();
-    if !is_xid_start(first) && first != '_' {
-        return false;
-    }
-
-    // Remaining characters must be letters, digits (Unicode), or underscores
-    chars.all(is_xid_continue)
-}
-
-/// Checks if a character is valid at the start of an identifier (XID_Start).
 ///
-/// This is a simplified implementation that covers ASCII and common Unicode letters.
-/// Python uses the full Unicode XID_Start property.
-fn is_xid_start(c: char) -> bool {
-    c.is_alphabetic()
-}
-
-/// Checks if a character is valid in the continuation of an identifier (XID_Continue).
+/// Note this matches `str.isidentifier()`, which accepts keywords (`'def'`
+/// is an identifier); callers needing the keyword distinction (e.g.
+/// `collections.namedtuple`) must combine this with a separate keyword check.
 ///
-/// This is a simplified implementation that covers ASCII and common Unicode.
-/// Python uses the full Unicode XID_Continue property.
-fn is_xid_continue(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
+/// Uses ruff's `is_identifier` — the full Unicode `XID_Start`/`XID_Continue`
+/// tables, so combining marks and other non-ASCII identifier characters are
+/// accepted like CPython (a bare `is_alphanumeric` check would reject them).
+/// `is_identifier` rejects keywords, but every keyword is XID-valid, so OR-ing
+/// the keyword check back in reconstructs `str.isidentifier()`'s "keywords are
+/// identifiers" behaviour exactly.
+pub(crate) fn str_isidentifier(s: &str) -> bool {
+    is_identifier(s) || is_keyword(s)
 }
 
 /// Implements Python's `str.istitle()` predicate.
@@ -2159,5 +2148,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         } else {
             Ok(None)
         }
+    }
+}
+
+/// Helper for substring containment check in strings.
+///
+/// Called by `HeapRead<Str>::py_contains_impl` and, for interned strings, by
+/// `Value::py_contains`. A non-str probe reports its own type, as CPython does.
+pub(crate) fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
+    match item {
+        Value::InternString(item_id) => {
+            let item_str = interns.get_str(*item_id);
+            Ok(container_str.contains(item_str))
+        }
+        Value::Ref(item_heap_id) => {
+            if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
+                Ok(container_str.contains(item_str.as_str()))
+            } else {
+                Err(ExcType::type_error(format!(
+                    "'in <string>' requires string as left operand, not {}",
+                    item.py_type_name_heap(heap, interns)
+                )))
+            }
+        }
+        _ => Err(ExcType::type_error(format!(
+            "'in <string>' requires string as left operand, not {}",
+            item.py_type_name_heap(heap, interns)
+        ))),
     }
 }

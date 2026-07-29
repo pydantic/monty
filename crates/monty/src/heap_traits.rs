@@ -40,14 +40,15 @@ pub(crate) trait HeapItem {
     /// separately when they are allocated.
     fn py_estimate_size(&self) -> usize;
 
-    /// Pushes any contained `HeapId`s onto the stack for reference counting.
+    /// Pushes every owned heap reference onto the iterative cleanup stack.
     ///
-    /// This is called during `dec_ref` to find nested heap references that
-    /// need their refcounts decremented when this value is freed.
+    /// Owned `HeapId` fields are valid in a `HeapItem`, but each must be documented
+    /// as owned and pushed exactly once here. Prefer this to calling `Heap::dec_ref`
+    /// directly; values containing references should delegate to their own
+    /// `py_dec_ref_ids` implementation.
     ///
-    /// When the `memory-model-checks` feature is enabled, this method also marks all
-    /// contained `Value`s as `Dereferenced` to prevent Drop panics. This
-    /// co-locates the cleanup logic with the reference collection logic.
+    /// With `memory-model-checks`, delegation also marks contained `Value`s as
+    /// `Dereferenced`, keeping that cleanup co-located with reference collection.
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
 }
 
@@ -85,6 +86,9 @@ impl ContainsHeap for Heap {
 /// cleanup automatically rather than inserting manual calls in every branch.
 pub(crate) trait DropWithContext<C: ?Sized> {
     /// Consume `self`, releasing every heap/VM reference it owns through `ctx`.
+    ///
+    /// Implementations owning raw `HeapId`s may call `Heap::dec_ref` here. Callers
+    /// should prefer a guard unless this is a simple, linear cleanup path.
     fn drop_with(self, ctx: &mut C);
 }
 

@@ -329,14 +329,20 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
     /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
     ///
+    /// Both C parsers insert `keyword ` before `argument` when the call passed
+    /// no positionals at all (`nargs == 0` in `vgetargskeywords` /
+    /// `vgetargskeywordsfast_impl`), so pass `all_keyword` accordingly:
+    /// `fspath() takes at most 1 keyword argument (2 given)`.
+    ///
     /// Use this instead of `type_error_at_most` for methods and type constructors that
     /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
     #[must_use]
-    fn type_error_method_at_most(name: &str, max: usize, actual: usize) -> RunError {
+    fn type_error_method_at_most(name: &str, max: usize, actual: usize, all_keyword: bool) -> RunError {
+        let kind = if all_keyword { "keyword " } else { "" };
         let plural = if max == 1 { "" } else { "s" };
         SimpleException::new_msg(
             ExcType::TypeError,
-            format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+            format!("{name}() takes at most {max} {kind}argument{plural} ({actual} given)"),
         )
         .into()
     }
@@ -643,6 +649,84 @@ pub(crate) trait ExcTypeExt: Sized {
         .into()
     }
 
+    /// Named positional-overflow wording used by clinic functions with
+    /// keyword-only slots (e.g. `os.stat`/`os.mkdir`): `{name}() takes
+    /// {exactly|at most} {max} positional argument{s} ({actual} given)` —
+    /// "exactly" when every positional param is required.
+    #[must_use]
+    fn type_error_named_positional(name: &str, max: usize, actual: usize, exact: bool) -> RunError {
+        let qualifier = if exact { "exactly" } else { "at most" };
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{name}() takes {qualifier} {max} positional argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError matching the `os` module's `path_t` converter:
+    /// `{func}: {arg} should be {accepted}, not {type}` — `accepted` is the
+    /// per-function accepted-types phrase (e.g. `string, bytes or os.PathLike`).
+    #[must_use]
+    fn type_error_os_path(func: &str, arg: &str, accepted: &str, type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("{func}: {arg} should be {accepted}, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `os.fspath` TypeError, also raised by pure-Python `os`
+    /// functions that call `fspath` internally (e.g. `os.makedirs`):
+    /// `expected str, bytes or os.PathLike object, not {type}`
+    #[must_use]
+    fn type_error_fspath(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("expected str, bytes or os.PathLike object, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the `dir_fd` converter TypeError:
+    /// `argument should be integer or None, not {type}`
+    #[must_use]
+    fn type_error_dir_fd(type_name: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("argument should be integer or None, not {type_name}"),
+        )
+        .into()
+    }
+
+    /// Creates the fd converter's OverflowError for fds above C `int` range:
+    /// `fd is greater than maximum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_maximum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is greater than maximum").into()
+    }
+
+    /// Creates the fd converter's OverflowError for fds below C `int` range:
+    /// `fd is less than minimum` (CPython's `_fd_converter`).
+    #[must_use]
+    fn overflow_fd_minimum() -> RunError {
+        SimpleException::new_msg(ExcType::OverflowError, "fd is less than minimum").into()
+    }
+
+    /// Creates the NotImplementedError CPython raises when an `os` argument is
+    /// unsupported on the platform (`argument_unavailable_error`):
+    /// `{func}: {arg} unavailable on this platform`, or just
+    /// `{arg} unavailable on this platform` when `func` is `None`.
+    /// Monty raises it for `dir_fd`/`follow_symlinks`, which it never supports.
+    #[must_use]
+    fn not_implemented_os_arg(func: Option<&str>, arg: &str) -> RunError {
+        let msg = match func {
+            Some(func) => format!("{func}: {arg} unavailable on this platform"),
+            None => format!("{arg} unavailable on this platform"),
+        };
+        Self::not_implemented(msg).into()
+    }
+
     /// Creates a TypeError for a missing required argument without a position,
     /// as raised by hand-written vectorcall fast paths like `enumerate`:
     /// `{name}() missing required argument '{arg_name}'`
@@ -732,7 +816,8 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a TypeError for **kwargs with non-string keys.
     ///
-    /// Matches CPython's format: `{name}() keywords must be strings`
+    /// Matches CPython exactly: `keywords must be strings`, unqualified — the
+    /// call machinery raises before the callee is entered, so no name is shown.
     #[must_use]
     fn type_error_kwargs_nonstring_key() -> RunError {
         SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into()
@@ -1143,8 +1228,10 @@ pub(crate) trait ExcTypeExt: Sized {
 
     /// Creates a NotImplementedError for an unimplemented Python feature.
     ///
-    /// Used during parsing when encountering Python syntax that Monty doesn't yet support.
-    /// The message format is: "The monty syntax parser does not yet support {feature}"
+    /// For syntax Monty cannot parse ("The monty syntax parser does not yet support
+    /// {feature}") and for runtime features it refuses rather than approximates (a
+    /// `@dataclass` body it cannot honour). Reserve it for "Monty has not built this
+    /// yet" — a call CPython would also reject belongs in the matching CPython type.
     #[must_use]
     fn not_implemented(msg: impl fmt::Display) -> SimpleException {
         SimpleException::new_msg(ExcType::NotImplementedError, msg)
@@ -1305,7 +1392,11 @@ pub(crate) trait ExcTypeExt: Sized {
     /// `unsupported operand type(s) for {op}: '{left}' and '{right}'`
     #[must_use]
     fn binary_type_error(op: &str, lhs_type: Type, lhs_name: impl Display, rhs_name: impl Display) -> RunError {
-        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
+        let message = if (op == "+" || op == "+=") && matches!(lhs_type, Type::Deque) {
+            // CPython hardcodes the bare "deque" here even though tp_name is the
+            // qualified "collections.deque", so this can't share the branch below.
+            format!("can only concatenate deque (not \"{rhs_name}\") to deque")
+        } else if (op == "+" || op == "+=") && matches!(lhs_type, Type::Str | Type::List) {
             format!("can only concatenate {lhs_name} (not \"{rhs_name}\") to {lhs_name}")
         } else {
             format!("unsupported operand type(s) for {op}: '{lhs_name}' and '{rhs_name}'")
@@ -1752,6 +1843,120 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(
             ExcType::ValueError,
             format!("Out of range float values are not JSON compliant: {value}"),
+        )
+        .into()
+    }
+
+    /// `AttributeError: attribute 'X' of 'Y' objects is not writable`.
+    ///
+    /// CPython distinguishes a read-only C-level attribute (`deque.maxlen`) from an
+    /// attribute that simply does not exist, which gets
+    /// [`attribute_error_no_setattr`](ExcType::attribute_error_no_setattr) instead.
+    #[must_use]
+    fn attribute_error_not_writable(attr_name: &str, type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::AttributeError,
+            format!("attribute '{attr_name}' of '{type_}' objects is not writable"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for slice indices that are not integers, where `None`
+    /// is *not* accepted either.
+    ///
+    /// Used by `index()`-style bounds (`deque.index`), which — unlike real slicing —
+    /// treat an explicit `None` as a bad argument rather than "use the default".
+    /// Matches CPython's format: `TypeError: slice indices must be integers or have an __index__ method`
+    #[must_use]
+    fn type_error_slice_indices_no_none() -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            "slice indices must be integers or have an __index__ method",
+        )
+        .into()
+    }
+
+    /// `RuntimeError: deque mutated during iteration`.
+    ///
+    /// Monty tracks a per-deque mutation counter, mirroring CPython's internal
+    /// state, so any structural change during iteration invalidates the iterator
+    /// — including `rotate()` and a length-preserving `append()`/`popleft()` pair,
+    /// which a bare length check would miss.
+    #[must_use]
+    fn runtime_error_deque_mutated() -> RunError {
+        SimpleException::new_msg(ExcType::RuntimeError, "deque mutated during iteration").into()
+    }
+
+    /// `IndexError: deque index out of range` — indexing or assigning out of bounds.
+    #[must_use]
+    fn index_error_deque_out_of_range() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque index out of range").into()
+    }
+
+    /// `IndexError: pop from an empty deque` — shared by `pop()` and `popleft()`.
+    #[must_use]
+    fn index_error_pop_from_empty_deque() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "pop from an empty deque").into()
+    }
+
+    /// `IndexError: deque already at its maximum size` — `insert()` into a full deque.
+    #[must_use]
+    fn index_error_deque_full() -> RunError {
+        SimpleException::new_msg(ExcType::IndexError, "deque already at its maximum size").into()
+    }
+
+    /// `ValueError: deque.remove(x): x not in deque`.
+    #[must_use]
+    fn value_error_deque_remove() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "deque.remove(x): x not in deque").into()
+    }
+
+    /// `ValueError: deque.index(x): x not in deque`.
+    #[must_use]
+    fn value_error_deque_index() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "deque.index(x): x not in deque").into()
+    }
+
+    /// `ValueError: maxlen must be non-negative`.
+    #[must_use]
+    fn value_error_maxlen_negative() -> RunError {
+        SimpleException::new_msg(ExcType::ValueError, "maxlen must be non-negative").into()
+    }
+
+    /// `TypeError: an integer is required` — a non-integer `maxlen`.
+    #[must_use]
+    fn type_error_integer_required() -> RunError {
+        SimpleException::new_msg(ExcType::TypeError, "an integer is required").into()
+    }
+
+    /// `TypeError: 'X' object cannot be interpreted as an integer`.
+    #[must_use]
+    fn type_error_not_an_integer(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("'{type_}' object cannot be interpreted as an integer"),
+        )
+        .into()
+    }
+
+    /// `TypeError: sequence index must be integer, not 'X'` — deque indexing with a
+    /// slice or other non-integer key.
+    #[must_use]
+    fn type_error_sequence_index(type_: &str) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("sequence index must be integer, not '{type_}'"),
+        )
+        .into()
+    }
+
+    /// `TypeError: deque() takes at most 2 arguments (N given)` — CPython's own
+    /// wording, which no `FromArgs` style reproduces.
+    #[must_use]
+    fn type_error_deque_too_many_args(given: usize) -> RunError {
+        SimpleException::new_msg(
+            ExcType::TypeError,
+            format!("deque() takes at most 2 arguments ({given} given)"),
         )
         .into()
     }

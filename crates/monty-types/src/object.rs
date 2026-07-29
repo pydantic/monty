@@ -732,6 +732,11 @@ pub enum MontyType {
     Str,
     Bytes,
     List,
+    /// `collections.deque`. Qualified like `datetime.datetime` so the
+    /// host-boundary name matches the runtime `Type::Deque` (`collections.deque`)
+    /// rather than a bare `deque`.
+    #[strum(serialize = "collections.deque")]
+    Deque,
     #[strum(serialize = "list_iterator")]
     ListIterator,
     #[strum(serialize = "callable_iterator")]
@@ -805,6 +810,14 @@ pub enum MontyType {
     DictValueIterator,
     #[strum(serialize = "set_iterator")]
     SetIterator,
+    #[strum(serialize = "itertools.count")]
+    ItertoolsCount,
+    #[strum(serialize = "itertools.repeat")]
+    ItertoolsRepeat,
+    /// A `dataclasses.Field` describing one field of a sandbox `@dataclass`,
+    /// as found in a class's `__dataclass_fields__`.
+    #[strum(serialize = "Field")]
+    Field,
     #[strum(serialize = "NotImplementedType")]
     NotImplementedType,
 }

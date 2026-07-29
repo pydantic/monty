@@ -8,6 +8,9 @@ use serde::{Serialize, de::DeserializeOwned};
 const MAGIC: &[u8; 6] = b"MONTY\0";
 
 /// Version of the postcard schema shared by all interpreter dump kinds.
+///
+/// Bump this whenever a serialized discriminant can shift, so older dumps are
+/// rejected instead of decoding as their neighbour.
 pub(crate) const VERSION: u16 = 1;
 
 /// Number of bytes before the postcard payload.
@@ -77,7 +80,7 @@ mod tests {
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x33c7_8bd6_d399_28b0,
+            0x9562_8bad_11bf_ad5d,
             "static strings changed for dump version {VERSION}"
         );
         assert_eq!(

@@ -35,11 +35,11 @@ methods, `__init__` (full parameter shapes), instance and class attribute
 get/set (including `setattr(Foo, ...)` and function-attributes-become-methods),
 bound methods, class variables (arbitrary expressions, evaluated in a real
 suspendable class-body scope), **class decorators** (`@deco class Foo`),
-`__repr__`/`__str__`/`__enter__`/`__exit__` dispatch, user-defined `__eq__`,
+`__repr__`/`__str__`/`__enter__`/`__exit__`/`__eq__`/`__hash__` dispatch,
 `obj.__class__`, `Foo.__name__`, `Foo.__doc__`/`obj.__doc__`,
 `Foo.__annotations__` (ordered; values stringized and provisional — see
-[typing.md](typing.md)),
-`type(obj)`/`isinstance(obj, Foo)`, and the 3-arg `type()` constructor. The
+[typing.md](typing.md)), `type(obj)`/`isinstance(obj, Foo)`, and the 3-arg
+`type()` constructor. The
 `__enter__`/`__exit__` divergences are in [with.md](with.md). Everything else
 below is where Monty differs from or does not implement CPython behaviour.
 
@@ -99,15 +99,12 @@ order and error wording, but with these divergences:
   runs to completion synchronously, so it cannot yield to the host, and an
   external-function `__init__` raises `NotImplementedError` rather than
   suspending.
-- **User `__hash__` is not dispatched.** Instances of classes without
-  `__eq__` hash by identity. Defining `__eq__` makes instances unhashable,
-  even if the class also defines `__hash__`; CPython would dispatch that
-  explicit `__hash__` implementation.
-- **`__eq__` runs synchronously and cannot suspend.** An external/OS call from
-  `__eq__` raises rather than yielding to the host. An exception raised by
-  `__eq__` terminates the run instead of being catchable by a `try` around the
-  comparison.
-- **Instances are always truthy**: `__bool__` and `__len__` are not dispatched.
+- **`__eq__`/`__hash__` cannot suspend**: like `__repr__`/`__str__` they run to
+  completion synchronously, so one that calls an external/OS function raises
+  rather than yielding to the host. An exception raised by `__eq__` terminates
+  the run instead of being catchable by a `try` around the comparison.
+- **Ordering dunders are still not dispatched** — see the entry above.
+  Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access
   creates a fresh object, so `obj.method == obj.method` is `False` and two
   accesses hash differently. CPython compares/hashes bound methods by
@@ -191,11 +188,19 @@ e.g. return a `dict` of the fields.
   on classes and on non-method functions are supported.
 - **Classes are barely introspectable**: `__dict__`, `__bases__` and `dir()`
   are all unavailable (`cls.__name__` and `cls.__annotations__` work — the
-  latter with stringized values, see [typing.md](typing.md)).
-- Dunder protocols other than `__init__`, `__eq__`, `__repr__`, `__str__`,
-  `__enter__`, `__exit__`, `__iter__`, `__next__`, and `__contains__`:
-  `__new__`, `__call__`, `__getitem__`, `__setitem__`, `__add__`,
-  `__hash__`, `__bool__`, etc. are not dispatched for user-defined instances.
+  latter with stringized values, see [typing.md](typing.md)). A class decorator
+  can therefore discover fields and nothing else.
+- **Tracebacks from decorator application point at the whole `class` statement**
+  (a span from the first decorator through the body, with the body elided as
+  `...<N lines>...`), where CPython pins the individual decorator that raised.
+  Every decorator in a stack reports that same location; only the callee frame
+  identifies which one raised.
+- Dunder protocols other than `__init__`, `__repr__`, `__str__`,
+  `__enter__`, `__exit__`, `__iter__`, `__next__`, `__contains__`, `__eq__`,
+  and `__hash__`: `__new__`, `__call__`, `__getitem__`, `__setitem__`,
+  `__add__`, `__ne__`, `__bool__`, etc. are not dispatched for user-defined
+  instances. `__ne__` is always the negation of `__eq__`, as CPython derives it
+  by default, so a custom `__ne__` is ignored.
 - `__iter__` / `__next__` / `__contains__` **are** dispatched, but like
   `__repr__`/`__str__` they run synchronously, so one that calls an external or
   OS function cannot suspend and raises `NotImplementedError`. Two related

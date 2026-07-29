@@ -279,6 +279,11 @@ impl ops::Deref for Bytes {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
+    /// One-sided implementation of Python membership (`__contains__`).
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        bytes_contains(self.get(vm.heap).as_slice(), item, vm).map(Some)
+    }
+
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
     }
@@ -345,7 +350,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(bytes_repr_fmt(&self.get(vm.heap).0, f)?)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let other = match other {
             Value::InternBytes(id) => vm.interns.get_bytes(*id),
             Value::Ref(id) if let HeapData::Bytes(value) = vm.heap.get(*id) => value.as_slice(),
@@ -2269,5 +2274,36 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BytesIterator> {
         } else {
             Ok(None)
         }
+    }
+}
+
+/// Membership for `item in <bytes>`, shared by heap and interned containers.
+///
+/// CPython accepts a bytes-like probe (substring) or an integer (byte value);
+/// an integer outside `range(0, 256)` is a `ValueError`, anything else a `TypeError`.
+pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> RunResult<bool> {
+    // `None` marks an integer probe that cannot be a byte, keeping the range
+    // error in one place. A `LongInt` never fits in a `u8` by construction — it
+    // exists precisely because the value overflowed `i64`.
+    let byte = match item {
+        Value::Int(i) => Some(*i),
+        Value::Bool(b) => Some(i64::from(*b)),
+        Value::InternLongInt(_) => None,
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::LongInt(_)) => None,
+        // A bytes-like probe is a substring test.
+        Value::InternBytes(_) | Value::Ref(_) => {
+            let needle = extract_bytes_only(item, vm)?;
+            return Ok(container.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty());
+        }
+        other => {
+            return Err(ExcType::type_error(format!(
+                "a bytes-like object is required, not '{}'",
+                other.py_type_name(vm)
+            )));
+        }
+    };
+    match byte.and_then(|b| u8::try_from(b).ok()) {
+        Some(b) => Ok(container.contains(&b)),
+        None => Err(ExcType::value_error("byte must be in range(0, 256)")),
     }
 }

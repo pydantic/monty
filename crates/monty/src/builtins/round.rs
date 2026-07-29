@@ -1,13 +1,12 @@
 //! Implementation of the round() builtin function.
 
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 
 use crate::{
     args::{ArgValues, FromArgs, is_long_int},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::HeapData,
     types::LongInt,
     value::Value,
 };
@@ -50,11 +49,7 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         // A genuine int wider than i64: clamp by sign — the saturating paths
         // below then return the number unchanged (huge positive) or 0 / ±0.0
         // (huge negative), matching CPython's `Py_ssize_t` clamp for floats.
-        v if is_long_int(v, vm) => Some(if long_int_is_negative(v, vm) {
-            i64::MIN
-        } else {
-            i64::MAX
-        }),
+        v if is_long_int(v, vm) => Some(if v.long_int_is_negative(vm) { i64::MIN } else { i64::MAX }),
         v => {
             let type_name = v.py_type_name(vm);
             return Err(SimpleException::new_msg(
@@ -127,16 +122,6 @@ pub fn builtin_round(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
             )
             .into())
         }
-    }
-}
-
-/// True when a LongInt-valued `ndigits` (interned or heap-allocated) is
-/// negative — decides which i64 extreme [`builtin_round`] clamps it to.
-fn long_int_is_negative(value: &Value, vm: &VM<'_>) -> bool {
-    match value {
-        Value::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
-        Value::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
-        _ => false,
     }
 }
 

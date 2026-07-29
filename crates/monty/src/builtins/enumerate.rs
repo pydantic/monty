@@ -95,7 +95,8 @@ fn extract_enumerate_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<(Value,
                 // `enumerate(start=1, x=1, iterable=[1])`.
                 Err(ExcType::type_error_missing_required_no_pos("enumerate", "iterable"))
             } else {
-                Err(ExcType::type_error_method_at_most("enumerate", 2, total))
+                // `n_pos > 0` in this arm, so never the all-keyword wording.
+                Err(ExcType::type_error_method_at_most("enumerate", 2, total, false))
             }
         }
     }

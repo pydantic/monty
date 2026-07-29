@@ -6,32 +6,37 @@ use std::{
     str::FromStr,
 };
 
-use monty_types::ResourceError;
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_traits::FromPrimitive;
 
 use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
-    defer_drop, defer_drop_mut,
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    expressions::CmpOperator,
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int},
-    heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
+    heap_data::heap_subscript,
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource_checks::check_pow_size,
     types::{
         Bytes, BytesIterator, CmpOrder, LazyHeapSet, LongInt, Property, PyTrait, StringIterator, Type,
-        bytes::{bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
-        instance::{instance_contains, instance_eq, instance_getattr, instance_repr, instance_str},
+        bytes::{bytes_contains, bytes_repr_fmt, concat_bytes, get_byte_at_index, repeat_bytes},
+        instance::{instance_dataclass_eq, instance_getattr, instance_repr_fmt, instance_str, instance_user_eq},
         long_int::{
             bigint_cmp_f64, bigint_cmp_i64, bigint_eq_f64, bigint_eq_i64, check_bits_str_digits_limit, i64_cmp_f64,
             repeat_count, wide_i128_into_value,
         },
+        namedtuple::cmp_item_seqs,
         slice::slice_collect_iterator,
-        str::{allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, string_repr_fmt},
+        str::{
+            allocate_char, allocate_string, concat_allocate_str, get_char_at_index, repeat_str, str_contains,
+            string_repr_fmt,
+        },
     },
 };
 
@@ -124,6 +129,10 @@ impl<'h> ValueRead<'h, '_> {
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
             Self::Heap {
+                value: HeapReadOutput::DequeIterator(iter),
+                ..
+            } => iter.get(vm.heap).size_hint(vm.heap),
+            Self::Heap {
                 value: HeapReadOutput::TupleIterator(iter),
                 ..
             } => iter.get(vm.heap).size_hint(vm.heap),
@@ -153,6 +162,10 @@ impl<'h> ValueRead<'h, '_> {
             } => iter.get(vm.heap).size_hint(),
             Self::Heap {
                 value: HeapReadOutput::SetIterator(iter),
+                ..
+            } => iter.get(vm.heap).size_hint(),
+            Self::Heap {
+                value: HeapReadOutput::Itertools(iter),
                 ..
             } => iter.get(vm.heap).size_hint(),
             _ => 0,
@@ -366,7 +379,24 @@ impl<'h> PyTrait<'h> for Value {
                     Ok(CmpOrder::Ordered(a.get(vm.heap).as_str().cmp(b.get(vm.heap).as_str())))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+                // A namedtuple orders like the tuple it subclasses, including
+                // against a plain tuple in either direction. Both sides are
+                // cloned first because the comparison needs `&mut VM`, which
+                // cannot coexist with two live `HeapRead`s.
+                (HeapReadOutput::NamedTuple(a), HeapReadOutput::NamedTuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
+                (HeapReadOutput::NamedTuple(a), HeapReadOutput::Tuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
+                (HeapReadOutput::Tuple(a), HeapReadOutput::NamedTuple(b)) => {
+                    let (a, b) = (a.cloned_items(vm), b.cloned_items(vm));
+                    cmp_item_seqs(a, b, vm)
+                }
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }
@@ -461,19 +491,19 @@ impl<'h> PyTrait<'h> for Value {
                         HeapData::List(_) => Ok(f.write_str("[...]")?),
                         HeapData::Tuple(_) => Ok(f.write_str("(...)")?),
                         HeapData::Dict(_) => Ok(f.write_str("{...}")?),
+                        // A deque prints its items inside list-shaped brackets
+                        // (`deque([...])`), so the placeholder is a list's.
+                        HeapData::Deque(_) => Ok(f.write_str("[...]")?),
                         // Other types don't typically have cycles, but handle gracefully
                         _ => Ok(f.write_str("...")?),
                     }
                 } else if matches!(vm.heap.get(*id), HeapData::Instance(_)) {
-                    // Instances dispatch to a user `__repr__` (or the default), which
-                    // needs the heap id to pass `self` — handled here, not at the heap
-                    // level, so no `heap_ids` insertion happens. Recursion here
-                    // re-enters the VM on the *Rust* stack, bounded by
-                    // `evaluate_function`'s re-entry guard (see the "Recursive/deep
-                    // `__repr__`/`__str__`" divergence in limitations/classes.md).
-                    let str_value = instance_repr(*id, vm)?;
-                    defer_drop!(str_value, vm);
-                    Ok(f.write_str(str_value.to_str(vm)?)?)
+                    // Handled here, not at the heap level, because dispatch needs
+                    // the heap id for `self`. A user `__repr__` recurses on the
+                    // *Rust* stack (see limitations/classes.md); the synthesized
+                    // dataclass form carries `heap_ids`, so a cycle in one hits
+                    // the branch above.
+                    instance_repr_fmt(*id, f, vm, heap_ids)
                 } else {
                     heap_ids.insert(*id);
                     let result = vm.heap.read(*id).py_repr_fmt(f, vm, heap_ids);
@@ -527,7 +557,7 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
         if let Self::Ref(id) = self {
             vm.heap.read(*id).py_iadd_impl(other, vm, Some(*id))
         } else {
@@ -535,8 +565,71 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
+    fn py_isub_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_isub_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_iand_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_iand_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_ior_impl(&mut self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_ior_impl(other, vm, Some(*id))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn py_cmp_op(
+        &self,
+        other: &Self,
+        op: CmpOperator,
+        vm: &mut VM<'_>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        if let Self::Ref(id) = self {
+            vm.heap.read(*id).py_cmp_op(other, op, vm, Some(*id))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn py_neg_impl(&self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
+        match self {
+            // `checked_neg` catches `i64::MIN`, whose negation only fits a LongInt.
+            Self::Int(n) => match n.checked_neg() {
+                Some(negated) => Ok(Some(Self::Int(negated))),
+                None => Ok(Some((-LongInt::from(*n)).into_value(vm.heap)?)),
+            },
+            Self::Float(f) => Ok(Some(Self::Float(-f))),
+            Self::Bool(b) => Ok(Some(Self::Int(if *b { -1 } else { 0 }))),
+            Self::Ref(id) => vm.heap.read(*id).py_neg_impl(vm, Some(*id)),
+            _ => Ok(None),
+        }
+    }
+
+    fn py_pos_impl(&self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
+        match self {
+            // `+x` leaves a number as it is; the clone is what the caller pushes
+            // in place of the operand it drops.
+            Self::Int(_) | Self::Float(_) => Ok(Some(self.clone_with_heap(vm.heap))),
+            Self::Bool(b) => Ok(Some(Self::Int(i64::from(*b)))),
+            Self::Ref(id) => vm.heap.read(*id).py_pos_impl(vm, Some(*id)),
+            _ => Ok(None),
+        }
+    }
+
     /// One-sided implementation of Python `+`.
-    fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_add_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
@@ -569,7 +662,7 @@ impl<'h> PyTrait<'h> for Value {
             (Self::InternBytes(lhs), Self::Ref(rhs)) if let HeapData::Bytes(rhs) = vm.heap.get(*rhs) => {
                 Ok(Some(concat_bytes(interns.get_bytes(*lhs), rhs.as_slice(), vm.heap)?))
             }
-            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm),
+            (Self::Ref(id), _) => vm.heap.read(*id).py_add_impl(other, vm, Some(*id)),
             _ => Ok(None),
         }
     }
@@ -584,7 +677,7 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `-`.
-    fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_sub_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         match (self, other) {
             // Int - Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -599,7 +692,7 @@ impl<'h> PyTrait<'h> for Value {
             // Int - Float and Float - Int
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 - b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a - *b as f64))),
-            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm),
+            (Self::Ref(id), _) => vm.heap.read(*id).py_sub_impl(other, vm, Some(*id)),
             _ => Ok(None),
         }
     }
@@ -1027,13 +1120,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `&`.
-    fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_and_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
             Ok(Some(Self::Bool(*lhs && *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs & rhs)))
         } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_and_impl(other, vm)
+            vm.heap.read(*id).py_and_impl(other, vm, Some(*id))
         } else {
             Ok(None)
         }
@@ -1049,13 +1142,13 @@ impl<'h> PyTrait<'h> for Value {
     }
 
     /// One-sided implementation of Python `|`.
-    fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+    fn py_or_impl(&self, other: &Self, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<Self>> {
         if let (Self::Bool(lhs), Self::Bool(rhs)) = (self, other) {
             Ok(Some(Self::Bool(*lhs || *rhs)))
         } else if let (Some(lhs), Some(rhs)) = (immediate_int(self), immediate_int(other)) {
             Ok(Some(Self::Int(lhs | rhs)))
         } else if let Self::Ref(id) = self {
-            vm.heap.read(*id).py_or_impl(other, vm)
+            vm.heap.read(*id).py_or_impl(other, vm, Some(*id))
         } else {
             Ok(None)
         }
@@ -1158,7 +1251,9 @@ impl<'h> PyTrait<'h> for Value {
     fn py_getitem(&self, key: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         let interns = vm.interns;
         match self {
-            Self::Ref(id) => vm.heap.read(*id).py_getitem(key, vm),
+            // `heap_subscript` owns the one case a heap read cannot: a
+            // defaultdict miss, which calls its factory and re-enters the VM.
+            Self::Ref(id) => heap_subscript(*id, key, vm),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1292,7 +1387,8 @@ impl Value {
     /// captured before `drop_with` cleanup and formatted after.
     #[must_use]
     pub(crate) fn py_type_name<'h>(&self, vm: &VM<'h>) -> Cow<'h, str> {
-        self.py_type(vm).name(vm.heap, vm.interns)
+        self.namedtuple_class_name(vm.heap, vm.interns)
+            .unwrap_or_else(|| self.py_type(vm).name(vm.heap, vm.interns))
     }
 
     /// [`py_type_name`](Self::py_type_name) for contexts without a `&VM` —
@@ -1300,7 +1396,29 @@ impl Value {
     /// `heap` + `interns` instead (mirrors [`py_type_heap`](Self::py_type_heap)).
     #[must_use]
     pub(crate) fn py_type_name_heap<'i>(&self, heap: &Heap, interns: &'i Interns) -> Cow<'i, str> {
-        self.py_type_heap(heap).name(heap, interns)
+        self.namedtuple_class_name(heap, interns)
+            .unwrap_or_else(|| self.py_type_heap(heap).name(heap, interns))
+    }
+
+    /// Class name of a named tuple, if this value is one.
+    ///
+    /// Named tuples keep their class name in the heap entry rather than in
+    /// [`Type`], which carries no identity for them. Error messages therefore
+    /// have to reach for it here to name the class (`'P'`) rather than the
+    /// generic `'namedtuple'`, matching CPython — including for structseqs,
+    /// whose stored name is already the qualified `sys.version_info`.
+    #[must_use]
+    fn namedtuple_class_name<'i>(&self, heap: &Heap, interns: &'i Interns) -> Option<Cow<'i, str>> {
+        if let Self::Ref(heap_id) = self
+            && let HeapData::NamedTuple(nt) = heap.get(*heap_id)
+        {
+            Some(match nt.name_either() {
+                EitherStr::Interned(id) => Cow::Borrowed(interns.get_str(*id)),
+                EitherStr::Heap(s) => Cow::Owned(s.clone()),
+            })
+        } else {
+            None
+        }
     }
 
     /// Returns the Python `Type` for immediate (non-heap) values without VM access.
@@ -1345,6 +1463,23 @@ impl Value {
         }
     }
 
+    /// Consumes this Value as a reference, returning the contained HeapId otherwise returns None.
+    ///
+    /// The caller is responsible for ensuring the `HeapId` is properly decref'd.
+    pub fn into_ref_id(self) -> Option<HeapId> {
+        match self {
+            Self::Ref(id) => {
+                #[cfg(feature = "memory-model-checks")]
+                {
+                    // Mark the value as dereferenced to prevent double-free
+                    mem::forget(self);
+                }
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
     /// Returns the module name if this value is a module, otherwise returns "<unknown>".
     ///
     /// Used for error messages in `from module import name` when the name doesn't exist.
@@ -1371,21 +1506,20 @@ impl Value {
         matches!(self, Self::NotImplemented)
     }
 
-    /// Container equality, which accepts identical objects before calling `__eq__`.
-    ///
-    /// Mirrors CPython's `PyObject_RichCompareBool`: sequence and mapping
-    /// operations use identity-or-equality so an object remains present in a
-    /// container even when its `__eq__` says it is unequal to itself.
+    /// Equality as containers perform it: identity before user equality.
     pub fn py_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         if self.is(other) {
             Ok(true)
-        } else if let Some(result) = self.py_eq_impl(other, vm, None)? {
-            Ok(result)
-        } else if let Some(result) = other.py_eq_impl(self, vm, None)? {
-            Ok(result)
         } else {
-            Ok(self.is(other))
+            self.py_eq_operator(other, vm)
         }
+    }
+
+    /// Python's `==` operator normalized to a boolean.
+    pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
+        let result = self.py_rich_eq(other, vm)?;
+        defer_drop!(result, vm);
+        result.py_bool(vm)
     }
 
     /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
@@ -1411,7 +1545,15 @@ impl Value {
         if let Self::Ref(id) = self
             && matches!(vm.heap.get(*id), HeapData::Instance(_))
         {
-            Ok(instance_eq(*id, other, vm)?.unwrap_or(Self::NotImplemented))
+            if let Some(result) = instance_user_eq(*id, other, vm)? {
+                Ok(result)
+            } else if self.is(other) {
+                Ok(Self::Bool(true))
+            } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
+                Ok(Self::Bool(result))
+            } else {
+                Ok(Self::NotImplemented)
+            }
         } else if let Some(result) = self.py_eq_impl(other, vm, None)? {
             Ok(Self::Bool(result))
         } else {
@@ -1526,135 +1668,27 @@ impl Value {
         }
     }
 
-    /// TODO this doesn't have many tests!!! also doesn't cover bytes
-    /// Checks if `item` is contained in `self` (the container).
+    /// Checks if `item` is contained in `self` (the container) — Python's `in`.
     ///
-    /// Implements Python's `in` operator for various container types:
-    /// - List/Tuple: linear search with equality
-    /// - Dict: key lookup
-    /// - Set/FrozenSet: element lookup
-    /// - Str: substring search
-    /// - Instance: the class's `__contains__`, else iteration
-    ///
-    /// Anything else iterable is consumed until the item is found.
+    /// Type-specific logic lives on each type's [`PyTrait::py_contains`]; this
+    /// resolves the value and applies CPython's protocol order: a type's own
+    /// containment first (`sq_contains`), then consuming it by iteration
+    /// (`tp_iter`), then `TypeError`.
     pub fn py_contains(&self, item: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
         match self {
-            Self::Ref(heap_id) => {
-                let output = vm.heap.read(*heap_id);
-                match output {
-                    HeapReadOutput::List(list) => {
-                        let len = list.get(vm.heap).len();
-                        for i in 0..len {
-                            let el = list.clone_item(i, vm);
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Tuple(tuple) => {
-                        let len = tuple.get(vm.heap).as_slice().len();
-                        for i in 0..len {
-                            let el = tuple.clone_item(i, vm);
-                            let eq = item.py_eq(&el, vm);
-                            el.drop_with(vm);
-                            if eq? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Dict(dict) => dict.contains_key(item, vm),
-                    HeapReadOutput::DictKeysView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_keys view must reference a dict");
-                        };
-                        dict.contains_key(item, vm)
-                    }
-                    HeapReadOutput::DictItemsView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
-                            return Ok(false);
-                        };
-                        let mut key_guard = DropGuard::new(key, vm);
-                        let (key, vm) = key_guard.as_parts_mut();
-                        let mut value_guard = DropGuard::new(value, vm);
-                        let (value, vm) = value_guard.as_parts_mut();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_items view must reference a dict");
-                        };
-                        match dict.dict_get(key, vm) {
-                            Ok(Some(existing_value)) => {
-                                let result = value.py_eq(&existing_value, vm);
-                                existing_value.drop_with(vm);
-                                result
-                            }
-                            Ok(None) => Ok(false),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    HeapReadOutput::DictValuesView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
-                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
-                            panic!("dict_values view must reference a dict");
-                        };
-                        let iter = dict.iter(vm)?;
-                        defer_drop_mut!(iter, vm);
-                        while let Some(value) = iter.next_value(vm)? {
-                            if item.py_eq(value, vm)? {
-                                return Ok(true);
-                            }
-                        }
-                        Ok(false)
-                    }
-                    HeapReadOutput::Set(set) => set.contains(item, vm),
-                    HeapReadOutput::FrozenSet(fset) => fset.contains(item, vm),
-                    HeapReadOutput::Str(s) => {
-                        let s_str = s.get(vm.heap).as_str();
-                        str_contains(s_str, item, vm.heap, vm.interns)
-                    }
-                    HeapReadOutput::Range(range) => {
-                        // Range containment is O(1) - check bounds and step alignment
-                        let range = range.get(vm.heap);
-                        let n = match item {
-                            Self::Int(i) => *i,
-                            Self::Bool(b) => i64::from(*b),
-                            Self::Float(f) => {
-                                if f.fract() != 0.0 {
-                                    return Ok(false);
-                                }
-                                let int_val = f.trunc();
-                                if int_val < i64::MIN as f64 || int_val > i64::MAX as f64 {
-                                    return Ok(false);
-                                }
-                                #[expect(clippy::cast_possible_truncation)]
-                                let n = int_val as i64;
-                                n
-                            }
-                            _ => return Ok(false),
-                        };
-                        Ok(range.contains(n))
-                    }
-                    // `__contains__` first, iteration only as a fallback —
-                    // CPython's `sq_contains` precedes `tp_iter`.
-                    HeapReadOutput::Instance(_) => match instance_contains(*heap_id, item, vm)? {
-                        Some(found) => Ok(found),
-                        None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
-                        None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
-                    },
-                    // Everything else with no `__contains__` of its own — the
-                    // iterators, and any future iterable heap type — is consumed
-                    // by iteration, as CPython falls back to `tp_iter`.
-                    _ if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
-                    _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
-                }
-            }
+            Self::Ref(heap_id) => match vm.heap.read(*heap_id).py_contains_impl(*heap_id, item, vm)? {
+                Some(found) => Ok(found),
+                None if self.py_is_iterable(vm) => self.contains_by_iteration(item, vm),
+                None => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
+            },
+            // Interned strings and bytes never reach the heap, so they answer here.
             Self::InternString(string_id) => {
                 let container_str = vm.interns.get_str(*string_id);
                 str_contains(container_str, item, vm.heap, vm.interns)
+            }
+            Self::InternBytes(bytes_id) => {
+                let container = vm.interns.get_bytes(*bytes_id);
+                bytes_contains(container, item, vm)
             }
             _ => Err(ExcType::type_error_not_container(&self.py_type_name(vm))),
         }
@@ -1737,10 +1771,20 @@ impl Value {
                     instance.set_attr(Self::attr_name_value(name, vm)?, value, vm)?
                 }
                 HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
+                // `defaultdict.default_factory = ...`; every other dict attribute
+                // raises the generic no-setattr error inside this method.
+                HeapReadOutput::Dict(mut dict) => dict.set_default_factory_attr(name, value, vm)?,
                 other => {
-                    let type_name = other.py_type(vm).name(vm.heap, vm.interns);
+                    let type_ = other.py_type(vm);
+                    let type_name = type_.name(vm.heap, vm.interns);
                     value.drop_with(vm);
-                    return Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)));
+                    // `deque.maxlen` exists but is read-only, which CPython reports
+                    // differently from an attribute that isn't there at all.
+                    return if type_ == Type::Deque && name.static_string() == Some(StaticStrings::Maxlen) {
+                        Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
+                    } else {
+                        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+                    };
                 }
             };
             old_value.drop_with(vm);
@@ -1815,6 +1859,20 @@ impl Value {
         }
     }
 
+    /// True when this is a `LongInt`-valued int (interned or heap-allocated)
+    /// that is negative — lets fixed-width consumers pick the right overflow
+    /// direction/message (`round`'s i64 clamp, `os`'s fd converter). False for
+    /// every other value, `Int`/`Bool` included: pair it with
+    /// [`is_long_int`](crate::args::is_long_int) rather than using it alone to
+    /// classify an int.
+    pub(crate) fn long_int_is_negative(&self, vm: &VM<'_>) -> bool {
+        match self {
+            Self::InternLongInt(id) => vm.interns.get_long_int(*id).sign() == Sign::Minus,
+            Self::Ref(id) => matches!(vm.heap.get(*id), HeapData::LongInt(li) if li.is_negative()),
+            _ => false,
+        }
+    }
+
     /// Performs Python `+` with reflected-operation fallback.
     pub(crate) fn py_add(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
         if let Some(result) = self.py_add_result(other, vm)? {
@@ -1832,7 +1890,7 @@ impl Value {
 
     /// Tries direct and reflected addition without producing the final type error.
     pub(crate) fn py_add_result(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
-        if let Some(result) = self.py_add_impl(other, vm)? {
+        if let Some(result) = self.py_add_impl(other, vm, self.ref_id())? {
             Ok(Some(result))
         } else {
             other.py_radd_impl(self, vm)
@@ -1844,7 +1902,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_sub_impl(other, vm),
+            |vm| self.py_sub_impl(other, vm, self.ref_id()),
             |vm| other.py_rsub_impl(self, vm),
             "-",
         )
@@ -1921,7 +1979,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_and_impl(other, vm),
+            |vm| self.py_and_impl(other, vm, self.ref_id()),
             |vm| other.py_rand_impl(self, vm),
             "&",
         )
@@ -1932,7 +1990,7 @@ impl Value {
         self.binary_op(
             other,
             vm,
-            |vm| self.py_or_impl(other, vm),
+            |vm| self.py_or_impl(other, vm, self.ref_id()),
             |vm| other.py_ror_impl(self, vm),
             "|",
         )
@@ -2050,7 +2108,9 @@ impl Value {
     ///
     /// # Important
     /// This method MUST be called before overwriting a namespace slot or discarding
-    /// a value to prevent memory leaks.
+    /// a value to prevent memory leaks. Call it directly only on a simple, linear
+    /// cleanup path; use `defer_drop!` or `DropGuard` when any branch or `?` could
+    /// bypass cleanup.
     #[cfg(not(feature = "memory-model-checks"))]
     #[inline]
     pub fn drop_with(self, heap: &mut impl ContainsHeap) {
@@ -2403,58 +2463,6 @@ fn py_float_mod(a: f64, b: f64) -> f64 {
         r + b
     } else {
         r
-    }
-}
-
-/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
-///
-/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
-/// also accepts namedtuples of length two so tuple-like runtime values behave
-/// sensibly even though namedtuples are not modeled as a true tuple subclass.
-fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
-    let Value::Ref(heap_id) = item else {
-        return None;
-    };
-
-    match heap.heap().get(*heap_id) {
-        HeapData::Tuple(tuple) => {
-            let items = tuple.as_slice();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        HeapData::NamedTuple(namedtuple) => {
-            let items = namedtuple.as_vec();
-            if items.len() == 2 {
-                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Helper for substring containment check in strings.
-///
-/// Called by `py_contains` when the container is a string.
-/// The item must also be a string (either interned or heap-allocated).
-fn str_contains(container_str: &str, item: &Value, heap: &Heap, interns: &Interns) -> RunResult<bool> {
-    match item {
-        Value::InternString(item_id) => {
-            let item_str = interns.get_str(*item_id);
-            Ok(container_str.contains(item_str))
-        }
-        Value::Ref(item_heap_id) => {
-            if let HeapData::Str(item_str) = heap.get(*item_heap_id) {
-                Ok(container_str.contains(item_str.as_str()))
-            } else {
-                Err(ExcType::type_error("'in <str>' requires string as left operand"))
-            }
-        }
-        _ => Err(ExcType::type_error("'in <str>' requires string as left operand")),
     }
 }
 

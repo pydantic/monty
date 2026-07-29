@@ -178,6 +178,12 @@ impl<'h> HeapRead<'h, Tuple> {
     }
 
     /// Clones all items from this tuple with proper refcount management.
+    /// Clones every item into a plain `Vec`, for the namedtuple orderings in
+    /// [`cmp_item_seqs`](crate::types::namedtuple::cmp_item_seqs).
+    pub(crate) fn cloned_items(&self, vm: &mut VM<'h>) -> Vec<Value> {
+        self.clone_all_items(vm).into_vec()
+    }
+
     fn clone_all_items(&self, vm: &mut VM<'h>) -> TupleVec {
         let len = self.get(vm.heap).items.len();
         let mut result = TupleVec::with_capacity(len);
@@ -284,6 +290,20 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    /// Linear search by equality, stored element on the left of `==` as CPython's
+    /// `tuplecontains` does. `TupleIter` owns each yielded item, so a user
+    /// `__eq__` re-entering the VM cannot invalidate the walk.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(el) = iter.next(vm)? {
+            if el.py_eq(item, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -418,7 +438,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(CmpOrder::Ordered(a_len.cmp(&b_len)))
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::Tuple(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

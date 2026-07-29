@@ -471,19 +471,18 @@ impl Signature {
         }
     }
 
-    /// The runtime `ErrorFamily` value for this style. `C`'s positional-pivot
-    /// wording is derived, not spelled: CPython's `vgetargskeywords` switches
-    /// to `… positional arguments …` exactly when the function has
+    /// The runtime `ErrorFamily` value for this style. The C families'
+    /// positional-pivot wording is derived, not spelled: CPython's
+    /// `vgetargskeywords` / `_PyArg_UnpackKeywords` switch to
+    /// `… positional argument(s) …` exactly when the function has
     /// keyword-only parameters.
     fn render_family(&self, named: &[&Field]) -> TokenStream {
+        let pivot = named.iter().any(|f| matches!(f.kind, FieldKind::KwOnly));
         match self.style {
             Style::Def => quote! { crate::args::ErrorFamily::Def },
             Style::Clinic => quote! { crate::args::ErrorFamily::Clinic },
-            Style::C => {
-                let pivot = named.iter().any(|f| matches!(f.kind, FieldKind::KwOnly));
-                quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } }
-            }
-            Style::CNamed => quote! { crate::args::ErrorFamily::CNamed },
+            Style::C => quote! { crate::args::ErrorFamily::C { positional_pivot: #pivot } },
+            Style::CNamed => quote! { crate::args::ErrorFamily::CNamed { positional_pivot: #pivot } },
             Style::Unpack => quote! { crate::args::ErrorFamily::Unpack },
         }
     }

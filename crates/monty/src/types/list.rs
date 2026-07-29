@@ -368,6 +368,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         true
     }
 
+    /// Linear search by equality, stored element on the left of `==` as CPython's
+    /// `list_contains` does. `ListIter` re-reads the length on every step, so a
+    /// user `__eq__` re-entering the VM and shrinking the list halts the walk
+    /// cleanly instead of indexing out of bounds.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let iter = self.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(el) = iter.next(vm)? {
+            if el.py_eq(item, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::List
     }
@@ -483,7 +498,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         repr_sequence_fmt('[', ']', len, |heap, i| &self.get(heap).as_slice()[i], f, vm, heap_ids)
     }
 
-    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_add_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(HeapReadOutput::List(other)) = other.read_heap(vm) else {
             return Ok(None);
         };
@@ -511,7 +526,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         self.py_mul_impl(other, vm)
     }
 
-    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> Result<bool, ResourceError> {
+    fn py_iadd_impl(&mut self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<bool> {
         let Value::Ref(other_id) = other else {
             return Ok(false);
         };

@@ -33,10 +33,9 @@ any code runs.
 
 ## Expressions rejected at parse time
 
-- **Multiple `**kwargs` unpacking** in a single call (`f(**a, **b)`).
-- **Complex number literals** (`1j`, `2+3j`).
+- **Complex number literals** (`1j`, `2+3j`) — `NotImplementedError: The monty
+  syntax parser does not yet support complex constants`.
 - **Template strings (t-strings)** — PEP 750.
-- **Walrus operator** (`:=`) — also rejected.
 
 ## Starred unpacking
 
@@ -162,13 +161,24 @@ the outer container types (`'tuple' and 'tuple'`) where CPython names the inner
 element pair (`'int' and 'str'`). Both raise `TypeError`; only the message text
 differs.
 
-One value divergence: CPython's sequence comparison shortcuts equality by
-*object identity* (`x is x` ⇒ equal) before falling back to `==`, so a shared
-`NaN` element in a prefix position makes the shorter sequence compare less
-(`x = float('nan'); [1, x] < [1, x, 3]` is `True`). Monty has no object identity
-for immediate floats, so it treats the two `NaN`s as a differing pair and yields
-`False`. Distinct `NaN` objects (`[1, float('nan')] < [1, float('nan'), 3]`)
-give `False` on both.
+One value divergence: whenever CPython compares elements *inside* a container it
+shortcuts equality by **object identity** (`x is x` ⇒ equal) before falling back
+to `==`. Monty has no object identity for immediate floats, so it asks `==`, and
+a `NaN` is never equal to itself. Every container operation built on element
+comparison therefore differs when the *same* `NaN` object appears on both sides:
+
+| with `x = float('nan')` | CPython | Monty |
+|---|---|---|
+| `(x,) == (x,)`, `[x] == [x]` | `True` | `False` |
+| `x in [x]` | `True` | `False` |
+| `[x].count(x)` | `1` | `0` |
+| `[x].index(x)` | `0` | `ValueError` |
+| `[1, x] < [1, x, 3]` | `True` | `False` |
+
+`NaN` is the only practical way to reach this, being the one built-in value
+unequal to itself. *Distinct* `NaN` objects agree on both
+(`[1, float('nan')] < [1, float('nan'), 3]` is `False` either way), as does a
+direct `x == x` (`False` on both). Named tuples inherit all of this from `tuple`.
 
 ## What *does* work
 

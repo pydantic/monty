@@ -16,7 +16,14 @@ use monty_types::{CompileOptions, MontyObject, PrintWriter, ResourceTracker};
 /// Frames one request the way a host transport would before posting it.
 fn frame_request(kind: pb::parent_request::Kind) -> Vec<u8> {
     let mut buf = Vec::new();
-    write_frame(&mut buf, &pb::ParentRequest { kind: Some(kind) }).expect("framing a request never fails");
+    write_frame(
+        &mut buf,
+        &pb::ParentRequest {
+            kind: Some(kind),
+            trace_parent: None,
+        },
+    )
+    .expect("framing a request never fails");
     buf
 }
 

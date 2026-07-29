@@ -65,6 +65,13 @@ impl VM<'_> {
     /// unordered values such as `NaN` and incomparable operand types.
     #[inline]
     fn cmp_ordering(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
+        // A type whose ordering no `CmpOrder` describes (a `Counter` compares as
+        // a multiset) answers the operator itself. Hooked in here rather than at
+        // the opcode so the fused-assert path, which calls `cmp_values` directly,
+        // gets the same semantics.
+        if let Some(result) = lhs.py_cmp_op(rhs, op, self, lhs.ref_id())? {
+            return Ok(result);
+        }
         match lhs.py_cmp(rhs, self)? {
             CmpOrder::Ordered(ordering) => Ok(match op {
                 CmpOperator::Lt => ordering.is_lt(),

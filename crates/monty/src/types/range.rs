@@ -191,6 +191,32 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         true
     }
 
+    /// O(1) containment: bounds plus step alignment, no iteration. Non-integral
+    /// items can never be members, matching CPython's fast path.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let range = self.get(vm.heap);
+        let n = match item {
+            Value::Int(i) => *i,
+            Value::Bool(b) => i64::from(*b),
+            Value::Float(f) => {
+                if f.fract() != 0.0 {
+                    return Ok(Some(false));
+                }
+                let int_val = f.trunc();
+                // Exclusive upper bound: `i64::MAX as f64` rounds up to 2^63, which
+                // `int_val as i64` would saturate back down to `i64::MAX`.
+                if int_val < i64::MIN as f64 || int_val >= i64::MAX as f64 {
+                    return Ok(Some(false));
+                }
+                #[expect(clippy::cast_possible_truncation)]
+                let n = int_val as i64;
+                n
+            }
+            _ => return Ok(Some(false)),
+        };
+        Ok(Some(range.contains(n)))
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Range
     }

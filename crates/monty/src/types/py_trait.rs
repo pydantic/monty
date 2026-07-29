@@ -12,13 +12,14 @@ use ahash::AHashSet;
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use monty_types::{OsFunctionCall, ResourceError};
+use monty_types::OsFunctionCall;
 
 use super::{Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
+    expressions::CmpOperator,
     hash::HashValue,
     heap::{DropWithContext, HeapId},
     intern::StringId,
@@ -166,6 +167,15 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
+    /// One-sided implementation of Python membership (`__contains__`).
+    ///
+    /// `Ok(None)` means the type has no containment logic of its own, so
+    /// [`Value::py_contains`] falls back to iteration and then `TypeError`.
+    /// `self_id` is only needed by types that re-enter the VM (`Instance`).
+    fn py_contains_impl(&self, _self_id: HeapId, _item: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
+    }
+
     /// One-sided equality normalized for identity-or-equality operations.
     ///
     /// Returns `Some(bool)` when this type handles `other`, or `None` for
@@ -201,6 +211,27 @@ pub(crate) trait PyTrait<'h> {
     /// Returns `Err(ResourceError::Recursion)` if maximum depth is exceeded.
     fn py_cmp(&self, _other: &Self, _vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         Ok(CmpOrder::Incomparable)
+    }
+
+    /// Answers a single ordering operator (`<` `<=` `>` `>=`) for types that a
+    /// [`CmpOrder`] cannot describe, taking precedence over [`py_cmp`](Self::py_cmp).
+    ///
+    /// A `Counter` compares as a multiset, where `<=` and `>=` are independent
+    /// containment tests (neither need hold) and each operator names *itself* in
+    /// the `TypeError` an unorderable count raises — so the answer depends on
+    /// which operator was written, which a single `CmpOrder` cannot carry.
+    /// `self_id` is this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
+    ///
+    /// Only the four ordering operators reach here. `Ok(None)` — the default —
+    /// defers to `py_cmp`.
+    fn py_cmp_op(
+        &self,
+        _other: &Value,
+        _op: CmpOperator,
+        _vm: &mut VM<'h>,
+        _self_id: Option<HeapId>,
+    ) -> RunResult<Option<bool>> {
+        Ok(None)
     }
 
     /// Returns the truthiness of the value following Python semantics.
@@ -255,8 +286,29 @@ pub(crate) trait PyTrait<'h> {
         self.py_repr(vm)
     }
 
+    /// Python unary minus (`__neg__`).
+    ///
+    /// `Ok(None)` — the default — means the type has no negation, so the VM
+    /// raises `TypeError`. `self_id` is this value's heap id, as for
+    /// [`py_add_impl`](Self::py_add_impl).
+    fn py_neg_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
+    /// Python unary plus (`__pos__`), with [`py_neg_impl`](Self::py_neg_impl)'s contract.
+    ///
+    /// Rarely a no-op: `+True` is `1`, and `+Counter(a=-1)` strips the
+    /// non-positive counts, so implementations return a value rather than `self`.
+    fn py_pos_impl(&self, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
+        Ok(None)
+    }
+
     /// One-sided implementation of Python addition (`__add__`).
-    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    ///
+    /// `self_id` is this value's own heap id, which types whose operator walks
+    /// their entries need (`Counter`'s algebra cannot hold a `HeapRead` across
+    /// the `&mut VM` each count comparison takes). Most implementations ignore it.
+    fn py_add_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -266,7 +318,8 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python subtraction (`__sub__`).
-    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
+    fn py_sub_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -336,7 +389,8 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python bitwise AND (`__and__`).
-    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
+    fn py_and_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -346,7 +400,8 @@ pub(crate) trait PyTrait<'h> {
     }
 
     /// One-sided implementation of Python bitwise OR (`__or__`).
-    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    /// `self_id` carries this value's heap id, as for [`py_add_impl`](Self::py_add_impl).
+    fn py_or_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         Ok(None)
     }
 
@@ -389,14 +444,27 @@ pub(crate) trait PyTrait<'h> {
     ///
     /// # Returns
     ///
-    /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported,
-    /// or `Err(ResourceError)` if allocation fails.
-    fn py_iadd_impl(
-        &mut self,
-        _other: &Value,
-        _vm: &mut VM<'h>,
-        _self_id: Option<HeapId>,
-    ) -> Result<bool, ResourceError> {
+    /// Returns `Ok(true)` if the operation was successful, `Ok(false)` if not supported
+    /// (the VM then falls back to `py_add`), or `Err` if the operation raised — including
+    /// types whose `+=` is `extend` (e.g. `deque`), which raise `TypeError` from the
+    /// iterator protocol rather than a `ResourceError`.
+    fn py_iadd_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        Ok(false)
+    }
+
+    /// Python in-place subtraction (`__isub__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s
+    /// contract: `Ok(true)` mutated `self` in place, `Ok(false)` falls back to binary `-`.
+    fn py_isub_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        Ok(false)
+    }
+
+    /// Python in-place bitwise AND (`__iand__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
+    fn py_iand_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
+        Ok(false)
+    }
+
+    /// Python in-place bitwise OR (`__ior__`), with [`py_iadd_impl`](Self::py_iadd_impl)'s contract.
+    fn py_ior_impl(&mut self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<bool> {
         Ok(false)
     }
 

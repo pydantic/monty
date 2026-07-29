@@ -17,10 +17,15 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError},
     function::Function,
-    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId},
+    heap::{ContainsHeap, DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     heap_data::CellValue,
     intern::{FunctionId, StaticStrings, StringId},
-    types::{Dict, Instance, PyTrait, Type, bytes::call_bytes_method, instance::class_name, str::call_str_method},
+    modules::dataclasses,
+    os_dispatch::PendingOsEffect,
+    types::{
+        Dict, Instance, PyTrait, Type, bytes::call_bytes_method, construct_namedtuple, instance::class_name,
+        str::call_str_method,
+    },
     value::{EitherStr, Value},
 };
 
@@ -59,23 +64,19 @@ pub(crate) enum CallResult {
     /// Used by `asyncio.run()` to execute a coroutine without an explicit `await`.
     /// The VM will push the value onto the stack and execute `exec_get_awaitable`.
     AwaitValue(Value),
-    /// OS call whose result must be stored into a heap [`OpenFile`](crate::types::OpenFile)'s
-    /// buffer rather than pushed onto the operand stack.
+    /// OS call whose result must be post-processed on resume via a
+    /// [`PendingOsEffect`] instead of being pushed onto the operand stack raw.
     ///
-    /// Used by `read(N)` / `readline()` / `readlines()` / `seek()` on the first
-    /// operation that needs the full file content. The host services the OS
-    /// call (always `ReadText` or `ReadBytes` against the file referenced by
-    /// `file_id`); on resume the VM stores the returned content into
-    /// `OpenFile::buffer` and then consumes the file's `pending_read`
-    /// [`ReadSpec`](crate::types::ReadSpec) to compute the slice that becomes
-    /// the call's return value.
-    ///
-    /// The OS-call payload is a [`OsFunctionCall::ReadText`] /
-    /// [`OsFunctionCall::ReadBytes`] (the only legal variants here) carrying
-    /// the file's virtual path; the per-call slice spec lives on the
-    /// `OpenFile` itself (in `pending_read`), so this variant only needs to
-    /// carry the typed call plus the file id used to look up the buffer slot.
-    OsCallStoreBuffer { call: OsFunctionCall, file_id: HeapId },
+    /// Used by buffered file reads (`BufferStore`), buffered writes
+    /// (`WritePosition`), and `os.listdir` (`ListdirNames`). Carrying the
+    /// effect *in* the result — armed on the VM only at dispatch — guarantees
+    /// a call that is rejected and dropped without dispatch (e.g. inside a
+    /// synchronous nested-call context, see `unsupported_call_result`) cannot
+    /// leave a stale effect behind to corrupt the next OS call's resume.
+    OsCallWithEffect {
+        call: OsFunctionCall,
+        effect: PendingOsEffect,
+    },
 }
 
 impl<C: ContainsHeap> DropWithContext<C> for CallResult {
@@ -87,12 +88,14 @@ impl<C: ContainsHeap> DropWithContext<C> for CallResult {
             }
             Self::OsCall(call) => call.drop_with(heap),
             Self::FramePushed => {}
-            Self::OsCallStoreBuffer { call, file_id } => {
+            Self::OsCallWithEffect { call, effect } => {
                 call.drop_with(heap);
-                // Single pin (see `inc_ref_for_pending_oscall`): release one ref
-                // if the call is discarded before dispatch routes it to a
-                // `pending_file_effect`.
-                heap.heap_mut().dec_ref(file_id);
+                // Single pin (see `inc_ref_for_pending_oscall`): release one
+                // ref if the call is discarded before dispatch arms the
+                // effect on `pending_os_effect`.
+                if let Some(file_id) = effect.pinned_file() {
+                    heap.heap_mut().dec_ref(file_id);
+                }
             }
         }
     }
@@ -426,7 +429,7 @@ impl VM<'_> {
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 function_call.name()
             )),
-            CallResult::OsCallStoreBuffer { call, .. } => ExcType::not_implemented(format!(
+            CallResult::OsCallWithEffect { call, .. } => ExcType::not_implemented(format!(
                 "{ctx}: OS function '{}' is not yet supported in this context",
                 call.name()
             )),
@@ -511,6 +514,10 @@ impl VM<'_> {
 
         let (func_id, cells, defaults) = match self.heap.get(heap_id) {
             HeapData::Class(_) => return self.instantiate_class(heap_id, args),
+            // Calling a namedtuple class constructs a `NamedTuple` instance.
+            HeapData::NamedTupleClass(_) => {
+                return construct_namedtuple(heap_id, self, args).map(CallResult::Value);
+            }
             HeapData::BoundMethod(bm) => {
                 let instance = bm.instance.clone_with_heap(self);
                 let func = bm.func.clone_with_heap(self);
@@ -959,15 +966,22 @@ impl VM<'_> {
         };
 
         match init {
+            // A dataclass with no user-defined `__init__` binds its fields
+            // natively off `__dataclass_fields__`, with no generated bytecode.
+            // The read hands it the class it already knows this is, and the
+            // instance's own reference keeps that class alive throughout.
+            None if dataclasses::is_dataclass_class(class_id, self) => {
+                let HeapReadOutput::Class(class) = self.heap.read(class_id) else {
+                    unreachable!("instantiate_class is only reached with a class")
+                };
+                dataclasses::dataclass_init(self, &class, Value::Ref(instance_id), args)
+            }
+            None if matches!(args, ArgValues::Empty) => Ok(CallResult::Value(Value::Ref(instance_id))),
             None => {
-                if matches!(args, ArgValues::Empty) {
-                    Ok(CallResult::Value(Value::Ref(instance_id)))
-                } else {
-                    args.drop_with(self);
-                    let name = class_name(class_id, self.heap, self.interns);
-                    Value::Ref(instance_id).drop_with(self);
-                    Err(ExcType::type_error(format!("{name}() takes no arguments")))
-                }
+                args.drop_with(self);
+                let name = class_name(class_id, self.heap, self.interns);
+                Value::Ref(instance_id).drop_with(self);
+                Err(ExcType::type_error(format!("{name}() takes no arguments")))
             }
             Some(init_func) => {
                 let this = self;

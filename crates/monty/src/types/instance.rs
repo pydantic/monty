@@ -6,13 +6,14 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop,
-    exception_private::{ExcType, ExcTypeExt, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
         BorrowedHeapReadMut, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
+    modules::dataclasses,
     types::allocate_string,
     value::{EitherStr, Value},
 };
@@ -77,6 +78,12 @@ impl<'h> HeapRead<'h, Instance> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
+    /// The class's `__contains__`, or `None` when it defines none — `in` then
+    /// falls back to iteration, matching CPython's `sq_contains` before `tp_iter`.
+    fn py_contains_impl(&self, self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        instance_contains(self_id, item, vm)
+    }
+
     fn py_type(&self, vm: &VM<'h>) -> Type {
         Type::Instance(self.get(vm.heap).class)
     }
@@ -87,35 +94,48 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<bool>> {
         let self_id = self_id.expect("instance equality requires its heap ID");
-        if let Some(result) = instance_eq(self_id, other, vm)? {
-            let is_equal = result.py_bool(vm);
-            result.drop_with(vm);
-            is_equal.map(Some)
+        if let Some(result) = instance_user_eq(self_id, other, vm)? {
+            defer_drop!(result, vm);
+            if result.is_not_implemented() {
+                Ok(None)
+            } else {
+                Ok(Some(result.py_bool(vm)?))
+            }
         } else {
-            Ok(None)
+            instance_dataclass_eq(self_id, other, vm)
         }
     }
 
+    /// Hashes an instance, following CPython's precedence.
+    ///
+    /// A user `__hash__` wins; `__hash__ = None` is the explicit unhashable
+    /// opt-out. Failing that, a class defining `__eq__` is unhashable — CPython
+    /// sets `__hash__ = None` implicitly whenever `__eq__` is defined — as is a
+    /// default `@dataclass` (`eq=True, frozen=False`). Everything else hashes by
+    /// identity.
     fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
-        let class_id = self.get(vm.heap).class;
-        if class_has_member(class_id, "__eq__", vm) {
-            // User `__hash__` dispatch is not supported, so defining equality
-            // implicitly makes the class unhashable as it does in CPython.
+        let class_id = self.get(vm.heap).class();
+        if class_defines(class_id, "__hash__", vm) {
+            if class_defines_not_none(class_id, "__hash__", vm) {
+                instance_user_hash(self_id, vm)
+            } else {
+                Ok(None)
+            }
+        } else if class_defines(class_id, "__eq__", vm) || dataclasses::is_dataclass_class(class_id, vm) {
             Ok(None)
         } else {
             Ok(Some(identity_hash(self_id)))
         }
     }
 
-    /// Heap-level `repr` fallback.
+    /// The best-effort `<ClassName object>` default, never the real `repr`.
     ///
-    /// Real `repr()`/`str()` (including dispatch to a user `__repr__`/`__str__`)
-    /// is handled at the `Value` level — see [`instance_repr`] / [`instance_str`] —
-    /// because it needs the instance's `HeapId` to pass `self`, which this method
-    /// does not receive. This produces a best-effort default and is essentially
-    /// never reached.
+    /// Every form that distinguishes instances needs the `HeapId` to pass `self`,
+    /// so all of it lives in [`instance_repr_fmt`], which `Value::py_repr_fmt`
+    /// routes every instance through; this is only the floor under a heap-level
+    /// `repr` reached without a `Value`.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
-        let class_id = self.get(vm.heap).class;
+        let class_id = self.get(vm.heap).class();
         Ok(write!(f, "<{} object>", class_name(class_id, vm.heap, vm.interns))?)
     }
 
@@ -358,39 +378,10 @@ impl HeapItem for BoundMethod {
 /// `HeapId`.
 pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_>) -> RunResult<CallResult> {
     let attr_str = attr.as_str(vm.interns);
-
-    // 1. Instance dict.
-    if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
-        && let Some(value) = inst
-            .get(vm.heap)
-            .attrs
-            .get_by_str(attr_str, vm.heap, vm.interns)
-            .map(|v| v.clone_with_heap(vm.heap))
-    {
-        return Ok(CallResult::Value(value));
-    }
-
-    // 2. Class namespace: bind methods, return class variables as-is.
-    let class_id = instance_class(self_id, vm);
-    if let Some(member) = class_member(class_id, attr_str, vm) {
-        if is_method_value(&member, vm) {
-            vm.heap.inc_ref(self_id);
-            let bound = BoundMethod {
-                instance: Value::Ref(self_id),
-                func: member,
-            };
-            let id = vm.heap.allocate(HeapData::BoundMethod(bound))?;
-            Ok(CallResult::Value(Value::Ref(id)))
-        } else {
-            Ok(CallResult::Value(member))
-        }
-    } else if attr_str == "__class__" {
-        // 3. `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
-        // Checked after the dict/namespace lookups so an explicit member of the
-        // same name wins, mirroring the `__name__` handling on class objects.
-        vm.heap.inc_ref(class_id);
-        Ok(CallResult::Value(Value::Ref(class_id)))
+    if let Some(value) = instance_attr(self_id, attr_str, vm)? {
+        Ok(CallResult::Value(value))
     } else {
+        let class_id = instance_class(self_id, vm);
         Err(ExcType::attribute_error(
             class_name(class_id, vm.heap, vm.interns),
             attr_str,
@@ -398,42 +389,80 @@ pub(crate) fn instance_getattr(self_id: HeapId, attr: &EitherStr, vm: &mut VM<'_
     }
 }
 
-/// Compares an instance by dispatching to a user `__eq__` if the class defines one.
+/// The lookup half of [`instance_getattr`]: the instance `__dict__`, then the
+/// class namespace, then the `__class__` special case; `None` when nothing binds
+/// `attr`, leaving the `AttributeError` to the caller.
 ///
-/// Returns the user's value unchanged, except that `NotImplemented` becomes
-/// `None` so rich comparison can try the reflected operand.
-pub(crate) fn instance_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+/// Split out so the synthesized dataclass `__repr__`/`__eq__` read their fields
+/// exactly as `self.field` does, binding a function-valued class member as a
+/// [`BoundMethod`] — which is why this allocates, and so is fallible.
+pub(crate) fn instance_attr(self_id: HeapId, attr: &str, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    if let HeapReadOutput::Instance(inst) = vm.heap.read(self_id)
+        && let Some(value) = inst
+            .get(vm.heap)
+            .attrs
+            .get_by_str(attr, vm.heap, vm.interns)
+            .map(|v| v.clone_with_heap(vm.heap))
+    {
+        return Ok(Some(value));
+    }
     let class_id = instance_class(self_id, vm);
-    let Some(func) = class_member(class_id, "__eq__", vm) else {
-        return Ok(None);
-    };
-    defer_drop!(func, vm);
-
-    let args = if is_method_value(func, vm) {
-        vm.heap.inc_ref(self_id);
-        vec![Value::Ref(self_id), other.clone_with_heap(vm.heap)]
-    } else {
-        vec![other.clone_with_heap(vm.heap)]
-    };
-    let args = ArgValues::ArgsKargs {
-        args,
-        kwargs: KwargsValues::Empty,
-    };
-    let result = vm.evaluate_function("__eq__", func, args)?;
-    if result.is_not_implemented() {
-        result.drop_with(vm);
-        Ok(None)
-    } else {
-        Ok(Some(result))
+    match class_member(class_id, attr, vm) {
+        // A class variable is returned as-is; a function binds `self`.
+        Some(member) if is_method_value(&member, vm) => {
+            vm.heap.inc_ref(self_id);
+            let bound = BoundMethod {
+                instance: Value::Ref(self_id),
+                func: member,
+            };
+            Ok(Some(Value::Ref(vm.heap.allocate(HeapData::BoundMethod(bound))?)))
+        }
+        Some(member) => Ok(Some(member)),
+        // `obj.__class__` returns the class object itself (`obj.__class__ is Foo`).
+        // Last, so an explicit member of the same name wins, mirroring the
+        // `__name__` handling on class objects.
+        None if attr == "__class__" => {
+            vm.heap.inc_ref(class_id);
+            Ok(Some(Value::Ref(class_id)))
+        }
+        None => Ok(None),
     }
 }
 
 /// Produces `repr(instance)`, dispatching to a user `__repr__` if the class
 /// defines one, otherwise the default `<ClassName object at 0x..>`.
 pub(crate) fn instance_repr(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Value> {
-    match instance_call_str_dunder(self_id, "__repr__", vm)? {
-        Some(s) => Ok(s),
-        None => Ok(allocate_string(default_repr(self_id, vm), vm.heap)?),
+    // Top of a repr, so the cycle set starts empty.
+    let mut s = String::new();
+    let mut heap_ids = LazyHeapSet::default();
+    instance_repr_fmt(self_id, &mut s, vm, &mut heap_ids)?;
+    Ok(allocate_string(s, vm.heap)?)
+}
+
+/// Writes an instance's `repr` into `f`: a user `__repr__` wins, then the
+/// synthesized dataclass form, then the `<Foo object at 0x..>` default.
+///
+/// The dataclass form registers the instance in the *caller's* `heap_ids` for
+/// its duration, so a field pointing back renders `...` rather than nesting.
+pub(crate) fn instance_repr_fmt(
+    self_id: HeapId,
+    f: &mut impl Write,
+    vm: &mut VM<'_>,
+    heap_ids: &mut LazyHeapSet,
+) -> RunResult<()> {
+    if let Some(s) = instance_call_str_dunder(self_id, "__repr__", vm)? {
+        defer_drop!(s, vm);
+        return Ok(f.write_str(s.to_str(vm)?)?);
+    }
+    let class_id = instance_class(self_id, vm);
+    match dataclasses::dataclass_fields(class_id, vm) {
+        Some(field_names) => {
+            heap_ids.insert(self_id);
+            let result = dataclasses::dataclass_repr_fmt(self_id, &field_names, f, vm, heap_ids);
+            heap_ids.remove(&self_id);
+            result
+        }
+        None => Ok(f.write_str(&default_repr(self_id, vm))?),
     }
 }
 
@@ -563,7 +592,7 @@ pub(crate) fn instance_defines_iter(self_id: HeapId, vm: &VM<'_>) -> bool {
 /// `__dict__`, matching CPython's lookup for implicit invocations. A slot whose
 /// `None` value opts the class out of the protocol wants
 /// [`class_defines_not_none`] instead.
-fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
+pub(crate) fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
     class_dunder(class_id, dunder, vm).is_some()
 }
 
@@ -574,7 +603,7 @@ fn class_defines(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
 /// same error as an absent one rather than calling it. This is per-slot, not
 /// general — `__next__ = None` keeps the class an iterator (see
 /// [`HeapRead::py_is_iterator`]), so use [`class_defines`] there.
-fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
+pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>) -> bool {
     matches!(class_dunder(class_id, dunder, vm), Some(member) if !matches!(member, Value::None))
 }
 
@@ -607,11 +636,57 @@ fn instance_class(self_id: HeapId, vm: &VM<'_>) -> HeapId {
     }
 }
 
-/// Checks whether a class namespace defines `name` without cloning its value.
-fn class_has_member(class_id: HeapId, name: &str, vm: &VM<'_>) -> bool {
-    match vm.heap.get(class_id) {
-        HeapData::Class(class) => class.namespace().get_by_str(name, vm.heap, vm.interns).is_some(),
-        _ => false,
+/// Dispatches a user-defined `__eq__`, or `Ok(None)` when it is absent.
+///
+/// The user's value is preserved so direct equality can return it unchanged;
+/// callers interpret `NotImplemented` according to their comparison mode.
+pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
+    if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
+        return Ok(None);
+    }
+    let class_id = instance_class(self_id, vm);
+    if !class_defines(class_id, "__eq__", vm) {
+        return Ok(None);
+    }
+    let other = other.clone_with_heap(vm.heap);
+    instance_call_dunder_sync(self_id, "__eq__", Some(other), vm)
+}
+
+/// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
+/// `Ok(None)` when `self_id` is not one, which leaves the caller on identity.
+///
+/// Not in `HeapRead<Instance>::py_eq_impl` because fields are read as
+/// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
+pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
+    if !matches!(vm.heap.get(self_id), HeapData::Instance(_)) {
+        return Ok(None);
+    }
+    let class_id = instance_class(self_id, vm);
+    match dataclasses::dataclass_fields(class_id, vm) {
+        None => Ok(None),
+        Some(field_names) => dataclasses::dataclass_eq(self_id, &field_names, other, vm),
+    }
+}
+
+/// Dispatches a user-defined `__hash__`, enforcing CPython's integer-return
+/// contract. Only reached once the class is known to define a non-`None`
+/// `__hash__`, so an absent member is an internal error.
+fn instance_user_hash(self_id: HeapId, vm: &mut VM<'_>) -> RunResult<Option<HashValue>> {
+    let Some(result) = instance_call_dunder_sync(self_id, "__hash__", None, vm)? else {
+        return Err(RunError::internal(
+            "instance_user_hash: __hash__ vanished from the class",
+        ));
+    };
+    defer_drop!(result, vm);
+    // CPython accepts any int (bool included, as an int subclass) and rejects
+    // everything else before the value is ever used as a hash.
+    if matches!(result.py_type(vm), Type::Int | Type::Bool) {
+        result.py_hash(vm)
+    } else {
+        Err(ExcType::type_error(format!(
+            "__hash__ method should return an integer, not {}",
+            result.py_type_name(vm)
+        )))
     }
 }
 

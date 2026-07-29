@@ -18,7 +18,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
     types::{
         Dict, LazyHeapSet, PyTrait, Type, allocate_tuple,
@@ -454,18 +454,12 @@ fn call_group<'h>(m: &HeapRead<'h, ReMatch>, args: ArgValues, vm: &mut VM<'h>) -
         other => {
             let pos = other.into_pos_only("re.Match.group", vm.heap)?;
             defer_drop_mut!(pos, vm);
-            let mut elements = smallvec::smallvec![];
+            let mut elements_guard = DropGuard::new(smallvec::smallvec![], vm);
+            let (elements, vm) = elements_guard.as_parts_mut();
             for val in pos.as_slice() {
-                let result = resolve_group_arg(m.get(vm.heap), val, vm);
-                if result.is_err() {
-                    // Drop already-allocated elements
-                    for elem in elements {
-                        Value::drop_with(elem, vm);
-                    }
-                    return result;
-                }
-                elements.push(result?);
+                elements.push(resolve_group_arg(m.get(vm.heap), val, vm)?);
             }
+            let (elements, vm) = elements_guard.into_parts();
             Ok(allocate_tuple(elements, vm.heap)?)
         }
     }

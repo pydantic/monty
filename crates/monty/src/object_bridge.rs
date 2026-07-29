@@ -263,7 +263,9 @@ impl MontyObjectExt for MontyObject {
                 if visited.contains(id) {
                     // Cycle detected - return appropriate placeholder
                     return match vm.heap.get(*id) {
-                        HeapData::List(_) => Self::Cycle(id.index(), "[...]".to_owned()),
+                        // A deque exports as a list, so it takes a list's placeholder
+                        // (as its repr does too).
+                        HeapData::List(_) | HeapData::Deque(_) => Self::Cycle(id.index(), "[...]".to_owned()),
                         HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(id.index(), "(...)".to_owned()),
                         HeapData::Dict(_) => Self::Cycle(id.index(), "{...}".to_owned()),
                         _ => Self::Cycle(id.index(), "...".to_owned()),
@@ -281,6 +283,22 @@ impl MontyObjectExt for MontyObject {
                         let children: Vec<Value> = list
                             .get(vm.heap)
                             .as_slice()
+                            .iter()
+                            .map(|item| item.clone_with_heap(vm.heap))
+                            .collect();
+                        defer_drop!(children, vm);
+                        Self::List(values_to_objects(children, vm, visited))
+                    }
+                    // A deque exports as a host list: there is no host-side deque
+                    // *value* type, so it degrades to the nearest structural one
+                    // rather than to a repr string, matching how defaultdict and
+                    // Counter degrade to `dict`. `maxlen` does not survive, and the
+                    // host cannot round-trip it back into a deque.
+                    HeapReadOutput::Deque(deque) => {
+                        // Snapshot before recursing: a deque is mutable, so a nested
+                        // `__repr__` may shorten it and invalidate index-based access.
+                        let children: Vec<Value> = deque
+                            .get(vm.heap)
                             .iter()
                             .map(|item| item.clone_with_heap(vm.heap))
                             .collect();
@@ -447,6 +465,11 @@ impl MontyObjectExt for MontyObject {
                     HeapReadOutput::DictValueIterator(_) => Self::Repr("<dict_valueiterator object>".to_owned()),
                     HeapReadOutput::SetIterator(_) => Self::Repr("<set_iterator object>".to_owned()),
                     HeapReadOutput::CallableIterator(_) => Self::Repr("<callable_iterator object>".to_owned()),
+                    // A placeholder despite the real in-sandbox repr (`count(0)`),
+                    // which would recurse into `repeat`'s arbitrary object.
+                    HeapReadOutput::Itertools(iter) => {
+                        Self::Repr(format!("<{} object>", iter.py_type(vm).name(vm.heap, vm.interns)))
+                    }
                     HeapReadOutput::LongInt(li) => Self::BigInt(li.get(vm.heap).inner().clone()),
                     HeapReadOutput::Module(m) => {
                         Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.get(vm.heap).name())))
@@ -531,6 +554,7 @@ impl MontyTypeExt for MontyType {
             Self::Str => Some(Type::Str),
             Self::Bytes => Some(Type::Bytes),
             Self::List => Some(Type::List),
+            Self::Deque => Some(Type::Deque),
             Self::ListIterator => Some(Type::ListIterator),
             Self::TupleIterator => Some(Type::TupleIterator),
             Self::StrAsciiIterator => Some(Type::StrAsciiIterator),
@@ -542,6 +566,8 @@ impl MontyTypeExt for MontyType {
             Self::DictValueIterator => Some(Type::DictValueIterator),
             Self::SetIterator => Some(Type::SetIterator),
             Self::CallableIterator => Some(Type::CallableIterator),
+            Self::ItertoolsCount => Some(Type::ItertoolsCount),
+            Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Dict => Some(Type::Dict),
@@ -568,6 +594,7 @@ impl MontyTypeExt for MontyType {
             Self::Property => Some(Type::Property),
             Self::RePattern => Some(Type::RePattern),
             Self::ReMatch => Some(Type::ReMatch),
+            Self::Field => Some(Type::DataclassField),
         }
     }
 
@@ -596,6 +623,10 @@ impl MontyTypeExt for MontyType {
             Type::Str => Self::Str,
             Type::Bytes => Self::Bytes,
             Type::List => Self::List,
+            Type::Deque => Self::Deque,
+            // No dedicated host-side deque-iterator type; it crosses as the
+            // generic `iterator`, like any iterator without a MontyType variant.
+            Type::DequeIterator => Self::Iterator,
             Type::ListIterator => Self::ListIterator,
             Type::TupleIterator => Self::TupleIterator,
             Type::StrAsciiIterator => Self::StrAsciiIterator,
@@ -607,9 +638,14 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::ItertoolsCount => Self::ItertoolsCount,
+            Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Dict => Self::Dict,
+            // No host-side defaultdict/Counter type; both degrade to `dict`,
+            // consistent with their values crossing as `MontyObject::Dict`.
+            Type::DefaultDict | Type::Counter => Self::Dict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
             Type::DictValues => Self::DictValues,
@@ -633,6 +669,7 @@ impl MontyTypeExt for MontyType {
             Type::Property => Self::Property,
             Type::RePattern => Self::RePattern,
             Type::ReMatch => Self::ReMatch,
+            Type::DataclassField => Self::Field,
         }
     }
 

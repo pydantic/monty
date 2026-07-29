@@ -18,6 +18,7 @@ use std::{
         Arc, Mutex, MutexGuard, Once, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -83,17 +84,19 @@ impl WebSocketWorker {
     /// Sends one event as a single binary WebSocket message (no length prefix), and
     /// flushes — the protocol is strict alternation, so the frame must hit the wire.
     fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+        // encode first: an oversize frame must be rejected before any I/O so the
+        // worker stays synced (see `request_turn`)
         let body = encode_to_capped_vec(request)?;
         self.socket
             .write(Message::Binary(body.into()))
             .map_err(ws_to_frame_error)?;
-        self.socket.flush().map_err(ws_to_frame_error)?;
-        Ok(())
+        self.socket.flush().map_err(ws_to_frame_error)
     }
 
     /// Reads one `ChildEvent` from the WebSocket, skipping control frames. A
-    /// close/EOF *without* a prior turn-ender means the child died — surfaced as
-    /// [`FrameError::Truncated`], mirroring the stdio crash contract.
+    /// close/EOF *without* a prior turn-ender means the remote worker is gone —
+    /// surfaced as [`FrameError::Truncated`], which the checkout classifies as
+    /// [`crate::PoolError::Disconnected`].
     fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         loop {
             match self.socket.read() {
@@ -253,6 +256,30 @@ impl Worker {
         }
     }
 
+    /// Reaps a child that is already on its way out, falling back to
+    /// [`Self::kill_and_reap`] if it has not gone within `grace`.
+    ///
+    /// For deaths the child *announces* before exiting — a `FatalError`, where
+    /// it deliberately sets an exit code — killing it immediately would race
+    /// its own exit and report the signal instead of that code, losing the one
+    /// diagnostic the announcement was made to carry. Polling rather than
+    /// blocking on `wait`, which has no timeout, keeps a wedged child from
+    /// hanging the caller.
+    pub(crate) fn reap_or_kill(&mut self, grace: Duration) -> Option<ExitStatus> {
+        if let WorkerKind::Subprocess(w) = &self.kind {
+            let start = Instant::now();
+            loop {
+                if let Ok(Some(status)) = lock_ignore_poison(&w.child).try_wait() {
+                    return Some(status);
+                } else if start.elapsed() >= grace {
+                    break;
+                }
+                thread::sleep(REAP_POLL_INTERVAL);
+            }
+        }
+        self.kill_and_reap()
+    }
+
     /// Tears the worker down (kills the child / closes the socket) and reaps it,
     /// returning the process exit status when there is one.
     pub(crate) fn kill_and_reap(&mut self) -> Option<ExitStatus> {
@@ -291,6 +318,11 @@ fn ws_to_frame_error(err: WsError) -> FrameError {
         _ => FrameError::Truncated,
     }
 }
+
+/// How often [`Worker::reap_or_kill`] checks whether the child is gone. Short
+/// enough that a child already exiting (the case it exists for) adds no
+/// noticeable latency to the failing turn.
+const REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
 /// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.

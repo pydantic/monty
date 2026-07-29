@@ -9,11 +9,13 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropWithContext, Heap, HeapData, HeapId},
     intern::{Interns, StaticStrings, StringId},
+    modules::collections,
     types::{
-        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone, Tuple,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, Path, PyTrait, Range, Set, Slice, Str, TimeZone,
+        Tuple,
         bytes::{bytes_fromhex, bytes_repr},
         date, datetime,
-        dict::dict_fromkeys,
+        dict::{DictKind, dict_fromkeys},
         instance::class_name,
         long_int::INT_MAX_STR_DIGITS,
         str::StringRepr,
@@ -68,6 +70,13 @@ pub enum Type {
     Tuple,
     NamedTuple,
     Dict,
+    /// `collections.defaultdict` — a `dict` with a `default_factory` (stored as
+    /// a `DictKind` on the `Dict`, not a separate heap type).
+    #[strum(serialize = "collections.defaultdict")]
+    DefaultDict,
+    /// `collections.Counter` — a `dict` subclass (also a `DictKind`).
+    #[strum(serialize = "Counter")]
+    Counter,
     #[strum(serialize = "dict_keys")]
     DictKeys,
     #[strum(serialize = "dict_items")]
@@ -158,6 +167,22 @@ pub enum Type {
     DictValueIterator,
     #[strum(serialize = "set_iterator")]
     SetIterator,
+    #[strum(serialize = "itertools.count")]
+    ItertoolsCount,
+    #[strum(serialize = "itertools.repeat")]
+    ItertoolsRepeat,
+    /// A `dataclasses.Field` from a class's `__dataclass_fields__` — displays
+    /// as "Field", the name CPython's `Field.__name__` reports.
+    #[strum(serialize = "Field")]
+    DataclassField,
+    /// `collections.deque` — qualified like `datetime.datetime`/`re.Pattern` so
+    /// the name matches CPython's `repr` and error messages; only `__name__`
+    /// diverges from CPython's bare `'deque'`. See `limitations/collections.md`.
+    #[strum(serialize = "collections.deque")]
+    Deque,
+    /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
+    #[strum(serialize = "_collections._deque_iterator")]
+    DequeIterator,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -278,6 +303,7 @@ impl Type {
         matches!(
             self,
             Self::ListIterator
+                | Self::DequeIterator
                 | Self::TupleIterator
                 | Self::StrAsciiIterator
                 | Self::StrIterator
@@ -288,6 +314,8 @@ impl Type {
                 | Self::DictValueIterator
                 | Self::SetIterator
                 | Self::CallableIterator
+                | Self::ItertoolsCount
+                | Self::ItertoolsRepeat
         )
     }
 
@@ -305,6 +333,12 @@ impl Type {
             true
         } else if self == Self::DateTime && other == Self::Date {
             // datetime is a subtype of date in Python
+            true
+        } else if (self == Self::DefaultDict || self == Self::Counter) && other == Self::Dict {
+            // collections.defaultdict and collections.Counter subclass dict
+            true
+        } else if self == Self::NamedTuple && other == Self::Tuple {
+            // a namedtuple class is generated as a tuple subclass
             true
         } else {
             false
@@ -370,7 +404,20 @@ impl Type {
         vm: &mut VM<'_>,
     ) -> RunResult<AttrCallResult> {
         match (self, method_id) {
-            (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
+            // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
+            (Self::Dict, m) if m == StaticStrings::Fromkeys => {
+                dict_fromkeys(args, DictKind::Plain, vm).map(AttrCallResult::Value)
+            }
+            // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
+            // factory — matching CPython's inherited `dict.fromkeys` classmethod.
+            (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
+                dict_fromkeys(args, DictKind::Default(None), vm).map(AttrCallResult::Value)
+            }
+            // Counter deliberately disables the inherited classmethod.
+            (Self::Counter, m) if m == StaticStrings::Fromkeys => {
+                args.drop_with(vm);
+                Err(ExcType::not_implemented("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.").into())
+            }
             (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
             (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
@@ -399,8 +446,11 @@ impl Type {
         match self {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
+            Self::Deque => Deque::init(vm, args),
             Self::Tuple => Tuple::init(vm, args),
             Self::Dict => Dict::init(vm, args),
+            Self::DefaultDict => collections::defaultdict_init(vm, args),
+            Self::Counter => collections::counter_init(vm, args),
             Self::Set => Set::init(vm, args),
             Self::FrozenSet => FrozenSet::init(vm, args),
             Self::Str => Str::init(vm, args),
@@ -582,18 +632,14 @@ fn int_convert(x: &Value, vm: &mut VM<'_>) -> RunResult<Value> {
 /// lands in the range error, not `OverflowError`; non-integers raise
 /// `TypeError` before the range is checked.
 fn int_base(base: Value, vm: &mut VM<'_>) -> RunResult<u32> {
-    let n = match &base {
+    defer_drop!(base, vm);
+    let n = match base {
         Value::Bool(b) => i64::from(*b),
         Value::Int(i) => *i,
         // Clamped by PyNumber_AsSsize_t: any i64-overflowing int is out of range.
-        _ if is_long_int(&base, vm) => i64::MAX,
-        _ => {
-            let err = ExcType::type_error_not_integer(&base.py_type_name(vm));
-            base.drop_with(vm);
-            return Err(err);
-        }
+        _ if is_long_int(base, vm) => i64::MAX,
+        _ => return Err(ExcType::type_error_not_integer(&base.py_type_name(vm))),
     };
-    base.drop_with(vm);
     match u32::try_from(n) {
         Ok(0) => Ok(0),
         Ok(b @ 2..=36) => Ok(b),

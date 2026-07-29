@@ -289,6 +289,115 @@ fn limited_tracker_roundtrip_preserves_memory_limit() {
 }
 
 #[test]
+fn counter_elements_huge_count_is_bounded() {
+    // `Counter.elements()` must pre-check the total against the memory limit, so a
+    // huge count can't build an untracked, multi-exabyte Rust Vec. Regression for
+    // the missing `check_repeat_size` guard in `counter_elements`.
+    let code = r"
+from collections import Counter
+c = Counter()
+c['a'] = 10**18
+c.elements()
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "elements() with a 10**18 count should exceed the memory limit"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn bounded_deque_repeat_huge_maxlen_is_bounded() {
+    // `deque(maxlen=N) * count` keeps only the surviving `min(len*count, N)`
+    // suffix, but that suffix is still attacker-sized when `maxlen` is huge. It
+    // must be pre-checked against the memory limit, not allocated and filled
+    // first. Regression for the missing `check_repeat_size` / `check_time` guard
+    // in the bounded branch of `repeat_deque`.
+    let code = r"
+from collections import deque
+deque([1, 2, 3], maxlen=10**9) * 10**9
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "a bounded deque repeat whose surviving suffix exceeds the memory limit should raise"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn bounded_deque_appends_do_not_leak_the_memory_counter() {
+    // A `maxlen` deque evicts as it appends, so its size never grows past the
+    // bound. `append` charges the tracker for the new slot, so the eviction on
+    // the same call must hand that charge back — otherwise the counter climbs
+    // without bound and a 3-element ring buffer eventually raises MemoryError,
+    // which would break the headline use case for `maxlen`.
+    //
+    // Note this is specifically about *automatic* eviction. Explicit removal
+    // (`pop`, `remove`, ...) does not shrink the counter for any container in
+    // Monty, which is pre-existing repo-wide behaviour and out of scope here.
+    let code = r"
+from collections import deque
+d = deque(maxlen=3)
+for i in range(200000):
+    d.append(i)
+len(d)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(2_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert_eq!(
+        result.expect("a 3-element bounded deque must not exhaust a 2 MB budget"),
+        MontyObject::Int(3),
+    );
+}
+
+#[test]
+fn namedtuple_field_names_are_charged_to_the_tracker() {
+    // Every namedtuple instance deep-clones its class's `field_names`, which for
+    // factory-made classes are owned `EitherStr::Heap` strings. Sizing them as
+    // `len * size_of::<StringId>()` charges ~8 bytes for what is really an
+    // arbitrarily long string, so a program could hold gigabytes of field-name
+    // copies while the tracker believed it was using kilobytes.
+    //
+    // 20 fields x ~20 KB x 200 instances is ~80 MB of real field-name data,
+    // which must not fit inside a 10 MB budget.
+    let code = r"
+from collections import namedtuple
+names = ['f' + 'x' * 20000 + str(i) for i in range(20)]
+C = namedtuple('C', names)
+rows = []
+for _ in range(200):
+    rows.append(C._make(list(range(20))))
+len(rows)
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "200 instances holding ~80 MB of cloned field names should exceed the 10 MB memory limit"
+    );
+    let exc = result.unwrap_err();
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+}
+
+#[test]
 fn time_limit_exceeded() {
     // Create a long-running loop using for + range (while isn't implemented yet)
     // Use a very large range to ensure it runs long enough to hit the time limit
@@ -1456,6 +1565,19 @@ fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
 }
 
+/// Test that a bounded `deque * n` repetition respects the time limit mid-build.
+///
+/// `repeat_deque` clones into a Rust-side loop that polls `check_time()`. Beyond
+/// enforcing the limit, a timeout must release the clones built so far — the
+/// heap-ref element makes a leak observable (it panics under memory-model-checks).
+#[test]
+fn timeout_in_bounded_deque_repeat() {
+    assert_timeout_in_builtin(
+        "from collections import deque\ndeque([[1]], maxlen=10**9) * 10**9",
+        "deque(maxlen=10**9) * 10**9",
+    );
+}
+
 /// Test that `sorted(range(huge))` respects the time limit.
 ///
 /// `sorted()` first collects items via `for_next()`, then sorts. The collection
@@ -2546,4 +2668,66 @@ for _v in Spin():
 
     let exc = result.expect_err("the time limit must terminate the run");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
+
+/// A memory limit hit part-way through `dataclass()` must release everything
+/// the decorator has built, not leak the `Field`s it has already allocated.
+///
+/// The class is defined in its own REPL turn with the budget untouched, then
+/// all but `slack` bytes of that budget are reserved, so the failure lands
+/// *inside* the decorator: allocate a `Field` per annotation, insert it into
+/// the `__dataclass_fields__` mapping, bind the mapping to the class. Under
+/// `memory-model-checks` a `Ref` nothing released panics when dropped, which is
+/// what makes this a leak test; without the feature it still pins that a budget
+/// exhausted mid-decoration surfaces as `MemoryError`.
+#[test]
+fn dataclass_decoration_releases_fields_on_memory_limit() {
+    const DEFINE: &str = "from dataclasses import dataclass\n\nclass Point:\n    x: int\n    y: int = 5";
+    const DECORATE: &str = "Point = dataclass(Point)";
+    const BUDGET: usize = 1 << 20;
+
+    // Defines the class, then leaves the decorator only `slack` bytes to run in.
+    let decorate_with_slack = |slack: usize| {
+        let limits = ResourceLimits::default().max_memory(BUDGET);
+        let mut repl = MontyRepl::new("repl.py", ResourceTracker::new(limits), CompileOptions::default());
+        repl.feed_run(DEFINE, vec![], PrintWriter::Stdout)
+            .expect("the class definition runs against the whole budget");
+        let reserve = BUDGET - repl.tracker().current_memory() - slack;
+        repl.tracker().on_grow(|| reserve).expect("the slack is within budget");
+        repl.feed_run(DECORATE, vec![], PrintWriter::Stdout)
+    };
+
+    // No slack at all cannot allocate the first `Field`; the untouched budget can.
+    let exc = decorate_with_slack(0).expect_err("decoration must need memory");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(decorate_with_slack(BUDGET / 2).unwrap(), MontyObject::None);
+
+    // Every slack in between aborts at some point inside the decorator.
+    for slack in 1..512 {
+        if let Err(exc) = decorate_with_slack(slack) {
+            assert_eq!(exc.exc_type(), ExcType::MemoryError, "slack={slack}: {exc}");
+        }
+    }
+}
+
+#[test]
+fn namedtuple_repetition_is_bounded() {
+    // Repeating a named tuple materializes a fresh plain tuple, so it is an
+    // amplification path in exactly the way `tuple * n` is: the result must be
+    // pre-checked against the memory limit rather than built and charged after.
+    let code = r"
+from collections import namedtuple
+P = namedtuple('P', 'a b c')
+P(1, 2, 3) * 10**9
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(
+        result.is_err(),
+        "repeating a namedtuple 10**9 times should exceed the memory limit"
+    );
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
 }

@@ -61,6 +61,7 @@ fn is_reversible(value: &Value, vm: &VM<'_>) -> bool {
             HeapData::List(_)
                 | HeapData::Tuple(_)
                 | HeapData::NamedTuple(_)
+                | HeapData::Deque(_)
                 | HeapData::Str(_)
                 | HeapData::Bytes(_)
                 | HeapData::Range(_)

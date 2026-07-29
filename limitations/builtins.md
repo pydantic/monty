@@ -37,6 +37,19 @@ mechanism beyond dataclass field inheritance.
 
 ## Behavioural divergences
 
+- **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager, not lazy** —
+  each drains its source and returns a `list`, so `type(enumerate(x)).__name__`
+  is `'list'` rather than `'enumerate'`. Observable several ways: a
+  side-effecting callable runs for every item at the call itself rather than as
+  the result is consumed; the whole result is held in memory at once, so an
+  infinite iterator (e.g. `map(f, itertools.count())`) never returns and runs
+  until a resource limit trips; the result can be indexed and re-iterated, which
+  CPython forbids; and mutating the source from inside the loop body is never
+  observed, so containers that detect mutation during iteration (`dict`, `set`,
+  `collections.deque`) will not raise when looped over via one of these. `zip`
+  and multi-iterable `map` stop at the shortest input, so pairing an infinite
+  iterable with a finite or empty one stays bounded. A plain `for x in
+  container` is lazy and does detect mutation. See [itertools.md](itertools.md).
 - **Arity-error wording for some str/bytes methods** — a handful of
   keyword-accepting methods (e.g. `str.split`, `str.rsplit` and the `bytes`
   equivalents) report too-many-arguments as `split expected at most 2

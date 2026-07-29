@@ -83,6 +83,9 @@ jobs:
       - name: Check generated protobuf code is in sync
         run: make check-proto
 
+      - name: Check vendored typeshed stubs are in sync
+        run: make check-typeshed
+
   test-rust:
     runs-on: ubuntu-latest
 

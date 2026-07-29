@@ -74,9 +74,11 @@ use super::{
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
+    defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    os_dispatch::PendingOsEffect,
     types::str::StringRepr,
     value::{EitherStr, Value},
 };
@@ -106,29 +108,6 @@ pub(crate) enum ReadSpec {
     /// bounds and resolve `SEEK_END`. After the load, `compute_slice` updates
     /// `position`/`eof` and returns the new position as an int.
     Seek { offset: i64, whence: i64 },
-}
-
-/// File-specific work to perform when a paused OS call resumes.
-///
-/// This generalizes the original buffered-read hook: both buffered reads and
-/// writes need to update [`OpenFile`] state only after the host reports a
-/// successful OS operation. Keeping them in one enum avoids adding another VM
-/// hook while preserving retry-safe exception behavior.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-pub(crate) enum PendingFileEffect {
-    /// Store a full-file read result into the file buffer, then compute the
-    /// pending read/seek slice.
-    BufferStore { file_id: HeapId },
-    /// Advance the file's logical position by the successful write result.
-    WritePosition {
-        /// File whose position is updated.
-        file_id: HeapId,
-        /// Position before the write was dispatched, used to restore state if
-        /// the host raises before returning a count.
-        previous_position: u64,
-        /// Known file length before dispatch, restored on host exception.
-        previous_length: u64,
-    },
 }
 
 pub use monty_types::FileMode;
@@ -535,7 +514,7 @@ impl<'h> HeapRead<'h, OpenFile> {
     ///
     /// If the buffer is already loaded, computes the slice synchronously.
     /// Otherwise records the spec on the file and yields a
-    /// [`CallResult::OsCallStoreBuffer`] so the host loads the full content
+    /// [`CallResult::OsCallWithEffect`] so the host loads the full content
     /// and the resume hook completes the operation.
     fn read_with_spec(&mut self, self_id: HeapId, vm: &mut VM<'h>, spec: ReadSpec) -> RunResult<CallResult> {
         let (binary, buffer_loaded) = {
@@ -554,7 +533,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         if buffer_loaded {
-            return compute_slice(self_id, spec, vm).map(CallResult::Value);
+            return compute_slice(self, spec, vm).map(CallResult::Value);
         }
 
         // First buffered op: stash spec, yield to host for the full content.
@@ -570,7 +549,10 @@ impl<'h> HeapRead<'h, OpenFile> {
             OsFunctionCall::ReadText(path)
         };
         inc_ref_for_pending_oscall(vm, self_id);
-        Ok(CallResult::OsCallStoreBuffer { call, file_id: self_id })
+        Ok(CallResult::OsCallWithEffect {
+            call,
+            effect: PendingOsEffect::BufferStore { file_id: self_id },
+        })
     }
 
     /// Implements `file.write(data)` as a one-shot OS write or append.
@@ -579,26 +561,22 @@ impl<'h> HeapRead<'h, OpenFile> {
     /// itself, delivered to the host as a `MontyObject::FileHandle`.
     fn write(&mut self, self_id: HeapId, vm: &mut VM<'h>, args: ArgValues) -> RunResult<CallResult> {
         let data = args.get_one_arg("write", vm.heap)?;
+        defer_drop!(data, vm);
         let binary = self.get(vm.heap).mode.is_binary();
-        if let Err(err) = validate_write_data(&data, binary, vm) {
-            data.drop_with(vm);
-            return Err(err);
-        }
-        if let Err(err) = self.get(vm.heap).ensure_open() {
-            data.drop_with(vm);
-            return Err(err);
-        }
+        validate_write_data(data, binary, vm)?;
+        self.get(vm.heap).ensure_open()?;
         let (path, append, binary) = {
-            let file = self.get_mut(vm.heap);
+            let file = self.get(vm.heap);
             if !file.mode.writable() {
                 let message = if file.mode.is_binary() { "write" } else { "not writable" };
-                data.drop_with(vm);
                 return Err(unsupported_operation(message));
             }
+            // `first_write_done` is flipped in `apply_write_position`, only once
+            // the host confirms the write — a rejected or host-failed write must
+            // not turn the next write into an append.
             let append = file.mode.is_append() || file.first_write_done;
             let binary = file.mode.is_binary();
             let path = file.path().to_owned();
-            file.first_write_done = true;
             (path, append, binary)
         };
 
@@ -608,8 +586,7 @@ impl<'h> HeapRead<'h, OpenFile> {
         // bytes vs str.
         let path = MontyPath::new(path);
         let call = if binary {
-            let bytes = extract_bytes_payload(&data, vm).expect("validate_write_data accepted a bytes-shaped value");
-            data.drop_with(vm);
+            let bytes = extract_bytes_payload(data, vm).expect("validate_write_data accepted a bytes-shaped value");
             let args = PathBytesDataArgs { path, data: bytes };
             if append {
                 OsFunctionCall::AppendBytes(args)
@@ -617,8 +594,7 @@ impl<'h> HeapRead<'h, OpenFile> {
                 OsFunctionCall::WriteBytes(args)
             }
         } else {
-            let text = extract_str_payload(&data, vm).expect("validate_write_data accepted a str-shaped value");
-            data.drop_with(vm);
+            let text = extract_str_payload(data, vm).expect("validate_write_data accepted a str-shaped value");
             let args = PathStringDataArgs { path, data: text };
             if append {
                 OsFunctionCall::AppendText(args)
@@ -628,12 +604,14 @@ impl<'h> HeapRead<'h, OpenFile> {
         };
 
         inc_ref_for_pending_oscall(vm, self_id);
-        vm.pending_file_effect = Some(PendingFileEffect::WritePosition {
+        // The effect travels with the call and is armed at dispatch, so a
+        // call rejected before dispatch cannot leave stale write state.
+        let effect = PendingOsEffect::WritePosition {
             file_id: self_id,
             previous_position: self.get(vm.heap).position,
             previous_length: self.get(vm.heap).file_length,
-        });
-        Ok(CallResult::OsCall(call))
+        };
+        Ok(CallResult::OsCallWithEffect { call, effect })
     }
 
     /// Marks the file wrapper as closed and releases the cached read buffer.
@@ -732,67 +710,14 @@ impl OpenFile {
 ///
 /// The buffered read/write OS calls carry only the file's path, never a
 /// `Value::Ref` to the file object, so there is no argument ref to release at
-/// the host boundary. The single pin is owned by the VM's `pending_file_effect`
-/// slot and released by exactly one site per path: [`apply_buffer_store`] /
-/// [`apply_write_position`] (success), `resume_with_exception` (host raised),
-/// `VM::drop` (abandoned), or `CallResult`'s drop (call discarded before
-/// dispatch).
+/// the host boundary. The single pin travels in the returned
+/// `CallResult::OsCallWithEffect` until dispatch arms it on the VM's
+/// `pending_os_effect` slot, and is released by exactly one site per path:
+/// [`apply_buffer_store`] / [`apply_write_position`] (success),
+/// `resume_with_exception` (host raised), `VM::drop` (abandoned), or
+/// `CallResult`'s drop (call discarded before dispatch).
 fn inc_ref_for_pending_oscall(vm: &VM<'_>, file_id: HeapId) {
     vm.heap.inc_ref(file_id);
-}
-
-/// Materialises the host-returned `result` into a heap-resident `HeapId`
-/// suitable for the file's `buffer` slot.
-///
-/// The `OsFunction::ReadText` / `ReadBytes` host boundary returns one of
-/// `MontyObject::String` / `MontyObject::Bytes`, which `to_value` may turn
-/// into an interned `Value::InternString` / `Value::InternBytes` (notably
-/// for empty strings or single-char ASCII) instead of a `Value::Ref`. The
-/// file's `buffer` slot is `Option<HeapId>` and slicing assumes a
-/// heap-resident `Str` / `Bytes`, so interned variants are reallocated
-/// onto the heap here.
-///
-/// `result` is fully consumed: every path runs `drop_with` exactly
-/// once. The two `Value::Ref`-producing arms `inc_ref` the entry they
-/// hand back so the upcoming `drop_with`'s dec_ref balances out and
-/// the returned `HeapId` keeps the refcount it would have had without
-/// the dance. This avoids `mem::forget`, which clippy flags on the
-/// no-Drop release configuration.
-fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId> {
-    // Match by reference: `Value` has a Drop impl under `memory-model-checks`,
-    // so we cannot destructure variants by move.
-    let id = match &result {
-        Value::Ref(id) => {
-            vm.heap.inc_ref(*id);
-            *id
-        }
-        Value::InternString(string_id) => {
-            let s = vm.interns.get_str(*string_id).to_owned();
-            // `allocate_string_no_interning` returns `Value::Ref` with
-            // refcount 1; inc_ref+drop_with below nets to zero and
-            // lets us drop the temporary Value cleanly.
-            let v = allocate_string_no_interning(s, vm.heap)?;
-            let Value::Ref(new_id) = &v else {
-                unreachable!("allocate_string_no_interning returns Value::Ref");
-            };
-            let new_id = *new_id;
-            vm.heap.inc_ref(new_id);
-            v.drop_with(vm);
-            new_id
-        }
-        Value::InternBytes(bytes_id) => {
-            let b = vm.interns.get_bytes(*bytes_id).to_vec();
-            vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?
-        }
-        _ => {
-            result.drop_with(vm);
-            return Err(RunError::internal(
-                "os_read_result_to_heap_id: OS result must be a string or bytes value",
-            ));
-        }
-    };
-    result.drop_with(vm);
-    Ok(id)
 }
 
 /// Stores the OS-returned full-file content into an [`OpenFile`]'s buffer and
@@ -800,7 +725,7 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId
 /// `readlines()` / `seek()`) should return.
 ///
 /// Called by the VM resume path when the paused OS call was emitted via
-/// [`CallResult::OsCallStoreBuffer`](crate::bytecode::CallResult::OsCallStoreBuffer).
+/// [`CallResult::OsCallWithEffect`](crate::bytecode::CallResult::OsCallWithEffect).
 ///
 /// Invariants on entry:
 /// - `result` is `Value::Ref(_)` (or an interned `String`/`Bytes`) coming
@@ -811,76 +736,72 @@ fn os_read_result_to_heap_id(result: Value, vm: &mut VM<'_>) -> RunResult<HeapId
 ///   panic, so a host can recover.
 ///
 /// The file owns one inc_ref on `result` for its `buffer` slot. The caller's
-/// inc_ref on `file_id` (held by the in-flight OS call) is released here
-/// via the RAII [`DropGuard`] on `Value::Ref(file_id)`, so every error path
-/// drops the pin without explicit `dec_ref` boilerplate.
+/// inc_ref on `file_id` (held by the in-flight OS call) is released here.
 ///
 /// **Error handling**: `pending_read` is taken up-front so every subsequent
 /// error path leaves the file in a retry-safe state — a user-caught
 /// exception followed by a retry sees no stale slice spec.
 pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    // The pin's dec_ref happens automatically on every path via the guard's
-    // Drop, so the early-return branches do not need explicit `dec_ref`s.
-    let mut pin = DropGuard::new(Value::Ref(file_id), vm);
+    // Ensure `file_id` is dec_ref'd on every path at end of this function.
+    let file = Value::Ref(file_id);
+    defer_drop!(file, vm);
 
-    // Stage 1: drain `pending_read` from the file. `result_guard` keeps the
-    // host-returned value alive across early-return branches; on the success
-    // path we hand ownership back via `into_inner`.
-    let (result, spec) = {
-        let (_, vm) = pin.as_parts_mut();
-        let mut result_guard = DropGuard::new(result, vm);
-        let (_, vm) = result_guard.as_parts_mut();
+    let mut result_guard = DropGuard::new(result, vm);
+    let (result, vm) = result_guard.as_parts_mut();
 
-        let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
-            return Err(RunError::internal(
-                "apply_buffer_store: file_id does not point to an OpenFile",
-            ));
-        };
-        let spec = file.get_mut(vm.heap).pending_read.take();
-        drop(file);
-        let Some(spec) = spec else {
-            return Err(RunError::internal("apply_buffer_store: OpenFile has no pending_read"));
-        };
-        (result_guard.into_inner(), spec)
+    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
+        return Err(RunError::internal(
+            "apply_buffer_store: file_id does not point to an OpenFile",
+        ));
     };
 
-    // Stage 2: materialise the host result onto the heap. `result_guard` is
-    // no longer needed — the refcount now lives on `result_id`.
-    let (_, vm) = pin.as_parts_mut();
-    let result_id = os_read_result_to_heap_id(result, vm)?;
+    // Stage 1: drain `pending_read` from the file.
+    let Some(spec) = file.get_mut(vm.heap).pending_read.take() else {
+        return Err(RunError::internal("apply_buffer_store: OpenFile has no pending_read"));
+    };
+
+    // Stage 2: materialise the host result as an owned heap value.
+    match result {
+        Value::Ref(_) => {}
+        // promote interned strings to heap-resident Str
+        &mut Value::InternString(string_id) => {
+            let s = vm.interns.get_str(string_id).to_owned();
+            *result = allocate_string_no_interning(s, vm.heap)?;
+        }
+        // promote interned bytes to heap-resident Bytes
+        &mut Value::InternBytes(bytes_id) => {
+            let b = vm.interns.get_bytes(bytes_id).to_vec();
+            *result = Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?);
+        }
+        _ => {
+            return Err(RunError::internal(
+                "apply_buffer_store: OS result must be a string or bytes value",
+            ));
+        }
+    }
 
     // Stage 3: install the buffer. Defensive: if it was already populated
-    // (e.g. a snapshot/restore race), drop the new content and slice from
-    // the existing one instead of stomping it.
-    let dec_result = {
-        let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
-            vm.heap.dec_ref(result_id);
-            return Err(RunError::internal(
-                "apply_buffer_store: file_id does not point to an OpenFile",
-            ));
-        };
-        let f = file.get_mut(vm.heap);
-        if f.buffer.is_some() {
-            true
-        } else {
-            f.buffer = Some(result_id);
-            false
-        }
-    };
-    if dec_result {
-        vm.heap.dec_ref(result_id);
+    // (e.g. a snapshot/restore race), the guard drops the new content and we
+    // slice from the existing one instead of stomping it.
+    let (result, vm) = result_guard.into_parts();
+    let f = file.get_mut(vm.heap);
+    if f.buffer.is_none() {
+        let result_id = result
+            .into_ref_id()
+            .expect("OS read result was materialised on the heap");
+        f.buffer = Some(result_id);
+    } else {
+        result.drop_with(vm);
     }
 
     // Populate the cached buffer metadata so the upcoming `compute_slice`
     // call (and every later read) starts from a known byte position and
     // buffer length without re-scanning the buffer from char 0.
-    populate_buffer_meta(file_id, vm)?;
+    populate_buffer_meta(&mut file, vm)?;
 
-    // Compute the slice while the pin guard still keeps the file alive —
-    // otherwise `open(p).read(5)` (where no caller holds a separate
-    // reference) would risk a use-after-free if the pin's dec_ref ran first.
-    compute_slice(file_id, spec, vm)
-    // `pin` drops here, releasing the pending-file-effect refcount.
+    // Compute the slice while the guard still keeps the file alive — otherwise
+    // `open(p).read(5)` could release its last reference before slicing.
+    compute_slice(&mut file, spec, vm)
 }
 
 /// Applies a successful host write result to an [`OpenFile`]'s logical
@@ -891,11 +812,10 @@ pub(crate) fn apply_buffer_store(file_id: HeapId, result: Value, vm: &mut VM<'_>
 /// values returned by Monty's filesystem backends and CPython's `write()`.
 ///
 /// As with [`apply_buffer_store`], the pending-file-effect pin on `file_id`
-/// is released via the RAII [`DropGuard`] regardless of which path the
-/// function takes.
+/// is released by `defer_drop!` regardless of which path the function takes.
 pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'_>) -> RunResult<Value> {
-    let mut pin = DropGuard::new(Value::Ref(file_id), vm);
-    let (_, vm) = pin.as_parts_mut();
+    let pin = Value::Ref(file_id);
+    defer_drop!(pin, vm);
     let mut result_guard = DropGuard::new(result, vm);
     let (result_ref, vm) = result_guard.as_parts_mut();
 
@@ -920,6 +840,10 @@ pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'
     f.position = new_position;
     f.file_length = f.file_length.max(new_position);
     f.eof = new_position >= f.file_length;
+    // The write is confirmed — subsequent writes append. Deliberately not set
+    // at dispatch time so a rejected or host-failed write leaves the file in
+    // its pre-call state (see `OpenFile::write`).
+    f.first_write_done = true;
     drop(file);
 
     Ok(result_guard.into_inner())
@@ -933,26 +857,20 @@ pub(crate) fn apply_write_position(file_id: HeapId, result: Value, vm: &mut VM<'
 /// that's being returned, and allocates a fresh `Str`/`Bytes`/`List` for the
 /// result. All buffer reads go through the heap so the slice content is fully
 /// snapshot-safe.
-fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_>) -> RunResult<Value> {
+fn compute_slice<'h>(file: &mut HeapRead<'h, OpenFile>, spec: ReadSpec, vm: &mut VM<'h>) -> RunResult<Value> {
     // Defensive: if `buffer` is loaded but `buffer_meta` is missing (e.g. a
     // restored snapshot from an older schema, or a future code path that
     // sets `buffer` directly), reconstruct the cache before slicing instead
     // of raising an internal error.
     let needs_meta = {
-        let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
-            return Err(RunError::internal("compute_slice: not an OpenFile"));
-        };
         let f = file.get(vm.heap);
         f.buffer.is_some() && f.buffer_meta.is_none()
     };
     if needs_meta {
-        populate_buffer_meta(file_id, vm)?;
+        populate_buffer_meta(file, vm)?;
     }
 
     let (binary, buffer_id, position, byte_position, buffer_total) = {
-        let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
-            return Err(RunError::internal("compute_slice: not an OpenFile"));
-        };
         let f = file.get(vm.heap);
         let buffer = f
             .buffer
@@ -967,9 +885,9 @@ fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_>) -> RunResult<
     };
 
     if binary {
-        compute_slice_binary(file_id, buffer_id, position, buffer_total, spec, vm)
+        compute_slice_binary(file, buffer_id, position, buffer_total, spec, vm)
     } else {
-        compute_slice_text(file_id, buffer_id, position, byte_position, buffer_total, spec, vm)
+        compute_slice_text(file, buffer_id, position, byte_position, buffer_total, spec, vm)
     }
 }
 
@@ -986,14 +904,14 @@ fn compute_slice(file_id: HeapId, spec: ReadSpec, vm: &mut VM<'_>) -> RunResult<
 /// that borrow is still live; `Heap::allocate` is `&self` and the paged
 /// storage guarantees existing references stay valid across allocations, so
 /// the previous full-buffer `to_owned()` is gone.
-fn compute_slice_text(
-    file_id: HeapId,
+fn compute_slice_text<'h>(
+    file: &mut HeapRead<'h, OpenFile>,
     buffer_id: HeapId,
     position: usize,
     byte_position: usize,
     buffer_total: usize,
     spec: ReadSpec,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     // Phase 1: read the buffer through an immutable heap borrow, compute the
     // slice, and allocate the result. `update_file_state` needs `&mut Heap`,
@@ -1075,7 +993,7 @@ fn compute_slice_text(
         }
     };
 
-    update_file_state(file_id, new_position, new_byte_position, eof, vm)?;
+    update_file_state(file, new_position, new_byte_position, eof, vm);
     Ok(value)
 }
 
@@ -1086,13 +1004,13 @@ fn compute_slice_text(
 /// returned slice is the only bytes that get cloned (previously the *entire*
 /// buffer was cloned on every call so the heap borrow could be released
 /// before `update_position_eof`).
-fn compute_slice_binary(
-    file_id: HeapId,
+fn compute_slice_binary<'h>(
+    file: &mut HeapRead<'h, OpenFile>,
     buffer_id: HeapId,
     position: usize,
     buffer_total: usize,
     spec: ReadSpec,
-    vm: &mut VM<'_>,
+    vm: &mut VM<'h>,
 ) -> RunResult<Value> {
     // `seek()` allows positioning past EOF; clamp here so the slice index
     // operations below never panic when `position > len`. The cap is per-call
@@ -1166,7 +1084,7 @@ fn compute_slice_binary(
 
     // Binary mode keeps `byte_position == min(position, buffer.len())` so
     // the cache stays consistent with the text-mode invariant.
-    update_file_state(file_id, new_position, new_position.min(buffer_total), eof, vm)?;
+    update_file_state(file, new_position, new_position.min(buffer_total), eof, vm);
     Ok(value)
 }
 
@@ -1225,24 +1143,19 @@ fn nth_char_byte_offset(s: &str, nth: usize) -> usize {
 /// borrow. All three values are `usize` for caller convenience; the widening
 /// to `u64` happens here at the single boundary so the slice code stays free
 /// of `as u64` casts that clippy would flag.
-fn update_file_state(
-    file_id: HeapId,
+fn update_file_state<'h>(
+    file: &mut HeapRead<'h, OpenFile>,
     new_position: usize,
     new_byte_position: usize,
     eof: bool,
-    vm: &mut VM<'_>,
-) -> RunResult<()> {
+    vm: &mut VM<'h>,
+) {
     // `usize > u64` is impossible on every platform we support, but
     // surfacing the conversion as an `expect` (rather than `as u64`) keeps
     // the assumption explicit and would survive a hypothetical wider-than-u64
     // target without silently truncating.
     let new_position = u64::try_from(new_position).expect("usize fits in u64");
     let new_byte_position = u64::try_from(new_byte_position).expect("usize fits in u64");
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
-        return Err(RunError::internal(
-            "update_file_state: file_id does not point to an OpenFile",
-        ));
-    };
     let f = file.get_mut(vm.heap);
     f.position = new_position;
     f.eof = eof;
@@ -1256,7 +1169,6 @@ fn update_file_state(
         buffer_total,
     });
     f.file_length = buffer_total;
-    Ok(())
 }
 
 /// Populates [`OpenFile::buffer_meta`] from the just-loaded buffer.
@@ -1267,16 +1179,9 @@ fn update_file_state(
 /// values derived from `buffer.len()` and `position`. The walk is O(buffer)
 /// for text but happens exactly once per file (the cache is then maintained
 /// incrementally by [`update_file_state`]).
-fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
-    // Pull what we need out of the file under a short scoped borrow so we
-    // can call `heap.get(buffer_id)` and `file.get_mut` separately without
-    // overlapping borrows.
+fn populate_buffer_meta<'h>(file: &mut HeapRead<'h, OpenFile>, vm: &mut VM<'h>) -> RunResult<()> {
+    // Pull what we need out of the file under a short scoped borrow
     let (buffer_id, position, binary, already_populated) = {
-        let HeapReadOutput::OpenFile(file) = vm.heap.read(file_id) else {
-            return Err(RunError::internal(
-                "populate_buffer_meta: file_id does not point to an OpenFile",
-            ));
-        };
         let f = file.get(vm.heap);
         let Some(buffer_id) = f.buffer else {
             return Err(RunError::internal("populate_buffer_meta: buffer must be loaded"));
@@ -1314,11 +1219,6 @@ fn populate_buffer_meta(file_id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
         }
     };
 
-    let HeapReadOutput::OpenFile(mut file) = vm.heap.read(file_id) else {
-        return Err(RunError::internal(
-            "populate_buffer_meta: file_id does not point to an OpenFile",
-        ));
-    };
     file.get_mut(vm.heap).buffer_meta = Some(meta);
     Ok(())
 }

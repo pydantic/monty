@@ -270,3 +270,15 @@ try:
     assert False, 'expected TypeError'
 except TypeError as e:
     assert str(e) == "argument for str() given by name ('encoding') and position (2)"
+
+# === `in` / `not in` ===
+assert 'bc' in 'abc'
+assert 'abc' in 'abc'
+assert '' in 'abc'
+assert 'x' not in 'abc'
+# Only a str is a valid probe; the error names the offending type.
+try:
+    1 in 'abc'
+    assert False, 'expected TypeError for a non-str probe'
+except TypeError as exc:
+    assert str(exc) == "'in <string>' requires string as left operand, not int"

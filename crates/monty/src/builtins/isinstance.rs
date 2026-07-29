@@ -38,6 +38,10 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
         }
         // A user-defined class: true iff `obj` is an instance of exactly this class.
         Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => Ok(instance_of_class(obj, *id, vm)),
+        // A `collections.namedtuple` class, matched by the instance's `class_id`.
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
+            Ok(instance_of_namedtuple_class(obj, *id, vm))
+        }
         Value::Ref(id) if let HeapReadOutput::Tuple(tuple) = vm.heap.read(*id) => {
             isinstance_check_tuple(obj, &tuple, vm)
         }
@@ -48,6 +52,14 @@ fn isinstance_check(obj: &Value, classinfo: &Value, vm: &mut VM<'_>) -> RunResul
 /// Whether `obj` is an instance whose class object is `class_id`.
 fn instance_of_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
     matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::Instance(inst) if inst.class() == class_id))
+}
+
+/// Whether `obj` is a namedtuple instance built from the class `class_id`.
+///
+/// Instances created by Monty internally (`sys.version_info`, host imports)
+/// carry no `class_id`, so they never match a factory class.
+fn instance_of_namedtuple_class(obj: &Value, class_id: HeapId, vm: &VM<'_>) -> bool {
+    matches!(obj, Value::Ref(obj_id) if matches!(vm.heap.get(*obj_id), HeapData::NamedTuple(nt) if nt.class_id() == Some(class_id)))
 }
 
 /// Recursively walks a tuple of classinfo entries.
@@ -69,6 +81,11 @@ fn isinstance_check_tuple<'h>(obj: &Value, tuple: &HeapRead<'h, Tuple>, vm: &mut
             }
             Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Class(_)) => {
                 if instance_of_class(obj, *id, vm) {
+                    return Ok(true);
+                }
+            }
+            Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::NamedTupleClass(_)) => {
+                if instance_of_namedtuple_class(obj, *id, vm) {
                     return Ok(true);
                 }
             }

@@ -985,6 +985,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         true
     }
 
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains(item, vm).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::Set
     }
@@ -1012,7 +1016,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1020,7 +1024,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1028,7 +1032,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1300,6 +1304,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         true
     }
 
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        self.contains(item, vm).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::FrozenSet
     }
@@ -1348,7 +1356,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(!self.get(vm.heap).is_empty())
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.sub_value(other, vm)? else {
             return Ok(None);
         };
@@ -1356,7 +1364,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.and_value(other, vm)? else {
             return Ok(None);
         };
@@ -1364,7 +1372,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(Value::Ref(result_id)))
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         let Some(result) = self.or_value(other, vm)? else {
             return Ok(None);
         };
@@ -1668,8 +1676,7 @@ fn unhashable_type_name(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
             HeapData::NamedTuple(namedtuple) => namedtuple.as_vec()[index].clone_with_heap(vm.heap),
             _ => unreachable!("tuple-like heap value changed type"),
         };
-        let mut item_guard = DropGuard::new(item, vm);
-        let (item, vm) = item_guard.as_parts_mut();
+        defer_drop!(item, vm);
         if item.py_hash(vm)?.is_none() {
             return unhashable_type_name(item, vm);
         }

@@ -102,6 +102,13 @@ known-first-party = ["pydantic_monty"]
     "F403", # unable to detect undefined names
     "F821", # Undefined name
 ]
+# Monty's narrowed replacement stubs keep upstream typeshed's structure verbatim
+# (e.g. the `from _collections_abc import *` fallback branch), so mirror the
+# vendored exemptions rather than diverging from upstream.
+"crates/monty-typeshed/custom/**/*.pyi" = [
+    "F403", # unable to detect undefined names
+    "F821", # Undefined name
+]
 "crates/monty-type-checking/tests/good_types.py" = [
     "F704", # await outside function - needed for testing top-level async/await
 ]
@@ -183,6 +190,8 @@ reportWildcardImportFromLibrary = false
 reportIndexIssue = false
 # dunder tests intentionally return the wrong type (e.g. `__repr__` returning int)
 reportIncompatibleMethodOverride = false
+# collections.namedtuple factory tests use the functional form, not class-based NamedTuple
+reportUntypedNamedTuple = false
 # `break`/`return`/`continue` inside `with` tests bind through Optional outer
 # variables that pyright can't narrow.
 reportOptionalMemberAccess = false
@@ -206,7 +215,7 @@ exclude = [
 
 [tool.codespell]
 # Ref: https://github.com/codespell-project/codespell#using-a-config-file
-ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll'
+ignore-words-list = 'crate,NotIn,ser,IST,Nd,afterAll,beforeAll,deques'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",

@@ -695,6 +695,39 @@ def bar(): pass
 }
 
 #[test]
+fn function_names_excludes_classes_and_methods() {
+    // The helper is deliberately narrower than `is_callable`: plain functions
+    // and lambdas count, but classes, namedtuple classes, and bound methods —
+    // all callable — must not be surfaced as "functions".
+    // Import via the module so the only function-valued global is `foo`/`lam`
+    // (a bare `from collections import namedtuple` would surface `namedtuple`
+    // itself, which is correctly a function).
+    let s = repl_with_code(
+        "\
+import collections
+def foo(): pass
+lam = lambda: 1
+class Cls:
+    def method(self): pass
+Point = collections.namedtuple('Point', ['a'])
+inst = Cls()
+bound = inst.method
+x = 42
+",
+    );
+    let mut names = s.function_names();
+    names.sort_unstable();
+    assert_eq!(names, vec!["foo", "lam"]);
+    assert!(s.has_function("foo"));
+    assert!(s.has_function("lam"));
+    assert!(!s.has_function("Cls")); // a class is callable but not a function
+    assert!(!s.has_function("Point")); // a namedtuple class likewise
+    assert!(!s.has_function("bound")); // a bound method likewise
+    assert!(!s.has_function("inst"));
+    assert!(!s.has_function("x"));
+}
+
+#[test]
 fn has_function() {
     let s = repl_with_code("def my_func(): pass\nx = 10");
     assert!(s.has_function("my_func"));

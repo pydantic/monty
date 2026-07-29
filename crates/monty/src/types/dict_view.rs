@@ -7,7 +7,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropGuard, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     types::{
         Dict, FrozenSet, LazyHeapSet, PyTrait, Set, Type, allocate_tuple,
@@ -160,6 +160,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         true
     }
 
+    /// Delegates to the backing dict's key lookup.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_keys view must reference a dict");
+        };
+        dict.contains_key(item, vm).map(Some)
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictKeys
     }
@@ -195,15 +204,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 
@@ -424,6 +433,30 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         true
     }
 
+    /// Membership takes a `(key, value)` probe: look the key up, then compare
+    /// the stored value. A non-pair probe can never be a member.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
+            return Ok(Some(false));
+        };
+        defer_drop!(key, vm);
+        defer_drop!(value, vm);
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_items view must reference a dict");
+        };
+        match dict.dict_get(key, vm) {
+            Ok(Some(existing_value)) => {
+                // Stored value on the left, as CPython's `dictitems_contains` does.
+                let result = existing_value.py_eq(value, vm);
+                existing_value.drop_with(vm);
+                result.map(Some)
+            }
+            Ok(None) => Ok(Some(false)),
+            Err(e) => Err(e),
+        }
+    }
+
     fn py_type(&self, _vm: &VM<'h>) -> Type {
         Type::DictItems
     }
@@ -453,15 +486,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         }
     }
 
-    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_sub)
     }
 
-    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_and_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         self.intersection(other, vm)
     }
 
-    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+    fn py_or_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
         dict_view_binary_op_value(self.to_set(vm)?, other, vm, apply_dict_view_or)
     }
 
@@ -561,6 +594,23 @@ impl<'h> HeapRead<'h, DictValuesView> {
 impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
     fn py_is_iterable(&self, _vm: &VM<'h>) -> bool {
         true
+    }
+
+    /// Values are not indexed, so this is a linear scan of the backing dict.
+    fn py_contains_impl(&self, _self_id: HeapId, item: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        let dict_id = self.get(vm.heap).dict_id();
+        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+            panic!("dict_values view must reference a dict");
+        };
+        let iter = dict.iter(vm)?;
+        defer_drop_mut!(iter, vm);
+        while let Some(value) = iter.next_value(vm)? {
+            // Stored value on the left, matching CPython's iteration fallback.
+            if value.py_eq(item, vm)? {
+                return Ok(Some(true));
+            }
+        }
+        Ok(Some(false))
     }
 
     fn py_type(&self, _vm: &VM<'h>) -> Type {
@@ -791,8 +841,7 @@ fn apply_dict_view_sub(lhs: &Set, rhs: &Set, vm: &mut VM<'_>) -> RunResult<Set> 
 /// including one-shot iterator objects. Reusing the same collection path keeps
 /// binary operators and `isdisjoint(...)` consistent with each other.
 pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_>) -> Result<Set, RunError> {
-    let mut value_guard = DropGuard::new(value, vm);
-    let (value, vm) = value_guard.as_parts();
+    defer_drop!(value, vm);
     let iter = value.py_iter(vm)?;
     defer_drop!(iter, vm);
     let mut iter = iter.read(vm);
@@ -819,4 +868,35 @@ fn sets_are_disjoint(left: &Set, right: &Set, vm: &mut VM<'_>) -> RunResult<bool
         }
     }
     Ok(true)
+}
+
+/// Extracts and clones the `(key, value)` probe accepted by `dict_items.__contains__`.
+///
+/// CPython treats only 2-tuples as valid probes for items-view membership. Monty
+/// also accepts namedtuples of length two so tuple-like runtime values behave
+/// sensibly even though namedtuples are not modeled as a true tuple subclass.
+pub(crate) fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option<(Value, Value)> {
+    let Value::Ref(heap_id) = item else {
+        return None;
+    };
+
+    match heap.heap().get(*heap_id) {
+        HeapData::Tuple(tuple) => {
+            let items = tuple.as_slice();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        HeapData::NamedTuple(namedtuple) => {
+            let items = namedtuple.as_vec();
+            if items.len() == 2 {
+                Some((items[0].clone_with_heap(heap), items[1].clone_with_heap(heap)))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }

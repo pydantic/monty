@@ -136,6 +136,9 @@ tempfile = "3"
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep
 # tree), so naming `aws_lc_rs` explicitly removes the ambiguity.
 rustls = { version = "0.23", features = ["aws_lc_rs"] }
+# Async runtime. Only the version is pinned here — tokio has no default
+# features and each consumer needs a very different slice of it.
+tokio = { version = "1" }
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment

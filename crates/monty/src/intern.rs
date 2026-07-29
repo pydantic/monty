@@ -763,6 +763,157 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+
+    // ==========================
+    // os module function/constant names. Appended at the enum end:
+    // discriminants are serialized `StringId`s, so mid-enum insertion would
+    // shift every later id. Constants reuse existing variants where the text
+    // already exists (`Sep` in the kwarg section, `Name`, single-char ASCII
+    // ids for `/`, `.`, `\n`).
+    /// `os.listdir()` function.
+    Listdir,
+    /// `os.makedirs()` function.
+    Makedirs,
+    /// `os.fspath()` function — distinct from `Fspath` (`__fspath__`).
+    #[strum(serialize = "fspath")]
+    OsFspath,
+    /// `os.altsep` constant name.
+    Altsep,
+    /// `os.extsep` constant name.
+    Extsep,
+    /// `os.curdir` constant name.
+    Curdir,
+    /// `os.pardir` constant name.
+    Pardir,
+    /// `os.linesep` constant name.
+    Linesep,
+    /// `os.devnull` constant name.
+    Devnull,
+    /// Value of `os.name`.
+    Posix,
+    /// Value of `os.pardir`.
+    #[strum(serialize = "..")]
+    ParentDirString,
+    /// Value of `os.devnull`.
+    #[strum(serialize = "/dev/null")]
+    DevNullString,
+    /// Kwarg name `path` — `os.listdir(path=...)`, `os.stat(path=...)`, etc.
+    Path,
+    /// Kwarg name `dir_fd` — `os.stat(dir_fd=...)`, `os.mkdir(dir_fd=...)`, etc.
+    DirFd,
+    /// Kwarg name `follow_symlinks` — `os.stat(follow_symlinks=...)`.
+    FollowSymlinks,
+    /// Kwarg name `src` — `os.rename(src=...)`, `os.replace(src=...)`.
+    Src,
+    /// Kwarg name `dst` — `os.rename(dst=...)`, `os.replace(dst=...)`.
+    Dst,
+    /// Kwarg name `src_dir_fd` — `os.rename(src_dir_fd=...)`.
+    SrcDirFd,
+    /// Kwarg name `dst_dir_fd` — `os.rename(dst_dir_fd=...)`.
+    DstDirFd,
+
+    // itertools module strings; `count`, `start`, `step` and `object` reuse the
+    // existing variants of the same name. Appended, per the rule above.
+    /// Module name for `import itertools`.
+    Itertools,
+    /// `itertools.repeat()` function.
+    Repeat,
+    /// `times` keyword argument of `itertools.repeat()`.
+    Times,
+
+    // ==========================
+    // dataclasses module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import dataclasses`.
+    Dataclasses,
+    /// `dataclasses.dataclass` decorator.
+    Dataclass,
+    /// `dataclasses.is_dataclass()` function.
+    IsDataclass,
+    /// The `__dataclass_fields__` class attribute `@dataclass` writes: the
+    /// name -> `Field` mapping that drives every synthesized dunder.
+    #[strum(serialize = "__dataclass_fields__")]
+    DataclassFields,
+
+    // ==========================
+    // collections module strings. Appended at the enum end: discriminants are
+    // serialized `StringId`s, so mid-enum insertion would shift every later id.
+    /// Module name for `import collections`.
+    Collections,
+    /// The `collections.deque` type.
+    Deque,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `deque.maxlen` attribute (also a constructor keyword argument).
+    Maxlen,
+    /// `deque(iterable=...)` — the constructor's first parameter, which CPython
+    /// also accepts by keyword. Distinct from [`Self::Iterable`], which is the
+    /// capitalized `typing.Iterable`.
+    #[strum(serialize = "iterable")]
+    IterableArg,
+    /// The `collections.namedtuple` factory function.
+    Namedtuple,
+    /// The `collections.defaultdict` factory function.
+    Defaultdict,
+    /// The `collections.Counter` type/factory.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `Counter.most_common()` method.
+    #[strum(serialize = "most_common")]
+    MostCommon,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `Counter.total()` method.
+    Total,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `namedtuple(typename=...)` keyword argument.
+    Typename,
+    /// `namedtuple(field_names=...)` keyword argument.
+    #[strum(serialize = "field_names")]
+    FieldNames,
+    /// `NamedTuple._fields` — tuple of field names.
+    #[strum(serialize = "_fields")]
+    UnderFields,
+    /// `NamedTuple._field_defaults` — dict of defaulted field names to values.
+    #[strum(serialize = "_field_defaults")]
+    UnderFieldDefaults,
+    /// `NamedTuple._make(iterable)` classmethod.
+    #[strum(serialize = "_make")]
+    UnderMake,
+    /// `NamedTuple._replace(**kwargs)` method.
+    #[strum(serialize = "_replace")]
+    UnderReplace,
+    /// `NamedTuple._asdict()` method.
+    #[strum(serialize = "_asdict")]
+    UnderAsdict,
+    /// `namedtuple(..., defaults=...)` keyword argument.
+    Defaults,
+    /// `namedtuple(..., module=...)` keyword argument.
+    #[strum(serialize = "module")]
+    ModuleKwarg,
+    /// `defaultdict.default_factory` attribute.
+    #[strum(serialize = "default_factory")]
+    DefaultFactory,
+    /// `defaultdict.__missing__` method.
+    #[strum(serialize = "__missing__")]
+    DunderMissing,
+    /// `__module__` — the defining module name, exposed on namedtuple classes.
+    #[strum(serialize = "__module__")]
+    DunderModule,
+    /// `__getnewargs__` — the copy/pickle hook on named tuples.
+    #[strum(serialize = "__getnewargs__")]
+    DunderGetnewargs,
+    /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
+    #[strum(serialize = "__qualname__")]
+    DunderQualname,
+    /// Python's `NotImplemented` singleton representation.
     #[strum(serialize = "NotImplemented")]
     NotImplementedRepr,
 }

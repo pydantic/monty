@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
-use monty_pool::{MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
-use monty_proto::{decode_frame, encode_to_capped_vec, pb};
+use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_proto::{WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
 use tungstenite::{Message, WebSocket};
 
@@ -378,4 +378,256 @@ fn restored_session_rearms_the_duration_backstop() {
     };
     assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
     server.join().expect("mock child thread");
+}
+
+// === server shutdown and disconnects ===
+//
+// These tests script the server side precisely, so they assert exactly what a
+// client sees when a server hands back a `ShutdownDump` or simply drops the
+// connection — and that a shutdown dump can be restored by hand.
+
+/// Reads the next request frame; `None` once the client closed the socket.
+fn try_read_request(socket: &mut WebSocket<TcpStream>) -> Option<pb::ParentRequest> {
+    loop {
+        match socket.read() {
+            Ok(Message::Binary(data)) => {
+                return Some(decode_frame::<pb::ParentRequest>(data.as_ref()).expect("decode request"));
+            }
+            Ok(Message::Ping(_) | Message::Pong(_)) => {}
+            Ok(_) | Err(_) => return None,
+        }
+    }
+}
+
+/// Sends one `ChildEvent` with the given kind (timing fields zeroed).
+fn send_kind(socket: &mut WebSocket<TcpStream>, kind: pb::child_event::Kind) {
+    send_event(socket, &event_kind(kind));
+}
+
+/// Shorthand for the `Ok` acknowledgement event.
+fn ok_event() -> pb::child_event::Kind {
+    pb::child_event::Kind::Ok(pb::Ok {})
+}
+
+/// Builds a `ShutdownDump` turn-ender.
+fn shutdown(dump: Option<&[u8]>) -> pb::child_event::Kind {
+    pb::child_event::Kind::Shutdown(pb::ShutdownDump {
+        dump: dump.map(<[u8]>::to_vec),
+    })
+}
+
+/// Builds a `FunctionCall` suspension with the given call id.
+fn function_call(call_id: u32) -> pb::child_event::Kind {
+    pb::child_event::Kind::FunctionCall(WireFunctionCall {
+        function_name: "ext".to_owned(),
+        args: vec![],
+        kwargs: vec![],
+        call_id,
+        method_call: false,
+    })
+}
+
+/// Asserts the next request is `Configure` and acknowledges it.
+fn expect_configure(socket: &mut WebSocket<TcpStream>) {
+    let request = try_read_request(socket).expect("configure");
+    assert!(
+        matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))),
+        "expected Configure, got {request:?}"
+    );
+    send_kind(socket, ok_event());
+}
+
+/// Asserts the next request is `Feed` of `code`.
+fn expect_feed(socket: &mut WebSocket<TcpStream>, code: &str) {
+    let request = try_read_request(socket).expect("feed");
+    match request.kind {
+        Some(pb::parent_request::Kind::Feed(feed)) => assert_eq!(feed.code, code),
+        other => panic!("expected Feed, got {other:?}"),
+    }
+}
+
+/// Asserts the next request is `Load` and checks its state bytes.
+fn expect_load(socket: &mut WebSocket<TcpStream>, state: &[u8]) {
+    let request = try_read_request(socket).expect("load");
+    match request.kind {
+        Some(pb::parent_request::Kind::Load(load)) => assert_eq!(load.state, state),
+        other => panic!("expected Load, got {other:?}"),
+    }
+}
+
+/// A pool + checkout against `ws://127.0.0.1:{port}` with a 10s turn timeout.
+fn websocket_checkout(port: u16) -> (Pool, Checkout) {
+    let pool = websocket_pool(port);
+    let checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    (pool, checkout)
+}
+
+/// A single-worker pool against `ws://127.0.0.1:{port}`.
+fn websocket_pool(port: u16) -> Pool {
+    let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
+    config.max_processes = 1;
+    config.request_timeout = Some(Duration::from_secs(10));
+    Pool::new(config).expect("pool")
+}
+
+#[test]
+fn shutdown_hands_back_a_restorable_dump() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        // conn 1: a draining server intercepts the feed and replies with the dump
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(&mut socket, shutdown(Some(b"fake-dump")));
+        // conn 2: the client restores the dump by hand and re-runs the feed
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"fake-dump");
+        send_kind(&mut socket, ok_event());
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(42).into()),
+            }),
+        );
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port);
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let err = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .expect_err("a draining server must not run the feed");
+    let PoolError::Shutdown { dump: Some(dump) } = err else {
+        panic!("expected Shutdown with a dump, got {err:?}");
+    };
+    assert_eq!(dump, b"fake-dump");
+
+    // the checkout's worker is gone; a fresh one restores the dump and the
+    // never-executed feed can simply be re-run
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
+    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    assert!(event.is_none(), "an idle dump has no suspension to re-announce");
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .expect("feed on the restored session");
+    assert!(
+        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        "got {event:?}"
+    );
+    checkout.finish().expect("finish");
+    server.join().expect("mock server thread");
+}
+
+#[test]
+fn shutdown_during_a_suspension_carries_the_suspended_dump() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "ext()");
+        send_kind(&mut socket, function_call(7));
+        let resume = try_read_request(&mut socket).expect("resume");
+        assert!(
+            matches!(&resume.kind, Some(pb::parent_request::Kind::ResumeCall(rc)) if rc.call_id == 7),
+            "expected ResumeCall(7), got {resume:?}"
+        );
+        send_kind(&mut socket, shutdown(Some(b"susp-dump")));
+        // the restored session re-announces the suspension the resume answered
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_load(&mut socket, b"susp-dump");
+        send_kind(&mut socket, function_call(7));
+        while try_read_request(&mut socket).is_some() {}
+    });
+
+    let pool = websocket_pool(port);
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let event = checkout
+        .feed("ext()", vec![], vec![], false, &mut |_, _| {})
+        .expect("feed");
+    assert!(
+        matches!(event, TurnEvent::FunctionCall { call_id: 7, .. }),
+        "got {event:?}"
+    );
+    let err = checkout
+        .resume(ResumeValue::Return(MontyObject::Int(5)), &mut |_, _| {})
+        .expect_err("a draining server must not run the resume");
+    let PoolError::Shutdown { dump: Some(dump) } = err else {
+        panic!("expected Shutdown with a dump, got {err:?}");
+    };
+    assert_eq!(dump, b"susp-dump");
+
+    // restoring re-announces the suspension, so the host can answer it again
+    let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
+    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    assert!(
+        matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
+        "got {event:?}"
+    );
+    // closes the socket, which ends the mock's trailing read loop
+    checkout.finish().expect("finish");
+    server.join().expect("mock server thread");
+}
+
+#[test]
+fn shutdown_without_a_session_carries_no_dump() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        // a server that began draining before this session ever ran anything
+        let mut socket = accept_ws(&listener);
+        let request = try_read_request(&mut socket).expect("configure");
+        assert!(matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))));
+        send_kind(&mut socket, shutdown(None));
+    });
+
+    let pool = websocket_pool(port);
+    let Err(err) = pool.checkout(&ReplConfig::default()) else {
+        panic!("checkout against a draining server must fail");
+    };
+    assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
+    server.join().expect("mock server thread");
+}
+
+#[test]
+fn a_dropped_connection_is_a_disconnect() {
+    // Every server policy action other than shutdown (idle/session/turn
+    // timeout, capacity) is just a closed socket. The client cannot tell those
+    // from a dead sandbox, and says so: `Disconnected`, never `Crashed` — the
+    // remote process is not ours to reap.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = thread::spawn(move || {
+        let mut socket = accept_ws(&listener);
+        expect_configure(&mut socket);
+        expect_feed(&mut socket, "1 + 1");
+        send_kind(
+            &mut socket,
+            pb::child_event::Kind::Complete(pb::Complete {
+                value: Some(MontyObject::Int(42).into()),
+            }),
+        );
+        // the server drops the session while the client sits idle, then exits
+        let _ = socket.close(None);
+    });
+
+    let (_pool, mut checkout) = websocket_checkout(port);
+    let event = checkout
+        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .expect("feed");
+    assert!(
+        matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
+        "got {event:?}"
+    );
+    // joining first guarantees the server side is fully torn down before the
+    // next feed — the failure mode this test pins
+    server.join().expect("mock server thread");
+    let err = checkout
+        .feed("x", vec![], vec![], false, &mut |_, _| {})
+        .expect_err("a closed connection must fail the turn");
+    assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
 }
