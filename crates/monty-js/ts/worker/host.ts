@@ -27,17 +27,11 @@ interface WasmExports {
  * Sends one framed request and resolves to the turn's framed reply. The
  * abstraction `WorkerTransport` drives, so the same transport works over an
  * in-process [`WasmHost`] (see [`inProcessDispatcher`]) and over a Web Worker
- * `postMessage` channel. `timeoutMs` overrides the channel's per-turn
- * deadline for this request; dispatchers without a watchdog (the in-process
- * host, which cannot preempt a synchronous turn) ignore it.
+ * `postMessage` channel.
  */
 export type Dispatcher = (
   requestFrame: Uint8Array,
-  timeoutMs?: number,
 ) => Promise<{ reply: Uint8Array; status: number; events?: DecodedChildEvent[] }>
-
-/** Signals that a dispatcher's hard per-turn watchdog terminated its worker. */
-export class DispatchTimeoutError extends Error {}
 
 /** Adapts a synchronous in-process [`WasmHost`] to the async [`Dispatcher`]. */
 export function inProcessDispatcher(host: WasmHost): Dispatcher {

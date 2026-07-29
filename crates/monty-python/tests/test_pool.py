@@ -122,14 +122,6 @@ def test_request_timeout_kills_hung_worker():
             assert session.feed_run('2 + 2') == snapshot(4)
 
 
-def test_feed_timeout_overrides_pool_default():
-    with Monty(request_timeout=60) as pool:
-        with pool.checkout() as session:
-            with pytest.raises(MontyCrashedError) as exc_info:
-                session.feed_run('while True:\n    pass', timeout=0.2)
-            assert exc_info.value.timed_out is True
-
-
 def test_concurrent_sessions_run_in_parallel(pool: Monty):
     results: list[object] = []
 
@@ -201,14 +193,6 @@ async def test_async_crash_recovery():
 
         async with pool.checkout() as session:
             assert await session.feed_run('1 + 1') == snapshot(2)
-
-
-async def test_async_feed_timeout_overrides_pool_default():
-    async with AsyncMonty(request_timeout=60) as pool:
-        async with pool.checkout() as session:
-            with pytest.raises(MontyCrashedError) as exc_info:
-                await session.feed_run('while True:\n    pass', timeout=0.2)
-            assert exc_info.value.timed_out is True
 
 
 async def test_async_concurrent_sessions():

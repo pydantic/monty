@@ -520,6 +520,10 @@ pub struct Feed {
     /// Skip type checking for this feed even when the session enables it.
     #[prost(bool, tag = "3")]
     pub skip_type_check: bool,
+    /// Re-arm the sandbox execution-time budget for this feed. Absent preserves
+    /// the session's existing cumulative budget and elapsed execution time.
+    #[prost(uint64, optional, tag = "4")]
+    pub max_duration_micros: ::core::option::Option<u64>,
 }
 /// Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
 /// suspension event.
@@ -567,6 +571,10 @@ pub struct Dump {}
 pub struct Load {
     #[prost(bytes = "vec", tag = "1")]
     pub state: ::prost::alloc::vec::Vec<u8>,
+    /// Re-arm the restored execution-time budget. This is primarily used when
+    /// restoring a suspended feed whose serialized budget was partly consumed.
+    #[prost(uint64, optional, tag = "2")]
+    pub max_duration_micros: ::core::option::Option<u64>,
 }
 /// Ends the checkout: the child drops all session state and returns to the
 /// no-session state, ready for the next `Configure` or `Load`.

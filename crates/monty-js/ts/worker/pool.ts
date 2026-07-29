@@ -13,8 +13,9 @@
 // (returned to the factory for disposal). State never leaks between sessions:
 // `Reset` clears the REPL before reuse.
 //
-// A per-turn watchdog is available with the browser and Node worker-thread
-// backends. The in-process fallback cannot preempt a synchronous wasm turn.
+// Not yet ported: the per-turn watchdog timeout. Hard preemption needs a real
+// `Worker.terminate()`; with the in-process backend a runaway turn cannot be
+// interrupted, exactly as the plan notes.
 
 import { MontySession } from '../session.js'
 import { WasmHost, type Dispatcher, inProcessDispatcher } from './host.js'

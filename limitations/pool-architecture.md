@@ -88,6 +88,14 @@ properties that real CPython does not provide, per the caveat above.
   host (external functions, OS callbacks) or between feeds — accumulates
   across feeds, and travels inside dumps. The worker reports its total on
   every protocol turn; the host never keeps a second clock.
+- **The budget can be re-armed per feed.** `Feed`/`Load` carry an optional
+  `max_duration_micros` that replaces the session's budget *and* zeroes the
+  accumulated time, so a session exhausted by one runaway feed is usable
+  again — `Checkout::feed`/`restore`'s `max_duration`, `feed_run` /
+  `feed_start` / `load_snapshot`'s `max_duration_secs` in Python, and
+  `feedRun` / `feedStart` / `loadSnapshot`'s `maxDurationSecs` in JS. The
+  host arms that turn's backstop watchdog from the fresh budget. Omitting it
+  keeps the cumulative behavior above.
 - **`max_duration` is backstopped by the host.** From the reported total the
   host arms each execution turn's watchdog with the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.

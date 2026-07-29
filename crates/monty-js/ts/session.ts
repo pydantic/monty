@@ -81,10 +81,12 @@ export interface FeedOptions {
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
   /**
-   * Per-turn deadline in seconds overriding the pool's `requestTimeout` for
-   * this feed; omit to use the pool default.
+   * Fresh in-sandbox execution-time budget in seconds for this feed, re-arming
+   * the session's `maxDurationSecs`. The session limit is *cumulative* across
+   * feeds, so pass this to give each feed its own allowance; omit to keep
+   * counting against the budget the previous feeds consumed.
    */
-  timeout?: number
+  maxDurationSecs?: number
 }
 
 /**
@@ -113,10 +115,12 @@ export interface FeedStartOptions {
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
   /**
-   * Per-turn deadline in seconds overriding the pool's `requestTimeout` for
-   * this feed and its snapshot resumes; omit to use the pool default.
+   * Fresh in-sandbox execution-time budget in seconds for this feed, re-arming
+   * the session's `maxDurationSecs`. The session limit is *cumulative* across
+   * feeds, so pass this to give each feed its own allowance; omit to keep
+   * counting against the budget the previous feeds consumed.
    */
-  timeout?: number
+  maxDurationSecs?: number
 }
 
 /** Options for [`MontySession.loadSnapshot`]. */
@@ -135,6 +139,11 @@ export interface LoadSnapshotOptions {
   externalLookup?: Record<string, unknown>
   /** Handler for OS calls, consulted by `resumeAuto()` as in `feedStart`. */
   os?: OsCallback
+  /**
+   * Fresh in-sandbox execution-time budget in seconds, replacing the cumulative
+   * execution time serialized in the dump before the snapshot resumes.
+   */
+  maxDurationSecs?: number
 }
 
 /** What [`MontySession.feedStart`] / `resume` / `loadSnapshot` yield. */
@@ -189,10 +198,7 @@ export class MontySession {
       code,
       options.inputs ?? null,
       mountsToNative(options.mount),
-      {
-        skipTypeCheck: options.skipTypeCheck ?? false,
-        timeoutMs: timeoutToMs(options.timeout),
-      },
+      { skipTypeCheck: options.skipTypeCheck ?? false, maxDurationSecs: options.maxDurationSecs },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -261,10 +267,7 @@ export class MontySession {
       code,
       options.inputs ?? null,
       mountsToNative(options.mount),
-      {
-        skipTypeCheck: options.skipTypeCheck ?? false,
-        timeoutMs: timeoutToMs(options.timeout),
-      },
+      { skipTypeCheck: options.skipTypeCheck ?? false, maxDurationSecs: options.maxDurationSecs },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -282,7 +285,7 @@ export class MontySession {
   async loadSession(state: Uint8Array): Promise<void> {
     this.claimFresh()
     const printTarget = new PrintTarget(undefined)
-    const turn = (await this.native.restore(bytesForNative(state), [], printTarget.write.bind(printTarget))) as
+    const turn = (await this.native.restore(bytesForNative(state), [], undefined, printTarget.write.bind(printTarget))) as
       | NativeTurn
       | LoadedTurn
     switch (turn.kind) {
@@ -312,7 +315,12 @@ export class MontySession {
   async loadSnapshot(state: Uint8Array, options: LoadSnapshotOptions = {}): Promise<Snapshot> {
     this.claimFresh()
     const driver = this.newDriver(options)
-    const turn = (await this.native.restore(bytesForNative(state), mountsToNative(options.mount), driver.onPrint)) as
+    const turn = (await this.native.restore(
+      bytesForNative(state),
+      mountsToNative(options.mount),
+      options.maxDurationSecs,
+      driver.onPrint,
+    )) as
       | NativeTurn
       | LoadedTurn
     if (turn.kind === 'loaded') {
@@ -1017,14 +1025,4 @@ function bytesForNative(bytes: Uint8Array): Buffer {
 
 function bufferFrom(bytes: Uint8Array): Buffer {
   return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
-}
-
-/** Normalizes a per-feed `timeout` option (seconds) to the native
- *  milliseconds encoding; `undefined` means "use the pool default". */
-function timeoutToMs(timeout: number | undefined): number | undefined {
-  if (timeout === undefined) return undefined
-  if (!Number.isFinite(timeout) || timeout < 0) {
-    throw new RangeError('timeout must be a finite non-negative number')
-  }
-  return timeout * 1000
 }

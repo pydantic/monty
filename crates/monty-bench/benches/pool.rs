@@ -92,7 +92,9 @@ fn pool_create_session_run(bench: &mut Bencher) {
     bench.iter(|| {
         let pool = Pool::new(PoolConfig::subprocess(&binary)).unwrap();
         let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-        let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+            .unwrap();
         black_box(expect_complete(event));
         session.finish().unwrap();
     });
@@ -105,7 +107,9 @@ fn session_checkout_run(bench: &mut Bencher) {
     let pool = Pool::new(PoolConfig::subprocess(monty_binary())).unwrap();
     bench.iter(|| {
         let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-        let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+            .unwrap();
         black_box(expect_complete(event));
         session.finish().unwrap();
     });
@@ -128,7 +132,7 @@ fn ext_calls_1000(bench: &mut Bencher) {
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     bench.iter(|| {
         let event = session
-            .feed(EXT_CALL_LOOP, vec![], vec![], false, &mut no_print)
+            .feed(EXT_CALL_LOOP, vec![], vec![], false, None, &mut no_print)
             .unwrap();
         black_box(drive_answering_calls(&mut session, event));
     });
@@ -189,7 +193,7 @@ fn ext_call_rows(bench: &mut Bencher) {
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     bench.iter(|| {
         let mut event = session
-            .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
+            .feed(EXT_ROWS_LOOP, vec![], vec![], false, None, &mut no_print)
             .unwrap();
         let value = loop {
             match event {

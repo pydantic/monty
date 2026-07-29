@@ -74,6 +74,7 @@ fn feed(child: &mut Child, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind
         code: code.to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        max_duration_micros: None,
     }));
     let (bytes, outcome) = dispatch_frame(child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -135,6 +136,7 @@ fn inputs_are_injected() {
             value: Some(WireObject::new(MontyObject::Int(41))),
         }],
         skip_type_check: false,
+        max_duration_micros: None,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -176,6 +178,7 @@ fn load_rejects_old_dump_version() {
     create_repl(&mut child);
     let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
         state: 5u16.to_le_bytes().to_vec(),
+        max_duration_micros: None,
     }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
@@ -220,7 +223,10 @@ fn load_rejects_dump_with_over_deep_suspension_args() {
 
     let mut child = Child::new();
     create_repl(&mut child);
-    let request = frame_request(pb::parent_request::Kind::Load(pb::Load { state }));
+    let request = frame_request(pb::parent_request::Kind::Load(pb::Load {
+        state,
+        max_duration_micros: None,
+    }));
     let (bytes, outcome) = dispatch_frame(&mut child, &request);
     assert_eq!(outcome, HandleOutcome::Continue);
     let (_, event) = split_turn(&bytes);

@@ -94,6 +94,7 @@ impl ChildProc {
             code: code.to_owned(),
             inputs,
             skip_type_check: false,
+            max_duration_micros: None,
         }));
         self.recv_turn()
     }
@@ -441,7 +442,10 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        max_duration_micros: None,
+    }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -479,7 +483,10 @@ fn type_check_state_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        max_duration_micros: None,
+    }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -512,7 +519,10 @@ fn assert_annotation_option_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        max_duration_micros: None,
+    }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -543,7 +553,10 @@ fn assert_annotation_custom_limit_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load {
+        state: dump.state,
+        max_duration_micros: None,
+    }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -658,6 +671,7 @@ fn killed_child_is_detected_as_eof() {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         skip_type_check: false,
+        max_duration_micros: None,
     }));
     thread::sleep(Duration::from_millis(200));
     child.child.kill().expect("kill");

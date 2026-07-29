@@ -223,9 +223,9 @@ impl PyMontySession {
     /// Blocks the calling thread with the GIL released; async external
     /// functions are not supported here — use [`AsyncMonty`].
     ///
-    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
-    /// turn) for this feed; `None` uses the pool default.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
+    /// `max_duration_secs` re-arms the sandbox execution-time limit with a
+    /// fresh budget for this feed; `None` preserves the cumulative budget.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, max_duration_secs=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run(
         &self,
@@ -237,7 +237,7 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
-        timeout: Option<f64>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -250,7 +250,7 @@ impl PyMontySession {
             mount,
             os,
             skip_type_check,
-            timeout,
+            max_duration_secs,
         )?;
         drive_sync(py, args, external_lookup)
     }
@@ -269,10 +269,9 @@ impl PyMontySession {
     /// subsequent suspensions from them (and from this feed's mounts), letting
     /// a caller iterate to completion without resolving each call by hand.
     ///
-    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
-    /// turn) for this feed and its snapshot resumes; `None` uses the pool
-    /// default.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
+    /// `max_duration_secs` re-arms the sandbox execution-time limit with a
+    /// fresh budget for this feed and its snapshot resumes.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, max_duration_secs=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
         &self,
@@ -284,7 +283,7 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
-        timeout: Option<f64>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -297,7 +296,7 @@ impl PyMontySession {
             mount,
             os,
             skip_type_check,
-            timeout,
+            max_duration_secs,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         feed_start_sync(py, args, ext, self.repl_config.script_name.clone())
@@ -314,7 +313,7 @@ impl PyMontySession {
     /// the dump is actually a suspended snapshot.
     fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
-        if self.restore_turn(py, state, Vec::new())?.0.is_some() {
+        if self.restore_turn(py, state, Vec::new(), None)?.0.is_some() {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
                 "this dump is a suspended snapshot — use load_snapshot() to resume it",
@@ -339,7 +338,11 @@ impl PyMontySession {
     /// restored snapshot: a restored `FutureSnapshot`'s pending coroutines are
     /// gone (they lived in the previous process), so async `resume_auto()` on it
     /// raises — resolve it manually with `resume({call_id: ...})`.
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
+    ///
+    /// `max_duration_secs` replaces the serialized cumulative duration with a
+    /// fresh budget before the snapshot is resumed.
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None, max_duration_secs=None))]
+    #[expect(clippy::too_many_arguments)]
     fn load_snapshot(
         &self,
         py: Python<'_>,
@@ -348,6 +351,7 @@ impl PyMontySession {
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
         os: Option<Py<PyAny>>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         // extract args before committing the session, so a bad-args error
         // leaves it loadable (a failed load is not retryable — checkout a fresh
@@ -355,8 +359,9 @@ impl PyMontySession {
         check_os_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
+        let max_duration = max_duration_secs.map(duration_from_secs).transpose()?;
         let ext = external_lookup.map(|d| d.clone().unbind());
-        let (event, script_name) = self.restore_turn(py, state, mounts)?;
+        let (event, script_name) = self.restore_turn(py, state, mounts, max_duration)?;
         let Some(event) = event else {
             py.detach(|| discard_checkout(&self.checkout));
             return Err(PyRuntimeError::new_err(
@@ -424,6 +429,7 @@ impl PyMontySession {
         py: Python<'_>,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
+        max_duration: Option<Duration>,
     ) -> PyResult<(Option<TurnEvent>, Option<String>)> {
         if self.used.swap(true, Ordering::Relaxed) {
             // non-destructive: an already-running session keeps its worker
@@ -435,7 +441,7 @@ impl PyMontySession {
             guard
                 .as_mut()
                 .ok_or(PoolError::Finished)?
-                .restore(state, mounts, &mut |_, _| {})
+                .restore(state, mounts, max_duration, &mut |_, _| {})
         });
         // a failed restore (bad mount, protocol desync, ...) leaves the worker
         // in an untrusted state: discard it so a later feed fails fast rather
@@ -734,9 +740,9 @@ impl PyAsyncMontySession {
     ///
     /// Worker I/O runs off the event loop via tokio's blocking pool.
     ///
-    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
-    /// turn) for this feed; `None` uses the pool default.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
+    /// `max_duration_secs` re-arms the sandbox execution-time limit with a
+    /// fresh budget for this feed; `None` preserves the cumulative budget.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, max_duration_secs=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
         &self,
@@ -748,7 +754,7 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
-        timeout: Option<f64>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -761,7 +767,7 @@ impl PyAsyncMontySession {
             mount,
             os,
             skip_type_check,
-            timeout,
+            max_duration_secs,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         future_into_py(py, async move { drive_async(args, ext).await })
@@ -773,10 +779,9 @@ impl PyAsyncMontySession {
     /// snapshot-driven protocol and the `external_lookup` / `os` capture that
     /// backs `resume_auto()`.
     ///
-    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
-    /// turn) for this feed and its snapshot resumes; `None` uses the pool
-    /// default.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
+    /// `max_duration_secs` re-arms the sandbox execution-time limit with a
+    /// fresh budget for this feed and its snapshot resumes.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, max_duration_secs=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start<'py>(
         &self,
@@ -788,7 +793,7 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
-        timeout: Option<f64>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -801,7 +806,7 @@ impl PyAsyncMontySession {
             mount,
             os,
             skip_type_check,
-            timeout,
+            max_duration_secs,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         feed_start_async(py, args, ext, self.repl_config.script_name.clone())
@@ -820,7 +825,7 @@ impl PyAsyncMontySession {
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            if restore_turn_async(Arc::clone(&checkout), state, Vec::new())
+            if restore_turn_async(Arc::clone(&checkout), state, Vec::new(), None)
                 .await?
                 .0
                 .is_some()
@@ -842,7 +847,11 @@ impl PyAsyncMontySession {
     /// session; raises if the dump is actually an idle session. `external_lookup`
     /// / `os` are captured for `resume_auto()` with the same caveats as the sync
     /// method (a restored `FutureSnapshot` cannot be `resume_auto`'d).
-    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None))]
+    ///
+    /// `max_duration_secs` replaces the serialized cumulative duration with a
+    /// fresh budget before the snapshot is resumed.
+    #[pyo3(signature = (state, *, mount=None, print_callback=None, external_lookup=None, os=None, max_duration_secs=None))]
+    #[expect(clippy::too_many_arguments)]
     fn load_snapshot<'py>(
         &self,
         py: Python<'py>,
@@ -851,12 +860,14 @@ impl PyAsyncMontySession {
         print_callback: Option<&Bound<'_, PyAny>>,
         external_lookup: Option<&Bound<'_, PyDict>>,
         os: Option<Py<PyAny>>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // extract args before committing the session (a bad-args error leaves
         // it loadable), then claim it in the synchronous prologue
         check_os_callable(py, os.as_ref())?;
         let mounts = extract_mount_specs(mount)?;
         let print_target = PrintTarget::from_py(print_callback)?;
+        let max_duration = max_duration_secs.map(duration_from_secs).transpose()?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         if self.used.swap(true, Ordering::Relaxed) {
             return Err(session_used_err());
@@ -865,7 +876,8 @@ impl PyAsyncMontySession {
         let dc_registry = self.dc_registry.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
         future_into_py(py, async move {
-            let (event, restored_script_name) = restore_turn_async(Arc::clone(&checkout), state, mounts).await?;
+            let (event, restored_script_name) =
+                restore_turn_async(Arc::clone(&checkout), state, mounts, max_duration).await?;
             let Some(event) = event else {
                 spawn_blocking(move || discard_checkout(&checkout))
                     .await
@@ -990,6 +1002,7 @@ async fn restore_turn_async(
     checkout: SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
+    max_duration: Option<Duration>,
 ) -> PyResult<(Option<TurnEvent>, Option<String>)> {
     spawn_blocking(move || {
         let result = {
@@ -997,7 +1010,7 @@ async fn restore_turn_async(
             guard
                 .as_mut()
                 .ok_or(PoolError::Finished)
-                .and_then(|checkout| checkout.restore(state, mounts, &mut |_, _| {}))
+                .and_then(|checkout| checkout.restore(state, mounts, max_duration, &mut |_, _| {}))
         };
         // discard the worker on failure (the lock is released above) so a later
         // feed fails fast — a failed load is not retryable
@@ -1125,9 +1138,8 @@ pub(crate) struct FeedArgs {
     pub(crate) print_target: PrintTarget,
     pub(crate) checkout: SharedCheckout,
     pub(crate) dc_registry: DcRegistry,
-    /// Per-call override of the pool's `request_timeout`; `None` restores the
-    /// pool default. Applied to the checkout as the feed turn starts.
-    pub(crate) timeout: Option<Duration>,
+    /// Fresh in-sandbox execution-time budget for this feed, when requested.
+    pub(crate) max_duration: Option<Duration>,
 }
 
 impl FeedArgs {
@@ -1142,7 +1154,7 @@ impl FeedArgs {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
-        timeout: Option<f64>,
+        max_duration_secs: Option<f64>,
     ) -> PyResult<Self> {
         check_os_callable(py, os.as_ref())?;
         Ok(Self {
@@ -1154,7 +1166,7 @@ impl FeedArgs {
             print_target: PrintTarget::from_py(print_callback)?,
             checkout: Arc::clone(checkout),
             dc_registry: dc_registry.clone_ref(py),
-            timeout: timeout.map(duration_from_secs).transpose()?,
+            max_duration: max_duration_secs.map(duration_from_secs).transpose()?,
         })
     }
 }
@@ -1175,14 +1187,13 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         print_target,
         checkout,
         dc_registry,
-        timeout,
+        max_duration,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &dc_registry);
     let mut event = {
         let (result, print_err) = py.detach(|| {
             run_turn_blocking(&checkout, &print_target, |c, p| {
-                c.set_request_timeout(timeout);
-                c.feed(&code, inputs, mounts, skip_type_check, p)
+                c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
             })
         });
         finalize_turn(py, result, print_err)?
@@ -1283,13 +1294,12 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
         print_target,
         checkout,
         dc_registry,
-        timeout,
+        max_duration,
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
     let mut event = run_turn_async(&checkout, &print_target, move |c, p| {
-        c.set_request_timeout(timeout);
-        c.feed(&code, inputs, mounts, skip_type_check, p)
+        c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
     })
     .await?;
 

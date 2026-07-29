@@ -2,10 +2,10 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { kind } from './env.js'
 
-import { MontyCrashedError, MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
-const { run } = setupPool()
+const { run, pool } = setupPool()
 
 const isRuntimeError = { instanceOf: MontyRuntimeError }
 
@@ -128,9 +128,18 @@ test('time limit', async () => {
   t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
 })
 
-test('feed timeout overrides the pool request timeout', async () => {
-  const error = await t.throwsAsync(() => run('while True:\n    pass', { timeout: 0.2 }), {
-    instanceOf: MontyCrashedError,
-  })
-  t.true(error.timedOut)
+test('per-feed maxDurationSecs re-arms the cumulative budget', async () => {
+  // The session limit accumulates across feeds, so the runaway loop below
+  // leaves the session unusable until a feed supplies a fresh budget.
+  await using session = await pool().checkout({ limits: { maxDurationSecs: 0.1 } })
+  await t.throwsAsync(() => session.feedRun('while True:\n    pass\n'), isRuntimeError)
+  await t.throwsAsync(() => session.feedRun('1 + 1'), isRuntimeError)
+  t.is(await session.feedRun('1 + 1', { maxDurationSecs: 0.1 }), 2)
+
+  // the fresh budget is itself enforced
+  const error = await t.throwsAsync(
+    () => session.feedRun('while True:\n    pass\n', { maxDurationSecs: 0.1 }),
+    isRuntimeError,
+  )
+  t.is(error.exception.typeName, 'TimeoutError')
 })

@@ -143,12 +143,11 @@ pub(crate) fn feed_start_sync(
         print_target,
         checkout,
         dc_registry,
-        timeout,
+        max_duration,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
     drive_sync(py, ctx, move |c, p| {
-        c.set_request_timeout(timeout);
-        c.feed(&code, inputs, mounts, skip_type_check, p)
+        c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
     })
 }
 
@@ -170,13 +169,12 @@ pub(crate) fn feed_start_async(
         print_target,
         checkout,
         dc_registry,
-        timeout,
+        max_duration,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
     future_into_py(py, async move {
         drive_async(ctx, move |c, p| {
-            c.set_request_timeout(timeout);
-            c.feed(&code, inputs, mounts, skip_type_check, p)
+            c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
         })
         .await
     })

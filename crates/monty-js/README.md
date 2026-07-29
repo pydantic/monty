@@ -259,6 +259,13 @@ remaining budget expires, covering cases where the in-sandbox limit cannot
 fire (its check only runs at interpreter checkpoints). Set
 `durationLimitGrace: null` to disable it.
 
+Because the budget is cumulative, one runaway feed leaves the whole session
+timed out. Pass `maxDurationSecs` to `feedRun` / `feedStart` to give a feed its
+own budget instead: it replaces the limit _and_ zeroes the elapsed execution
+time, so the turn starts fresh. `loadSnapshot(state, { maxDurationSecs })` does
+the same for a restored snapshot, whose dump would otherwise carry the time the
+original session had already consumed.
+
 ## Assert message annotations
 
 Failed `assert` statements carry a pytest-style introspected message by

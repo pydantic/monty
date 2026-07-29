@@ -70,6 +70,9 @@ catch them. `RecursionError` is catchable, as in CPython.
 - The accumulated time is serialized into dumps/snapshots, so a restored
   session resumes its budget where it left off rather than restarting
   from zero.
+- The host can re-arm the budget per feed (or per snapshot restore), which
+  replaces the limit and resets the accumulated time to zero. See
+  `limitations/pool-architecture.md` for the host-API surface.
 - There is no in-sandbox way to observe the budget or remaining time.
 
 ## JSON

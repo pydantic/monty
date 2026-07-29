@@ -16,7 +16,7 @@
 //! the host transport surfaces that; it only ensures every *graceful* turn ends
 //! with exactly one turn-ending event.
 
-use std::{borrow::Cow, mem};
+use std::{borrow::Cow, mem, time::Duration};
 
 use monty::{MontyRepl, ReplProgress, ReplStartError};
 use monty_type_checking::{SourceFile, type_check};
@@ -434,6 +434,12 @@ impl Child {
             // ensure_repl left it un-Ready only when mid-suspension
             return protocol_violation("Feed without a session ready for input");
         }
+        if let Some(micros) = feed.max_duration_micros {
+            let SessionState::Ready(repl) = &mut self.state else {
+                unreachable!("checked Ready above");
+            };
+            repl.tracker_mut().set_max_duration(Duration::from_micros(micros));
+        }
         if !feed.skip_type_check
             && let Some(event) = self.type_check_feed(&feed.code)
         {
@@ -607,7 +613,10 @@ impl Child {
         if !matches!(self.state, SessionState::Configured(_)) {
             return protocol_violation("Load requires a session that has not started (a feed has already run)");
         }
-        let pb::Load { state } = load;
+        let pb::Load {
+            state,
+            max_duration_micros,
+        } = load;
         let Some((version_bytes, rest)) = state.split_at_checked(2) else {
             return protocol_violation("dump state too short");
         };
@@ -669,6 +678,14 @@ impl Child {
         // its prior un-started state, re-loadable. Surface the adopted script
         // name so the parent can report it without parsing the opaque dump.
         if matches!(self.state, SessionState::Ready(_) | SessionState::Suspended(_)) {
+            if let Some(micros) = max_duration_micros {
+                let tracker = match &mut self.state {
+                    SessionState::Ready(repl) => repl.tracker_mut(),
+                    SessionState::Suspended(progress) => progress.tracker_mut(),
+                    SessionState::Configured(_) => unreachable!("checked Ready/Suspended above"),
+                };
+                tracker.set_max_duration(Duration::from_micros(micros));
+            }
             self.script_name = script_name;
             self.type_check = type_check;
             event.restored_script_name = Some(self.script_name.clone());

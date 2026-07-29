@@ -8,7 +8,7 @@
 // and rejects every in-flight request when the worker dies or is killed (so the
 // transport sees a crash and the pool replaces it).
 
-import { DispatchTimeoutError, type DecodedChildEvent, type Dispatcher } from './host.js'
+import type { DecodedChildEvent, Dispatcher } from './host.js'
 import type { PooledWorker } from './pool.js'
 
 /** A request sent to the worker: a turn's framed `ParentRequest`. */
@@ -66,14 +66,12 @@ export class WorkerChannel implements PooledWorker {
     return this.live
   }
 
-  /** Posts one turn and resolves with its reply, or rejects on death/timeout.
-   *  A per-request `timeoutMs` (a per-feed override) beats the channel-wide
-   *  `requestTimeoutMs` default. */
-  dispatch: Dispatcher = (frame, requestTimeoutMs) => {
+  /** Posts one turn and resolves with its reply, or rejects on death/timeout. */
+  dispatch: Dispatcher = (frame) => {
     if (!this.live) return Promise.reject(new Error('worker is dead'))
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      const timeoutMs = requestTimeoutMs ?? this.options.requestTimeoutMs
+      const timeoutMs = this.options.requestTimeoutMs
       const timer = timeoutMs === undefined ? null : setTimeout(() => this.onTimeout(), timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       this.worker.post({ id, frame })
@@ -95,7 +93,7 @@ export class WorkerChannel implements PooledWorker {
 
   private onTimeout(): void {
     // a synchronous sandbox turn can only be stopped by killing the worker
-    this.kill(new DispatchTimeoutError('turn exceeded the request timeout'))
+    this.kill(new Error('turn exceeded the request timeout'))
   }
 
   private kill(err: Error): void {
