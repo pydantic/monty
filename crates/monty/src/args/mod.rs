@@ -337,22 +337,6 @@ impl KwargsValues {
         self.len() == 0
     }
 
-    /// Whether any key is not a string, which only `**` unpacking can produce
-    /// (`Inline` keys are interned ids by construction).
-    ///
-    /// CPython's call machinery rejects these with `keywords must be strings`
-    /// *before* the callee binds anything, so a binder must check every key up
-    /// front for `f(**{'z': 1, 1: 2})` to report the non-string key rather than
-    /// the unexpected `'z'` it would reach first.
-    #[must_use]
-    pub fn has_nonstring_key(&self, heap: &Heap) -> bool {
-        match self {
-            Self::Empty | Self::Inline(_) => false,
-            Self::Pairs(kvs) => kvs.iter().any(|(key, _)| key.as_either_str(heap).is_none()),
-            Self::Dict(dict) => dict.iter().any(|(key, _)| key.as_either_str(heap).is_none()),
-        }
-    }
-
     /// Converts the arguments into a Vec of MontyObjects.
     ///
     /// This is used when passing arguments to external functions.

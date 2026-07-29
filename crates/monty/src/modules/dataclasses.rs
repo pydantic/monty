@@ -415,6 +415,10 @@ fn store_bound_fields<'h>(
 /// Bound arguments are guarded, so an error on any path releases them and the
 /// unbound ones alike. The instance is untouched; the caller owns it.
 ///
+/// Every key is a string here: `**` unpacking is the only way a non-string one
+/// could arrive, and `DictMerge` raises `keywords must be strings` while
+/// building the call's kwargs — before any binder runs, as CPython does.
+///
 /// TODO(dataclass-keywords): a third binder alongside `args::bind_native` and
 /// `args::bind_python`, all three reproducing CPython's error wording and able
 /// to drift. Fold into `Signature::bind` when the `@dataclass(...)` keyword form
@@ -429,16 +433,6 @@ fn bind_dataclass_fields<'h>(
 ) -> Result<Vec<Value>, RunError> {
     let n_fields = fields.len();
     let init_name = format!("{}.__init__", class.get(vm.heap).name().as_str(vm.interns));
-    // Up front, because the call machinery raises this before `__init__` binds
-    // anything: it outranks every error below whatever its position among the
-    // keys, and checking it here leaves the binding loop free to raise on the
-    // spot (see `KwargsValues::has_nonstring_key`).
-    if let ArgValues::Kwargs(kwargs) | ArgValues::ArgsKargs { kwargs, .. } = &args
-        && kwargs.has_nonstring_key(vm.heap)
-    {
-        args.drop_with(vm);
-        return Err(ExcType::type_error_kwargs_nonstring_key());
-    }
     let (pos_iter, kwargs) = args.into_parts();
 
     // Every bound argument lands in `values`, guarded so each error below is a
@@ -516,7 +510,7 @@ fn bind_keyword_args(
         defer_drop!(key, vm);
         let name = key
             .as_either_str(vm.heap)
-            .expect("non-string keys are rejected before binding")
+            .expect("DictMerge rejects non-string keys before the call")
             .as_str(vm.interns)
             .to_owned();
         // Resolved before the value is guarded, which borrows the VM.
