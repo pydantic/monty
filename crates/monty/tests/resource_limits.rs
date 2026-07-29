@@ -2547,3 +2547,43 @@ for _v in Spin():
     let exc = result.expect_err("the time limit must terminate the run");
     assert_eq!(exc.exc_type(), ExcType::TimeoutError);
 }
+
+/// A memory limit hit part-way through `dataclass()` must release everything
+/// the decorator has built, not leak the `Field`s it has already allocated.
+///
+/// The class is defined in its own REPL turn with the budget untouched, then
+/// all but `slack` bytes of that budget are reserved, so the failure lands
+/// *inside* the decorator: allocate a `Field` per annotation, insert it into
+/// the `__dataclass_fields__` mapping, bind the mapping to the class. Under
+/// `memory-model-checks` a `Ref` nothing released panics when dropped, which is
+/// what makes this a leak test; without the feature it still pins that a budget
+/// exhausted mid-decoration surfaces as `MemoryError`.
+#[test]
+fn dataclass_decoration_releases_fields_on_memory_limit() {
+    const DEFINE: &str = "from dataclasses import dataclass\n\nclass Point:\n    x: int\n    y: int = 5";
+    const DECORATE: &str = "Point = dataclass(Point)";
+    const BUDGET: usize = 1 << 20;
+
+    // Defines the class, then leaves the decorator only `slack` bytes to run in.
+    let decorate_with_slack = |slack: usize| {
+        let limits = ResourceLimits::default().max_memory(BUDGET);
+        let mut repl = MontyRepl::new("repl.py", ResourceTracker::new(limits), CompileOptions::default());
+        repl.feed_run(DEFINE, vec![], PrintWriter::Stdout)
+            .expect("the class definition runs against the whole budget");
+        let reserve = BUDGET - repl.tracker().current_memory() - slack;
+        repl.tracker().on_grow(|| reserve).expect("the slack is within budget");
+        repl.feed_run(DECORATE, vec![], PrintWriter::Stdout)
+    };
+
+    // No slack at all cannot allocate the first `Field`; the untouched budget can.
+    let exc = decorate_with_slack(0).expect_err("decoration must need memory");
+    assert_eq!(exc.exc_type(), ExcType::MemoryError);
+    assert_eq!(decorate_with_slack(BUDGET / 2).unwrap(), MontyObject::None);
+
+    // Every slack in between aborts at some point inside the decorator.
+    for slack in 1..512 {
+        if let Err(exc) = decorate_with_slack(slack) {
+            assert_eq!(exc.exc_type(), ExcType::MemoryError, "slack={slack}: {exc}");
+        }
+    }
+}

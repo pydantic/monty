@@ -134,6 +134,9 @@ impl Dict {
     /// we can compare keys directly by their string contents while preserving the
     /// same duplicate-key semantics as CPython (`{"a": 1, "a": 2}` keeps the
     /// last value and retains the first insertion position).
+    ///
+    /// Ownership follows [`Dict::set`]: `key` and `value` transfer to the dict,
+    /// and are released here if the insertion exceeds the memory limit.
     pub fn set_json_string_key(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
 
@@ -153,7 +156,10 @@ impl Dict {
             old_entry.key.drop_with(vm);
             Ok(Some(old_entry.value))
         } else {
-            vm.heap.track_growth(2 * VALUE_SIZE)?;
+            if let Err(error) = vm.heap.track_growth(2 * VALUE_SIZE) {
+                entry.drop_with(vm);
+                return Err(error.into());
+            }
             let index = self.entries.len();
             self.entries.push(entry);
             self.indices.insert_unique(hash, index, |&i| self.entries[i].hash);
@@ -281,7 +287,8 @@ impl Dict {
     ///
     /// If the key already exists, replaces the old value and returns it (caller now
     /// owns the old value and is responsible for its refcount).
-    /// Returns Err if key is unhashable.
+    /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
+    /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'_>) -> RunResult<Option<Value>> {
         vm.heap.protect_mut(self).set(key, value, vm)
     }
@@ -296,7 +303,8 @@ impl<'h> HeapRead<'h, Dict> {
     ///
     /// If the key already exists, replaces the old value and returns it (caller now
     /// owns the old value and is responsible for its refcount).
-    /// Returns Err if key is unhashable.
+    /// Returns Err if key is unhashable or the insertion exceeds the memory limit;
+    /// either way `key` and `value` are released, so the caller must not drop them.
     pub fn set(&mut self, key: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
@@ -326,7 +334,12 @@ impl<'h> HeapRead<'h, Dict> {
         } else {
             // Key doesn't exist — track memory growth before adding the new entry.
             // Growth unit is 2 * size_of::<Value>() to match Dict::py_estimate_size.
-            vm.heap.track_growth(2 * VALUE_SIZE)?;
+            if let Err(error) = vm.heap.track_growth(2 * VALUE_SIZE) {
+                // The entry never reaches the dict, so release what the caller
+                // transferred rather than leaking it — same contract as above.
+                entry.drop_with(vm);
+                return Err(error.into());
+            }
             let this = self.get_mut(vm.heap);
             let index = this.entries.len();
             this.entries.push(entry);

@@ -143,7 +143,8 @@ fn allocate_fields_dict(vm: &mut VM<'_>, fields: Vec<DataclassField>) -> RunResu
             unreachable!("the dict was just allocated")
         };
         // Annotation keys are unique, so nothing is ever replaced — released
-        // rather than asserted away so a future duplicate cannot leak.
+        // rather than asserted away so a future duplicate cannot leak. A dict
+        // rejected by the memory limit releases the field it was handed.
         let replaced = dict.set(Value::InternString(name), Value::Ref(field_id), vm)?;
         replaced.drop_with(vm);
     }
