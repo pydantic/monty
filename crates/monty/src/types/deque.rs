@@ -371,6 +371,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         Type::Deque
     }
 
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        if name.static_string() == Some(StaticStrings::Maxlen) {
+            Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
+        } else {
+            Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+        }
+    }
+
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {
         let deque_id = self_id.expect("heap values have an id");
         let iterator = vm

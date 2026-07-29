@@ -1019,6 +1019,21 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
         )
     }
 
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        heap_read_output_py_trait_forward!(
+            self,
+            |item| item.py_set_attr(name, value, vm),
+            else {
+                value.drop_with(vm);
+                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                Err(ExcType::attribute_error_no_setattr(
+                    &type_name,
+                    name.as_str(vm.interns),
+                ))
+            }
+        )
+    }
+
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h>) -> RunResult<Option<CallResult>> {
         heap_read_output_py_trait_forward!(
             self,

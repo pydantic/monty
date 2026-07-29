@@ -1069,7 +1069,7 @@ impl<'h> HeapRead<'h, Dict> {
     /// previous factory for the caller to drop. Every other attribute — and any
     /// attribute on a plain dict — raises the generic no-setattr
     /// `AttributeError`. Consumes `value`.
-    pub(crate) fn set_default_factory_attr(
+    fn set_default_factory_attr(
         &mut self,
         attr: &EitherStr,
         value: Value,
@@ -1110,6 +1110,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 
     fn py_type(&self, vm: &VM<'h>) -> Type {
         self.get(vm.heap).kind_type()
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let old_value = self.set_default_factory_attr(name, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
     }
 
     fn py_iter(&self, self_id: Option<HeapId>, vm: &mut VM<'h>) -> RunResult<Value> {

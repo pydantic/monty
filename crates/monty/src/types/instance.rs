@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
     builtins::Builtins,
@@ -90,6 +90,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let old_value = self.set_attr(attribute_name_value(name, vm)?, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
     }
 
     /// Always `NotImplemented` (`Ok(None)`), leaving the caller on identity: both

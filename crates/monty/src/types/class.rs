@@ -1,6 +1,6 @@
 use std::{fmt::Write, mem};
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -77,6 +77,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
 
     fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
         None
+    }
+
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let old_value = self.set_attr(attribute_name_value(name, vm)?, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
     }
 
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
