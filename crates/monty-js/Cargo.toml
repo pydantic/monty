@@ -23,6 +23,9 @@ monty-types = { workspace = true }
 monty-pool = { workspace = true }
 monty-type-checking = { workspace = true }
 napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
+# The pool is async; the binding shares napi's tokio runtime and only needs
+# the sync primitives (the per-session checkout mutex) itself.
+tokio = { workspace = true, features = ["sync"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }

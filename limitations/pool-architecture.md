@@ -68,20 +68,24 @@ properties that real CPython does not provide, per the caveat above.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
-- Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
-  blocked on the worker; use sandbox `limits` and/or the pool's
-  `request_timeout` (which kills the worker).
+- Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...) does
+  not interrupt the sandbox, and it **loses the session**: the protocol turn
+  was abandoned mid-flight, so its worker can no longer be trusted — the next
+  call on the session (or its `__aexit__`) discards the worker, and a new
+  call raises `RuntimeError`. The pool itself stays healthy. To bound
+  execution, use sandbox `limits` and/or the pool's `request_timeout` (which
+  kills the worker); Ctrl-C in sync code still cannot interrupt a turn
+  blocked on the worker.
 - **Workers never spawn subprocesses, and the pool depends on it.** The
-  interpreter exposes no `fork`/`exec`/subprocess surface. The watchdog
-  enforces `request_timeout` (and the `max_duration` backstop) by killing the
-  single worker PID, which closes the worker's stdout and unblocks the
-  parent's blocked read. A worker that forked a grandchild inheriting that
-  pipe could hold it open past the kill and hang the parent forever, so the
-  no-subprocess property is a hard sandbox invariant, not just a missing
-  feature — and the pool deliberately does **not** add process-group / Job
-  Object teardown to defend against it. A sandbox escape that bypassed the
-  invariant is out of scope here: it is already arbitrary native code running
-  in the worker.
+  interpreter exposes no `fork`/`exec`/subprocess surface. `request_timeout`
+  (and the `max_duration` backstop) is enforced by abandoning the turn at the
+  deadline and killing the single worker PID. A worker that forked a
+  grandchild would leave that grandchild running (and holding the stdout
+  pipe) after the kill, so the no-subprocess property is a hard sandbox
+  invariant, not just a missing feature — and the pool deliberately does
+  **not** add process-group / Job Object teardown to defend against it. A
+  sandbox escape that bypassed the invariant is out of scope here: it is
+  already arbitrary native code running in the worker.
 - **`max_duration` measures cumulative execution time, and the worker's
   clock is the single source of truth.** The in-sandbox clock runs only
   while the interpreter executes — never while suspended waiting on the
@@ -89,14 +93,14 @@ properties that real CPython does not provide, per the caveat above.
   across feeds, and travels inside dumps. The worker reports its total on
   every protocol turn; the host never keeps a second clock.
 - **`max_duration` is backstopped by the host.** From the reported total the
-  host arms each execution turn's watchdog with the remaining budget plus
+  host bounds each execution turn by the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.
   The in-sandbox limit normally fires first with a clean `TimeoutError`; the
   backstop covers cases where it cannot — a worker that stops answering
   (e.g. compromised or wedged) — and surfaces as `MontyCrashedError`, losing
   the session. Mount I/O runs on the host between protocol turns and does not
   count against the worker's deadline. Because the budget and consumed time are also stamped onto the
-  worker's replies, sessions restored via the Rust `Pool::checkout_load`
+  worker's replies, sessions restored via the Rust `Checkout::restore`
   regain the backstop too. A *compromised* worker could under-report its
   total, stretching each turn to the full budget plus grace — turns stay
   bounded, and `request_timeout` applies independently.

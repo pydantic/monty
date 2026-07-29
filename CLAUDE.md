@@ -133,8 +133,11 @@ subprocesses:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.
-- `crates/monty-pool` — the parent: an elastic pool of workers with crash
-  detection/replacement and a watchdog enforcing a hard per-turn timeout.
+- `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
+  with crash detection/replacement and a hard per-turn timeout. Each worker's
+  frames are read by a dedicated pump task (async frame reads are not
+  cancel-safe), and turn deadlines are tokio timers rather than a watchdog
+  thread.
 - `pydantic_monty.Monty` / `pydantic_monty.AsyncMonty` — the ONLY Python
   execution surface (there is no in-process Python API): sync and async pools
   of workers (`with Monty() as pool: with pool.checkout() as session:
@@ -760,7 +763,7 @@ Rust pool/protocol engine `pydantic_monty` uses — wrapped by a thin
 TypeScript layer. The native binding exposes turn-level primitives
 (`NativePool`, `NativeSession.feed/resume*`); the TypeScript drive loop
 answers suspension events (external functions, `os` callbacks, async
-futures) where promises are native. Pool elasticity, watchdogs, crash
+futures) where promises are native. Pool elasticity, turn deadlines, crash
 recovery, framing and value conversion all live in Rust.
 
 ### Structure

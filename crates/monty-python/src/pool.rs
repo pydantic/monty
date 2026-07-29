@@ -17,37 +17,42 @@
 //!         result = await session.feed_run('1 + 1')
 //! ```
 //!
-//! Both classes share all pool/dispatch machinery; they differ only in how
-//! the blocking protocol turns are driven. `Monty` blocks the calling thread
-//! with the GIL released; `AsyncMonty` hands turns to tokio's blocking pool
-//! via `spawn_blocking` so the event loop stays free, and its external
-//! functions may be coroutines. Python callbacks — external functions, `os=`,
-//! `print_callback` — always execute in the host process.
+//! Both classes share all pool/dispatch machinery — `monty-pool` is async, so
+//! every protocol turn is a future driven on the pyo3-async-runtimes tokio
+//! runtime. `AsyncMonty` awaits those futures from the asyncio event loop via
+//! `future_into_py`; `Monty` blocks the calling thread on the same futures
+//! with `Runtime::block_on` (GIL released). External functions may be
+//! coroutines under `AsyncMonty`. Python callbacks — external functions,
+//! `os=`, `print_callback` — always execute in the host process.
 
 use std::{
+    future::{Future, ready},
     num::NonZeroU32,
     path::PathBuf,
+    pin::Pin,
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
+        Arc, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
-use monty_pool::{Checkout, MountSpec, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{
+    Checkout, MountSpec, OnPrint, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+};
 use monty_proto::python::{DcRegistry, exc_py_to_monty, monty_to_py, py_to_monty_value};
-use monty_types::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject};
+use monty_types::{AssertMessageAnnotations, ExtFunctionResult, MontyException, MontyObject, PrintStream};
 use pyo3::{
     Borrowed,
     exceptions::{PyRuntimeError, PyTimeoutError, PyTypeError, PyValueError},
     prelude::*,
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
-use tokio::task::{JoinSet, spawn_blocking};
+use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
+use tokio::{sync::Mutex as AsyncMutex, task::JoinSet};
 
 use crate::{
-    async_dispatch::{dispatch_function_call, join_error_to_py, spawn_coroutine_task, wait_for_futures},
+    async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
     build::{extract_repl_inputs, extract_source_code, extract_type_check_stubs},
     exceptions::{MontyCrashedError, MontyDisconnectError, MontyError, MontyShutdown, MontyTypingError},
     external::{CallResult, ExternalLookup, dispatch_method_call},
@@ -59,11 +64,27 @@ use crate::{
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
-/// until the context manager is entered and again after it exits.
+/// until the context manager is entered and again after it exits. A std
+/// mutex: it is only ever held to clone/take the `Arc`, never across awaits.
 pub(crate) type SharedPool = Arc<Mutex<Option<Arc<Pool>>>>;
 /// The worker handle of one session. `None` before the session is entered,
-/// after it exits, and after the worker is discarded on a crash.
-pub(crate) type SharedCheckout = Arc<Mutex<Option<Checkout>>>;
+/// after it exits, and after the worker is discarded on a crash. A *tokio*
+/// mutex: it is held for the whole duration of a protocol turn, across all
+/// of that turn's awaits, which serializes turns on the session.
+pub(crate) type SharedCheckout = Arc<AsyncMutex<Option<Checkout>>>;
+
+/// The boxed turn future a [`turn_fn`] closure returns: one protocol turn
+/// borrowing the locked checkout and the per-turn print callback.
+pub(crate) type TurnFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, PoolError>> + Send + 'a>>;
+
+/// Identity helper pinning the HRTB closure shape [`run_turn`] accepts —
+/// without it, closure lifetime inference fails at every callsite.
+pub(crate) fn turn_fn<T, F>(f: F) -> F
+where
+    F: for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+{
+    f
+}
 
 // =============================================================================
 // Sync API: Monty / MontySession
@@ -116,7 +137,9 @@ impl PyMonty {
     fn __enter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Py<Self>> {
         let this = slf.get();
         let config = this.config.clone();
-        let pool = py.detach(|| Pool::new(config)).map_err(|e| pool_err_to_py(py, e))?;
+        let pool = py
+            .detach(|| get_runtime().block_on(Pool::new(config)))
+            .map_err(|e| pool_err_to_py(py, e))?;
         *lock(&this.pool) = Some(Arc::new(pool));
         Ok(slf)
     }
@@ -126,7 +149,7 @@ impl PyMonty {
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
         let pool = lock(&self.pool).take();
-        py.detach(|| drop(pool));
+        py.detach(|| get_runtime().block_on(close_pool(pool)));
     }
 
     /// Prepares a REPL session; the worker is checked out by `with`.
@@ -161,7 +184,7 @@ impl PyMonty {
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            checkout: Arc::new(Mutex::new(None)),
+            checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
         })
     }
@@ -195,10 +218,13 @@ impl PyMontySession {
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
         py.detach(|| {
-            pool.checkout(&repl_config)
-                .map(|checkout| *lock(&slot) = Some(checkout))
+            get_runtime().block_on(async {
+                let checkout = pool.checkout(&repl_config).await?;
+                *slot.lock().await = Some(checkout);
+                Ok(())
+            })
         })
-        .map_err(|e| pool_err_to_py(py, e))?;
+        .map_err(|e: PoolError| pool_err_to_py(py, e))?;
         Ok(slf)
     }
 
@@ -208,12 +234,7 @@ impl PyMontySession {
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
         let slot = Arc::clone(&self.checkout);
-        py.detach(move || {
-            let checkout = lock(&slot).take();
-            if let Some(checkout) = checkout {
-                let _ = checkout.finish();
-            }
-        });
+        py.detach(move || get_runtime().block_on(finish_checkout(&slot)));
     }
 
     /// Executes one snippet in the worker, driving external function calls,
@@ -304,7 +325,7 @@ impl PyMontySession {
     fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
         if self.restore_turn(py, state, Vec::new())?.0.is_some() {
-            py.detach(|| discard_checkout(&self.checkout));
+            py.detach(|| get_runtime().block_on(discard_checkout(&self.checkout)));
             return Err(PyRuntimeError::new_err(
                 "this dump is a suspended snapshot — use load_snapshot() to resume it",
             ));
@@ -347,7 +368,7 @@ impl PyMontySession {
         let ext = external_lookup.map(|d| d.clone().unbind());
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
-            py.detach(|| discard_checkout(&self.checkout));
+            py.detach(|| get_runtime().block_on(discard_checkout(&self.checkout)));
             return Err(PyRuntimeError::new_err(
                 "this dump is an idle session — use load_session() to restore it",
             ));
@@ -369,7 +390,7 @@ impl PyMontySession {
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let state = py
-            .detach(|| dump_checkout(&self.checkout))
+            .detach(|| get_runtime().block_on(dump_checkout(&self.checkout)))
             .map_err(|e| pool_err_to_py(py, e))?;
         Ok(PyBytes::new(py, &state))
     }
@@ -384,7 +405,7 @@ impl PyMontySession {
     /// thread with the GIL released, bounded by the pool's `request_timeout`.
     fn install_dependencies(&self, py: Python<'_>, requirements: Vec<String>) -> PyResult<()> {
         self.used.store(true, Ordering::Relaxed);
-        py.detach(|| install_deps_checkout(&self.checkout, requirements))
+        py.detach(|| get_runtime().block_on(install_deps_checkout(&self.checkout, requirements)))
             .map_err(|e| pool_err_to_py(py, e))
     }
 
@@ -392,11 +413,11 @@ impl PyMontySession {
     /// attached or a turn is in flight (diagnostics/tests).
     ///
     /// Must not block on the checkout lock: this getter runs with the GIL
-    /// held, and the thread driving a turn holds the lock while needing the
-    /// GIL for print callbacks — blocking here can deadlock both threads.
+    /// held, and the task driving a turn holds the lock while needing the
+    /// GIL for print callbacks — blocking here can deadlock.
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
-        try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
+        self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 }
 
@@ -419,19 +440,7 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| {
-            let mut guard = lock(&checkout);
-            guard
-                .as_mut()
-                .ok_or(PoolError::Finished)?
-                .restore(state, mounts, &mut |_, _| {})
-        });
-        // a failed restore (bad mount, protocol desync, ...) leaves the worker
-        // in an untrusted state: discard it so a later feed fails fast rather
-        // than running on a half-restored session
-        if result.is_err() {
-            py.detach(|| discard_checkout(&checkout));
-        }
+        let result = py.detach(|| get_runtime().block_on(restore_turn(&checkout, state, mounts)));
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -488,9 +497,8 @@ impl PyAsyncMonty {
         let config = slf.get().config.clone();
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
-            let pool = spawn_blocking(move || Pool::new(config))
+            let pool = Pool::new(config)
                 .await
-                .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             *lock(&slot) = Some(Arc::new(pool));
             Ok(slf)
@@ -503,7 +511,7 @@ impl PyAsyncMonty {
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
-            spawn_blocking(move || drop(pool)).await.map_err(join_error_to_py)?;
+            close_pool(pool).await;
             Ok(())
         })
     }
@@ -540,7 +548,7 @@ impl PyAsyncMonty {
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            checkout: Arc::new(Mutex::new(None)),
+            checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
         })
     }
@@ -601,9 +609,8 @@ impl PyAsyncMontyWebsocket {
         let config = slf.get().config.clone();
         let slot = Arc::clone(&slf.get().pool);
         future_into_py(py, async move {
-            let pool = spawn_blocking(move || Pool::new(config))
+            let pool = Pool::new(config)
                 .await
-                .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             *lock(&slot) = Some(Arc::new(pool));
             Ok(slf)
@@ -616,7 +623,7 @@ impl PyAsyncMontyWebsocket {
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
-            spawn_blocking(move || drop(pool)).await.map_err(join_error_to_py)?;
+            close_pool(pool).await;
             Ok(())
         })
     }
@@ -653,7 +660,7 @@ impl PyAsyncMontyWebsocket {
                 assert_message_annotations,
             )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
-            checkout: Arc::new(Mutex::new(None)),
+            checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
         })
     }
@@ -684,35 +691,24 @@ impl PyAsyncMontySession {
         let slot = Arc::clone(&this.checkout);
         future_into_py(py, async move {
             let pool = active_pool(&pool)?;
-            let checkout = spawn_blocking(move || pool.checkout(&repl_config))
+            let checkout = pool
+                .checkout(&repl_config)
                 .await
-                .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
-            *lock(&slot) = Some(checkout);
+            *slot.lock().await = Some(checkout);
             Ok(slf)
         })
     }
 
     /// Returns the worker to the pool (best effort — a crashed worker has
-    /// already been discarded and replaced).
-    ///
-    /// The checkout slot is taken inside `spawn_blocking`, never on the event
-    /// loop with the GIL held: a cancelled `feed_run` leaves its blocking
-    /// turn running with the lock until the worker answers (or the request
-    /// timeout fires), and that turn may itself block on the GIL for print
-    /// callbacks — taking the lock here synchronously would deadlock.
+    /// already been discarded and replaced). A cancelled `feed_run` may have
+    /// left its turn future dropped mid-flight; `Checkout::finish` notices and
+    /// discards the worker instead of returning it.
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let slot = Arc::clone(&self.checkout);
         future_into_py(py, async move {
-            spawn_blocking(move || {
-                // take in its own statement so the lock is released before
-                // the (blocking) finish turn runs
-                let checkout = lock(&slot).take();
-                checkout.map(Checkout::finish)
-            })
-            .await
-            .map_err(join_error_to_py)?;
+            finish_checkout(&slot).await;
             Ok(())
         })
     }
@@ -798,14 +794,11 @@ impl PyAsyncMontySession {
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
             // an idle session has no snapshot, so the restored name is unused
-            if restore_turn_async(Arc::clone(&checkout), state, Vec::new())
-                .await?
-                .0
-                .is_some()
-            {
-                spawn_blocking(move || discard_checkout(&checkout))
-                    .await
-                    .map_err(join_error_to_py)?;
+            let restored = restore_turn(&checkout, state, Vec::new())
+                .await
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            if restored.0.is_some() {
+                discard_checkout(&checkout).await;
                 return Err(PyRuntimeError::new_err(
                     "this dump is a suspended snapshot — use load_snapshot() to resume it",
                 ));
@@ -843,11 +836,11 @@ impl PyAsyncMontySession {
         let dc_registry = self.dc_registry.clone_ref(py);
         let config_script_name = self.repl_config.script_name.clone();
         future_into_py(py, async move {
-            let (event, restored_script_name) = restore_turn_async(Arc::clone(&checkout), state, mounts).await?;
+            let (event, restored_script_name) = restore_turn(&checkout, state, mounts)
+                .await
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             let Some(event) = event else {
-                spawn_blocking(move || discard_checkout(&checkout))
-                    .await
-                    .map_err(join_error_to_py)?;
+                discard_checkout(&checkout).await;
                 return Err(PyRuntimeError::new_err(
                     "this dump is an idle session — use load_session() to restore it",
                 ));
@@ -867,9 +860,8 @@ impl PyAsyncMontySession {
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
-            let state = spawn_blocking(move || dump_checkout(&checkout))
+            let state = dump_checkout(&checkout)
                 .await
-                .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             Ok(Python::attach(|py| PyBytes::new(py, &state).unbind()))
         })
@@ -883,9 +875,8 @@ impl PyAsyncMontySession {
         self.used.store(true, Ordering::Relaxed);
         let checkout = Arc::clone(&self.checkout);
         future_into_py(py, async move {
-            spawn_blocking(move || install_deps_checkout(&checkout, requirements))
+            install_deps_checkout(&checkout, requirements)
                 .await
-                .map_err(join_error_to_py)?
                 .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             // resolve to None (whereas `()` would convert to an empty tuple) to
             // match the `-> None` stub and the sync method
@@ -898,7 +889,7 @@ impl PyAsyncMontySession {
     /// the same reason as the sync getter.
     #[getter]
     fn worker_pid(&self) -> Option<u32> {
-        try_lock(&self.checkout)?.as_ref().and_then(Checkout::pid)
+        self.checkout.try_lock().ok()?.as_ref().and_then(Checkout::pid)
     }
 }
 
@@ -959,45 +950,69 @@ fn session_used_err() -> PyErr {
     )
 }
 
-/// Runs the low-level restore off the event loop (via `spawn_blocking`),
-/// returning the re-announced suspension (`Some`) or `None` for an idle dump,
-/// paired with the dump's adopted script name. The restore turn runs no sandbox
-/// code, so it needs no print sink. Shared by the async
-/// [`PyAsyncMontySession::load_session`] / `load_snapshot`.
-async fn restore_turn_async(
-    checkout: SharedCheckout,
+/// Runs the low-level restore turn, returning the re-announced suspension
+/// (`Some`) or `None` for an idle dump, paired with the dump's adopted script
+/// name. The restore turn runs no sandbox code, so it needs no print sink. A
+/// failed restore (bad mount, protocol desync, ...) leaves the worker in an
+/// untrusted state: it is discarded so a later feed fails fast rather than
+/// running on a half-restored session. Shared by the sync and async
+/// `load_session` / `load_snapshot`.
+async fn restore_turn(
+    checkout: &SharedCheckout,
     state: Vec<u8>,
     mounts: Vec<MountSpec>,
-) -> PyResult<(Option<TurnEvent>, Option<String>)> {
-    spawn_blocking(move || {
-        let result = {
-            let mut guard = lock(&checkout);
-            guard
-                .as_mut()
-                .ok_or(PoolError::Finished)
-                .and_then(|checkout| checkout.restore(state, mounts, &mut |_, _| {}))
-        };
-        // discard the worker on failure (the lock is released above) so a later
-        // feed fails fast — a failed load is not retryable
-        if result.is_err() {
-            discard_checkout(&checkout);
+) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+    let result = {
+        let mut guard = checkout.lock().await;
+        match guard.as_mut() {
+            Some(checkout) => {
+                checkout
+                    .restore(state, mounts, &mut monty_pool::on_print_sync(|_, _| {}))
+                    .await
+            }
+            None => Err(PoolError::Finished),
         }
-        result
-    })
-    .await
-    .map_err(join_error_to_py)?
-    .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))
+    };
+    // discard the worker on failure (the lock is released above) so a later
+    // feed fails fast — a failed load is not retryable
+    if result.is_err() {
+        discard_checkout(checkout).await;
+    }
+    result
 }
 
 /// Kills the session's worker and empties its checkout slot after a failed
 /// load. Any subsequent feed then fails with [`PoolError::Finished`] — like a
 /// crashed session — enforcing that a failed load is not retryable (callers
-/// must check out a fresh session). Does no protocol I/O, so it never blocks.
-pub(crate) fn discard_checkout(checkout: &SharedCheckout) {
+/// must check out a fresh session). Does no protocol I/O.
+pub(crate) async fn discard_checkout(checkout: &SharedCheckout) {
     // take in its own statement so the lock is released before the worker is
     // dropped (its `Drop` kills the process)
-    let taken = lock(checkout).take();
+    let taken = checkout.lock().await.take();
     drop(taken);
+}
+
+/// Gracefully closes a pool taken out of its shared slot (a no-op when the
+/// context manager was never entered). Shared by the sync `__exit__` and the
+/// async `__aexit__`s.
+async fn close_pool(pool: Option<Arc<Pool>>) {
+    if let Some(pool) = pool {
+        pool.close().await;
+        drop(pool);
+    }
+}
+
+/// Takes the session's checkout out of its slot and finishes it, returning
+/// the worker to the pool (best effort — errors are swallowed, matching the
+/// previous context-manager behaviour). Shared by the sync `__exit__` and
+/// the async `__aexit__`.
+async fn finish_checkout(checkout: &SharedCheckout) {
+    // take in its own statement so the lock is released before the finish
+    // turn runs
+    let taken = checkout.lock().await.take();
+    if let Some(taken) = taken {
+        let _ = taken.finish().await;
+    }
 }
 
 /// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
@@ -1077,19 +1092,22 @@ pub(crate) fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
 
 /// Dumps the session of a live checkout (shared by the sync and async dump
 /// methods; runs without the GIL).
-fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
-    let mut guard = lock(checkout);
-    guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
+async fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
+    let mut guard = checkout.lock().await;
+    match guard.as_mut() {
+        Some(checkout) => checkout.dump().await,
+        None => Err(PoolError::Finished),
+    }
 }
 
 /// Installs dependencies into a live checkout's session (shared by the sync and
 /// async `install_dependencies` methods; runs without the GIL).
-fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<String>) -> Result<(), PoolError> {
-    let mut guard = lock(checkout);
-    guard
-        .as_mut()
-        .ok_or(PoolError::Finished)?
-        .install_dependencies(requirements)
+async fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<String>) -> Result<(), PoolError> {
+    let mut guard = checkout.lock().await;
+    match guard.as_mut() {
+        Some(checkout) => checkout.install_dependencies(requirements).await,
+        None => Err(PoolError::Finished),
+    }
 }
 
 /// Everything a feed needs, extracted from Python arguments up front so the
@@ -1136,8 +1154,8 @@ impl FeedArgs {
 // Drive loops
 // =============================================================================
 
-/// Synchronous drive loop: protocol turns run with the GIL released;
-/// callbacks run between turns with the GIL held.
+/// Synchronous drive loop: protocol turns block the calling thread (GIL
+/// released) via `block_on`; callbacks run between turns with the GIL held.
 fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_, PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
@@ -1150,14 +1168,12 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         dc_registry,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &dc_registry);
-    let mut event = {
-        let (result, print_err) = py.detach(|| {
-            run_turn_blocking(&checkout, &print_target, |c, p| {
-                c.feed(&code, inputs, mounts, skip_type_check, p)
-            })
-        });
-        finalize_turn(py, result, print_err)?
-    };
+    let mut event = run_turn_sync(
+        py,
+        &checkout,
+        &print_target,
+        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+    )?;
 
     loop {
         // `Complete` ends the loop; on any other event a failure to compute the
@@ -1172,9 +1188,13 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
                 kwargs,
                 ..
             } => {
-                let (result, print_err) =
-                    py.detach(|| run_turn_blocking(&checkout, &print_target, Checkout::resume_from_mounts));
-                match finalize_turn(py, result, print_err)? {
+                let mounted = run_turn_sync(
+                    py,
+                    &checkout,
+                    &print_target,
+                    turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+                )?;
+                match mounted {
                     Some(next) => {
                         event = next;
                         continue;
@@ -1192,18 +1212,24 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
             event => match sync_turn_answer(py, event, &lookup, &dc_registry) {
                 Ok(answer) => answer,
                 Err(err) => {
-                    py.detach(|| discard_checkout(&checkout));
+                    py.detach(|| get_runtime().block_on(discard_checkout(&checkout)));
                     return Err(err);
                 }
             },
         };
-        let (result, print_err) = py.detach(|| {
-            run_turn_blocking(&checkout, &print_target, move |c, p| match resume_with {
-                TurnAnswer::Call(value) => c.resume(value, p),
-                TurnAnswer::Name(value) => c.resume_name_lookup(value, p),
-            })
-        });
-        event = finalize_turn(py, result, print_err)?;
+        event = run_turn_sync(
+            py,
+            &checkout,
+            &print_target,
+            turn_fn(move |c, p| {
+                Box::pin(async move {
+                    match resume_with {
+                        TurnAnswer::Call(value) => c.resume(value, p).await,
+                        TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                    }
+                })
+            }),
+        )?;
     }
 }
 
@@ -1241,8 +1267,8 @@ fn sync_turn_answer(
     }
 }
 
-/// Async drive loop: protocol turns run in `spawn_blocking`; coroutine
-/// external functions are spawned as tasks and resolved via
+/// Async drive loop: protocol turns are awaited directly on the runtime;
+/// coroutine external functions are spawned as tasks and resolved via
 /// `ResolveFutures`.
 async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
@@ -1257,9 +1283,11 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
-    let mut event = run_turn_async(&checkout, &print_target, move |c, p| {
-        c.feed(&code, inputs, mounts, skip_type_check, p)
-    })
+    let mut event = run_turn_async(
+        &checkout,
+        &print_target,
+        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+    )
     .await?;
 
     loop {
@@ -1281,11 +1309,16 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
                 let results = match resolved {
                     Ok(results) => results,
                     Err(err) => {
-                        discard_checkout_async(&checkout).await;
+                        discard_checkout(&checkout).await;
                         return Err(err);
                     }
                 };
-                event = run_turn_async(&checkout, &print_target, move |c, p| c.resume_futures(results, p)).await?;
+                event = run_turn_async(
+                    &checkout,
+                    &print_target,
+                    turn_fn(move |c, p| Box::pin(c.resume_futures(results, p))),
+                )
+                .await?;
                 continue;
             }
             // Mounts get first refusal, as in `drive_sync`.
@@ -1295,7 +1328,13 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
                 kwargs,
                 ..
             } => {
-                if let Some(next) = run_turn_async(&checkout, &print_target, Checkout::resume_from_mounts).await? {
+                let mounted = run_turn_async(
+                    &checkout,
+                    &print_target,
+                    turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+                )
+                .await?;
+                if let Some(next) = mounted {
                     event = next;
                     continue;
                 }
@@ -1307,15 +1346,23 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
             event => match async_turn_answer(event, external_lookup.as_ref(), &dc_registry, &mut join_set) {
                 Ok(answer) => answer,
                 Err(err) => {
-                    discard_checkout_async(&checkout).await;
+                    discard_checkout(&checkout).await;
                     return Err(err);
                 }
             },
         };
-        event = run_turn_async(&checkout, &print_target, move |c, p| match answer {
-            TurnAnswer::Call(value) => c.resume(value, p),
-            TurnAnswer::Name(value) => c.resume_name_lookup(value, p),
-        })
+        event = run_turn_async(
+            &checkout,
+            &print_target,
+            turn_fn(move |c, p| {
+                Box::pin(async move {
+                    match answer {
+                        TurnAnswer::Call(value) => c.resume(value, p).await,
+                        TurnAnswer::Name(value) => c.resume_name_lookup(value, p).await,
+                    }
+                })
+            }),
+        )
         .await?;
     }
 }
@@ -1362,14 +1409,6 @@ fn async_turn_answer(
     }
 }
 
-/// Best-effort discard of a suspended checkout from an async drive-loop error
-/// path. The caller returns the original error, so a `spawn_blocking` join
-/// failure here is deliberately ignored.
-pub(crate) async fn discard_checkout_async(checkout: &SharedCheckout) {
-    let checkout = Arc::clone(checkout);
-    let _ = spawn_blocking(move || discard_checkout(&checkout)).await;
-}
-
 /// The caller's answer to a suspension, paired with which resume call
 /// delivers it.
 enum TurnAnswer {
@@ -1381,7 +1420,7 @@ enum TurnAnswer {
 /// ordinary resume ([`TurnEvent`]) and a mount attempt (`Option<TurnEvent>`,
 /// `None` when no mount covered the call).
 ///
-/// Only [`run_turn_blocking`]'s print-failure cleanup needs to tell these
+/// Only [`run_turn`]'s print-failure cleanup needs to tell these
 /// apart: it must know whether the worker is left suspended.
 pub(crate) trait TurnOutcome {
     /// Whether the worker is left waiting for a resume after this outcome.
@@ -1407,25 +1446,30 @@ impl TurnOutcome for Option<TurnEvent> {
 
 /// Runs one protocol turn against the (locked) checkout, streaming prints to
 /// `print_target` and capturing the first print-callback failure.
-pub(crate) fn run_turn_blocking<T: TurnOutcome>(
+///
+/// Print delivery is synchronous inside the turn (the callback attaches the
+/// GIL when needed and returns a ready future), preserving print ordering and
+/// backpressure against the worker.
+pub(crate) async fn run_turn<T: TurnOutcome>(
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
-    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<T, PoolError>,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> (Result<T, PoolError>, Option<MontyException>) {
-    let mut guard = lock(checkout);
+    let mut guard = checkout.lock().await;
     let Some(checkout) = guard.as_mut() else {
         return (Err(PoolError::Finished), None);
     };
     let mut print_err: Option<MontyException> = None;
     let result = {
-        let mut on_print = |stream, text: &str| {
+        let mut on_print = |stream: PrintStream, text: &str| -> PrintFuture {
             if print_err.is_none()
                 && let Err(err) = print_target.write_event(stream, text)
             {
                 print_err = Some(err);
             }
+            Box::pin(ready(()))
         };
-        turn(checkout, &mut on_print)
+        turn(checkout, &mut on_print).await
     };
     // A print-callback failure aborts the feed. If the turn left the worker
     // suspended awaiting a resume the aborted feed will never send, drop the
@@ -1437,17 +1481,25 @@ pub(crate) fn run_turn_blocking<T: TurnOutcome>(
     (result, print_err)
 }
 
-/// `spawn_blocking` wrapper around [`run_turn_blocking`] for the async loop.
-pub(crate) async fn run_turn_async<T: TurnOutcome + Send + 'static>(
+/// Blocks the calling thread on one protocol turn (GIL released) and
+/// finalizes it — the sync sessions' counterpart of [`run_turn_async`].
+pub(crate) fn run_turn_sync<T: TurnOutcome + Send>(
+    py: Python<'_>,
     checkout: &SharedCheckout,
     print_target: &PrintTarget,
-    turn: impl FnOnce(&mut Checkout, monty_pool::OnPrint<'_>) -> Result<T, PoolError> + Send + 'static,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> PyResult<T> {
-    let checkout = Arc::clone(checkout);
-    let print_target = print_target.clone_handle_detached();
-    let (result, print_err) = spawn_blocking(move || run_turn_blocking(&checkout, &print_target, turn))
-        .await
-        .map_err(join_error_to_py)?;
+    let (result, print_err) = py.detach(|| get_runtime().block_on(run_turn(checkout, print_target, turn)));
+    finalize_turn(py, result, print_err)
+}
+
+/// Awaits one protocol turn and finalizes it for the async drive loops.
+pub(crate) async fn run_turn_async<T: TurnOutcome>(
+    checkout: &SharedCheckout,
+    print_target: &PrintTarget,
+    turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
+) -> PyResult<T> {
+    let (result, print_err) = run_turn(checkout, print_target, turn).await;
     Python::attach(|py| finalize_turn(py, result, print_err))
 }
 
@@ -1562,21 +1614,9 @@ fn duration_from_secs(secs: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(secs).map_err(|err| PyValueError::new_err(format!("invalid timeout: {err}")))
 }
 
-/// Locks a shared slot, ignoring poisoning (a panic elsewhere must not wedge
-/// the pool). Never call while attached to the GIL: a protocol turn holds the
-/// checkout lock for its whole duration and attaches for print callbacks, so
-/// a GIL-holding waiter deadlocks both threads — detach first, or use
-/// [`try_lock`].
+/// Locks the shared *pool* slot, ignoring poisoning (a panic elsewhere must
+/// not wedge the pool). Only ever held to clone/take the `Arc<Pool>` — the
+/// per-session checkout slot is a tokio mutex locked with `.lock().await`.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Non-blocking [`lock`]: `None` when the lock is held (e.g. by a turn in
-/// flight on another thread). Safe to call with the GIL held.
-fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
-    match mutex.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(TryLockError::Poisoned(err)) => Some(err.into_inner()),
-        Err(TryLockError::WouldBlock) => None,
-    }
 }

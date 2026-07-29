@@ -22,6 +22,11 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
 
+The pool is async end-to-end and runs on [tokio](https://tokio.rs): each worker's frames are
+pumped by a dedicated task, and turn deadlines are ordinary timers rather than a watchdog
+thread. Turn futures are not resumable after being dropped mid-flight — the checkout notices,
+discards the worker, and fails the next call cleanly.
+
 ## Usage
 
 Workers are `monty` CLI binaries spawned as subprocesses — build one with
@@ -29,17 +34,18 @@ Workers are `monty` CLI binaries spawned as subprocesses — build one with
 install it from PyPI as [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
 
 ```rust,no_run
-use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent};
+use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent, on_print_sync};
 
-fn main() -> Result<(), PoolError> {
-    let pool = Pool::new(PoolConfig::subprocess("path/to/monty"))?;
+#[tokio::main]
+async fn main() -> Result<(), PoolError> {
+    let pool = Pool::new(PoolConfig::subprocess("path/to/monty")).await?;
 
-    let mut session = pool.checkout(&ReplConfig::default())?;
-    let mut on_print = |_stream, text: &str| print!("{text}");
+    let mut session = pool.checkout(&ReplConfig::default()).await?;
+    let mut on_print = on_print_sync(|_stream, text| print!("{text}"));
 
     // session state persists between feeds on the same checkout
-    session.feed("x = 21", vec![], vec![], false, &mut on_print)?;
-    let event = session.feed("x * 2", vec![], vec![], false, &mut on_print)?;
+    session.feed("x = 21", vec![], vec![], false, &mut on_print).await?;
+    let event = session.feed("x * 2", vec![], vec![], false, &mut on_print).await?;
     match event {
         TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
         // other events are suspensions (external function calls, OS calls,
@@ -49,7 +55,7 @@ fn main() -> Result<(), PoolError> {
     }
 
     // return the worker to the pool for reuse by the next checkout
-    session.finish()?;
+    session.finish().await?;
     Ok(())
 }
 ```
@@ -64,10 +70,10 @@ and restored later — including on a different worker or machine — with `Chec
 - **Crash isolation** — a segfault, stack-overflow abort, or allocator abort in the sandbox
   kills only the worker. The pool observes the death as `PoolError::Crashed`, discards the
   worker, and spawns a replacement; the parent process and every other session stay healthy.
-- **Hard timeouts** — a parent-side watchdog kills any worker whose turn exceeds
+- **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
   and catching hangs those limits cannot see. When a session has a `max_duration` budget,
-  the watchdog also enforces it (plus `duration_limit_grace`) from outside the child.
+  the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
 - **Untrusted children** — the parent treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
   that violates the protocol is discarded.

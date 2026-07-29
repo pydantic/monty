@@ -1,17 +1,22 @@
 //! The elastic worker pool: prewarming, checkout, replacement, teardown.
 
 use std::{
-    sync::{Arc, Condvar, Mutex, PoisonError},
-    time::Instant,
+    mem,
+    pin::pin,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::Duration,
 };
 
 use monty_proto::pb;
+use tokio::{
+    sync::Notify,
+    time::{Instant, timeout_at},
+};
 
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig, request},
-    watchdog::Watchdog,
-    worker::{Worker, lock_ignore_poison},
+    worker::Worker,
 };
 
 /// An elastic pool of `monty subprocess` workers.
@@ -21,20 +26,23 @@ use crate::{
 /// are detected and replaced transparently. See the crate docs for the full
 /// lifecycle.
 ///
-/// `Pool` is safe to share across threads. Dropping it kills and reaps all
-/// idle workers; workers held by live [`Checkout`]s die when those are
-/// finished or dropped.
+/// `Pool` is safe to share across tasks and threads. [`Pool::close`] asks idle
+/// workers to exit cleanly; merely dropping the pool kills them instead (via
+/// their kill-on-drop handles). Workers held by live [`Checkout`]s die when
+/// those are finished or dropped.
 pub struct Pool {
     pub(crate) inner: Arc<PoolInner>,
 }
 
 pub(crate) struct PoolInner {
     pub(crate) config: PoolConfig,
+    /// Guarded by a *synchronous* mutex: every critical section is short and
+    /// await-free, and worker/checkout `Drop` impls must be able to release
+    /// capacity without an async context.
     state: Mutex<PoolState>,
     /// Signalled whenever a worker returns to the idle queue or capacity is
     /// released, waking blocked `checkout` calls.
-    available: Condvar,
-    pub(crate) watchdog: Watchdog,
+    available: Notify,
 }
 
 struct PoolState {
@@ -45,22 +53,21 @@ struct PoolState {
 
 impl Pool {
     /// Creates the pool and eagerly spawns `min_processes` workers, failing
-    /// fast if the binary cannot be spawned.
-    pub fn new(config: PoolConfig) -> Result<Self, PoolError> {
+    /// fast if the binary cannot be spawned. Must be called within a tokio
+    /// runtime (each worker gets a frame-pump task).
+    pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Spawn(format!(
                 "invalid pool size: min_processes={} max_processes={}",
                 config.min_processes, config.max_processes
             )));
         }
-        let watchdog =
-            Watchdog::new().map_err(|err| PoolError::Spawn(format!("failed to spawn the watchdog thread: {err}")))?;
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::new(&config)?);
+                idle.push(Worker::new(&config).await?);
             }
         }
         let total = idle.len();
@@ -68,8 +75,7 @@ impl Pool {
             inner: Arc::new(PoolInner {
                 config,
                 state: Mutex::new(PoolState { idle, total }),
-                available: Condvar::new(),
-                watchdog,
+                available: Notify::new(),
             }),
         })
     }
@@ -77,11 +83,33 @@ impl Pool {
     /// Dedicates a worker to one REPL session created from `repl`.
     ///
     /// Takes an idle worker when one exists, spawns a new one while below
-    /// `max_processes`, and otherwise blocks up to `checkout_timeout`
+    /// `max_processes`, and otherwise waits up to `checkout_timeout`
     /// (forever when `None`) before failing with [`PoolError::Exhausted`].
-    pub fn checkout(&self, repl: &ReplConfig) -> Result<Checkout, PoolError> {
-        let worker = self.inner.acquire_worker()?;
-        Checkout::create(worker, Arc::clone(&self.inner), repl)
+    pub async fn checkout(&self, repl: &ReplConfig) -> Result<Checkout, PoolError> {
+        let worker = self.inner.acquire_worker().await?;
+        Checkout::create(worker, Arc::clone(&self.inner), repl).await
+    }
+
+    /// Asks idle workers to exit cleanly and reaps them, capping the wait per
+    /// worker. Sessions still checked out keep their workers until they finish.
+    ///
+    /// Optional: dropping the pool kills idle workers instead, which is just
+    /// as safe — this only trades a SIGKILL for a clean protocol goodbye.
+    pub async fn close(&self) {
+        let mut idle = {
+            let mut state = lock_ignore_poison(&self.inner.state);
+            mem::take(&mut state.idle)
+        };
+        for worker in &mut idle {
+            let _ = worker
+                .send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})))
+                .await;
+        }
+        for mut worker in idle {
+            // the workers exit concurrently, so the total wait is ~one grace
+            worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
+            self.inner.release_capacity();
+        }
     }
 
     /// Number of idle workers right now (diagnostics/tests only — the value
@@ -102,50 +130,59 @@ impl Pool {
     }
 }
 
+/// How long [`Pool::close`] waits for a worker to exit on its own after the
+/// `Shutdown` request before killing it.
+const SHUTDOWN_EXIT_GRACE: Duration = Duration::from_millis(500);
+
 impl PoolInner {
     /// Takes a worker, reusing/spawning a local one or connecting a fresh remote
-    /// one, waiting as capacity allows. Also used by `Checkout`'s eviction
-    /// recovery to dial a replacement worker mid-checkout.
-    pub(crate) fn acquire_worker(&self) -> Result<Worker, PoolError> {
+    /// one, waiting as capacity allows.
+    pub(crate) async fn acquire_worker(&self) -> Result<Worker, PoolError> {
         // WebSocket connections are single-use and never pooled idle, so the
         // idle-reuse step is skipped and each acquisition dials a fresh worker.
         let websocket = self.config.transport.is_websocket();
         let deadline = self.config.checkout_timeout.map(|t| Instant::now() + t);
-        let mut state = lock_ignore_poison(&self.state);
         loop {
-            if !websocket {
-                // discard workers that died while idle — their replacement is
-                // the spawn below or a later checkout's spawn
-                while let Some(worker) = state.idle.pop() {
-                    if worker.is_dead() {
-                        state.total -= 1;
-                        drop(worker); // reaps
-                    } else {
-                        return Ok(worker);
+            // Register for wakeups BEFORE checking state: a release landing
+            // between the check and the await below is then still observed
+            // (`enable` is what arms an un-polled `Notified`).
+            let mut notified = pin!(self.available.notified());
+            notified.as_mut().enable();
+            // The guard's scope must close before any await below, so the
+            // spawn/connect and the notified wait never hold the lock.
+            let spawn = {
+                let mut state = lock_ignore_poison(&self.state);
+                if !websocket {
+                    // discard workers that died while idle — their replacement
+                    // is the spawn below or a later checkout's spawn
+                    while let Some(mut worker) = state.idle.pop() {
+                        if worker.is_dead() {
+                            state.total -= 1;
+                            drop(worker); // kill-on-drop backstop; already dead
+                        } else {
+                            return Ok(worker);
+                        }
                     }
                 }
-            }
-            if state.total < self.config.max_processes {
                 // reserve capacity before releasing the lock to spawn/connect
-                state.total += 1;
-                drop(state);
-                let acquired = Worker::new(&self.config);
+                let below_cap = state.total < self.config.max_processes;
+                if below_cap {
+                    state.total += 1;
+                }
+                below_cap
+            };
+            if spawn {
+                let acquired = Worker::new(&self.config).await;
                 return acquired.inspect_err(|_| self.release_capacity());
             }
-            state = match deadline {
+            match deadline {
                 Some(deadline) => {
-                    let now = Instant::now();
-                    if now >= deadline {
+                    if timeout_at(deadline, notified).await.is_err() {
                         return Err(PoolError::Exhausted);
                     }
-                    let (guard, _) = self
-                        .available
-                        .wait_timeout(state, deadline - now)
-                        .unwrap_or_else(PoisonError::into_inner);
-                    guard
                 }
-                None => self.available.wait(state).unwrap_or_else(PoisonError::into_inner),
-            };
+                None => notified.await,
+            }
         }
     }
 
@@ -159,7 +196,7 @@ impl PoolInner {
                 .max_checkouts_per_worker
                 .is_some_and(|max| worker.checkouts_served >= max);
         if recycle {
-            drop(worker); // kill + reap
+            drop(worker); // kill (on drop) — reaped by tokio in the background
             self.release_capacity();
         } else {
             lock_ignore_poison(&self.state).idle.push(worker);
@@ -173,21 +210,10 @@ impl PoolInner {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
     }
-
-    /// Asks idle workers to exit cleanly; called on pool drop. Workers that
-    /// don't comply are killed by `Worker::drop` anyway.
-    fn shutdown_idle(&self) {
-        let mut state = lock_ignore_poison(&self.state);
-        for worker in &mut state.idle {
-            let _ = worker.send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})));
-        }
-        // dropping the workers reaps them (kill is a no-op if Shutdown won)
-        state.idle.clear();
-    }
 }
 
-impl Drop for PoolInner {
-    fn drop(&mut self) {
-        self.shutdown_idle();
-    }
+/// Locks a possibly poisoned mutex; a panic elsewhere must not stop us from
+/// killing/reaping children.
+pub(crate) fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

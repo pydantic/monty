@@ -1,14 +1,22 @@
 //! A checked-out worker: one REPL session, driven turn by turn.
 
-use std::{borrow::Cow, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    borrow::Cow,
+    future::{Future, ready},
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
+use tokio::time::timeout;
 
-use crate::{CrashCause, PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
+use crate::{CrashCause, PoolError, pool::PoolInner, worker::Worker};
 
 /// Arguments for the REPL session a checkout creates — mirrors
 /// `MontyRepl`'s constructor surface.
@@ -144,20 +152,57 @@ pub enum ResumeValue {
     NotHandled,
 }
 
+/// The (boxed) future an [`OnPrint`] callback returns for one fragment; the
+/// turn awaits it before reading on, so a slow sink backpressures the worker.
+pub type PrintFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
 /// Callback receiving sandbox `print()` output streamed during a turn.
-pub type OnPrint<'a> = &'a mut dyn FnMut(PrintStream, &str);
+///
+/// The callback returns a future so genuinely async sinks (a JS callback, a
+/// socket) can be awaited per fragment; synchronous sinks wrap themselves
+/// with [`on_print_sync`]. The future must be `'static`, so it captures owned
+/// copies of whatever it needs (including the text, if consumed async).
+pub type OnPrint<'a> = &'a mut (dyn FnMut(PrintStream, &str) -> PrintFuture + Send);
+
+/// Adapts a synchronous print sink to the [`OnPrint`] callback shape.
+///
+/// ```rust,no_run
+/// # use monty_pool::on_print_sync;
+/// let mut on_print = on_print_sync(|_stream, text| print!("{text}"));
+/// // session.feed("print('hi')", vec![], vec![], false, &mut on_print).await?;
+/// ```
+pub fn on_print_sync<F>(mut sink: F) -> impl FnMut(PrintStream, &str) -> PrintFuture + Send
+where
+    F: FnMut(PrintStream, &str) + Send,
+{
+    move |stream, text| {
+        sink(stream, text);
+        Box::pin(ready(()))
+    }
+}
 
 /// One worker dedicated to one REPL session.
 ///
 /// Obtained from [`crate::Pool::checkout`]. [`Checkout::finish`] returns the
 /// worker to the pool; dropping without finishing kills the worker instead —
 /// mid-execution state cannot be trusted back into the pool.
+///
+/// # Cancellation
+///
+/// Turn futures (`feed`, `resume*`, `dump`, ...) are **not** resumable after
+/// being dropped mid-flight: the request may already be on the wire, so the
+/// protocol state is unknowable. The checkout notices on its next call,
+/// discards the worker, and fails with [`PoolError::Protocol`]; `finish` on
+/// such a session likewise discards the worker rather than returning it.
 pub struct Checkout {
     /// `None` after `finish()` or after the worker was discarded on error.
     worker: Option<Worker>,
     pool: Arc<PoolInner>,
     /// The suspension awaiting an answer, when mid-feed.
     pending: Option<Pending>,
+    /// Set while a turn's I/O is in flight; still set on the next call only
+    /// if the previous turn future was cancelled mid-I/O (see the type docs).
+    turn_in_flight: bool,
     /// The session's `max_duration` budget for the parent-side backstop, when
     /// configured. Set from the config on `create`; for `restore`d sessions it
     /// is adopted from the timing fields on the worker's first reply (the limits
@@ -170,7 +215,7 @@ pub struct Checkout {
     /// worker cannot rewind the parent's view of its consumed budget.
     reported_execution: Duration,
     /// The deadline armed for the most recent turn, surfaced by
-    /// [`PoolError::Timeout`] when the watchdog fires.
+    /// [`PoolError::Timeout`] when it fires.
     armed_deadline: Option<Duration>,
     /// The script name a `restore` adopted, captured from the worker's `Load`
     /// reply (the name travels inside the opaque dump, so the parent learns it
@@ -204,7 +249,7 @@ enum Pending {
 impl Checkout {
     /// Sends `Configure` on a fresh worker (the worker materializes the repl
     /// lazily on the first feed, or restores one via `load_snapshot` instead).
-    pub(crate) fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
+    pub(crate) async fn create(worker: Worker, pool: Arc<PoolInner>, repl: &ReplConfig) -> Result<Self, PoolError> {
         let request = request(pb::parent_request::Kind::Configure(pb::Configure {
             script_name: repl.script_name.clone(),
             limits: repl.limits.as_ref().map(Into::into),
@@ -221,13 +266,16 @@ impl Checkout {
             worker: Some(worker),
             pool,
             pending: None,
+            turn_in_flight: false,
             duration_budget: repl.limits.as_ref().and_then(|limits| limits.max_duration),
             reported_execution: Duration::ZERO,
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
         };
-        match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = this.pool.config.request_timeout;
+        match this.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Ok => Ok(this),
             other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
@@ -256,7 +304,7 @@ impl Checkout {
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
     /// not the `Configure` one), which the parent surfaces in restored snapshots.
-    pub fn restore(
+    pub async fn restore(
         &mut self,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
@@ -270,7 +318,10 @@ impl Checkout {
         self.restored_script_name = None;
         self.feed_mounts = build_mount_table(mounts)?;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
-        let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
+        let event = match self
+            .request_turn(&request, self.pool.config.request_timeout, on_print)
+            .await?
+        {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
             other @ ControlEvent::Dump(_) => {
@@ -290,7 +341,7 @@ impl Checkout {
     /// # Errors
     /// [`PoolError::Runtime`] / [`PoolError::Typing`] leave the session
     /// usable; all other errors mean the worker was discarded.
-    pub fn feed(
+    pub async fn feed(
         &mut self,
         code: &str,
         inputs: Vec<(String, MontyObject)>,
@@ -316,11 +367,11 @@ impl Checkout {
                 .collect(),
             skip_type_check,
         }));
-        self.expect_turn(&request, on_print)
+        self.expect_turn(&request, on_print).await
     }
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
-    pub fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+    pub async fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
         let Some(Pending::Call {
             call_id,
             function_name,
@@ -353,7 +404,7 @@ impl Checkout {
         // rejected by `Worker::send` before any bytes reach the child, and
         // `request_turn` surfaces it with the suspension still answerable.
         // Every turn-ending reply overwrites `pending` anyway.
-        self.expect_turn(&request, on_print)
+        self.expect_turn(&request, on_print).await
     }
 
     /// Answers a pending [`TurnEvent::OsCall`] from this feed's mounts, when
@@ -369,7 +420,7 @@ impl Checkout {
     /// auto-answering driver tries mounts first and falls back to its handler,
     /// while a caller driving suspensions by hand can ignore mounts entirely.
     /// Path containment inside covered calls is enforced by the [`MountTable`].
-    pub fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
+    pub async fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
         let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
@@ -391,7 +442,7 @@ impl Checkout {
                     Ok(obj) => ResumeValue::Return(obj),
                     Err(err) => ResumeValue::Error(err.into_exception()),
                 };
-                match self.resume(value, on_print) {
+                match self.resume(value, &mut *on_print).await {
                     // The result never reached the child (too large or too deep
                     // to encode), so the call is still suspended — answer it
                     // with that error instead, letting the sandbox raise a
@@ -399,7 +450,7 @@ impl Checkout {
                     // a rejection before the frame is written leaves `pending`
                     // set, so this cannot catch a genuine sandbox exception.
                     Err(PoolError::Runtime(exc)) if self.pending.is_some() => {
-                        self.resume(ResumeValue::Error(exc), on_print).map(Some)
+                        self.resume(ResumeValue::Error(exc), on_print).await.map(Some)
                     }
                     other => other.map(Some),
                 }
@@ -416,7 +467,7 @@ impl Checkout {
 
     /// Answers a [`TurnEvent::NameLookup`]: `Some(value)` resolves the name,
     /// `None` makes the sandbox raise `NameError`.
-    pub fn resume_name_lookup(
+    pub async fn resume_name_lookup(
         &mut self,
         value: Option<MontyObject>,
         on_print: OnPrint<'_>,
@@ -435,13 +486,13 @@ impl Checkout {
             kind: Some(kind),
         }));
         // `pending` left set — see the comment in [`Self::resume`]
-        self.expect_turn(&request, on_print)
+        self.expect_turn(&request, on_print).await
     }
 
     /// Answers a [`TurnEvent::ResolveFutures`] with results for some or all
     /// pending call ids. Each result must be `Return` or `Error` — a future
     /// cannot resolve to another future or to "not found".
-    pub fn resume_futures(
+    pub async fn resume_futures(
         &mut self,
         results: Vec<(u32, ResumeValue)>,
         on_print: OnPrint<'_>,
@@ -472,7 +523,7 @@ impl Checkout {
             .collect::<Result<Vec<_>, _>>()?;
         let request = request(pb::parent_request::Kind::ResumeFutures(pb::ResumeFutures { results }));
         // `pending` left set — see the comment in [`Self::resume`]
-        self.expect_turn(&request, on_print)
+        self.expect_turn(&request, on_print).await
     }
 
     /// Installs third-party Python packages into the session, making them
@@ -489,7 +540,7 @@ impl Checkout {
     /// frame is sent: a string that uv would parse as an option rather than a
     /// package specifier is rejected with [`PoolError::Runtime`] (a
     /// `ValueError`). See [`validate_requirement`] for the rationale.
-    pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
+    pub async fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
                 "install_dependencies called while a suspension is awaiting an answer".into(),
@@ -506,7 +557,9 @@ impl Checkout {
         let request = request(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
             requirements,
         }));
-        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Ok => Ok(()),
             other => Err(self.protocol_violation(format!("unexpected reply to InstallDependencies: {other:?}"))),
         }
@@ -515,9 +568,11 @@ impl Checkout {
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`Checkout::restore`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
-    pub fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
+    pub async fn dump(&mut self) -> Result<Vec<u8>, PoolError> {
         let request = request(pb::parent_request::Kind::Dump(pb::Dump {}));
-        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Dump(state) => Ok(state),
             other => Err(self.protocol_violation(format!("unexpected reply to Dump: {other:?}"))),
         }
@@ -527,7 +582,7 @@ impl Checkout {
     ///
     /// Consumes the checkout. On error the worker is discarded (and the
     /// error reported), but the pool remains healthy either way.
-    pub fn finish(mut self) -> Result<(), PoolError> {
+    pub async fn finish(mut self) -> Result<(), PoolError> {
         // A websocket worker is single-use — the pool discards it after every
         // checkout — so there is no point round-tripping a `Reset` to ready it
         // for reuse. Dropping it closes the socket, which the child reads as a
@@ -540,7 +595,9 @@ impl Checkout {
             return Ok(());
         }
         let request = request(pb::parent_request::Kind::Reset(pb::Reset {}));
-        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
+        let mut no_print = on_print_sync(|_, _| {});
+        let deadline = self.pool.config.request_timeout;
+        match self.request_turn(&request, deadline, &mut no_print).await? {
             ControlEvent::Ok => {
                 if let Some(mut worker) = self.worker.take() {
                     worker.checkouts_served += 1;
@@ -561,11 +618,15 @@ impl Checkout {
     /// Sends a request and requires the reply to be a [`TurnEvent`].
     ///
     /// This is the entry point for *execution* turns (feed/resume — the
-    /// turns where the sandbox runs code), so the watchdog deadline includes
+    /// turns where the sandbox runs code), so the deadline includes
     /// [`Self::backstop_deadline`] on top of the configured request timeout.
-    fn expect_turn(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+    async fn expect_turn(
+        &mut self,
+        request: &pb::ParentRequest,
+        on_print: OnPrint<'_>,
+    ) -> Result<TurnEvent, PoolError> {
         let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
-        match self.request_turn(request, deadline, on_print)? {
+        match self.request_turn(request, deadline, on_print).await? {
             ControlEvent::Turn(event) => Ok(event),
             other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
         }
@@ -598,35 +659,56 @@ impl Checkout {
         }
     }
 
-    /// The core protocol turn: send one request, stream prints, classify the
-    /// turn-ending event. The watchdog kills the worker if the turn outlives
-    /// `deadline`. All failure paths discard the worker except `Runtime` /
-    /// `Typing`, which are sandbox-level outcomes.
-    fn request_turn(
+    /// The core protocol turn, bounded by `deadline`: when it expires the turn
+    /// I/O is abandoned (safe — reads are pumped whole, never split across the
+    /// cancellation) and the worker is killed and discarded.
+    ///
+    /// Also enforces the cancellation contract (see the type docs): a caller
+    /// that dropped a previous turn future mid-I/O left the protocol state
+    /// unknowable, so the worker is discarded on the next call.
+    async fn request_turn(
         &mut self,
         request: &pb::ParentRequest,
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
+        if self.worker.is_none() {
+            return Err(PoolError::Finished);
+        }
+        if self.turn_in_flight {
+            self.discard_worker();
+            return Err(PoolError::Protocol(
+                "a previous protocol turn was cancelled mid-flight; the worker was discarded".into(),
+            ));
+        }
+        self.turn_in_flight = true;
+        self.armed_deadline = deadline;
+        let outcome = match deadline {
+            Some(limit) => match timeout(limit, self.turn_io(request, on_print)).await {
+                Ok(outcome) => outcome,
+                Err(_elapsed) => Err(self.poison_timeout().await),
+            },
+            None => self.turn_io(request, on_print).await,
+        };
+        self.turn_in_flight = false;
+        outcome
+    }
+
+    /// One request/reply exchange: send the request, stream prints, classify
+    /// the turn-ending event. All failure paths discard the worker except
+    /// `Runtime` / `Typing`, which are sandbox-level outcomes.
+    async fn turn_io(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<ControlEvent, PoolError> {
         let Some(worker) = self.worker.as_mut() else {
             return Err(PoolError::Finished);
         };
-        // Scope the watchdog's sticky kill flag to this turn's deadline so a
-        // kill from a previous turn cannot misclassify this one (see
-        // `Worker::reset_killed_for_timeout`).
-        worker.reset_killed_for_timeout();
-        self.armed_deadline = deadline;
-        let deadline_guard = self.pool.watchdog.arm(worker, deadline);
-
-        if let Err(err) = worker.send(request) {
-            // `write_frame` rejects an oversize frame *before* writing any
-            // bytes, so the worker never saw the request and is still synced —
-            // surface a clean, catchable error instead of discarding a healthy
-            // worker as if it had crashed. For a `resume*` request this also
-            // leaves `pending` set (nothing overwrites it on this path), so
-            // the suspension stays answerable with a smaller value. Every
-            // other send failure is a real I/O break (dead worker / closed
-            // pipe).
+        if let Err(err) = worker.send(request).await {
+            // An oversize frame is rejected *before* any bytes are written, so
+            // the worker never saw the request and is still synced — surface a
+            // clean, catchable error instead of discarding a healthy worker as
+            // if it had crashed. For a `resume*` request this also leaves
+            // `pending` set (nothing overwrites it on this path), so the
+            // suspension stays answerable with a smaller value. Every other
+            // send failure is a real I/O break (dead worker / closed pipe).
             return Err(match err {
                 FrameError::FrameTooLarge { len, max } => PoolError::Runtime(MontyException::new(
                     ExcType::RuntimeError,
@@ -634,11 +716,11 @@ impl Checkout {
                         "request frame of {len} bytes exceeds the maximum of {max} bytes"
                     )),
                 )),
-                _ => self.poison("sending a request"),
+                _ => self.poison("sending a request").await,
             });
         }
-        let outcome = loop {
-            let event = match self.worker.as_mut().expect("checked above").recv() {
+        loop {
+            let event = match self.worker.as_mut().expect("checked above").recv().await {
                 Ok(event) => event,
                 // a decode failure means the frame arrived intact but its
                 // payload was garbage (including values that fail semantic
@@ -647,7 +729,7 @@ impl Checkout {
                 Err(FrameError::Decode(err)) => {
                     return Err(self.protocol_violation(format!("invalid payload from worker: {err}")));
                 }
-                Err(_) => return Err(self.poison("waiting for a reply")),
+                Err(_) => return Err(self.poison("waiting for a reply").await),
             };
             // Print events carry no timing (the fields are zero), so this is
             // a no-op for them thanks to the monotonic-max ratchet.
@@ -663,7 +745,7 @@ impl Checkout {
                         pb::PrintStream::Stderr => PrintStream::Stderr,
                         pb::PrintStream::Stdout | pb::PrintStream::Unspecified => PrintStream::Stdout,
                     };
-                    on_print(stream, &print.text);
+                    on_print(stream, &print.text).await;
                 }
                 Some(pb::child_event::Kind::FunctionCall(call)) => {
                     self.pending = Some(Pending::Call {
@@ -671,7 +753,7 @@ impl Checkout {
                         function_name: call.function_name.clone(),
                         os_call: None,
                     });
-                    break self.convert_turn(|| {
+                    return self.convert_turn(|| {
                         Ok(TurnEvent::FunctionCall {
                             function_name: call.function_name,
                             args: call.args,
@@ -688,11 +770,11 @@ impl Checkout {
                     // payload the child could never legitimately produce is a
                     // protocol violation.
                     let function_call = match call.call {
-                        None => break Err(self.protocol_violation("OsCall event with no call")),
+                        None => return Err(self.protocol_violation("OsCall event with no call")),
                         Some(kind) => match OsFunctionCall::try_from(kind) {
                             Ok(function_call) => function_call,
                             Err(err) => {
-                                break Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
+                                return Err(self.protocol_violation(format!("invalid OS call payload: {err}")));
                             }
                         },
                     };
@@ -708,7 +790,7 @@ impl Checkout {
                         function_name: function_name.clone(),
                         os_call: Some(Box::new(function_call)),
                     });
-                    break Ok(ControlEvent::Turn(TurnEvent::OsCall {
+                    return Ok(ControlEvent::Turn(TurnEvent::OsCall {
                         function_name,
                         args,
                         kwargs,
@@ -717,11 +799,11 @@ impl Checkout {
                 }
                 Some(pb::child_event::Kind::NameLookup(lookup)) => {
                     self.pending = Some(Pending::NameLookup);
-                    break Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
+                    return Ok(ControlEvent::Turn(TurnEvent::NameLookup { name: lookup.name }));
                 }
                 Some(pb::child_event::Kind::ResolveFutures(futures)) => {
                     self.pending = Some(Pending::Futures);
-                    break Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
+                    return Ok(ControlEvent::Turn(TurnEvent::ResolveFutures {
                         pending_call_ids: futures.pending_call_ids,
                     }));
                 }
@@ -730,7 +812,7 @@ impl Checkout {
                     // the feed is over — drop its mounts so overlay writes
                     // cannot leak into the next feed
                     self.feed_mounts = None;
-                    break self.convert_turn(|| {
+                    return self.convert_turn(|| {
                         let value = complete
                             .value
                             .ok_or(monty_proto::ProtoConvertError::MissingField("Complete.value"))?;
@@ -748,7 +830,7 @@ impl Checkout {
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
                     };
-                    break match MontyException::try_from(exception) {
+                    return match MontyException::try_from(exception) {
                         Ok(exc) => Err(PoolError::Runtime(exc)),
                         Err(err) => Err(self.protocol_violation(format!("invalid exception payload: {err}"))),
                     };
@@ -756,12 +838,12 @@ impl Checkout {
                 Some(pb::child_event::Kind::TypingError(typing)) => {
                     self.pending = None;
                     self.feed_mounts = None;
-                    break Err(PoolError::Typing(typing.diagnostics));
+                    return Err(PoolError::Typing(typing.diagnostics));
                 }
-                Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
-                Some(pb::child_event::Kind::DumpResult(dump)) => break Ok(ControlEvent::Dump(dump.state)),
+                Some(pb::child_event::Kind::Ok(_)) => return Ok(ControlEvent::Ok),
+                Some(pb::child_event::Kind::DumpResult(dump)) => return Ok(ControlEvent::Dump(dump.state)),
                 Some(pb::child_event::Kind::FatalError(fatal)) => {
-                    break Err(self.fatal_error(&fatal.message));
+                    return Err(self.fatal_error(&fatal.message).await);
                 }
                 Some(pb::child_event::Kind::Shutdown(shutdown)) => {
                     // Only a serving relay sends this, never a child — so a
@@ -780,31 +862,12 @@ impl Checkout {
                     // host-side dump signing lands it must pass the same
                     // verification there as any other dump.
                     self.discard_worker();
-                    break Err(PoolError::Shutdown { dump: shutdown.dump });
+                    return Err(PoolError::Shutdown { dump: shutdown.dump });
                 }
                 None => {
                     return Err(self.protocol_violation("unexpected event"));
                 }
             }
-        };
-        self.finish_request_turn(deadline_guard, outcome)
-    }
-
-    /// Disarms the watchdog, then guards the narrow race where the deadline
-    /// fired between reading the turn-ending event and removing the watchdog
-    /// entry: if it did, the worker is already dead, so the apparent success
-    /// is reported as this turn's timeout instead of handing back a dead
-    /// worker.
-    fn finish_request_turn(
-        &mut self,
-        deadline_guard: Option<DeadlineGuard>,
-        outcome: Result<ControlEvent, PoolError>,
-    ) -> Result<ControlEvent, PoolError> {
-        drop(deadline_guard);
-        if self.worker.as_ref().is_some_and(Worker::was_killed_for_timeout) {
-            Err(self.poison("waiting for a reply"))
-        } else {
-            outcome
         }
     }
 
@@ -834,18 +897,18 @@ impl Checkout {
     /// The frame arrives on an intact stream, but it means the far end is
     /// *gone*: a child writes it and exits immediately (version skew, frame
     /// desync, panic), and a serving relay uses it to report that it could not
-    /// start a child at all. That is a crash with a reason attached rather
+    /// start a worker at all. That is a crash with a reason attached rather
     /// than a protocol disagreement, so it is reported as one — a caller that
     /// handles crashes by starting a new session needs no extra arm, and the
     /// worker's own account lands in [`CrashCause::Announced`].
-    fn fatal_error(&mut self, message: &str) -> PoolError {
+    async fn fatal_error(&mut self, message: &str) -> PoolError {
         let status = match self.worker.take() {
             // the child exits right after the frame, so give it a moment to do
             // so before killing: that is what surfaces e.g. the non-zero status
             // of a version-skew exit, which a SIGKILL would replace with the
             // signal and lose
             Some(mut worker) => {
-                let status = worker.reap_or_kill(FATAL_EXIT_GRACE);
+                let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
                 drop(worker);
                 self.pool.release_capacity();
                 status
@@ -862,24 +925,20 @@ impl Checkout {
         }
     }
 
-    /// Discards the worker after an I/O failure and classifies it as a
-    /// watchdog timeout, a crash, or — on the WebSocket transport, where the
-    /// worker is a remote process this client cannot reap — a disconnect.
-    fn poison(&mut self, context: &str) -> PoolError {
+    /// Discards the worker after an I/O failure and classifies it as a crash,
+    /// or — on the WebSocket transport, where the worker is a remote process
+    /// this client cannot reap — a disconnect. Deadline expiry goes through
+    /// [`Self::poison_timeout`] instead.
+    async fn poison(&mut self, context: &str) -> PoolError {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
         };
         self.pending = None;
         self.feed_mounts = None;
-        let timed_out = worker.was_killed_for_timeout();
-        let status = worker.kill_and_reap();
+        let status = worker.kill_and_reap().await;
         drop(worker);
         self.pool.release_capacity();
-        if timed_out {
-            PoolError::Timeout {
-                timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
-            }
-        } else if self.pool.config.transport.is_websocket() {
+        if self.pool.config.transport.is_websocket() {
             PoolError::Disconnected {
                 context: context.to_owned(),
             }
@@ -890,6 +949,22 @@ impl Checkout {
                     context: context.to_owned(),
                 },
             }
+        }
+    }
+
+    /// Discards the worker after the turn deadline expired: the turn's I/O
+    /// future has already been dropped (whole-frame reads make that safe),
+    /// so this only kills, reaps, and classifies.
+    async fn poison_timeout(&mut self) -> PoolError {
+        if let Some(mut worker) = self.worker.take() {
+            let _ = worker.kill_and_reap().await;
+            drop(worker);
+            self.pool.release_capacity();
+        }
+        self.pending = None;
+        self.feed_mounts = None;
+        PoolError::Timeout {
+            timeout: self.armed_deadline.unwrap_or(Duration::ZERO),
         }
     }
 
@@ -904,6 +979,7 @@ impl Checkout {
         }
         self.pending = None;
         self.feed_mounts = None;
+        self.turn_in_flight = false;
     }
 }
 

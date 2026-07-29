@@ -42,7 +42,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyTuple},
 };
-use pyo3_async_runtimes::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
@@ -50,8 +50,8 @@ use crate::{
     exceptions::MontyError,
     external::{CallResult, ExternalLookup},
     pool::{
-        FeedArgs, SharedCheckout, discard_checkout, discard_checkout_async, dispatch_os_parts, ext_to_resume,
-        finalize_turn, lock, pool_err_to_py, run_turn_async, run_turn_blocking,
+        FeedArgs, SharedCheckout, TurnFuture, discard_checkout, dispatch_os_parts, ext_to_resume, pool_err_to_py,
+        run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
 };
@@ -145,7 +145,11 @@ pub(crate) fn feed_start_sync(
         dc_registry,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
-    drive_sync(py, ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p))
+    drive_sync(
+        py,
+        ctx,
+        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+    )
 }
 
 /// Async counterpart of [`feed_start_sync`]: the returned coroutine runs the
@@ -169,7 +173,11 @@ pub(crate) fn feed_start_async(
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
     future_into_py(py, async move {
-        drive_async(ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p)).await
+        drive_async(
+            ctx,
+            turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+        )
+        .await
     })
 }
 
@@ -186,18 +194,16 @@ pub(crate) fn feed_start_async(
 fn drive_sync(
     py: Python<'_>,
     ctx: DriveContext,
-    initial: impl FnOnce(&mut Checkout, OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send,
+    initial: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, TurnEvent> + Send,
 ) -> PyResult<Py<PyAny>> {
-    let (result, print_err) = py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, initial));
-    let event = finalize_turn(py, result, print_err)?;
+    let event = run_turn_sync(py, &ctx.checkout, &ctx.print_target, initial)?;
     build_snapshot(py, ctx, event, false)
 }
 
-/// Async counterpart of [`drive_sync`]: the worker turn runs via
-/// `spawn_blocking`.
+/// Async counterpart of [`drive_sync`]: the worker turn is awaited directly.
 async fn drive_async(
     ctx: DriveContext,
-    initial: impl FnOnce(&mut Checkout, OnPrint<'_>) -> Result<TurnEvent, PoolError> + Send + 'static,
+    initial: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, TurnEvent> + Send,
 ) -> PyResult<Py<PyAny>> {
     let event = run_turn_async(&ctx.checkout, &ctx.print_target, initial).await?;
     Python::attach(|py| build_snapshot(py, ctx, event, true))
@@ -206,9 +212,12 @@ async fn drive_async(
 /// Answers a suspended OS call from the feed's mounts, returning the next
 /// event when one covered it and `None` when the caller must answer it itself.
 fn try_mounts_sync(py: Python<'_>, ctx: &DriveContext) -> PyResult<Option<TurnEvent>> {
-    let (result, print_err) =
-        py.detach(|| run_turn_blocking(&ctx.checkout, &ctx.print_target, Checkout::resume_from_mounts));
-    finalize_turn(py, result, print_err)
+    run_turn_sync(
+        py,
+        &ctx.checkout,
+        &ctx.print_target,
+        turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+    )
 }
 
 /// Builds the Python object for a caller-visible turn event: a snapshot for a
@@ -344,15 +353,16 @@ impl SnapshotState {
         let resumed = &self.resumed;
         let state = py
             .detach(|| {
-                let mut guard = lock(&checkout);
-                if resumed.load(Ordering::SeqCst) {
-                    return Ok(None);
-                }
-                guard
-                    .as_mut()
-                    .ok_or(PoolError::Finished)
-                    .and_then(Checkout::dump)
-                    .map(Some)
+                get_runtime().block_on(async {
+                    let mut guard = checkout.lock().await;
+                    if resumed.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    match guard.as_mut() {
+                        Some(checkout) => checkout.dump().await.map(Some),
+                        None => Err(PoolError::Finished),
+                    }
+                })
             })
             .map_err(|e| pool_err_to_py(py, e))?;
         match state {
@@ -553,14 +563,14 @@ impl PyFunctionSnapshot {
     fn resume(&self, py: Python<'_>, result: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, result)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
     }
 
     /// Resumes an OS-call snapshot with monty's default unhandled-OS behaviour.
     fn resume_not_handled(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let value = self.0.not_handled_value()?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
     }
 
     /// Answers this call automatically, then drives to the next snapshot (or
@@ -600,12 +610,12 @@ impl PyFunctionSnapshot {
                     // "coroutine was never awaited" ResourceWarning: a sync
                     // session has no event loop to drive it.
                     let _ = coro.bind(py).call_method0(intern!(py, "close"));
-                    py.detach(|| discard_checkout(&ctx.checkout));
+                    py.detach(|| get_runtime().block_on(discard_checkout(&ctx.checkout)));
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
             }
         };
-        drive_sync(py, ctx, move |c, p| c.resume(value, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p))))
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -665,19 +675,17 @@ impl PyAsyncFunctionSnapshot {
     fn resume<'py>(&self, py: Python<'py>, result: &Bound<'_, PyDict>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.resume_value(py, result)?;
         let ctx = self.0.snapshot.claim(py)?;
-        future_into_py(
-            py,
-            async move { drive_async(ctx, move |c, p| c.resume(value, p)).await },
-        )
+        future_into_py(py, async move {
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
+        })
     }
 
     fn resume_not_handled<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let value = self.0.not_handled_value()?;
         let ctx = self.0.snapshot.claim(py)?;
-        future_into_py(
-            py,
-            async move { drive_async(ctx, move |c, p| c.resume(value, p)).await },
-        )
+        future_into_py(py, async move {
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
+        })
     }
 
     /// Async sibling of [`PyFunctionSnapshot::resume_auto`]. A coroutine external
@@ -693,7 +701,13 @@ impl PyAsyncFunctionSnapshot {
             // asyncio task-locals that `future_into_py`'s scope establishes.
             let answer: PyResult<ResumeValue> = if call.is_os_function {
                 // mounts get first refusal, then the captured `os=`
-                match run_turn_async(&ctx.checkout, &ctx.print_target, Checkout::resume_from_mounts).await? {
+                match run_turn_async(
+                    &ctx.checkout,
+                    &ctx.print_target,
+                    turn_fn(|c, p| Box::pin(c.resume_from_mounts(p))),
+                )
+                .await?
+                {
                     Some(event) => return Python::attach(|py| build_snapshot(py, ctx, event, true)),
                     None => Ok(Python::attach(|py| {
                         dispatch_os_parts(
@@ -726,11 +740,11 @@ impl PyAsyncFunctionSnapshot {
             let value = match answer {
                 Ok(value) => value,
                 Err(err) => {
-                    discard_checkout_async(&ctx.checkout).await;
+                    discard_checkout(&ctx.checkout).await;
                     return Err(err);
                 }
             };
-            drive_async(ctx, move |c, p| c.resume(value, p)).await
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume(value, p)))).await
         })
     }
 
@@ -812,7 +826,7 @@ impl PyNameLookupSnapshot {
     fn resume(&self, py: Python<'_>, value: MaybeValue<'_>) -> PyResult<Py<PyAny>> {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, move |c, p| c.resume_name_lookup(value, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p))))
     }
 
     /// Answers this name lookup automatically from the captured
@@ -824,11 +838,11 @@ impl PyNameLookupSnapshot {
         let value = match resolve_captured_name(py, &ctx, &self.0.name) {
             Ok(value) => value,
             Err(err) => {
-                py.detach(|| discard_checkout(&ctx.checkout));
+                py.detach(|| get_runtime().block_on(discard_checkout(&ctx.checkout)));
                 return Err(err);
             }
         };
-        drive_sync(py, ctx, move |c, p| c.resume_name_lookup(value, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p))))
     }
 
     fn dump(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
@@ -861,7 +875,7 @@ impl PyAsyncNameLookupSnapshot {
         let value = self.0.resume_value(py, value)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
-            drive_async(ctx, move |c, p| c.resume_name_lookup(value, p)).await
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p)))).await
         })
     }
 
@@ -873,11 +887,11 @@ impl PyAsyncNameLookupSnapshot {
             let value = match Python::attach(|py| resolve_captured_name(py, &ctx, &name)) {
                 Ok(value) => value,
                 Err(err) => {
-                    discard_checkout_async(&ctx.checkout).await;
+                    discard_checkout(&ctx.checkout).await;
                     return Err(err);
                 }
             };
-            drive_async(ctx, move |c, p| c.resume_name_lookup(value, p)).await
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_name_lookup(value, p)))).await
         })
     }
 
@@ -946,7 +960,7 @@ impl PyFutureSnapshot {
     fn resume(&self, py: Python<'_>, results: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
-        drive_sync(py, ctx, move |c, p| c.resume_futures(resolved, p))
+        drive_sync(py, ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(resolved, p))))
     }
 
     /// Sync sessions have no event loop to drive coroutine externals, so this
@@ -986,7 +1000,7 @@ impl PyAsyncFutureSnapshot {
         let resolved = self.0.resume_values(py, results)?;
         let ctx = self.0.snapshot.claim(py)?;
         future_into_py(py, async move {
-            drive_async(ctx, move |c, p| c.resume_futures(resolved, p)).await
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(resolved, p)))).await
         })
     }
 
@@ -1011,11 +1025,11 @@ impl PyAsyncFutureSnapshot {
             let results = match resolved {
                 Ok(results) => results,
                 Err(err) => {
-                    discard_checkout_async(&ctx.checkout).await;
+                    discard_checkout(&ctx.checkout).await;
                     return Err(err);
                 }
             };
-            drive_async(ctx, move |c, p| c.resume_futures(results, p)).await
+            drive_async(ctx, turn_fn(move |c, p| Box::pin(c.resume_futures(results, p)))).await
         })
     }
 
