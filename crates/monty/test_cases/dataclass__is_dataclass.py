@@ -65,7 +65,10 @@ assert b.repr is True
 assert b.compare is True
 assert b.kw_only is False
 assert b.hash is None
-assert b.doc is None
+# `Field.doc` is new in CPython 3.14, so a pre-3.14 dual-run has no attribute to
+# compare; Monty always has it (see `tests/dataclass_fields.rs` for the strict check).
+if hasattr(b, 'doc'):
+    assert b.doc is None
 
 try:
     b.nope
