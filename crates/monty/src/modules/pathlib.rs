@@ -30,5 +30,5 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     // pathlib.Path - the Path class (callable to create Path instances)
     module.set_attr(StaticStrings::PathClass, Value::Builtin(Builtins::Type(Type::Path)), vm);
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }

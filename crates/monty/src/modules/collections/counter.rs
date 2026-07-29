@@ -1,6 +1,6 @@
 //! Runtime behaviour for `collections.Counter`.
 //!
-//! A Counter is a `dict` tagged with [`DictKind::Counter`](crate::types::DictKind);
+//! A Counter is a `dict` tagged with a `Counter` [`DictKind`](crate::types::DictKind);
 //! everything here operates on that dict through the VM by [`HeapId`] rather than
 //! on `Dict`'s internals, which is why it lives beside the module surface instead
 //! of in `types/dict.rs`. The dict method surface is inherited as-is — only the

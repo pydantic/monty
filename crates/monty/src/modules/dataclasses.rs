@@ -54,7 +54,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
         Value::ModuleFunction(ModuleFunctions::Dataclasses(DataclassesFunctions::IsDataclass)),
         vm,
     );
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a `dataclasses` module function call.

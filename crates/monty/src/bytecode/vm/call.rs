@@ -945,7 +945,7 @@ impl VM<'_> {
         // Allocate the instance. On allocation failure drop the args we own.
         let instance_id = match self
             .heap
-            .allocate(HeapData::Instance(Instance::new(class_id, Dict::new())))
+            .allocate(HeapData::Instance(Box::new(Instance::new(class_id, Dict::new()))))
         {
             Ok(id) => id,
             Err(e) => {

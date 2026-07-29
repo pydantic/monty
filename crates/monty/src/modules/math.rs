@@ -196,7 +196,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     module.set_attr(StaticStrings::MathInf, Value::Float(f64::INFINITY), vm);
     module.set_attr(StaticStrings::MathNan, Value::Float(f64::NAN), vm);
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Static mapping of attribute names to math functions for module creation.

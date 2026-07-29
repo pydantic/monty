@@ -657,7 +657,7 @@ impl<'a> HeapPtr<'a> {
             }
             HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read_boxed(base, dataclass, readers)),
             HeapData::Class(class) => HeapReadOutput::Class(heap_read_boxed(base, class, readers)),
-            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
+            HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read_boxed(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(base, field, readers)),
             HeapData::ListIterator(iter) => HeapReadOutput::ListIterator(heap_read(base, iter, readers)),
@@ -673,7 +673,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::CallableIterator(c) => HeapReadOutput::CallableIterator(heap_read(base, c, readers)),
             HeapData::Itertools(i) => HeapReadOutput::Itertools(heap_read(base, i, readers)),
             HeapData::LongInt(l) => HeapReadOutput::LongInt(heap_read(base, l, readers)),
-            HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
+            HeapData::Module(module) => HeapReadOutput::Module(heap_read_boxed(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
             HeapData::GatherFuture(gather_future) => {
                 HeapReadOutput::GatherFuture(heap_read_boxed(base, gather_future, readers))

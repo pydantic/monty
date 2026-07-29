@@ -84,6 +84,12 @@ pub(crate) struct Dict {
 
 /// Distinguishes a plain `dict` from a `collections.defaultdict` or `Counter`.
 ///
+/// Stored as one word: a plain `dict` (the overwhelmingly common case) is
+/// `None`, and the special kinds box a [`DictSpecial`]. `Dict` is embedded
+/// inline in `Instance` and `Module`, so every byte here is paid by the
+/// `HeapData` size ceiling (see the assertion in `heap_data.rs`) — an unboxed
+/// factory `Value` would push the whole heap arena's entry size up.
+///
 /// The real solution is inheritance, as CPython does it: both are genuine
 /// `dict` subclasses there (`class Counter(dict)`; `defaultdict`'s C struct
 /// embeds a `PyDictObject` and adds a `default_factory`), so they get the dict
@@ -92,14 +98,17 @@ pub(crate) struct Dict {
 /// hence the `type(x) is Counter` divergence in `limitations/collections.md`.
 /// Workable in the meantime; revisit once inheritance exists.
 ///
-/// The `Default(Some(_))` factory is a heap reference the dict owns — released
-/// in [`Dict::py_dec_ref_ids`] / `DropWithContext` and reported to the cycle
+/// The defaultdict factory is a heap reference the dict owns — released in
+/// [`Dict::py_dec_ref_ids`] / `DropWithContext` and reported to the cycle
 /// collector alongside the entries, so those two paths MUST stay in sync.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DictKind {
-    /// A plain `dict`.
-    #[default]
-    Plain,
+pub(crate) struct DictKind(Option<Box<DictSpecial>>);
+
+/// Boxed state for the non-plain [`DictKind`]s. Private to this module —
+/// everything outside speaks through `DictKind`'s constructors and `Dict`'s
+/// accessors (`is_defaultdict`, `default_factory`, `kind_type`, ...).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+enum DictSpecial {
     /// A `collections.defaultdict`; the optional `default_factory` is invoked
     /// on a missing-key access. `None` means missing keys raise `KeyError`.
     Default(Option<Value>),
@@ -107,6 +116,26 @@ pub(crate) enum DictKind {
     /// inserting), and it adds `most_common`/`elements`/arithmetic on top of
     /// the dict surface.
     Counter,
+}
+
+impl DictKind {
+    /// A plain `dict` — no allocation.
+    #[must_use]
+    pub fn plain() -> Self {
+        Self(None)
+    }
+
+    /// A `defaultdict` kind, taking ownership of the factory reference.
+    #[must_use]
+    pub fn defaultdict(factory: Option<Value>) -> Self {
+        Self(Some(Box::new(DictSpecial::Default(factory))))
+    }
+
+    /// A `Counter` kind.
+    #[must_use]
+    pub fn counter() -> Self {
+        Self(Some(Box::new(DictSpecial::Counter)))
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -129,7 +158,7 @@ impl Dict {
             indices: HashTable::with_capacity(capacity),
             entries: Vec::with_capacity(capacity),
             contains_refs: false,
-            kind: DictKind::Plain,
+            kind: DictKind::plain(),
         }
     }
 
@@ -140,24 +169,24 @@ impl Dict {
         if matches!(factory, Some(Value::Ref(_))) {
             self.contains_refs = true;
         }
-        self.kind = DictKind::Default(factory);
+        self.kind = DictKind::defaultdict(factory);
     }
 
     /// Returns whether this dict is a `defaultdict`.
     #[must_use]
     pub fn is_defaultdict(&self) -> bool {
-        matches!(self.kind, DictKind::Default(_))
+        matches!(self.kind.0.as_deref(), Some(DictSpecial::Default(_)))
     }
 
     /// Marks this dict as a `collections.Counter`.
     pub fn make_counter(&mut self) {
-        self.kind = DictKind::Counter;
+        self.kind = DictKind::counter();
     }
 
     /// Returns whether this dict is a `Counter`.
     #[must_use]
     pub fn is_counter(&self) -> bool {
-        matches!(self.kind, DictKind::Counter)
+        matches!(self.kind.0.as_deref(), Some(DictSpecial::Counter))
     }
 
     /// Clones this dict's kind for a derived dict, taking a counted reference to
@@ -169,17 +198,19 @@ impl Dict {
     /// is_defaultdict()` chain silently degrades a `Counter` to a plain dict.
     #[must_use]
     pub fn cloned_kind(&self, heap: &impl ContainsHeap) -> DictKind {
-        match &self.kind {
-            DictKind::Plain => DictKind::Plain,
-            DictKind::Default(factory) => DictKind::Default(factory.as_ref().map(|f| f.clone_with_heap(heap))),
-            DictKind::Counter => DictKind::Counter,
+        match self.kind.0.as_deref() {
+            None => DictKind::plain(),
+            Some(DictSpecial::Default(factory)) => {
+                DictKind::defaultdict(factory.as_ref().map(|f| f.clone_with_heap(heap)))
+            }
+            Some(DictSpecial::Counter) => DictKind::counter(),
         }
     }
 
     /// Adopts a kind produced by [`cloned_kind`], taking ownership of any
     /// factory reference it carries.
     pub fn set_kind(&mut self, kind: DictKind) {
-        if matches!(kind, DictKind::Default(Some(Value::Ref(_)))) {
+        if matches!(kind.0.as_deref(), Some(DictSpecial::Default(Some(Value::Ref(_))))) {
             self.contains_refs = true;
         }
         self.kind = kind;
@@ -189,10 +220,10 @@ impl Dict {
     /// `Counter`).
     #[must_use]
     pub fn kind_type(&self) -> Type {
-        match self.kind {
-            DictKind::Plain => Type::Dict,
-            DictKind::Default(_) => Type::DefaultDict,
-            DictKind::Counter => Type::Counter,
+        match self.kind.0.as_deref() {
+            None => Type::Dict,
+            Some(DictSpecial::Default(_)) => Type::DefaultDict,
+            Some(DictSpecial::Counter) => Type::Counter,
         }
     }
 
@@ -207,9 +238,9 @@ impl Dict {
     /// factory-less defaultdict.
     #[must_use]
     pub fn default_factory(&self) -> Option<&Value> {
-        match &self.kind {
-            DictKind::Default(factory) => factory.as_ref(),
-            DictKind::Plain | DictKind::Counter => None,
+        match self.kind.0.as_deref() {
+            Some(DictSpecial::Default(factory)) => factory.as_ref(),
+            None | Some(DictSpecial::Counter) => None,
         }
     }
 
@@ -222,10 +253,10 @@ impl Dict {
         }
         // The `default_factory =` setter only calls this on an existing
         // defaultdict; the other arms are defensive.
-        match &mut self.kind {
-            DictKind::Default(slot) => mem::replace(slot, factory),
-            DictKind::Plain | DictKind::Counter => {
-                self.kind = DictKind::Default(factory);
+        match self.kind.0.as_deref_mut() {
+            Some(DictSpecial::Default(slot)) => mem::replace(slot, factory),
+            None | Some(DictSpecial::Counter) => {
+                self.kind = DictKind::defaultdict(factory);
                 None
             }
         }
@@ -1371,9 +1402,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
             // no factory (the zero-arg constructor); Counter is rejected above.
             StaticStrings::Fromkeys => {
                 let kind = if self.get(vm.heap).is_defaultdict() {
-                    DictKind::Default(None)
+                    DictKind::defaultdict(None)
                 } else {
-                    DictKind::Plain
+                    DictKind::plain()
                 };
                 dict_fromkeys(args, kind, vm)
             }
@@ -1464,7 +1495,7 @@ impl HeapItem for Dict {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Release the default_factory (a defaultdict with a heap-ref factory, e.g.
         // a lambda). MUST be reported here and in `for_each_child_id` identically.
-        if let DictKind::Default(Some(factory)) = &mut self.kind
+        if let Some(DictSpecial::Default(Some(factory))) = self.kind.0.as_deref_mut()
             && let Value::Ref(id) = factory
         {
             stack.push(*id);
@@ -1499,7 +1530,9 @@ impl<C: ContainsHeap> DropWithContext<C> for Dict {
 
 impl<C: ContainsHeap> DropWithContext<C> for DictKind {
     fn drop_with(self, heap: &mut C) {
-        if let Self::Default(Some(factory)) = self {
+        if let Some(special) = self.0
+            && let DictSpecial::Default(Some(factory)) = *special
+        {
             factory.drop_with(heap);
         }
     }

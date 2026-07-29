@@ -27,6 +27,7 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
+        tuple::TupleVec,
     },
     value::{EitherStr, Value},
 };
@@ -263,7 +264,7 @@ impl RePattern {
             _ => {
                 for caps in self.compiled.captures_iter(text) {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
+                    let mut elements: TupleVec = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
                         let val = cap.map_or("", |m| m.as_str());
                         elements.push(allocate_string(val, heap)?);

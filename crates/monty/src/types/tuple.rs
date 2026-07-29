@@ -47,14 +47,14 @@ use crate::{
 
 /// Inline capacity for small tuples. Tuples with 2 or fewer elements avoid
 /// heap allocation for the items storage.
-const TUPLE_INLINE_CAPACITY: usize = 3;
+const TUPLE_INLINE_CAPACITY: usize = 2;
 
 /// Storage type for tuple items. Uses SmallVec to inline small tuples.
 pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 
 /// Python tuple value stored on the heap.
 ///
-/// Uses `SmallVec<[Value; 3]>` internally to avoid separate heap allocation
+/// Uses `SmallVec<[Value; 2]>` internally to avoid separate heap allocation
 /// for tuples with 3 or fewer elements. This is a significant optimization
 /// since small tuples are very common (enumerate, dict items, returns, etc.).
 ///

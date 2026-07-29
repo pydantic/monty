@@ -404,12 +404,12 @@ impl Type {
         match (self, method_id) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::Plain, vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::plain(), vm).map(AttrCallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
             (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::Default(None), vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(AttrCallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
             (Self::Counter, m) if m == StaticStrings::Fromkeys => {

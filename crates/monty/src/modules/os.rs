@@ -99,7 +99,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     for (attr, value) in attrs {
         module.set_attr(attr, value, vm);
     }
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a call to an os module function.

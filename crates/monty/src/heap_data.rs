@@ -33,7 +33,7 @@ use crate::{
 ///
 /// The enum is moved by value on every heap allocate and free, so its inline
 /// size is a direct memcpy cost on those hot paths. Variants larger than
-/// [`Tuple`]/[`Dict`] (the largest hot variants) are therefore `Box`ed — see the size
+/// [`Dict`] (the largest hot variant) are therefore `Box`ed — see the size
 /// assertion below the enum before adding or growing a variant.
 ///
 /// Each variant wraps a type that implements `PyTrait`, providing
@@ -93,7 +93,7 @@ pub(crate) enum HeapData {
     /// An instance of a user-defined class.
     ///
     /// Holds a reference to its `Class` and an `attrs` dict (the instance `__dict__`).
-    Instance(Instance),
+    Instance(Box<Instance>),
     /// A method bound to an instance, produced by `obj.method` without calling it.
     BoundMethod(BoundMethod),
     /// One `dataclasses.Field` of a `@dataclass`, held by the class's
@@ -132,7 +132,7 @@ pub(crate) enum HeapData {
     ///
     /// Modules have a name and a dictionary of attributes. They are created by
     /// import statements and can have refs to other heap values in their attributes.
-    Module(Module),
+    Module(Box<Module>),
     /// A coroutine object from an async function call.
     ///
     /// Contains pre-bound arguments and captured cells, ready to be awaited.
@@ -189,10 +189,10 @@ pub(crate) enum HeapData {
 }
 
 // `HeapData` is memcpy'd on every allocate and free, so its inline size is paid on
-// the hottest heap paths. `Tuple` (inline `SmallVec` storage) and `Dict` — both far
-// too hot to box — set the 80-byte payload ceiling (96 with the discriminant); if
-// this assertion fails a variant has outgrown them and should be boxed.
-const _: () = assert!(mem::size_of::<HeapData>() <= 96);
+// the hottest heap paths. `Dict` — far too hot to box — sets the 72-byte payload
+// ceiling (currently tag-free thanks to niche packing); if this assertion fails a
+// variant has outgrown it and should be boxed (or, for `Dict` itself, slimmed down).
+const _: () = assert!(mem::size_of::<HeapData>() <= 80);
 
 impl HeapData {
     /// Returns whether this heap data type can participate in reference cycles.
