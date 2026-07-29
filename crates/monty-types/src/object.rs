@@ -830,6 +830,10 @@ pub enum MontyType {
     ItertoolsCycle,
     #[strum(serialize = "NotImplementedType")]
     NotImplementedType,
+    /// The `__dataclass_params__` of a sandbox `@dataclass`: the options it was
+    /// decorated with, named as CPython's private class reports itself.
+    #[strum(serialize = "_DataclassParams")]
+    DataclassParams,
 }
 
 impl fmt::Display for MontyType {

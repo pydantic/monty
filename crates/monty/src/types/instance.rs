@@ -72,7 +72,23 @@ impl<'h> HeapRead<'h, Instance> {
 
     /// Sets an instance attribute, returning the previous value (if any) for the
     /// caller to drop. Takes ownership of both `name` and `value`.
+    ///
+    /// The one hook a `@dataclass(frozen=True)` needs on the write path; what
+    /// counts as frozen and how it reads is [`dataclasses`]' business.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
+        let class_id = self.get(vm.heap).class();
+        if let Some(exc) = dataclasses::frozen_assignment_error(class_id, &name, vm) {
+            [name, value].drop_with(vm);
+            return Err(exc);
+        }
+        self.attrs_mut().set(name, value, vm)
+    }
+
+    /// Sets an attribute without the frozen check, for the synthesized
+    /// `__init__` — which has to populate a `frozen=True` instance that its own
+    /// `set_attr` would refuse, exactly as CPython's generated `__init__` goes
+    /// through `object.__setattr__`.
+    pub fn set_attr_unchecked(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.attrs_mut().set(name, value, vm)
     }
 }
@@ -109,23 +125,34 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     /// Hashes an instance, following CPython's precedence.
     ///
-    /// A user `__hash__` wins; `__hash__ = None` is the explicit unhashable
-    /// opt-out. Failing that, a class defining `__eq__` is unhashable — CPython
-    /// sets `__hash__ = None` implicitly whenever `__eq__` is defined — as is a
-    /// default `@dataclass` (`eq=True, frozen=False`). Everything else hashes by
+    /// A user `__hash__` wins and `__hash__ = None` is the explicit unhashable
+    /// opt-out; failing that, a class defining `__eq__` is unhashable, because
+    /// CPython sets `__hash__ = None` implicitly whenever `__eq__` is defined.
+    /// A dataclass then follows its options — `frozen=True` hashes by field
+    /// values, value equality alone is unhashable — and anything left hashes by
     /// identity.
     fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let class_id = self.get(vm.heap).class();
         if class_defines(class_id, "__hash__", vm) {
-            if class_defines_not_none(class_id, "__hash__", vm) {
+            return if class_defines_not_none(class_id, "__hash__", vm) {
                 instance_user_hash(self_id, vm)
             } else {
                 Ok(None)
+            };
+        }
+        if class_defines(class_id, "__eq__", vm) {
+            return Ok(None);
+        }
+        match dataclasses::dataclass_options(class_id, vm) {
+            Some(options) if options.eq && options.frozen => {
+                let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
+                dataclasses::dataclass_hash(self_id, &field_names, vm).map(Some)
             }
-        } else if class_defines(class_id, "__eq__", vm) || dataclasses::is_dataclass_class(class_id, vm) {
-            Ok(None)
-        } else {
-            Ok(Some(identity_hash(self_id)))
+            // Value equality without immutability is unhashable, like CPython's
+            // default `eq=True, frozen=False`.
+            Some(options) if options.eq => Ok(None),
+            // `eq=False` keeps identity equality, so identity hashing stands.
+            _ => Ok(Some(identity_hash(self_id))),
         }
     }
 
@@ -646,7 +673,8 @@ pub(crate) fn instance_user_eq(self_id: HeapId, other: &Value, vm: &mut VM<'_>) 
 }
 
 /// Dispatches the synthesized field-wise `__eq__` of a dataclass instance, or
-/// `Ok(None)` when `self_id` is not one, which leaves the caller on identity.
+/// `Ok(None)` when `self_id` is not one — or is one declared `eq=False` — which
+/// leaves the caller on identity.
 ///
 /// Not in `HeapRead<Instance>::py_eq_impl` because fields are read as
 /// `self.field` is (see [`instance_attr`]), which needs the instance's `HeapId`.
@@ -655,9 +683,14 @@ pub(crate) fn instance_dataclass_eq(self_id: HeapId, other: &Value, vm: &mut VM<
         return Ok(None);
     }
     let class_id = instance_class(self_id, vm);
-    match dataclasses::dataclass_fields(class_id, vm) {
-        None => Ok(None),
-        Some(field_names) => dataclasses::dataclass_eq(self_id, &field_names, other, vm),
+    match dataclasses::dataclass_options(class_id, vm) {
+        // `eq=True` (the default) gets CPython's field-wise `__eq__`; `eq=False`
+        // and a plain class alike return `None`, leaving the caller on identity.
+        Some(options) if options.eq => {
+            let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
+            dataclasses::dataclass_eq(self_id, &field_names, other, vm)
+        }
+        _ => Ok(None),
     }
 }
 
