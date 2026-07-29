@@ -1,0 +1,66 @@
+crates/monty/src/modules/sys.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 94
+crates/monty/src/modules/dataclasses.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 57
+crates/monty/src/modules/gc.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 56
+crates/monty/src/bytecode/vm/call.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 948
+crates/monty/src/types/type.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 407,412
+crates/monty/src/modules/typing.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 38
+crates/monty/src/types/tuple.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 50,57
+crates/monty/src/modules/unicodedata.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 88
+crates/monty/src/modules/collections/defaultdict.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 3
+crates/monty/src/modules/asyncio.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 57
+crates/monty/src/modules/datetime.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 50
+crates/monty/src/modules/json/mod.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 68
+crates/monty/src/types/dict.rs
+  s_18d9ea429c0dee::t_4ddd492fed3dea 87-92,101-102,105-111,121-138
+  s_18d9ea429c0dee::t_188019e4f81e06 161,172,178,183,189,201-206,213,223-226,241-243,256-259,1498,1533-1535
+  s_18d9ea429c0dee::t_63be8f483fe2e8 1405,1407
+crates/monty/src/modules/collections/mod.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 72
+crates/monty/src/heap_data.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 36,96,135,192,195
+  s_18d9ea429c0dee::t_891dce63d9f835 193-194
+crates/monty/src/modules/math.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 199
+crates/monty/src/modules/collections/counter.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 3
+crates/monty/src/modules/re.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 190
+crates/monty/src/types/re_pattern.rs
+  s_18d9ea429c0dee::t_62d696009a83d0 258
+crates/monty/src/heap.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 660,676
+crates/monty/src/modules/os.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 102
+crates/monty/src/modules/itertools.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 49
+crates/monty/src/modules/pathlib.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b3cb416c88e900ee1e1347ec880cba6b8d9ac95a",
+  "prompts": {},
+  "sessions": {
+    "s_18d9ea429c0dee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce9ce288-1215-4805-9199-36972a841e3f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
