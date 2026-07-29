@@ -807,12 +807,16 @@ function functionValue(name: string): Uint8Array {
   return obj.finish()
 }
 
-/** Encodes a JS seconds duration as the protocol's microsecond integer. */
-function durationMicros(secs: number): number {
+/** Encodes a JS seconds duration as the protocol's saturated `uint64` microseconds. */
+function durationMicros(secs: number): bigint {
   if (!Number.isFinite(secs) || secs < 0) {
     throw new RangeError('maxDurationSecs must be a finite non-negative number')
   }
-  return Math.round(secs * 1_000_000)
+  const micros = Math.round(secs * 1_000_000)
+  if (!Number.isFinite(micros)) {
+    throw new RangeError('maxDurationSecs is too large')
+  }
+  return micros >= 2 ** 64 ? 0xffff_ffff_ffff_ffffn : BigInt(micros)
 }
 
 function crashed(message: string): NativeTurn {

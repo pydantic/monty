@@ -2,7 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { kind } from './env.js'
 
-import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { FunctionSnapshot, MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run, pool } = setupPool()
@@ -26,6 +26,24 @@ test('resource limits custom', async () => {
 
 test('run with limits', async () => {
   t.is(await run('1 + 1', { limits: { maxDurationSecs: 5.0 } }), 2)
+})
+
+test('large duration limits saturate to protocol uint64', async () => {
+  const maxDurationSecs = Number.MAX_SAFE_INTEGER
+  t.is(await run('1 + 1', { limits: { maxDurationSecs } }), 2)
+
+  let blob: Uint8Array
+  await using source = await pool().checkout()
+  const snapshot = await source.feedStart('fetch()')
+  t.true(snapshot instanceof FunctionSnapshot)
+  blob = await snapshot.dump()
+
+  await using session = await pool().checkout()
+  t.is(await session.feedRun('1 + 1', { maxDurationSecs }), 2)
+
+  await using restored = await pool().checkout()
+  const loaded = await restored.loadSnapshot(blob, { maxDurationSecs })
+  t.true(loaded instanceof FunctionSnapshot)
 })
 
 // =============================================================================
