@@ -1,0 +1,75 @@
+crates/monty/src/types/path.rs
+  s_7ee30745208492::t_0cace7b406d979 18
+  s_7ee30745208492::t_658e51606a2dc8 459
+  s_7ee30745208492::t_58715938cf6dda 7
+crates/monty-proto/Cargo.toml
+  s_7ee30745208492::t_ac57ab427e0824 42
+  s_7ee30745208492::t_1b49e0b76c07ed 28-29
+crates/monty/src/types/tuple.rs
+  s_7ee30745208492::t_dcba18f90ec335 9
+  s_7ee30745208492::t_4a49c217c370ef 373
+crates/monty/src/types/slice.rs
+  s_7ee30745208492::t_0cace7b406d979 14
+  s_7ee30745208492::t_1d65c03fa624ec 6
+  s_7ee30745208492::t_a4107b1ec96324 175
+crates/monty/src/types/timedelta.rs
+  s_7ee30745208492::t_a2dbc1be4b8be3 7
+  s_7ee30745208492::t_0cace7b406d979 15
+  s_7ee30745208492::t_a7d1efed4d6be7 317
+crates/monty/src/heap_data.rs
+  s_7ee30745208492::t_29a72efed74d47 8
+  s_7ee30745208492::t_8f96afc931c30c 826,831
+crates/monty/src/types/dict.rs
+  s_7ee30745208492::t_2a47ce775ef053 13
+  s_7ee30745208492::t_10f9214d372fbf 248-250
+  s_7ee30745208492::t_a6d775132dd383 1
+crates/monty/tests/py_object.rs
+  s_7ee30745208492::t_59e127ea9f7e5f 1,3,8
+crates/monty/src/types/datetime.rs
+  s_7ee30745208492::t_0cace7b406d979 22
+  s_7ee30745208492::t_3a17074ee3617b 819
+crates/monty/src/types/date.rs
+  s_7ee30745208492::t_0cace7b406d979 19
+  s_7ee30745208492::t_714a25cbce9ef2 207
+crates/monty-proto/src/python/dataclass.rs
+  s_7ee30745208492::t_bfce42c49d7316 395
+  s_7ee30745208492::t_30442f8e9442f7 8,10
+crates/monty/src/hash.rs
+  s_7ee30745208492::t_6e3cac3cec6d93 159
+  s_7ee30745208492::t_90326a24a9bd6c 33
+  s_7ee30745208492::t_d84274e13ffbe4 127,132-134,137
+  s_7ee30745208492::t_238d98add68103 179
+  s_7ee30745208492::t_181ffa37d80c00 188
+  s_7ee30745208492::t_599a17bd1e13a4 170
+  s_7ee30745208492::t_626b1fbaa2f45e 146
+crates/monty/src/types/namedtuple.rs
+  s_7ee30745208492::t_77f7058eedd8ab 8
+  s_7ee30745208492::t_65688902c62522 346
+Cargo.lock
+  ai_agent 2118
+crates/monty/src/types/range.rs
+  s_7ee30745208492::t_9b4af68ad50380 12
+  s_7ee30745208492::t_4f0e9d1fdc65e9 301
+crates/monty/src/types/timezone.rs
+  s_7ee30745208492::t_0cace7b406d979 16
+  s_7ee30745208492::t_03bf5d2b64d92f 242
+crates/monty/src/types/dataclass.rs
+  s_7ee30745208492::t_594bbe51c5c94e 3,7
+  s_7ee30745208492::t_0fd718d27ffba2 183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ad318545e2ac23aa9fc1e1dc6be395607eb2d992",
+  "prompts": {},
+  "sessions": {
+    "s_7ee30745208492": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "098a124e-975b-46e7-af0a-9c773a429972",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
