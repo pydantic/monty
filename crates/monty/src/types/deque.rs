@@ -6,7 +6,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
-    heap::{DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource_checks::check_repeat_size,
     types::{LazyHeapSet, Type, list::repr_sequence_fmt, long_int::repeat_count},
@@ -180,35 +180,26 @@ impl Deque {
         let DequeArgs { iterable, maxlen } = DequeArgs::from_args(args, vm)?;
 
         // `maxlen` is validated before the iterable is consumed (CPython order), so
-        // both failing branches must release the already-bound `iterable`. An
-        // explicit `None` is unbounded; a big int out of range is `OverflowError`.
+        // the guard releases the already-bound `iterable` on every failing branch.
+        // An explicit `None` is unbounded; a big int out of range is `OverflowError`.
+        let mut iterable = DropGuard::new(iterable, vm);
         let raw_maxlen = if let Value::None = maxlen {
             None
         } else {
+            let vm = iterable.ctx();
             let parsed = read_ssize(&maxlen, vm, ExcType::overflow_c_ssize_t);
             maxlen.drop_with(vm);
             match parsed {
                 Some(Ok(i)) => Some(i),
-                Some(Err(e)) => {
-                    iterable.drop_with(vm);
-                    return Err(e);
-                }
-                None => {
-                    iterable.drop_with(vm);
-                    return Err(ExcType::type_error_integer_required());
-                }
+                Some(Err(e)) => return Err(e),
+                None => return Err(ExcType::type_error_integer_required()),
             }
         };
-        let maxlen = match raw_maxlen.map(check_maxlen).transpose() {
-            Ok(maxlen) => maxlen,
-            Err(e) => {
-                iterable.drop_with(vm);
-                return Err(e);
-            }
-        };
+        let maxlen = raw_maxlen.map(check_maxlen).transpose()?;
 
         // An omitted iterable is empty; an explicit `None` falls through to
         // `collect_owned_iterable`, raising `'NoneType' object is not iterable`.
+        let (iterable, vm) = iterable.into_parts();
         let items = match iterable {
             None => Vec::new(),
             Some(v) => collect_owned_iterable(v, vm)?,
@@ -216,9 +207,7 @@ impl Deque {
 
         let (deque, evicted) = Self::new(items, maxlen);
         // Items dropped by the maxlen truncation still hold their refcounts.
-        for value in evicted {
-            value.drop_with(vm);
-        }
+        evicted.drop_with(vm);
         let heap_id = vm.heap.allocate(HeapData::Deque(deque))?;
         Ok(Value::Ref(heap_id))
     }
@@ -492,9 +481,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
         let (deque, evicted) = Deque::new(items, maxlen);
-        for value in evicted {
-            value.drop_with(vm.heap);
-        }
+        evicted.drop_with(vm.heap);
         let id = vm.heap.allocate(HeapData::Deque(deque))?;
         Ok(Some(Value::Ref(id)))
     }
@@ -749,9 +736,7 @@ fn call_deque_method<'h>(
             }
             this.bump_state();
             let items: Vec<Value> = this.items.drain(..).collect();
-            for value in items {
-                value.drop_with(vm);
-            }
+            items.drop_with(vm);
             Ok(Value::None)
         }
         StaticStrings::Copy => {
@@ -759,9 +744,7 @@ fn call_deque_method<'h>(
             let maxlen = deque.get(vm.heap).maxlen();
             let items = deque.clone_all_items(vm);
             let (new_deque, evicted) = Deque::new(items, maxlen);
-            for value in evicted {
-                value.drop_with(vm);
-            }
+            evicted.drop_with(vm);
             let id = vm.heap.allocate(HeapData::Deque(new_deque))?;
             Ok(Value::Ref(id))
         }
@@ -796,16 +779,12 @@ fn call_deque_method<'h>(
 /// `deque.rotate([n=1])` — rotates right by `n` (left if negative), wrapping.
 fn rotate<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>) -> RunResult<Value> {
     let RotateArgs { n } = RotateArgs::from_args(args, vm)?;
+    defer_drop!(n, vm);
     // A big int is a valid rotation count; only one out of `i64` range is an
     // `OverflowError`, matching CPython's `PyNumber_AsSsize_t`.
-    let parsed = read_ssize(&n, vm, ExcType::overflow_c_ssize_t);
-    let n = if let Some(res) = parsed {
-        n.drop_with(vm);
-        res?
-    } else {
-        let name = n.py_type_name(vm);
-        n.drop_with(vm);
-        return Err(ExcType::type_error_not_an_integer(&name));
+    let n = match read_ssize(n, vm, ExcType::overflow_c_ssize_t) {
+        Some(res) => res?,
+        None => return Err(ExcType::type_error_not_an_integer(&n.py_type_name(vm))),
     };
     let this = deque.get_mut(vm.heap);
     let len = this.items.len();
@@ -830,13 +809,17 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
         item,
     } = InsertArgs::from_args(args, vm)?;
     defer_drop!(index_value, vm);
+    // Every failing branch below releases `item` through the guard — including
+    // the `track_growth` limit, where a plain `Drop` would leak its refcount.
+    // The insert at the end takes it back out.
+    let mut item_guard = DropGuard::new(item, vm);
+    let vm = item_guard.ctx();
 
     // CPython checks fullness before touching the index.
     let this = deque.get(vm.heap);
     if let Some(max) = this.maxlen()
         && this.len() >= max
     {
-        item.drop_with(vm);
         return Err(ExcType::index_error_deque_full());
     }
 
@@ -844,15 +827,8 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
     // `OverflowError` (CPython's `PyNumber_AsSsize_t`), not a type error.
     let raw = match read_ssize(index_value, vm, ExcType::overflow_c_ssize_t) {
         Some(Ok(i)) => i,
-        Some(Err(e)) => {
-            item.drop_with(vm);
-            return Err(e);
-        }
-        None => {
-            let name = index_value.py_type_name(vm);
-            item.drop_with(vm);
-            return Err(ExcType::type_error_not_an_integer(&name));
-        }
+        Some(Err(e)) => return Err(e),
+        None => return Err(ExcType::type_error_not_an_integer(&index_value.py_type_name(vm))),
     };
 
     // insert() clamps rather than raising, like list.insert.
@@ -861,6 +837,7 @@ fn insert<'h>(deque: &mut HeapRead<'h, Deque>, args: ArgValues, vm: &mut VM<'h>)
     let idx = usize::try_from(normalized).expect("index clamped non-negative");
 
     vm.heap.track_growth(VALUE_SIZE)?;
+    let (item, vm) = item_guard.into_parts();
     if matches!(item, Value::Ref(_)) {
         deque.get_mut(vm.heap).contains_refs = true;
     }
@@ -1060,33 +1037,29 @@ fn repeat_deque(source: Vec<Value>, maxlen: Option<usize>, count: usize, vm: &mu
         check_repeat_size(mem::size_of::<Value>(), kept, vm.heap.tracker())?;
         // `Vec::new()` (not `with_capacity(kept)`): the check above is the real
         // guard, and reserving an attacker-sized capacity would itself abort.
-        let mut result = Vec::new();
+        // The guard releases the clones built so far if the time poll trips.
+        let mut result = DropGuard::new(Vec::new(), vm);
         if kept > 0 {
             let start = (len - kept % len) % len;
             for i in 0..kept {
-                result.push(source[(start + i % len) % len].clone_with_heap(vm.heap));
-                // Poll once per notional copy; on a timeout, release the clones
-                // built so far rather than leaking them through the plain `Drop`.
-                if i % len == 0
-                    && let Err(e) = vm.heap.check_time()
-                {
-                    result.drop_with(vm);
-                    return Err(e.into());
+                let (items, vm) = result.as_parts_mut();
+                items.push(source[(start + i % len) % len].clone_with_heap(vm.heap));
+                // Poll once per notional copy.
+                if i % len == 0 {
+                    vm.heap.check_time()?;
                 }
             }
         }
-        result
+        result.into_inner()
     } else {
         check_repeat_size(len.saturating_mul(mem::size_of::<Value>()), count, vm.heap.tracker())?;
-        let mut result = Vec::with_capacity(len * count);
+        let mut result = DropGuard::new(Vec::with_capacity(len * count), vm);
         for _ in 0..count {
-            result.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));
-            if let Err(e) = vm.heap.check_time() {
-                result.drop_with(vm);
-                return Err(e.into());
-            }
+            let (items, vm) = result.as_parts_mut();
+            items.extend(source.iter().map(|v| v.clone_with_heap(vm.heap)));
+            vm.heap.check_time()?;
         }
-        result
+        result.into_inner()
     };
     // We already trimmed to at most `maxlen`, so `Deque::new` evicts nothing and
     // no refcounts need releasing — `debug_assert` guards that invariant.

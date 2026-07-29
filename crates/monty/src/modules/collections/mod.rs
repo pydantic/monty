@@ -30,7 +30,7 @@ use crate::{
     args::{ArgValues, FromArgs},
     builtins::Builtins,
     bytecode::VM,
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropWithContext, HeapData, HeapId, HeapReadOutput},
     intern::StaticStrings,
@@ -99,12 +99,8 @@ pub(crate) fn counter_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value>
 
     // Counter accepts at most one positional (the iterable/mapping).
     if total > 1 {
-        if let Some(source) = source {
-            source.drop_with(vm);
-        }
-        for extra in pos {
-            extra.drop_with(vm);
-        }
+        source.drop_with(vm);
+        pos.drop_with(vm);
         kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(
             "Counter.__init__",
@@ -144,9 +140,7 @@ pub(crate) fn defaultdict_init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Va
         Some(value) if value.is_callable(vm.heap) => Some(value),
         Some(value) => {
             value.drop_with(vm);
-            for extra in pos {
-                extra.drop_with(vm);
-            }
+            pos.drop_with(vm);
             kwargs.drop_with(vm);
             return Err(ExcType::type_error("first argument must be callable or None"));
         }
@@ -242,9 +236,7 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
     // Collect defaults (rightmost fields), then validate the count.
     let default_values = collect_defaults(defaults, vm)?;
     if default_values.len() > names.len() {
-        for v in default_values {
-            v.drop_with(vm);
-        }
+        default_values.drop_with(vm);
         return Err(ExcType::type_error("Got more default values than field names"));
     }
 
@@ -276,29 +268,15 @@ fn parse_field_names(field_names: &Value, vm: &mut VM<'_>) -> RunResult<Vec<Stri
     } else {
         let items = collect_owned_iterable::<Vec<Value>>(field_names.clone_with_heap(vm.heap), vm)?;
         let mut names = Vec::with_capacity(items.len());
-        // Drain by hand so a failing `str()` (a field's `__str__` raising)
-        // releases the current item *and* the un-iterated remainder — a bare
-        // `?` inside a `for` loop would leak both.
-        let mut iter = items.into_iter();
-        while let Some(item) = iter.next() {
-            let as_str = match item.py_str(vm) {
-                Ok(as_str) => as_str,
-                Err(e) => {
-                    item.drop_with(vm);
-                    iter.drop_with(vm);
-                    return Err(e);
-                }
-            };
-            let owned = as_str.to_str(vm).map(str::to_owned);
-            as_str.drop_with(vm);
-            item.drop_with(vm);
-            match owned {
-                Ok(name) => names.push(name),
-                Err(e) => {
-                    iter.drop_with(vm);
-                    return Err(e);
-                }
-            }
+        // A failing `str()` (a field's `__str__` raising) must release the
+        // current item *and* the un-iterated remainder; the guards cover both.
+        let iter = items.into_iter();
+        defer_drop_mut!(iter, vm);
+        for item in iter.by_ref() {
+            defer_drop!(item, vm);
+            let as_str = item.py_str(vm)?;
+            defer_drop!(as_str, vm);
+            names.push(as_str.to_str(vm)?.to_owned());
         }
         Ok(names)
     }
