@@ -257,7 +257,9 @@ fn namedtuple(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     let field_names: Vec<EitherStr> = names.into_iter().map(EitherStr::Heap).collect();
     let class = NamedTupleClass::new(type_name, field_names, default_values, module);
-    Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTupleClass(class))?))
+    Ok(Value::Ref(
+        vm.heap.allocate(HeapData::NamedTupleClass(Box::new(class)))?,
+    ))
 }
 
 /// Parses the `field_names` argument into owned strings.

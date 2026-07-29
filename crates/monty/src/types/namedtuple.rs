@@ -1231,7 +1231,7 @@ pub(crate) fn build_namedtuple(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     let nt = NamedTuple::with_class(name, field_names, items, class_id);
-    let id = vm.heap.allocate(HeapData::NamedTuple(nt))?;
+    let id = vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))?;
     // The instance owns a reference to its class object (see `py_dec_ref_ids`).
     if let Some(cid) = class_id {
         vm.heap.inc_ref(cid);

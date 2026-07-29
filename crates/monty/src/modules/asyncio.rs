@@ -125,7 +125,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
         .collect();
     let gather_future = GatherFuture::new(items);
-    let id = vm.heap.allocate(HeapData::GatherFuture(gather_future))?;
+    let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)))?;
     Ok(Value::Ref(id))
 }
 

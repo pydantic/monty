@@ -583,15 +583,34 @@ impl<'a> HeapPtr<'a> {
         }
 
         /// Like `heap_read` but for `Box<T>` fields inside `HeapData` variants.
+        ///
+        /// The `&Box<T>` is only used to locate the box field inside the enum; the
+        /// inner pointer is *loaded out of* that field rather than derived by
+        /// dereferencing the box. Dereferencing (`boxed.as_ref()`) would create a
+        /// shared `&T` whose `SharedReadOnly` provenance makes later
+        /// `HeapRead::get_mut` writes UB; the loaded pointer instead carries the
+        /// box's own stored (writeable) provenance.
         #[expect(
             clippy::borrowed_box,
             reason = "We intentionally take &Box<T> to signal this is for boxed HeapData variants; &T would lose that context"
         )]
-        fn heap_read_boxed<'a, T>(boxed: &Box<T>, readers: NonNull<Cell<usize>>) -> HeapRead<'a, T> {
+        fn heap_read_boxed<'a, T>(
+            base: *mut HeapData,
+            boxed: &Box<T>,
+            readers: NonNull<Cell<usize>>,
+        ) -> HeapRead<'a, T> {
+            let base_addr = base as usize;
+            let field_addr = ptr::from_ref(boxed) as usize;
+            let offset = field_addr - base_addr;
+            // SAFETY: `offset` locates the live `Box<T>` field within the enum, and the
+            // pointer to it is derived from the `UnsafeCell`'s `*mut` (not from `&Box<T>`),
+            // preserving `SharedReadWrite` permission for the load below. `Box<T>` with
+            // `T: Sized` is guaranteed to be represented as a single non-null pointer, so
+            // loading the field as `*mut T` yields the box's data pointer together with
+            // the read/write provenance it was stored with.
+            let value = unsafe { NonNull::new_unchecked(base.byte_add(offset).cast::<*mut T>().read()) };
             HeapRead {
-                // SAFETY: The Box's allocation is valid for reads/writes as long as the
-                // HeapData containing it is alive.
-                value: unsafe { NonNull::new_unchecked(ptr::from_ref(boxed.as_ref()).cast_mut()) },
+                value,
                 readers,
                 borrow: PhantomData,
             }
@@ -615,8 +634,10 @@ impl<'a> HeapPtr<'a> {
             HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
             HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(base, deque, readers)),
             HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
-            HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple, readers)),
-            HeapData::NamedTupleClass(class) => HeapReadOutput::NamedTupleClass(heap_read(base, class, readers)),
+            HeapData::NamedTuple(named_tuple) => {
+                HeapReadOutput::NamedTuple(heap_read_boxed(base, named_tuple, readers))
+            }
+            HeapData::NamedTupleClass(class) => HeapReadOutput::NamedTupleClass(heap_read_boxed(base, class, readers)),
             HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
             HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v, readers)),
             HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v, readers)),
@@ -634,8 +655,8 @@ impl<'a> HeapPtr<'a> {
             HeapData::Exception(simple_exception) => {
                 HeapReadOutput::Exception(heap_read(base, simple_exception, readers))
             }
-            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read(base, dataclass, readers)),
-            HeapData::Class(class) => HeapReadOutput::Class(heap_read(base, class, readers)),
+            HeapData::Dataclass(dataclass) => HeapReadOutput::Dataclass(heap_read_boxed(base, dataclass, readers)),
+            HeapData::Class(class) => HeapReadOutput::Class(heap_read_boxed(base, class, readers)),
             HeapData::Instance(instance) => HeapReadOutput::Instance(heap_read(base, instance, readers)),
             HeapData::BoundMethod(bound_method) => HeapReadOutput::BoundMethod(heap_read(base, bound_method, readers)),
             HeapData::DataclassField(field) => HeapReadOutput::DataclassField(heap_read(base, field, readers)),
@@ -655,15 +676,15 @@ impl<'a> HeapPtr<'a> {
             HeapData::Module(module) => HeapReadOutput::Module(heap_read(base, module, readers)),
             HeapData::Coroutine(coroutine) => HeapReadOutput::Coroutine(heap_read(base, coroutine, readers)),
             HeapData::GatherFuture(gather_future) => {
-                HeapReadOutput::GatherFuture(heap_read(base, gather_future, readers))
+                HeapReadOutput::GatherFuture(heap_read_boxed(base, gather_future, readers))
             }
             HeapData::ExternalFuture(external_future) => {
-                HeapReadOutput::ExternalFuture(heap_read(base, external_future, readers))
+                HeapReadOutput::ExternalFuture(heap_read_boxed(base, external_future, readers))
             }
             HeapData::Path(path) => HeapReadOutput::Path(heap_read(base, path, readers)),
-            HeapData::OpenFile(file) => HeapReadOutput::OpenFile(heap_read(base, file, readers)),
-            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(re_pattern, readers)),
-            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read(base, re_match, readers)),
+            HeapData::OpenFile(file) => HeapReadOutput::OpenFile(heap_read_boxed(base, file, readers)),
+            HeapData::RePattern(re_pattern) => HeapReadOutput::RePattern(heap_read_boxed(base, re_pattern, readers)),
+            HeapData::ReMatch(re_match) => HeapReadOutput::ReMatch(heap_read_boxed(base, re_match, readers)),
             HeapData::Date(d) => HeapReadOutput::Date(heap_read(base, d, readers)),
             HeapData::DateTime(d) => HeapReadOutput::DateTime(heap_read(base, d, readers)),
             HeapData::TimeDelta(d) => HeapReadOutput::TimeDelta(heap_read(base, d, readers)),

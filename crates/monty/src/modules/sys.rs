@@ -79,7 +79,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
             Value::Int(0),
         ],
     );
-    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(version_info))?;
+    let version_info_id = vm.heap.allocate(HeapData::NamedTuple(Box::new(version_info)))?;
     module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm);
 
     // Test-only callables — see the module-level docs and the

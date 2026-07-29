@@ -188,7 +188,7 @@ impl RePattern {
         heap: &Heap,
     ) -> RunResult<Value> {
         let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
-        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
+        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m)))?))
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
