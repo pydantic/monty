@@ -1,0 +1,59 @@
+crates/monty-cpython/src/host_pathlib.rs
+  s_cfe376c695ce8f::t_c74a8a86755280 26-29,101-104,109-112,117-120,125-128
+  s_cfe376c695ce8f::t_8c4509c534c0d0 1-25,30-100,105-108,113-116,121-124,129-148
+crates/monty-cpython/README.md
+  s_cfe376c695ce8f::t_37e48c7fd87b10 150-188
+  s_cfe376c695ce8f::t_8ea9e52ec064dc 235-240
+crates/monty-cpython/Cargo.toml
+  s_cfe376c695ce8f::t_f446d31fa9221a 45-48
+crates/monty-cpython/src/pyexec.rs
+  s_cfe376c695ce8f::t_10d618f936bee8 19,24,35,37
+  s_cfe376c695ce8f::t_2f8ee2a8418859 11-13
+  s_cfe376c695ce8f::t_14089665e551ce 104-106,109,117-118,120,128
+  s_cfe376c695ce8f::t_9f19ce32d56285 174
+  s_cfe376c695ce8f::t_528993952ecdc9 162
+  s_cfe376c695ce8f::t_c2b67f557862f4 268,271-272
+crates/monty-cpython/src/bridge.rs
+  s_cfe376c695ce8f::t_09a884f00883ff 19
+  s_cfe376c695ce8f::t_ccb76aed27e1f7 1-18,20-154
+crates/monty-cpython/src/session.rs
+  s_cfe376c695ce8f::t_1d2aac8259f341 24,26
+  s_cfe376c695ce8f::t_16e5c0110d849f 205-208,210-212
+  s_cfe376c695ce8f::t_7cb9a6b62e53be 13
+crates/monty-cpython/src/events.rs
+  s_cfe376c695ce8f::t_18bc00bf0b0011 8
+  s_cfe376c695ce8f::t_92c9c21c632e9e 78-86
+crates/monty-cpython/src/host_pathlib.py
+  s_cfe376c695ce8f::t_881ac77819ca53 1-110
+crates/monty-cpython/tests/stdio_session.rs
+  s_cfe376c695ce8f::t_a2b614478c4da5 125-142
+  s_cfe376c695ce8f::t_54ab4e55e9dff2 51-54,67-70
+  s_cfe376c695ce8f::t_a4993da7c7469f 169,264,311,360,403,435,479,516,552,586,649,697,729,760,785,826,861,891,920,959
+  s_cfe376c695ce8f::t_7c0e5ecaee0a31 29,31
+  s_cfe376c695ce8f::t_2c48982c02979d 75-78,84
+  s_cfe376c695ce8f::t_94caa927435070 1043
+  s_cfe376c695ce8f::t_e268f53bf94335 1158-1169
+  s_cfe376c695ce8f::t_0eaa8999e576d2 983-989,991-1042,1044-1063,1081-1108
+  s_cfe376c695ce8f::t_022edf9e9cf060 1064-1080
+  s_cfe376c695ce8f::t_5d8429bc2f7d59 990
+  s_cfe376c695ce8f::t_28ce4c666e0912 18
+  s_cfe376c695ce8f::t_52692ca40afa85 4-5
+crates/monty-cpython/src/lib.rs
+  s_cfe376c695ce8f::t_f7f90908eb4bf2 9,11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2afdf0ea35a8d2f414b6e018642d2c4ec2d79a7c",
+  "prompts": {},
+  "sessions": {
+    "s_cfe376c695ce8f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "44004d25-0e9c-41d1-9c8f-2f74e07631d2",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
