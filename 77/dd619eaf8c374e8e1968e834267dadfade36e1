@@ -1,0 +1,19 @@
+crates/monty-server/src/child.rs
+  s_c34bba15aeabb6::t_2718c502427667 9-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "77dd619eaf8c374e8e1968e834267dadfade36e1",
+  "prompts": {},
+  "sessions": {
+    "s_c34bba15aeabb6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfb61ce2-7858-46cf-85fa-94293b7fc2ef",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
