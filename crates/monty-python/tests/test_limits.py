@@ -8,7 +8,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import AsyncMonty, Monty, MontyRuntimeError, ResourceLimits
+from pydantic_monty import AsyncMonty, FunctionSnapshot, Monty, MontyRuntimeError, ResourceLimits
 
 
 def test_resource_limits_typed_dict():
@@ -126,10 +126,12 @@ def test_load_snapshot_max_duration_replaces_the_dumps_budget(pool: Monty):
     runs against the fresh limit rather than the serialized one."""
     with pool.checkout() as session:
         snap = session.feed_start('fetch()\nwhile True:\n    pass')
+        assert isinstance(snap, FunctionSnapshot)
         blob = snap.dump()
 
     with pool.checkout() as session:
         loaded = session.load_snapshot(blob, max_duration_secs=0.1)
+        assert isinstance(loaded, FunctionSnapshot)
         with pytest.raises(MontyRuntimeError) as exc_info:
             loaded.resume({'return_value': None})
         assert isinstance(exc_info.value.exception(), TimeoutError)
