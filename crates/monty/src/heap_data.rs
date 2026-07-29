@@ -202,9 +202,6 @@ impl HeapData {
             | Self::Deque(_)
             | Self::Tuple(_)
             | Self::NamedTuple(_)
-            // A namedtuple class owns its `defaults`, which may be heap refs
-            // (e.g. `namedtuple('C', ['a'], defaults=[[]])`), so it can sit on
-            // a cycle just like `Class`.
             | Self::NamedTupleClass(_)
             | Self::Dict(_)
             | Self::DictKeysView(_)
@@ -221,8 +218,6 @@ impl HeapData {
             | Self::BoundMethod(_)
             | Self::DataclassField(_)
             | Self::ListIterator(_)
-            // A deque iterator owns a reference to its deque (a container), so it
-            // can close a cycle exactly like `ListIterator`.
             | Self::DequeIterator(_)
             | Self::TupleIterator(_)
             | Self::DictKeyIterator(_)
@@ -282,7 +277,6 @@ impl HeapData {
             Self::List(_) => Type::List,
             Self::Deque(_) => Type::Deque,
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
-            // A namedtuple class object's type is `type`, like any class.
             Self::NamedTupleClass(_) => Type::Type,
             Self::Dict(_) => Type::Dict,
             Self::DictKeysView(_) => Type::DictKeys,
@@ -1080,7 +1074,6 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::DateTime(value) => value.py_iter(self_id, vm),
             Self::TimeDelta(value) => value.py_iter(self_id, vm),
             Self::TimeZone(value) => value.py_iter(self_id, vm),
-            // A namedtuple *class* is a callable, not an iterable.
             Self::NamedTupleClass(_)
             | Self::Closure(_)
             | Self::FunctionDefaults(_)
