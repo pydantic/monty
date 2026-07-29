@@ -10,12 +10,22 @@
 //! - `py_next` cannot hold the state borrow: adaptors re-enter the VM, so each
 //!   per-type function takes the `HeapRead` and re-projects under short borrows.
 
+pub mod chain;
+pub mod compress;
 pub mod count;
+pub mod cycle;
+pub mod islice;
+pub mod pairwise;
 pub mod repeat;
 
 use std::{fmt::Write, mem};
 
+pub(crate) use chain::Chain;
+pub(crate) use compress::Compress;
 pub(crate) use count::Count;
+pub(crate) use cycle::Cycle;
+pub(crate) use islice::Islice;
+pub(crate) use pairwise::Pairwise;
 pub(crate) use repeat::Repeat;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +46,11 @@ use crate::{
 pub(crate) enum ItertoolsIter {
     Count(Count),
     Repeat(Repeat),
+    Pairwise(Pairwise),
+    Compress(Compress),
+    Islice(Islice),
+    Chain(Chain),
+    Cycle(Cycle),
 }
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
@@ -47,6 +62,11 @@ pub(crate) enum ItertoolsIter {
 pub(crate) enum Kind {
     Count,
     Repeat,
+    Pairwise,
+    Compress,
+    Islice,
+    Chain,
+    Cycle,
 }
 
 impl ItertoolsIter {
@@ -55,6 +75,11 @@ impl ItertoolsIter {
         match self {
             Self::Count(_) => Kind::Count,
             Self::Repeat(_) => Kind::Repeat,
+            Self::Pairwise(_) => Kind::Pairwise,
+            Self::Compress(_) => Kind::Compress,
+            Self::Islice(_) => Kind::Islice,
+            Self::Chain(_) => Kind::Chain,
+            Self::Cycle(_) => Kind::Cycle,
         }
     }
 
@@ -63,6 +88,11 @@ impl ItertoolsIter {
         match self {
             Self::Count(_) => Type::ItertoolsCount,
             Self::Repeat(_) => Type::ItertoolsRepeat,
+            Self::Pairwise(_) => Type::ItertoolsPairwise,
+            Self::Compress(_) => Type::ItertoolsCompress,
+            Self::Islice(_) => Type::ItertoolsIslice,
+            Self::Chain(_) => Type::ItertoolsChain,
+            Self::Cycle(_) => Type::ItertoolsCycle,
         }
     }
 
@@ -72,8 +102,13 @@ impl ItertoolsIter {
         match self {
             // Only ever holds numbers, whose refs point at `LongInt` leaves.
             Self::Count(_) => false,
-            // Holds an arbitrary object, which may reach back to the iterator.
-            Self::Repeat(_) => true,
+            // Both hold arbitrary objects, which may reach back to the iterator.
+            Self::Repeat(_)
+            | Self::Pairwise(_)
+            | Self::Compress(_)
+            | Self::Islice(_)
+            | Self::Chain(_)
+            | Self::Cycle(_) => true,
         }
     }
 
@@ -83,7 +118,12 @@ impl ItertoolsIter {
     /// than a guess (see `checked_preallocation_hint`).
     pub(crate) fn size_hint(&self) -> usize {
         match self {
-            Self::Count(_) => 0,
+            Self::Count(_)
+            | Self::Pairwise(_)
+            | Self::Compress(_)
+            | Self::Islice(_)
+            | Self::Chain(_)
+            | Self::Cycle(_) => 0,
             Self::Repeat(repeat) => repeat.size_hint(),
         }
     }
@@ -93,6 +133,11 @@ impl ItertoolsIter {
         match self {
             Self::Count(count) => count.for_each_child_id(on_child),
             Self::Repeat(repeat) => repeat.for_each_child_id(on_child),
+            Self::Pairwise(pairwise) => pairwise.for_each_child_id(on_child),
+            Self::Compress(compress) => compress.for_each_child_id(on_child),
+            Self::Islice(islice) => islice.for_each_child_id(on_child),
+            Self::Chain(chain) => chain.for_each_child_id(on_child),
+            Self::Cycle(cycle) => cycle.for_each_child_id(on_child),
         }
     }
 }
@@ -107,6 +152,11 @@ impl HeapItem for ItertoolsIter {
         match self {
             Self::Count(count) => count.py_dec_ref_ids(stack),
             Self::Repeat(repeat) => repeat.py_dec_ref_ids(stack),
+            Self::Pairwise(pairwise) => pairwise.py_dec_ref_ids(stack),
+            Self::Compress(compress) => compress.py_dec_ref_ids(stack),
+            Self::Islice(islice) => islice.py_dec_ref_ids(stack),
+            Self::Chain(chain) => chain.py_dec_ref_ids(stack),
+            Self::Cycle(cycle) => cycle.py_dec_ref_ids(stack),
         }
     }
 }
@@ -144,13 +194,25 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ItertoolsIter> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::next(self, vm),
             Kind::Repeat => repeat::next(self, vm),
+            Kind::Pairwise => pairwise::next(self, vm),
+            Kind::Compress => compress::next(self, vm),
+            Kind::Islice => islice::next(self, vm),
+            Kind::Chain => chain::next(self, vm),
+            Kind::Cycle => cycle::next(self, vm),
         }
     }
 
+    /// Only `count` and `repeat` carry a custom `repr`; every other adaptor
+    /// uses CPython's default `<itertools.name object>` form, which is what the
+    /// `PyTrait` default writes.
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
         match self.get(vm.heap).kind() {
             Kind::Count => count::repr_fmt(self, f, vm, heap_ids),
             Kind::Repeat => repeat::repr_fmt(self, f, vm, heap_ids),
+            Kind::Pairwise | Kind::Compress | Kind::Islice | Kind::Chain | Kind::Cycle => {
+                let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+                Ok(write!(f, "<{type_name} object>")?)
+            }
         }
     }
 }

@@ -230,6 +230,11 @@ fn round_trip_type_table(py: Python<'_>) -> PyResult<&'static Vec<(Py<PyAny>, Mo
             MontyType::CallableIterator,
             MontyType::ItertoolsCount,
             MontyType::ItertoolsRepeat,
+            MontyType::ItertoolsPairwise,
+            MontyType::ItertoolsCompress,
+            MontyType::ItertoolsIslice,
+            MontyType::ItertoolsChain,
+            MontyType::ItertoolsCycle,
             MontyType::Tuple,
             MontyType::Dict,
             MontyType::Set,
@@ -446,6 +451,11 @@ fn type_object_to_py(py: Python<'_>, t: MontyType) -> PyResult<Py<PyAny>> {
         MontyType::CallableIterator => get_callable_iterator_type(py).map(|b| b.clone().unbind()),
         MontyType::ItertoolsCount => cached!("itertools", "count"),
         MontyType::ItertoolsRepeat => cached!("itertools", "repeat"),
+        MontyType::ItertoolsPairwise => cached!("itertools", "pairwise"),
+        MontyType::ItertoolsCompress => cached!("itertools", "compress"),
+        MontyType::ItertoolsIslice => cached!("itertools", "islice"),
+        MontyType::ItertoolsChain => cached!("itertools", "chain"),
+        MontyType::ItertoolsCycle => cached!("itertools", "cycle"),
         // Consistent with the Path *instance* arm, which marshals as PurePosixPath
         // and is instantiable on every host OS (unlike PosixPath on Windows).
         MontyType::Path => get_pure_posix_path(py).map(|b| b.clone().unbind()),

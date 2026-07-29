@@ -6,14 +6,21 @@ notes below.
 
 ## Implemented
 
-`count(start=0, step=1)`, `repeat(object, times=?)`.
+`count(start=0, step=1)`, `repeat(object, times=?)`, `pairwise(iterable)`,
+`compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
+`chain(*iterables)`, `cycle(iterable)`.
 
 ## Not implemented
 
-Everything else: `accumulate`, `batched`, `chain` (and `chain.from_iterable`),
-`combinations`, `combinations_with_replacement`, `compress`, `cycle`,
-`dropwhile`, `filterfalse`, `groupby`, `islice`, `pairwise`, `permutations`,
-`product`, `starmap`, `takewhile`, `tee`, `zip_longest`.
+Everything else: `accumulate`, `batched`, `combinations`,
+`combinations_with_replacement`, `dropwhile`, `filterfalse`, `groupby`,
+`permutations`, `product`, `starmap`, `takewhile`, `tee`, `zip_longest`.
+
+`chain.from_iterable` is also absent, even though `chain` itself is
+implemented: it is a classmethod reached through an attribute on the `chain`
+builtin, and Monty's module functions expose no attributes
+(`itertools.chain.from_iterable` raises `AttributeError: 'builtin_function_or_method'
+object has no attribute 'from_iterable'`). Use `chain(*iterables)` instead.
 
 These names are absent from the module namespace rather than stubbed, so they
 are rejected at type-check time (`Module 'itertools' has no member 'chain'`) and
@@ -42,6 +49,10 @@ raise `AttributeError` at runtime.
   reaches back to the `repeat` holding it, Monty prints `repeat([...])` where
   CPython prints `repeat([repeat([...])])`. This is Monty's general cycle
   detection in `repr()`, not specific to `itertools`.
+- **Adaptors without a custom `repr()` omit the address.** `repr(pairwise([]))`
+  is `<itertools.pairwise object>`, where CPython appends ` at 0x...`. This is
+  Monty's general iterator treatment (see `limitations/iter.md`), not specific
+  to `itertools`.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
   `<itertools.repeat object>` rather than its in-sandbox `repr()`

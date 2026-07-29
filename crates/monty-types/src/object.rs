@@ -813,6 +813,16 @@ pub enum MontyType {
     /// as found in a class's `__dataclass_fields__`.
     #[strum(serialize = "Field")]
     Field,
+    #[strum(serialize = "itertools.pairwise")]
+    ItertoolsPairwise,
+    #[strum(serialize = "itertools.compress")]
+    ItertoolsCompress,
+    #[strum(serialize = "itertools.islice")]
+    ItertoolsIslice,
+    #[strum(serialize = "itertools.chain")]
+    ItertoolsChain,
+    #[strum(serialize = "itertools.cycle")]
+    ItertoolsCycle,
 }
 
 impl fmt::Display for MontyType {

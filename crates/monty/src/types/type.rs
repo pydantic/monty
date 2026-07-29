@@ -181,6 +181,16 @@ pub enum Type {
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
     #[strum(serialize = "_collections._deque_iterator")]
     DequeIterator,
+    #[strum(serialize = "itertools.pairwise")]
+    ItertoolsPairwise,
+    #[strum(serialize = "itertools.compress")]
+    ItertoolsCompress,
+    #[strum(serialize = "itertools.islice")]
+    ItertoolsIslice,
+    #[strum(serialize = "itertools.chain")]
+    ItertoolsChain,
+    #[strum(serialize = "itertools.cycle")]
+    ItertoolsCycle,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -314,6 +324,11 @@ impl Type {
                 | Self::CallableIterator
                 | Self::ItertoolsCount
                 | Self::ItertoolsRepeat
+                | Self::ItertoolsPairwise
+                | Self::ItertoolsCompress
+                | Self::ItertoolsIslice
+                | Self::ItertoolsChain
+                | Self::ItertoolsCycle
         )
     }
 
