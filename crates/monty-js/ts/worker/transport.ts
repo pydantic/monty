@@ -15,11 +15,17 @@
 
 import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
-import type { Dispatcher } from './host.js'
+import { DispatchTimeoutError, type Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
+
+/** Feed controls shared structurally with the napi binding. */
+interface NativeFeedOptions {
+  skipTypeCheck: boolean
+  timeoutMs?: number
+}
 
 /** Resource limits enforced inside the worker, mirroring the napi pool's. */
 export interface ResourceLimits {
@@ -87,6 +93,17 @@ export class WorkerTransport {
    */
   private dead = false
 
+  /** The dispatcher failure behind a missing turn-ending event, if any. */
+  private dispatchError: unknown
+
+  /**
+   * Per-feed override of the channel's per-turn deadline, set by `feed` and
+   * applied to every subsequent turn in that feed. The next `feed` replaces
+   * it, mirroring the native checkout's `set_request_timeout`; `undefined`
+   * means "use the channel default".
+   */
+  private timeoutMsOverride: number | undefined
+
   /**
    * Invoked when the session ends, telling the owner (a pool) whether the
    * worker may be reused. `true` after a clean `Reset`; `false` if the worker
@@ -116,12 +133,13 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: NativeFeedOptions,
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
     }
+    this.timeoutMsOverride = options.timeoutMs
     const feed = new Writer()
     feed.string(1, code) // ReplFeed.code
     for (const [name, value] of Object.entries(inputs ?? {})) {
@@ -130,7 +148,7 @@ export class WorkerTransport {
       named.lengthDelimited(2, encodeMontyObject(value)) // NamedValue.value
       feed.lengthDelimited(2, named.finish()) // ReplFeed.inputs
     }
-    if (skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
+    if (options.skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
     return this.turn(Req.ReplFeed, feed.finish(), onPrint)
   }
 
@@ -234,7 +252,7 @@ export class WorkerTransport {
     const load = new Writer()
     load.bytes(1, state) // Load.state
     const event = await this.run(Req.Load, load.finish(), onPrint)
-    if (!event) return crashed('worker exited without a turn-ending event')
+    if (!event) return this.dispatchCrash()
     if (event.kind === Ev.Ok) return { kind: 'loaded' }
     return this.toTurn(event)
   }
@@ -269,8 +287,8 @@ export class WorkerTransport {
 
   /** Sends a request and decodes the terminating event into a `NativeTurn`. */
   private async turn(field: number, payload: Uint8Array, onPrint: OnPrint): Promise<NativeTurn> {
-    const event = await this.run(field, payload, onPrint)
-    const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
+    const event = await this.run(field, payload, onPrint, this.timeoutMsOverride)
+    const turn = event ? this.toTurn(event) : this.dispatchCrash()
     if (turn.kind === 'crashed') this.dead = true
     return turn
   }
@@ -278,24 +296,34 @@ export class WorkerTransport {
   /** Sends a control request (ReplCreate/Reset/Dump) and asserts its event kind. */
   private async control(field: number, payload: Uint8Array, kind: number, what: string): Promise<ChildEventFrame> {
     const event = await this.run(field, payload, undefined)
-    if (!event) throw new Error(`${what} produced no turn-ending event (worker crashed)`)
+    if (!event) {
+      const error = this.takeDispatchError()
+      throw error instanceof Error ? error : new Error(`${what} produced no turn-ending event (worker crashed)`)
+    }
     if (event.kind !== kind) throw new Error(`${what} expected event ${kind}, got ${event.kind}`)
     return event
   }
 
   /** Runs one turn, streaming `Print`s, and returns the single terminating event. */
-  private async run(field: number, payload: Uint8Array, onPrint: OnPrint | undefined): Promise<ChildEventFrame | null> {
+  private async run(
+    field: number,
+    payload: Uint8Array,
+    onPrint: OnPrint | undefined,
+    timeoutMs?: number,
+  ): Promise<ChildEventFrame | null> {
     const request = new Writer()
     request.lengthDelimited(field, payload) // ParentRequest oneof
+    this.dispatchError = undefined
     let reply: Uint8Array
     let decodedEvents: ChildEventFrame[] | undefined
     try {
-      const dispatched = await this.dispatcher(frame(request.finish()))
+      const dispatched = await this.dispatcher(frame(request.finish()), timeoutMs)
       reply = dispatched.reply
       decodedEvents = dispatched.events?.map((event) => ({ kind: event.kind, bytes: Uint8Array.from(event.bytes) }))
-    } catch {
+    } catch (error) {
       // the dispatcher rejects when the worker died or the channel broke; the
       // caller treats a missing terminating event as a crash
+      this.dispatchError = error
       return null
     }
     let terminating: ChildEventFrame | null = null
@@ -312,13 +340,30 @@ export class WorkerTransport {
     return terminating
   }
 
+  /** Converts the last dispatcher rejection into the public crash turn. */
+  private dispatchCrash(): NativeTurn {
+    const error = this.takeDispatchError()
+    const message = error instanceof Error ? error.message : 'worker exited without a turn-ending event'
+    return crashed(message, error instanceof DispatchTimeoutError)
+  }
+
+  /** Takes a dispatcher error so it cannot be attributed to a later turn. */
+  private takeDispatchError(): unknown {
+    const error = this.dispatchError
+    this.dispatchError = undefined
+    return error
+  }
+
   private toTurn(event: ChildEventFrame): NativeTurn {
     switch (event.kind) {
       case Ev.Complete:
+        this.timeoutMsOverride = undefined
         return { kind: 'complete', value: decodeComplete(event.bytes) }
       case Ev.Error:
+        this.timeoutMsOverride = undefined
         return { kind: 'error', exception: decodeError(event.bytes) }
       case Ev.TypingError:
+        this.timeoutMsOverride = undefined
         return { kind: 'typingError', diagnostics: decodeSingleString(event.bytes) }
       case Ev.FunctionCall: {
         const call = decodeCall(event.bytes)
@@ -798,8 +843,8 @@ function functionValue(name: string): Uint8Array {
   return obj.finish()
 }
 
-function crashed(message: string): NativeTurn {
-  return { kind: 'crashed', message, timedOut: false }
+function crashed(message: string, timedOut = false): NativeTurn {
+  return { kind: 'crashed', message, timedOut }
 }
 
 function decodeString(bytes: Uint8Array): string {

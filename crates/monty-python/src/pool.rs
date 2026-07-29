@@ -222,7 +222,10 @@ impl PyMontySession {
     ///
     /// Blocks the calling thread with the GIL released; async external
     /// functions are not supported here — use [`AsyncMonty`].
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    ///
+    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
+    /// turn) for this feed; `None` uses the pool default.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run(
         &self,
@@ -234,6 +237,7 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
+        timeout: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -246,6 +250,7 @@ impl PyMontySession {
             mount,
             os,
             skip_type_check,
+            timeout,
         )?;
         drive_sync(py, args, external_lookup)
     }
@@ -263,7 +268,11 @@ impl PyMontySession {
     /// captured on the snapshot so `snapshot.resume_auto()` can answer
     /// subsequent suspensions from them (and from this feed's mounts), letting
     /// a caller iterate to completion without resolving each call by hand.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    ///
+    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
+    /// turn) for this feed and its snapshot resumes; `None` uses the pool
+    /// default.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start(
         &self,
@@ -275,6 +284,7 @@ impl PyMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
+        timeout: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -287,6 +297,7 @@ impl PyMontySession {
             mount,
             os,
             skip_type_check,
+            timeout,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         feed_start_sync(py, args, ext, self.repl_config.script_name.clone())
@@ -722,7 +733,10 @@ impl PyAsyncMontySession {
     /// print callbacks in this process. Session state persists across feeds.
     ///
     /// Worker I/O runs off the event loop via tokio's blocking pool.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    ///
+    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
+    /// turn) for this feed; `None` uses the pool default.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
         &self,
@@ -734,6 +748,7 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
+        timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -746,6 +761,7 @@ impl PyAsyncMontySession {
             mount,
             os,
             skip_type_check,
+            timeout,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         future_into_py(py, async move { drive_async(args, ext).await })
@@ -756,7 +772,11 @@ impl PyAsyncMontySession {
     /// is awaitable) or a `MontyComplete`. See that method for the
     /// snapshot-driven protocol and the `external_lookup` / `os` capture that
     /// backs `resume_auto()`.
-    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
+    ///
+    /// `timeout` overrides the pool's `request_timeout` (seconds, per protocol
+    /// turn) for this feed and its snapshot resumes; `None` uses the pool
+    /// default.
+    #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false, timeout=None))]
     #[expect(clippy::too_many_arguments)]
     fn feed_start<'py>(
         &self,
@@ -768,6 +788,7 @@ impl PyAsyncMontySession {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
+        timeout: Option<f64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         self.used.store(true, Ordering::Relaxed);
         let args = FeedArgs::extract(
@@ -780,6 +801,7 @@ impl PyAsyncMontySession {
             mount,
             os,
             skip_type_check,
+            timeout,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
         feed_start_async(py, args, ext, self.repl_config.script_name.clone())
@@ -1103,6 +1125,9 @@ pub(crate) struct FeedArgs {
     pub(crate) print_target: PrintTarget,
     pub(crate) checkout: SharedCheckout,
     pub(crate) dc_registry: DcRegistry,
+    /// Per-call override of the pool's `request_timeout`; `None` restores the
+    /// pool default. Applied to the checkout as the feed turn starts.
+    pub(crate) timeout: Option<Duration>,
 }
 
 impl FeedArgs {
@@ -1117,6 +1142,7 @@ impl FeedArgs {
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<Py<PyAny>>,
         skip_type_check: bool,
+        timeout: Option<f64>,
     ) -> PyResult<Self> {
         check_os_callable(py, os.as_ref())?;
         Ok(Self {
@@ -1128,6 +1154,7 @@ impl FeedArgs {
             print_target: PrintTarget::from_py(print_callback)?,
             checkout: Arc::clone(checkout),
             dc_registry: dc_registry.clone_ref(py),
+            timeout: timeout.map(duration_from_secs).transpose()?,
         })
     }
 }
@@ -1148,11 +1175,13 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
         print_target,
         checkout,
         dc_registry,
+        timeout,
     } = args;
     let lookup = ExternalLookup::new(py, external_lookup, &dc_registry);
     let mut event = {
         let (result, print_err) = py.detach(|| {
             run_turn_blocking(&checkout, &print_target, |c, p| {
+                c.set_request_timeout(timeout);
                 c.feed(&code, inputs, mounts, skip_type_check, p)
             })
         });
@@ -1254,10 +1283,12 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
         print_target,
         checkout,
         dc_registry,
+        timeout,
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
     let mut event = run_turn_async(&checkout, &print_target, move |c, p| {
+        c.set_request_timeout(timeout);
         c.feed(&code, inputs, mounts, skip_type_check, p)
     })
     .await?;

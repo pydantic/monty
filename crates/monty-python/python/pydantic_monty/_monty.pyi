@@ -456,6 +456,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
+        timeout: float | None = None,
     ) -> Any:
         """
         Execute one snippet in the worker and return its result.
@@ -489,6 +490,8 @@ class MontySession:
                 or an `AbstractOS` instance.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            timeout: Per-turn deadline in seconds overriding the pool's
+                `request_timeout` for this feed; `None` uses the pool default.
 
         Raises:
             MontyRuntimeError: The code raised an exception (session survives).
@@ -507,6 +510,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
+        timeout: float | None = None,
     ) -> SyncSnapshot:
         """
         Start a snippet and return a snapshot at each external call, OS call,
@@ -553,6 +557,8 @@ class MontySession:
                 OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            timeout: Per-turn deadline in seconds overriding the pool's
+                `request_timeout` for this feed; `None` uses the pool default.
         """
 
     def load_session(self, state: bytes) -> None:
@@ -788,6 +794,7 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
+        timeout: float | None = None,
     ) -> Any:
         """
         Execute one snippet in the worker and return its result.
@@ -821,6 +828,8 @@ class AsyncMontySession:
                 or an `AbstractOS` instance.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            timeout: Per-turn deadline in seconds overriding the pool's
+                `request_timeout` for this feed; `None` uses the pool default.
         """
 
     async def feed_start(
@@ -833,6 +842,7 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
+        timeout: float | None = None,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.feed_start`: resolves to a snapshot
@@ -869,6 +879,8 @@ class AsyncMontySession:
                 OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            timeout: Per-turn deadline in seconds overriding the pool's
+                `request_timeout` for this feed; `None` uses the pool default.
         """
 
     async def load_session(self, state: bytes) -> None:

@@ -921,6 +921,55 @@ fn watchdog_kills_hung_worker_after_request_timeout() {
 }
 
 #[test]
+fn per_checkout_timeout_overrides_pool_default() {
+    // A generous pool-wide timeout: only the per-checkout override can be
+    // what kills the hung feed below within the test's runtime.
+    let mut config = config();
+    config.request_timeout = Some(Duration::from_mins(2));
+    let pool = Pool::new(config).unwrap();
+
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    session.set_request_timeout(Some(Duration::from_millis(300)));
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    assert!(
+        matches!(err, PoolError::Timeout { timeout } if timeout == Duration::from_millis(300)),
+        "got {err:?}"
+    );
+
+    // The timed-out worker is replaced and the pool remains healthy.
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+    assert_eq!(
+        expect_complete(session.feed("3 + 3", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(6)
+    );
+    session.finish().unwrap();
+}
+
+#[test]
+fn per_checkout_timeout_clears_after_feed() {
+    let mut config = config();
+    config.request_timeout = Some(Duration::from_millis(300));
+    let pool = Pool::new(config).unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).unwrap();
+
+    session.set_request_timeout(Some(Duration::from_mins(2)));
+    assert_eq!(
+        expect_complete(session.feed("3 + 3", vec![], vec![], false, &mut no_print).unwrap()),
+        MontyObject::Int(6)
+    );
+
+    let err = session
+        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .unwrap_err();
+    assert!(
+        matches!(err, PoolError::Timeout { timeout } if timeout == Duration::from_millis(300)),
+        "got {err:?}"
+    );
+}
+
+#[test]
 fn child_resource_limits_do_not_kill_the_worker() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool

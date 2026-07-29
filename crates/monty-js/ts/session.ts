@@ -80,6 +80,11 @@ export interface FeedOptions {
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
+  /**
+   * Per-turn deadline in seconds overriding the pool's `requestTimeout` for
+   * this feed; omit to use the pool default.
+   */
+  timeout?: number
 }
 
 /**
@@ -107,6 +112,11 @@ export interface FeedStartOptions {
   os?: OsCallback
   /** Skip type checking for this feed even when the session enables it. */
   skipTypeCheck?: boolean
+  /**
+   * Per-turn deadline in seconds overriding the pool's `requestTimeout` for
+   * this feed and its snapshot resumes; omit to use the pool default.
+   */
+  timeout?: number
 }
 
 /** Options for [`MontySession.loadSnapshot`]. */
@@ -179,7 +189,10 @@ export class MontySession {
       code,
       options.inputs ?? null,
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      {
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        timeoutMs: timeoutToMs(options.timeout),
+      },
       onPrint,
     )) as NativeTurn
     for (;;) {
@@ -248,7 +261,10 @@ export class MontySession {
       code,
       options.inputs ?? null,
       mountsToNative(options.mount),
-      options.skipTypeCheck ?? false,
+      {
+        skipTypeCheck: options.skipTypeCheck ?? false,
+        timeoutMs: timeoutToMs(options.timeout),
+      },
       driver.onPrint,
     )) as NativeTurn
     return driver.advance(turn)
@@ -1001,4 +1017,14 @@ function bytesForNative(bytes: Uint8Array): Buffer {
 
 function bufferFrom(bytes: Uint8Array): Buffer {
   return (typeof Buffer === 'undefined' ? bytes : Buffer.from(bytes)) as Buffer
+}
+
+/** Normalizes a per-feed `timeout` option (seconds) to the native
+ *  milliseconds encoding; `undefined` means "use the pool default". */
+function timeoutToMs(timeout: number | undefined): number | undefined {
+  if (timeout === undefined) return undefined
+  if (!Number.isFinite(timeout) || timeout < 0) {
+    throw new RangeError('timeout must be a finite non-negative number')
+  }
+  return timeout * 1000
 }

@@ -104,6 +104,15 @@ pub struct NativeCheckoutOptions {
     pub assert_message_annotations: Option<u32>,
 }
 
+/// Per-feed controls normalized by the TypeScript layer.
+#[napi(object, js_name = "NativeFeedOptions")]
+pub struct NativeFeedOptions {
+    /// Skip type checking for this feed.
+    pub skip_type_check: bool,
+    /// Per-turn watchdog override in milliseconds; absent uses the pool default.
+    pub timeout_ms: Option<f64>,
+}
+
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
 #[napi(object, js_name = "NativeMount")]
 pub struct NativeMount {
@@ -236,6 +245,8 @@ impl NativeSession {
 
     /// Runs one feed turn: executes `code` until completion or the first
     /// suspension, streaming prints to `on_print`. Resolves to a turn object.
+    /// `options.timeout_ms` overrides the pool's `request_timeout` for every
+    /// turn in this feed; `None` uses the pool default.
     #[napi]
     pub fn feed<'env>(
         &self,
@@ -243,7 +254,7 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<NativeMount>,
-        skip_type_check: bool,
+        options: NativeFeedOptions,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
@@ -251,8 +262,10 @@ impl NativeSession {
             .into_iter()
             .map(MountSpec::try_from)
             .collect::<Result<Vec<_>>>()?;
+        let timeout = options.timeout_ms.map(duration_from_ms).transpose()?;
         self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.feed(&code, inputs, mounts, skip_type_check, on_print)
+            checkout.set_request_timeout(timeout);
+            checkout.feed(&code, inputs, mounts, options.skip_type_check, on_print)
         })
     }
 

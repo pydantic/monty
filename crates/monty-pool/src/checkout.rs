@@ -182,6 +182,9 @@ pub struct Checkout {
     /// Consulted only by [`Checkout::resume_from_mounts`]. Dropped when the
     /// feed ends so overlay writes never leak into the next feed.
     feed_mounts: Option<MountTable>,
+    /// Per-checkout override of the pool's `request_timeout`, set via
+    /// [`Checkout::set_request_timeout`]. `None` means "use the pool default".
+    request_timeout_override: Option<Duration>,
 }
 
 /// Which kind of suspension is awaiting an answer.
@@ -226,11 +229,27 @@ impl Checkout {
             armed_deadline: None,
             restored_script_name: None,
             feed_mounts: None,
+            request_timeout_override: None,
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
             ControlEvent::Ok => Ok(this),
             other => Err(this.protocol_violation(format!("unexpected reply to Configure: {other:?}"))),
         }
+    }
+
+    /// Overrides the pool's `request_timeout` for the next feed: `Some`
+    /// replaces the pool default, `None` uses it.
+    ///
+    /// The override covers the initial turn and all resumes, then clears when
+    /// the feed ends. Set it immediately before [`Self::feed`].
+    pub fn set_request_timeout(&mut self, timeout: Option<Duration>) {
+        self.request_timeout_override = timeout;
+    }
+
+    /// The watchdog deadline for turns on this checkout: the per-checkout
+    /// override when set, otherwise the pool's `request_timeout`.
+    fn request_timeout(&self) -> Option<Duration> {
+        self.request_timeout_override.or(self.pool.config.request_timeout)
     }
 
     /// Restores a dumped session into this checkout's freshly configured (but
@@ -564,7 +583,7 @@ impl Checkout {
     /// turns where the sandbox runs code), so the watchdog deadline includes
     /// [`Self::backstop_deadline`] on top of the configured request timeout.
     fn expect_turn(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
-        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        let deadline = min_deadline(self.request_timeout(), self.backstop_deadline());
         match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
             other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
@@ -730,6 +749,7 @@ impl Checkout {
                     // the feed is over — drop its mounts so overlay writes
                     // cannot leak into the next feed
                     self.feed_mounts = None;
+                    self.request_timeout_override = None;
                     break self.convert_turn(|| {
                         let value = complete
                             .value
@@ -744,6 +764,7 @@ impl Checkout {
                     if !matches!(request.kind, Some(pb::parent_request::Kind::Dump(_))) {
                         self.pending = None;
                         self.feed_mounts = None;
+                        self.request_timeout_override = None;
                     }
                     let Some(exception) = error.exception else {
                         return Err(self.protocol_violation("error event with no exception"));
@@ -756,6 +777,7 @@ impl Checkout {
                 Some(pb::child_event::Kind::TypingError(typing)) => {
                     self.pending = None;
                     self.feed_mounts = None;
+                    self.request_timeout_override = None;
                     break Err(PoolError::Typing(typing.diagnostics));
                 }
                 Some(pb::child_event::Kind::Ok(_)) => break Ok(ControlEvent::Ok),
@@ -854,6 +876,7 @@ impl Checkout {
         };
         self.pending = None;
         self.feed_mounts = None;
+        self.request_timeout_override = None;
         PoolError::Crashed {
             status,
             cause: CrashCause::Announced {
@@ -871,6 +894,7 @@ impl Checkout {
         };
         self.pending = None;
         self.feed_mounts = None;
+        self.request_timeout_override = None;
         let timed_out = worker.was_killed_for_timeout();
         let status = worker.kill_and_reap();
         drop(worker);
@@ -904,6 +928,7 @@ impl Checkout {
         }
         self.pending = None;
         self.feed_mounts = None;
+        self.request_timeout_override = None;
     }
 }
 

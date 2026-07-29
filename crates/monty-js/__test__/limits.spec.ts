@@ -2,7 +2,7 @@ import { test } from 'vitest'
 import { t } from './assertions.js'
 import { kind } from './env.js'
 
-import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
+import { MontyCrashedError, MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -126,4 +126,11 @@ test('time limit', async () => {
   t.is(error.exception.typeName, 'TimeoutError')
   // The reported elapsed time varies from run to run; the limit is fixed.
   t.regex(error.display('msg'), /^time limit exceeded: \d+(\.\d+)?ms > 100ms$/)
+})
+
+test('feed timeout overrides the pool request timeout', async () => {
+  const error = await t.throwsAsync(() => run('while True:\n    pass', { timeout: 0.2 }), {
+    instanceOf: MontyCrashedError,
+  })
+  t.true(error.timedOut)
 })
