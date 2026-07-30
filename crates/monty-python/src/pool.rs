@@ -1297,12 +1297,14 @@ async fn drive_async(
             "a previous feed_run was cancelled mid-run; the session's worker was discarded",
         ));
     }
+    let started = Arc::new(AtomicBool::new(false));
     let mut guard = AbandonGuard {
         checkout: Arc::clone(&args.checkout),
         abandoned,
+        started: Arc::clone(&started),
         armed: true,
     };
-    let result = drive_async_inner(args, external_lookup).await;
+    let result = drive_async_inner(args, external_lookup, started).await;
     guard.armed = false;
     result
 }
@@ -1310,21 +1312,29 @@ async fn drive_async(
 /// Discards the session's worker when the drive future is cancelled — dropped
 /// while still armed; every normal exit disarms first.
 ///
-/// The slot lock is only ever held *within* a turn, and a mid-turn
-/// cancellation drops the turn (and its lock guard) before this guard runs,
-/// so `try_lock` normally succeeds and the worker dies on the spot (later
-/// calls fail with "already finished"). The `abandoned` marker is the
-/// fallback when the lock is contended (e.g. a concurrent `feed_run` inside
-/// its turn): the next drive then finishes the discard.
+/// `started` gates the whole reaction: it is set inside the drive's first
+/// turn closure, which runs only once the slot lock is held (no await point
+/// separates acquisition from closure entry). A drive cancelled *before*
+/// that — e.g. dropped while still queued on the slot mutex behind another
+/// drive's turn — touched no protocol state, so its death must not poison
+/// the session.
+///
+/// After `started`, the slot lock is only ever held *within* a turn, and a
+/// mid-turn cancellation drops the turn (and its lock guard) before this
+/// guard runs, so `try_lock` normally succeeds and the worker dies on the
+/// spot (later calls fail with "already finished"). The `abandoned` marker
+/// is the fallback when the lock is contended (e.g. a concurrent `feed_run`
+/// inside its turn): the next drive then finishes the discard.
 struct AbandonGuard {
     checkout: SharedCheckout,
     abandoned: Arc<AtomicBool>,
+    started: Arc<AtomicBool>,
     armed: bool,
 }
 
 impl Drop for AbandonGuard {
     fn drop(&mut self) {
-        if self.armed {
+        if self.armed && self.started.load(Ordering::Acquire) {
             match self.checkout.try_lock() {
                 // dropping the Checkout kills the worker and frees capacity
                 Ok(mut slot) => *slot = None,
@@ -1337,7 +1347,11 @@ impl Drop for AbandonGuard {
 /// The drive loop itself: protocol turns are awaited directly on the runtime;
 /// coroutine external functions are spawned as tasks and resolved via
 /// `ResolveFutures`.
-async fn drive_async_inner(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
+async fn drive_async_inner(
+    args: FeedArgs,
+    external_lookup: Option<Py<PyDict>>,
+    started: Arc<AtomicBool>,
+) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -1353,7 +1367,13 @@ async fn drive_async_inner(args: FeedArgs, external_lookup: Option<Py<PyDict>>) 
     let mut event = run_turn_async(
         &checkout,
         &print_target,
-        turn_fn(move |c, p| Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })),
+        turn_fn(move |c, p| {
+            // the slot lock is now held and protocol I/O is about to start:
+            // from here a cancelled drive must poison the session (see
+            // `AbandonGuard`)
+            started.store(true, Ordering::Release);
+            Box::pin(async move { c.feed(&code, inputs, mounts, skip_type_check, p).await })
+        }),
     )
     .await?;
 

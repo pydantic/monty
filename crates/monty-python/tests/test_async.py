@@ -1036,3 +1036,19 @@ async def test_concurrent_feed_run_is_rejected_without_killing_the_first(apool: 
         release.set()
         assert await first == snapshot(5)
         assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMonty):
+    """Cancelling a feed_run that is still queued on the session (waiting for
+    another feed_run's turn to finish) must not poison the session: it never
+    started any protocol I/O, so the first feed and later feeds keep working."""
+    async with apool.checkout() as session:
+        first = asyncio.ensure_future(session.feed_run('sum(range(20_000_000))'))
+        await asyncio.sleep(0.05)  # the first turn is in flight, holding the session slot
+        second = asyncio.ensure_future(session.feed_run('1 + 1'))
+        await asyncio.sleep(0.05)  # the second feed is queued behind it
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert await first == snapshot(199999990000000)
+        assert await session.feed_run('1 + 1') == snapshot(2)
