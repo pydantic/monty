@@ -54,8 +54,8 @@ fn monty_binary() -> PathBuf {
 }
 
 /// The shared tokio runtime all benchmark iterations run on. One static
-/// runtime (rather than one per bench) so workers' pump tasks outlive the
-/// individual `block_on` calls that use them.
+/// runtime (rather than one per bench) so workers' process handles and pipe
+/// registrations outlive the individual `block_on` calls that use them.
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| Runtime::new().expect("tokio runtime"))

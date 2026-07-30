@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 
+use futures_util::future::join_all;
 use monty_proto::pb;
 use tokio::{
     sync::Notify,
@@ -54,7 +55,7 @@ struct PoolState {
 impl Pool {
     /// Creates the pool and eagerly spawns `min_processes` workers, failing
     /// fast if the binary cannot be spawned. Must be called within a tokio
-    /// runtime (each worker gets a frame-pump task).
+    /// runtime (worker process and pipe I/O is driven by the runtime).
     pub async fn new(config: PoolConfig) -> Result<Self, PoolError> {
         if config.min_processes > config.max_processes || config.max_processes == 0 {
             return Err(PoolError::Spawn(format!(
@@ -96,20 +97,29 @@ impl Pool {
     /// Optional: dropping the pool kills idle workers instead, which is just
     /// as safe — this only trades a SIGKILL for a clean protocol goodbye.
     pub async fn close(&self) {
-        let mut idle = {
+        // Pair each removed worker with a capacity guard immediately: if this
+        // future is dropped mid-close, every unreaped worker is killed by its
+        // kill-on-drop handle and its slot released by the guard, instead of
+        // leaking capacity the pool can never recover.
+        let mut idle: Vec<_> = {
             let mut state = lock_ignore_poison(&self.inner.state);
             mem::take(&mut state.idle)
-        };
-        for worker in &mut idle {
+        }
+        .into_iter()
+        .map(|worker| (worker, CapacityGuard::new(&self.inner)))
+        .collect();
+        for (worker, _) in &mut idle {
             let _ = worker
                 .send(&request(pb::parent_request::Kind::Shutdown(pb::Shutdown {})))
                 .await;
         }
-        for mut worker in idle {
-            // the workers exit concurrently, so the total wait is ~one grace
+        // Reap concurrently: a *nonresponsive* worker costs the full grace, so
+        // reaping serially would multiply it by the number of stuck workers.
+        join_all(idle.into_iter().map(|(mut worker, capacity)| async move {
+            let _capacity = capacity;
             worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
-            self.inner.release_capacity();
-        }
+        }))
+        .await;
     }
 
     /// Number of idle workers right now (diagnostics/tests only — the value
@@ -172,8 +182,12 @@ impl PoolInner {
                 below_cap
             };
             if spawn {
-                let acquired = Worker::new(&self.config).await;
-                return acquired.inspect_err(|_| self.release_capacity());
+                // guard the reserved slot: a failed — or cancelled, for the
+                // WebSocket dial — spawn must release it or the pool shrinks
+                let capacity = CapacityGuard::new(self);
+                let worker = Worker::new(&self.config).await?;
+                capacity.disarm();
+                return Ok(worker);
             }
             match deadline {
                 Some(deadline) => {
@@ -209,6 +223,37 @@ impl PoolInner {
     pub(crate) fn release_capacity(&self) {
         lock_ignore_poison(&self.state).total -= 1;
         self.available.notify_one();
+    }
+}
+
+/// RAII hold on one reserved capacity slot: releases it on drop unless
+/// [`CapacityGuard::disarm`]ed.
+///
+/// Teardown and spawn paths hold one across their `await`s so a future
+/// dropped mid-flight (e.g. asyncio cancellation) still releases the slot —
+/// a leaked slot would shrink the pool permanently, down to a pool that can
+/// never check out again. The worker itself needs no such guard: its
+/// kill-on-drop handle kills the child whenever it is dropped.
+pub(crate) struct CapacityGuard<'a> {
+    pool: Option<&'a PoolInner>,
+}
+
+impl<'a> CapacityGuard<'a> {
+    pub(crate) fn new(pool: &'a PoolInner) -> Self {
+        Self { pool: Some(pool) }
+    }
+
+    /// Keeps the slot reserved: the capacity was consumed by a live worker.
+    pub(crate) fn disarm(mut self) {
+        self.pool = None;
+    }
+}
+
+impl Drop for CapacityGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool {
+            pool.release_capacity();
+        }
     }
 }
 

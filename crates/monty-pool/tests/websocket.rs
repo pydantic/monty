@@ -49,10 +49,8 @@ fn no_print(_: PrintStream, _: &str) -> PrintFuture {
 
 /// Joins a mock-server thread without blocking the runtime thread.
 ///
-/// Closing the client side of a discarded worker's socket happens when its
-/// aborted pump task is dropped, which needs the scheduler to tick — a plain
-/// `server.join()` inside the test future would deadlock a server waiting for
-/// that close.
+/// A plain `server.join()` inside the test future would block the runtime
+/// thread, deadlocking a server that still needs the client side serviced.
 async fn join_server(server: thread::JoinHandle<()>) {
     spawn_blocking(move || server.join().expect("mock server thread"))
         .await

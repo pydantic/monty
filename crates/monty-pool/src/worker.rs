@@ -3,33 +3,31 @@
 //! WebSocket. Both expose the same async send/recv/kill surface so the
 //! checkout turn loop is transport-agnostic.
 //!
-//! Reads are pumped by a dedicated task per worker: async frame reads are not
-//! cancel-safe (dropping a read future mid-frame loses bytes and desyncs the
-//! stream), so the pump owns the read half and forwards whole decoded events
-//! over a bounded channel. The consumer's `recv` — a channel read — *is*
-//! cancel-safe, which is what lets the checkout race a turn against a
-//! `tokio::time` deadline without corrupting the stream it may yet reuse.
+//! `recv` must be cancel-safe: the checkout races each turn against a
+//! `tokio::time` deadline, and dropping a plain `read_exact` future mid-frame
+//! would lose bytes and desync the stream. Rather than paying for a pump task
+//! and channel per worker (a cross-task wakeup per event), cancel-safety comes
+//! from keeping the partial-frame state *in the worker*: [`FrameRecv`] holds
+//! the buffer and fill offset across polls, so a dropped `recv` future loses
+//! nothing and the next call resumes exactly where it stopped. The WebSocket
+//! transport gets the same property for free — partial-message state lives
+//! inside the `WebSocketStream`, and `Stream::poll_next` is cancel-safe.
 
 use std::{
-    env, io,
+    env, mem,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::Once,
     time::Duration,
 };
 
-use futures_util::{
-    SinkExt, StreamExt,
-    stream::{SplitSink, SplitStream},
-};
-use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, pb};
+use futures_util::{SinkExt, StreamExt};
+use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_vec, encode_to_capped_vec, pb};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::mpsc,
-    task::JoinHandle,
     time::timeout,
 };
 use tokio_tungstenite::{
@@ -42,50 +40,38 @@ use crate::{MontyTransport, PoolConfig, PoolError};
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// How many decoded child events the pump may buffer ahead of the consumer.
-///
-/// Small on purpose: the pump blocks once it is full, so a print flood is
-/// backpressured through the pipe / socket exactly as it was when reads were
-/// synchronous, instead of ballooning host memory.
-const EVENT_CHANNEL_CAPACITY: usize = 16;
-
-/// A worker plus its recycle counter. The transport-specific *write* half
-/// lives in [`WorkerKind`]; reads arrive through `events`, fed by the pump
-/// task that owns the read half.
+/// A worker plus its recycle counter. The transport-specific I/O halves live
+/// in [`WorkerKind`]; both transports keep any partial-read state inside the
+/// worker so `recv` is cancel-safe (see the module docs).
 pub(crate) struct Worker {
     kind: WorkerKind,
-    /// Decoded events from the pump task. A closed channel means the pump
-    /// ended: the peer reached EOF/close, or the read stream broke.
-    events: mpsc::Receiver<Result<pb::ChildEvent, FrameError>>,
-    /// The pump task, aborted on kill/drop so the read half is released
-    /// promptly rather than lingering until the peer closes.
-    pump: JoinHandle<()>,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
 }
 
-/// The two transports a worker can speak the protocol over (write halves).
+/// The two transports a worker can speak the protocol over. Both variants are
+/// boxed: the WebSocket stream (TLS state and buffers) and the subprocess
+/// handles + frame-read state are each far larger than a pointer, and workers
+/// move through the idle queue by value.
 enum WorkerKind {
-    Subprocess(SubprocessWorker),
-    // Boxed: the WebSocket sink (with its TLS state and buffers) is far larger
-    // than the subprocess handle, so inlining it would bloat every `Worker`.
+    Subprocess(Box<SubprocessWorker>),
     WebSocket(Box<WebSocketWorker>),
 }
 
-/// A local `monty subprocess` child: the process handle (kill-on-drop) and its
-/// framed stdin. Stdout lives in the pump task.
+/// A local `monty subprocess` child: the process handle (kill-on-drop), its
+/// framed stdin, and the cancel-safe stdout frame reader.
 struct SubprocessWorker {
     child: Child,
     stdin: ChildStdin,
+    recv: FrameRecv,
 }
 
-/// A remote child reached over a WebSocket: the write half of the split
-/// stream. One binary message per protocol frame (no length prefix — the
-/// message boundary is the frame). `Option` so teardown can drop the sink in
-/// place: with the pump aborted (read half gone), dropping it closes the
+/// A remote child reached over a WebSocket. One binary message per protocol
+/// frame (no length prefix — the message boundary is the frame). `Option` so
+/// teardown can drop the stream in place: dropping it closes the TCP
 /// connection — the async analogue of killing a child.
 struct WebSocketWorker {
-    sink: Option<SplitSink<WsStream, Message>>,
+    stream: Option<WsStream>,
 }
 
 impl Worker {
@@ -100,8 +86,7 @@ impl Worker {
         }
     }
 
-    /// Spawns a local `monty subprocess` child with framed pipes and starts
-    /// its frame pump.
+    /// Spawns a local `monty subprocess` child with framed pipes.
     ///
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
@@ -131,12 +116,12 @@ impl Worker {
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        let (tx, events) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let pump = tokio::spawn(pump_frames(stdout, tx));
         Ok(Self {
-            kind: WorkerKind::Subprocess(SubprocessWorker { child, stdin }),
-            events,
-            pump,
+            kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
+                child,
+                stdin,
+                recv: FrameRecv::new(stdout),
+            })),
             checkouts_served: 0,
         })
     }
@@ -159,13 +144,8 @@ impl Worker {
             .await
             .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
             .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
-        let (sink, stream) = stream.split();
-        let (tx, events) = mpsc::channel(EVENT_CHANNEL_CAPACITY);
-        let pump = tokio::spawn(pump_ws(stream, tx));
         Ok(Self {
-            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker { sink: Some(sink) })),
-            events,
-            pump,
+            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker { stream: Some(stream) })),
             checkouts_served: 0,
         })
     }
@@ -175,31 +155,60 @@ impl Worker {
     /// oversize frame is rejected *before* any I/O so the stream stays synced
     /// (see `Checkout::request_turn`).
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
-        let body = encode_to_capped_vec(request)?;
         match &mut self.kind {
             WorkerKind::Subprocess(w) => {
-                let len = u32::try_from(body.len()).expect("capped by encode_to_capped_vec");
-                w.stdin.write_all(&len.to_le_bytes()).await?;
-                w.stdin.write_all(&body).await?;
-                w.stdin.flush().await?;
+                // prefix + body in one buffer: a single write syscall, and a
+                // pipe write needs no flush
+                let framed = encode_framed_vec(request)?;
+                w.stdin.write_all(&framed).await?;
                 Ok(())
             }
-            WorkerKind::WebSocket(w) => match &mut w.sink {
-                Some(sink) => sink.send(Message::Binary(body.into())).await.map_err(ws_to_frame_error),
-                None => Err(FrameError::Truncated),
-            },
+            WorkerKind::WebSocket(w) => {
+                let body = encode_to_capped_vec(request)?;
+                match &mut w.stream {
+                    Some(stream) => stream
+                        .send(Message::Binary(body.into()))
+                        .await
+                        .map_err(ws_to_frame_error),
+                    None => Err(FrameError::Truncated),
+                }
+            }
         }
     }
 
-    /// Receives one event from the pump. EOF/close is an error here because
-    /// within a checkout the child must never close its side first.
+    /// Receives one event. EOF/close is an error here because within a
+    /// checkout the child must never close its side first.
     ///
-    /// Cancel-safe (it is a channel read; partial frames never leave the pump),
-    /// which is what lets `Checkout` race a turn against its deadline.
+    /// Cancel-safe: partial-frame state persists in the worker (see the
+    /// module docs), which is what lets `Checkout` race a turn against its
+    /// deadline.
     pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
-        match self.events.recv().await {
-            Some(result) => result,
-            None => Err(FrameError::Truncated),
+        match &mut self.kind {
+            WorkerKind::Subprocess(w) => match w.recv.recv().await? {
+                Some(event) => Ok(event),
+                None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
+            },
+            WorkerKind::WebSocket(w) => {
+                let Some(stream) = &mut w.stream else {
+                    return Err(FrameError::Truncated);
+                };
+                // Ping/Pong are handled by tokio-tungstenite itself and skipped
+                // here; a close, EOF, or any frame the protocol never uses is
+                // surfaced as `Truncated`, which the checkout classifies as
+                // `PoolError::Disconnected`.
+                loop {
+                    return match stream.next().await {
+                        Some(Ok(Message::Binary(data))) => decode_frame::<pb::ChildEvent>(data.as_ref()),
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                        // A clean close, or text/raw frames the protocol never uses.
+                        Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
+                            Err(FrameError::Truncated)
+                        }
+                        Some(Err(WsError::Io(err))) => Err(FrameError::Io(err)),
+                        Some(Err(_)) => Err(FrameError::Truncated),
+                    };
+                }
+            }
         }
     }
 
@@ -233,7 +242,6 @@ impl Worker {
         if let WorkerKind::Subprocess(w) = &mut self.kind
             && let Ok(Ok(status)) = timeout(grace, w.child.wait()).await
         {
-            self.pump.abort();
             return Some(status);
         }
         self.kill_and_reap().await
@@ -242,109 +250,106 @@ impl Worker {
     /// Tears the worker down (kills the child / closes the connection) and
     /// reaps it, returning the process exit status when there is one.
     pub(crate) async fn kill_and_reap(&mut self) -> Option<ExitStatus> {
-        // aborting the pump drops the read half; for a WebSocket that is one
-        // of the two halves keeping the connection open
-        self.pump.abort();
         match &mut self.kind {
             WorkerKind::Subprocess(w) => {
                 let _ = w.child.start_kill();
                 w.child.wait().await.ok()
             }
             WorkerKind::WebSocket(w) => {
-                // Drop the write half rather than sending a WebSocket Close
-                // frame: a peer that has stopped draining could block the
-                // close write indefinitely. With both halves gone the TCP
-                // socket closes; the child reads that as a clean EOF and
-                // exits, so the graceful Close frame buys nothing here.
-                w.sink = None;
+                // Drop the stream rather than sending a WebSocket Close frame:
+                // a peer that has stopped draining could block the close write
+                // indefinitely. With the stream gone the TCP socket closes; the
+                // child reads that as a clean EOF and exits, so the graceful
+                // Close frame buys nothing here.
+                w.stream = None;
                 None
             }
         }
     }
 }
 
-impl Drop for Worker {
-    /// Synchronous backstop teardown: the pump is aborted (releasing the read
-    /// half) and a subprocess child is killed by its `kill_on_drop` handle,
-    /// with tokio reaping it in the background. Paths that need the exit
-    /// status call [`Worker::kill_and_reap`] before dropping.
-    fn drop(&mut self) {
-        self.pump.abort();
-    }
+/// A cancel-safe reader of length-prefixed frames from the child's stdout.
+///
+/// Async `read_exact` is not cancel-safe — dropping it mid-frame loses the
+/// bytes already read. Here the buffer and fill offset are fields, and each
+/// await is a single `read` (which never consumes bytes when it returns
+/// `Pending`), so a `recv` future dropped at any await point leaves the
+/// accumulated bytes in place for the next call to resume from.
+struct FrameRecv {
+    stdout: ChildStdout,
+    state: RecvState,
 }
 
-/// Pumps length-prefixed frames from a subprocess's stdout into the event
-/// channel until EOF, a framing error, or the consumer going away. Exactly one
-/// terminal `Err` is forwarded so the consumer can classify the breakage; a
-/// clean EOF just closes the channel.
-async fn pump_frames(stdout: ChildStdout, tx: mpsc::Sender<Result<pb::ChildEvent, FrameError>>) {
-    let mut stdout = stdout;
-    loop {
-        match read_frame(&mut stdout).await {
-            Ok(Some(event)) => {
-                if tx.send(Ok(event)).await.is_err() {
-                    return; // worker dropped; nobody is listening
-                }
-            }
-            Ok(None) => return, // clean EOF at a frame boundary
-            Err(err) => {
-                let _ = tx.send(Err(err)).await;
-                return;
-            }
+/// Read progress on the current frame; survives a cancelled `recv`.
+enum RecvState {
+    /// Accumulating the 4-byte LE length prefix.
+    Len { buf: [u8; 4], filled: usize },
+    /// Accumulating a body whose length the prefix announced.
+    Body { buf: Vec<u8>, filled: usize },
+}
+
+impl FrameRecv {
+    fn new(stdout: ChildStdout) -> Self {
+        Self {
+            stdout,
+            state: RecvState::Len { buf: [0; 4], filled: 0 },
         }
     }
-}
 
-/// Reads one length-prefixed frame, enforcing [`MAX_FRAME_LEN`] before
-/// allocating. `Ok(None)` on EOF at (or within) the length prefix — the peer
-/// closed between messages; EOF inside the body is [`FrameError::Truncated`].
-async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> Result<Option<pb::ChildEvent>, FrameError> {
-    let mut len_bytes = [0u8; 4];
-    match reader.read_exact(&mut len_bytes).await {
-        Ok(_) => {}
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err.into()),
-    }
-    let len = u32::from_le_bytes(len_bytes);
-    if len > MAX_FRAME_LEN {
-        return Err(FrameError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_LEN,
-        });
-    }
-    // Allocation is up front but bounded by MAX_FRAME_LEN (256 MiB), keeping
-    // byzantine peers bounded to one frame buffer per worker.
-    let mut body = vec![0u8; len as usize];
-    match reader.read_exact(&mut body).await {
-        Ok(_) => {}
-        // EOF after a length prefix is always mid-frame.
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Err(FrameError::Truncated),
-        Err(err) => return Err(err.into()),
-    }
-    // `decode_frame` resets the per-frame decode budget; decoding is fully
-    // synchronous, so the thread-local budget cannot interleave with another
-    // pump task's frame.
-    decode_frame::<pb::ChildEvent>(&body).map(Some)
-}
-
-/// Pumps WebSocket messages into the event channel: one binary message per
-/// protocol frame. Ping/Pong are handled by tokio-tungstenite itself and
-/// skipped here; a close, EOF, or any frame the protocol never uses ends the
-/// pump (surfaced to the consumer as [`FrameError::Truncated`], which the
-/// checkout classifies as [`crate::PoolError::Disconnected`]).
-async fn pump_ws(mut stream: SplitStream<WsStream>, tx: mpsc::Sender<Result<pb::ChildEvent, FrameError>>) {
-    loop {
-        let forward = match stream.next().await {
-            Some(Ok(Message::Binary(data))) => decode_frame::<pb::ChildEvent>(data.as_ref()),
-            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-            // A clean close, or text/raw frames the protocol never uses.
-            Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => return,
-            Some(Err(WsError::Io(err))) => Err(FrameError::Io(err)),
-            Some(Err(_)) => Err(FrameError::Truncated),
-        };
-        let stop = forward.is_err();
-        if tx.send(forward).await.is_err() || stop {
-            return;
+    /// Reads and decodes one frame, enforcing [`MAX_FRAME_LEN`] before
+    /// allocating the body. `Ok(None)` on EOF at a frame boundary — the peer
+    /// closed between messages; EOF inside a frame is [`FrameError::Truncated`].
+    async fn recv(&mut self) -> Result<Option<pb::ChildEvent>, FrameError> {
+        loop {
+            match &mut self.state {
+                RecvState::Len { buf, filled } => {
+                    while *filled < buf.len() {
+                        let n = self.stdout.read(&mut buf[*filled..]).await?;
+                        if n == 0 {
+                            // EOF at the boundary is a clean close; inside the
+                            // prefix the peer died mid-write.
+                            return if *filled == 0 {
+                                Ok(None)
+                            } else {
+                                Err(FrameError::Truncated)
+                            };
+                        }
+                        *filled += n;
+                    }
+                    let len = u32::from_le_bytes(*buf);
+                    if len > MAX_FRAME_LEN {
+                        return Err(FrameError::FrameTooLarge {
+                            len,
+                            max: MAX_FRAME_LEN,
+                        });
+                    }
+                    // Allocation is up front but bounded by MAX_FRAME_LEN
+                    // (256 MiB), keeping byzantine peers bounded to one frame
+                    // buffer per worker.
+                    self.state = RecvState::Body {
+                        buf: vec![0u8; len as usize],
+                        filled: 0,
+                    };
+                }
+                RecvState::Body { buf, filled } => {
+                    while *filled < buf.len() {
+                        let n = self.stdout.read(&mut buf[*filled..]).await?;
+                        if n == 0 {
+                            // EOF after a length prefix is always mid-frame.
+                            return Err(FrameError::Truncated);
+                        }
+                        *filled += n;
+                    }
+                    let done = mem::replace(&mut self.state, RecvState::Len { buf: [0; 4], filled: 0 });
+                    let RecvState::Body { buf: body, .. } = done else {
+                        unreachable!("matched Body above");
+                    };
+                    // `decode_frame` resets the per-frame decode budget;
+                    // decoding is fully synchronous, so the thread-local budget
+                    // cannot interleave with another worker's frame.
+                    return decode_frame::<pb::ChildEvent>(&body).map(Some);
+                }
+            }
         }
     }
 }

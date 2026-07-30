@@ -129,6 +129,30 @@ pub fn encode_to_capped_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError> {
     Ok(msg.encode_to_vec())
 }
 
+/// Encodes `msg` as one length-prefixed frame — prefix and body in a single
+/// buffer — enforcing [`MAX_FRAME_LEN`] *before* encoding.
+///
+/// Byte-stream transports that own their write half directly (the pool's
+/// subprocess workers) send this with one `write_all`, halving the write
+/// syscalls of a prefix-then-body pair.
+pub fn encode_framed_vec(msg: &impl Message) -> Result<Vec<u8>, FrameError> {
+    // Size before encoding to avoid building a giant Vec just to reject it.
+    let encoded_len = msg.encoded_len();
+    let len = u32::try_from(encoded_len)
+        .ok()
+        .filter(|&len| len <= MAX_FRAME_LEN)
+        .ok_or(FrameError::FrameTooLarge {
+            len: u32::try_from(encoded_len).unwrap_or(u32::MAX),
+            max: MAX_FRAME_LEN,
+        })?;
+    let mut framed = Vec::with_capacity(4 + encoded_len);
+    framed.extend_from_slice(&len.to_le_bytes());
+    // encode_raw: infallible into a Vec (encode's only failure is a
+    // fixed-capacity buffer running out of space, which a Vec cannot)
+    msg.encode_raw(&mut framed);
+    Ok(framed)
+}
+
 /// Decodes one already-deframed message from `bytes`.
 ///
 /// The message-oriented counterpart to one [`FrameReader::read`]: a transport

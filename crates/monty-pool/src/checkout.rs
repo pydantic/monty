@@ -16,7 +16,11 @@ use monty_types::{
 };
 use tokio::time::timeout;
 
-use crate::{CrashCause, PoolError, pool::PoolInner, worker::Worker};
+use crate::{
+    CrashCause, PoolError,
+    pool::{CapacityGuard, PoolInner},
+    worker::Worker,
+};
 
 /// Arguments for the REPL session a checkout creates — mirrors
 /// `MontyRepl`'s constructor surface.
@@ -660,8 +664,8 @@ impl Checkout {
     }
 
     /// The core protocol turn, bounded by `deadline`: when it expires the turn
-    /// I/O is abandoned (safe — reads are pumped whole, never split across the
-    /// cancellation) and the worker is killed and discarded.
+    /// I/O is abandoned (safe — `Worker::recv` is cancel-safe, partial-frame
+    /// state stays in the worker) and the worker is killed and discarded.
     ///
     /// Also enforces the cancellation contract (see the type docs): a caller
     /// that dropped a previous turn future mid-I/O left the protocol state
@@ -908,9 +912,11 @@ impl Checkout {
             // of a version-skew exit, which a SIGKILL would replace with the
             // signal and lose
             Some(mut worker) => {
+                // guard, not a trailing release: a caller dropping this future
+                // mid-reap must still release the slot
+                let _capacity = CapacityGuard::new(&self.pool);
                 let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
                 drop(worker);
-                self.pool.release_capacity();
                 status
             }
             None => None,
@@ -935,9 +941,11 @@ impl Checkout {
         };
         self.pending = None;
         self.feed_mounts = None;
+        // guard, not a trailing release: a caller dropping this future
+        // mid-reap must still release the slot
+        let _capacity = CapacityGuard::new(&self.pool);
         let status = worker.kill_and_reap().await;
         drop(worker);
-        self.pool.release_capacity();
         if self.pool.config.transport.is_websocket() {
             PoolError::Disconnected {
                 context: context.to_owned(),
@@ -953,13 +961,15 @@ impl Checkout {
     }
 
     /// Discards the worker after the turn deadline expired: the turn's I/O
-    /// future has already been dropped (whole-frame reads make that safe),
+    /// future has already been dropped (safe — `Worker::recv` is cancel-safe),
     /// so this only kills, reaps, and classifies.
     async fn poison_timeout(&mut self) -> PoolError {
         if let Some(mut worker) = self.worker.take() {
+            // guard, not a trailing release: a caller dropping this future
+            // mid-reap must still release the slot
+            let _capacity = CapacityGuard::new(&self.pool);
             let _ = worker.kill_and_reap().await;
             drop(worker);
-            self.pool.release_capacity();
         }
         self.pending = None;
         self.feed_mounts = None;
