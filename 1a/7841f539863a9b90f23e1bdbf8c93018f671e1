@@ -1,0 +1,55 @@
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_bc2b96e4ce632b::t_a8564c00ac9c48 399-403
+crates/monty-js/README.md
+  s_bc2b96e4ce632b::t_0a70632a567983 325-330
+crates/monty-runtime/src/main.rs
+  s_bc2b96e4ce632b::t_314f814c79a9b7 23,26
+crates/monty-pool/README.md
+  s_bc2b96e4ce632b::t_fff944851e0009 84-85
+  s_bc2b96e4ce632b::t_0a70632a567983 78-81
+crates/monty-runtime/src/oom_exit.rs
+  s_bc2b96e4ce632b::t_6174345de57bf3 46
+  s_bc2b96e4ce632b::t_8afbb6fe71abc2 3,9,12-45,47-90
+  s_bc2b96e4ce632b::t_af7127ae1c66c9 1-2,4-8,10-11
+crates/monty-python/tests/test_pool.py
+  s_bc2b96e4ce632b::t_c5bd2809661caf 134-151,153-154,157,159
+limitations/resource_limits.md
+  s_bc2b96e4ce632b::t_58d891c7d94500 40-46
+  s_bc2b96e4ce632b::t_61faf1985109f0 47-51
+  s_bc2b96e4ce632b::t_bc04dfc8f601ab 66-75
+crates/monty-pool/tests/pool_test.rs
+  s_bc2b96e4ce632b::t_138400aa0c4a82 969-1003,1006,1020-1023
+  s_bc2b96e4ce632b::t_d1bde82826ec84 894-901
+crates/monty-proto/src/lib.rs
+  s_bc2b96e4ce632b::t_d1cf0a06ea9c80 23-27,32
+  s_bc2b96e4ce632b::t_a7e8345e7a2f22 28-31
+crates/monty-js/__test__/pool.spec.ts
+  s_bc2b96e4ce632b::t_d4840a0e4e7ae0 75-91,100,102
+crates/monty-pool/src/lib.rs
+  s_bc2b96e4ce632b::t_37bfd7a5de6286 135-138
+limitations/pool-architecture.md
+  s_bc2b96e4ce632b::t_f677780231ae55 105-117
+crates/monty-pool/src/checkout.rs
+  s_bc2b96e4ce632b::t_409f5e2ce0d749 866-868,876-886,897-903
+crates/monty-runtime/tests/subprocess.rs
+  s_bc2b96e4ce632b::t_7fb32ff4427229 7-8
+  s_bc2b96e4ce632b::t_e5981d24bae06f 138-166
+  s_bc2b96e4ce632b::t_f263def1a41d20 28-29,31-40,46
+  s_bc2b96e4ce632b::t_2eac4e81d6879b 417-431,435-436,439-440,442-445
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1a7841f539863a9b90f23e1bdbf8c93018f671e1",
+  "prompts": {},
+  "sessions": {
+    "s_bc2b96e4ce632b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0893224-99f1-4443-bfd9-b26c1ee4d93f",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
