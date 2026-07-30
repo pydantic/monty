@@ -144,6 +144,37 @@ left.x = right
 right.x = left
 assert repr(left) == 'Node(x=Node(x=...))'
 
+# Comparing two *distinct* cyclic dataclasses re-enters the field walk once per
+# level; CPython raises RecursionError, and Monty must bound it rather than
+# overflowing the host stack.
+cyc_a = Node(None)
+cyc_b = Node(None)
+cyc_a.x = cyc_a
+cyc_b.x = cyc_b
+try:
+    cyc_a == cyc_b
+    assert False, 'expected RecursionError from cyclic dataclass equality'
+except RecursionError:
+    pass
+# Mutually cyclic dataclasses recurse the same way.
+try:
+    left == cyc_a
+    assert False, 'expected RecursionError from mutually cyclic dataclasses'
+except RecursionError:
+    pass
+# A cycle reached through a container recurses through that container's guard.
+box_a = Node(None)
+box_b = Node(None)
+box_a.x = [box_a]
+box_b.x = [box_b]
+try:
+    box_a == box_b
+    assert False, 'expected RecursionError from a cycle through a list field'
+except RecursionError:
+    pass
+# The identity shortcut still resolves a cyclic dataclass against itself.
+assert cyc_a == cyc_a
+
 # The comparison chain short-circuits, so an earlier unequal field is reported
 # before the uninitialized one is ever read; and identity wins outright, since
 # CPython's generated `__eq__` opens with `self is other`.

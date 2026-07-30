@@ -561,6 +561,11 @@ pub(crate) fn dataclass_eq(
     if !matches!(vm.heap.get(other_id), HeapData::Instance(inst) if inst.class() == class_id) {
         return Ok(None);
     }
+    // Charge a recursion level: two distinct cyclic dataclasses (`a.x = a;
+    // b.x = b; a == b`) re-enter here per level and would otherwise overflow
+    // the host stack.
+    let mut depth = vm.recursion_guard()?;
+    let vm = &mut *depth;
     for name_id in field_names {
         let field_name = vm.interns.get_str(*name_id).to_owned();
         // Each read is guarded before the next runs, so the second failing
