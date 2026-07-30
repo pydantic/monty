@@ -619,6 +619,18 @@ impl Checkout {
         self.worker.as_ref().and_then(Worker::pid)
     }
 
+    /// Whether a suspension is currently awaiting an answer (a `resume*` call).
+    ///
+    /// Drivers that own the whole answer lifecycle (the bindings' drive loops)
+    /// check this at the start of a feed to recognize a previous drive future
+    /// dropped mid-suspension: its answer sources died with it, so the
+    /// suspension can never be answered and the worker should be discarded
+    /// rather than retained behind a session that can only error.
+    #[must_use]
+    pub fn has_pending_suspension(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Sends a request and requires the reply to be a [`TurnEvent`].
     ///
     /// This is the entry point for *execution* turns (feed/resume — the

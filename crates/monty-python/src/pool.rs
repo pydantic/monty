@@ -1283,6 +1283,23 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
 
+    // A suspension already pending as a new feed starts means the previous
+    // `feed_run` future was cancelled mid-suspension (this loop otherwise
+    // always answers or discards): its coroutine tasks died with it, so the
+    // suspension can never be answered. Discard the worker and fail cleanly
+    // instead of wedging the session behind a worker nobody can resume.
+    let abandoned = checkout
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(Checkout::has_pending_suspension);
+    if abandoned {
+        discard_checkout(&checkout).await;
+        return Err(PyRuntimeError::new_err(
+            "a previous feed_run was cancelled while a suspension awaited an answer; the worker was discarded",
+        ));
+    }
+
     let mut event = run_turn_async(
         &checkout,
         &print_target,

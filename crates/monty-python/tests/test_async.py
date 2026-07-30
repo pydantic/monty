@@ -970,3 +970,39 @@ async def test_llm_syntax_error_then_fix(asession: AsyncMontySession):
     # Snippet 3: state preserved, LLM fixes the code
     result = await asession.feed_run('y = add(x, 5)\ny', external_lookup=ext)
     assert result == snapshot(15)
+
+
+# === Cancellation ===
+
+
+async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
+    """Cancelling `feed_run` while an external coroutine is pending abandons a
+    suspension nobody can ever answer: the next feed must discard the worker
+    and fail cleanly rather than wedge the session, and the pool must still
+    serve fresh sessions."""
+    started = asyncio.Event()
+
+    async def block() -> int:
+        started.set()
+        await asyncio.sleep(60)
+        return 0
+
+    async with apool.checkout() as session:
+        # ensure_future: feed_run returns a Future, not a coroutine
+        task = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
+        await started.wait()
+        # let the drive loop reach the ResolveFutures suspension before cancelling
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await session.feed_run('1 + 1')
+        assert exc_info.value.args[0] == snapshot(
+            'a previous feed_run was cancelled while a suspension awaited an answer; the worker was discarded'
+        )
+
+    # the discarded worker's capacity was released; a fresh session works
+    async with apool.checkout() as session:
+        assert await session.feed_run('1 + 1') == snapshot(2)

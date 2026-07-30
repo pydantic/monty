@@ -1295,12 +1295,13 @@ async fn cancelled_turn_discards_the_worker_on_next_use() {
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
 
     {
-        // race the feed against an immediate sleep: the feed is cancelled
-        // while awaiting the worker's reply
+        // race the feed against a short sleep: the snippet never terminates,
+        // so the sleep deterministically wins and the feed is cancelled while
+        // awaiting the worker's reply
         let mut printer = no_print;
-        let feed = session.feed("sum(range(10_000_000))", vec![], vec![], false, &mut printer);
+        let feed = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer);
         tokio::select! {
-            _result = feed => panic!("the feed should not win an immediate race"),
+            _result = feed => panic!("the feed cannot complete"),
             () = sleep(Duration::from_millis(10)) => {}
         }
     }
