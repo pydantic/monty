@@ -1,0 +1,41 @@
+crates/monty/src/modules/re.rs
+  s_13cc81f33a8152::t_c0cfb4a0941920 619-623
+  s_13cc81f33a8152::t_150034fd8d080d 632-635
+  s_13cc81f33a8152::t_84a87deff59db9 241-242
+  s_13cc81f33a8152::t_dce7ba9aaf2dbd 219-220
+  s_13cc81f33a8152::t_e0af2fe6629abd 263-264,266-268
+  s_13cc81f33a8152::t_fd9606f2487368 734-735
+  s_13cc81f33a8152::t_8c991781d06b41 66-68
+  s_13cc81f33a8152::t_db47d67204bd49 334-336,338-339
+  s_13cc81f33a8152::t_753646b5f54a1c 612-616
+  s_13cc81f33a8152::t_0af0ba1db9b564 480-483,485-487
+  s_13cc81f33a8152::t_f13a611dea9fbe 456,458-461
+  s_13cc81f33a8152::t_a7da975b42cb0b 596-598
+  s_13cc81f33a8152::t_b6eba8ffd205a9 625-627
+  s_13cc81f33a8152::t_9a3b321f3e6f6c 692-694,696-697
+  s_13cc81f33a8152::t_b26cd6694851f7 606-609
+  s_13cc81f33a8152::t_acd2bf7ffc2292 229-230
+  s_13cc81f33a8152::t_7a44a8bca92afa 746-747
+  s_13cc81f33a8152::t_e542536369a9fa 522-523,525-527
+  s_13cc81f33a8152::t_7cef8d0807db3c 92-93,96
+  s_13cc81f33a8152::t_c87cce760f715f 253-254
+  s_13cc81f33a8152::t_9068db3b59ed90 202-204
+  s_13cc81f33a8152::t_61b1be68eb2c84 186-187
+  s_13cc81f33a8152::t_8f0a3fdba0dd23 312-313
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e5fa83b0bc5de9e4d99cb63e0a830b7584ea2dcb",
+  "prompts": {},
+  "sessions": {
+    "s_13cc81f33a8152": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aeafd75c-ab6a-41ba-bec9-59dda0b2aaa4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
