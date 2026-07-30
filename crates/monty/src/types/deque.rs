@@ -419,8 +419,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
         // Charge a recursion level: two distinct cyclic deques (`a.append(a);
         // b.append(b); a == b`) re-enter here per level and would otherwise
         // overflow the host stack. A deque walks by index, so it charges directly.
-        let mut depth = vm.recursion_guard()?;
-        let vm = &mut *depth;
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         for i in 0..len {
             let a = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(a, vm);
@@ -442,8 +442,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Deque> {
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h>) -> RunResult<CmpOrder> {
         let self_len = self.get(vm.heap).len();
         let other_len = other.get(vm.heap).len();
-        let mut depth = vm.recursion_guard()?;
-        let vm = &mut *depth;
+        let mut guard = vm.recursion_guard()?;
+        let vm = &mut *guard;
         for i in 0..self_len.min(other_len) {
             let a = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
             defer_drop!(a, vm);
