@@ -996,13 +996,43 @@ async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        # the Rust-side drive future is dropped asynchronously on the tokio
+        # runtime; give it a beat so the cancelled drive's guard has discarded
+        # the worker before we probe the session
+        await asyncio.sleep(0.1)
 
         with pytest.raises(RuntimeError) as exc_info:
             await session.feed_run('1 + 1')
-        assert exc_info.value.args[0] == snapshot(
-            'a previous feed_run was cancelled while a suspension awaited an answer; the worker was discarded'
-        )
+        assert exc_info.value.args[0] == snapshot('this checkout has already been finished')
 
     # the discarded worker's capacity was released; a fresh session works
     async with apool.checkout() as session:
+        assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_concurrent_feed_run_is_rejected_without_killing_the_first(apool: AsyncMonty):
+    """A second feed_run started while the first is mid-suspension must get a
+    clean session-preserving error — never be mistaken for a cancelled drive
+    and kill the worker out from under the first."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block() -> int:
+        started.set()
+        await release.wait()
+        return 5
+
+    async with apool.checkout() as session:
+        first = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
+        await started.wait()
+        # let the drive loop reach the ResolveFutures suspension
+        await asyncio.sleep(0.05)
+        with pytest.raises(RuntimeError) as exc_info:
+            await session.feed_run('1 + 1')
+        assert exc_info.value.args[0] == snapshot(
+            'monty worker protocol error: feed called while a suspension is awaiting an answer'
+        )
+        # the first feed_run is unharmed and completes normally
+        release.set()
+        assert await first == snapshot(5)
         assert await session.feed_run('1 + 1') == snapshot(2)

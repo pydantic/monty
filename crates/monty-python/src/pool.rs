@@ -550,6 +550,7 @@ impl PyAsyncMonty {
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
+            drive_abandoned: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -662,6 +663,7 @@ impl PyAsyncMontyWebsocket {
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(AsyncMutex::new(None)),
             used: AtomicBool::new(false),
+            drive_abandoned: Arc::new(AtomicBool::new(false)),
         })
     }
 }
@@ -678,6 +680,11 @@ pub struct PyAsyncMontySession {
     /// `load_snapshot` are valid only while unset. See
     /// [`PyMontySession::load_snapshot`].
     used: AtomicBool,
+    /// Set by [`AbandonGuard`] when a `feed_run` future is dropped mid-drive
+    /// (asyncio cancellation): the drive's coroutine tasks died with it, so any
+    /// suspension it was servicing can never be answered. The next `feed_run`
+    /// discards the worker and fails cleanly instead of wedging the session.
+    drive_abandoned: Arc<AtomicBool>,
 }
 
 #[pymethods]
@@ -744,7 +751,8 @@ impl PyAsyncMontySession {
             skip_type_check,
         )?;
         let ext = external_lookup.map(|d| d.clone().unbind());
-        future_into_py(py, async move { drive_async(args, ext).await })
+        let abandoned = Arc::clone(&self.drive_abandoned);
+        future_into_py(py, async move { drive_async(args, ext, abandoned).await })
     }
 
     /// Async counterpart of [`PyMontySession::feed_start`]: the returned
@@ -1267,10 +1275,69 @@ fn sync_turn_answer(
     }
 }
 
-/// Async drive loop: protocol turns are awaited directly on the runtime;
+/// Async drive loop entry: detects a drive abandoned by asyncio cancellation
+/// before running a new one.
+///
+/// `abandoned` is the session's cancelled-drive marker. A `feed_run` future
+/// dropped mid-drive orphans whatever it was doing — in particular a
+/// suspension whose answering coroutine tasks died with it — so the next call
+/// discards the worker and fails cleanly instead of wedging the session. The
+/// marker is set by [`AbandonGuard`] only on genuine cancellation: it is
+/// disarmed in the same poll that completes the inner drive, so normal `Ok` /
+/// `Err` returns never trip it, and a *concurrent* `feed_run` (or a suspension
+/// parked by `feed_start`) is never mistaken for an abandoned one.
+async fn drive_async(
+    args: FeedArgs,
+    external_lookup: Option<Py<PyDict>>,
+    abandoned: Arc<AtomicBool>,
+) -> PyResult<Py<PyAny>> {
+    if abandoned.load(Ordering::Acquire) {
+        discard_checkout(&args.checkout).await;
+        return Err(PyRuntimeError::new_err(
+            "a previous feed_run was cancelled mid-run; the session's worker was discarded",
+        ));
+    }
+    let mut guard = AbandonGuard {
+        checkout: Arc::clone(&args.checkout),
+        abandoned,
+        armed: true,
+    };
+    let result = drive_async_inner(args, external_lookup).await;
+    guard.armed = false;
+    result
+}
+
+/// Discards the session's worker when the drive future is cancelled — dropped
+/// while still armed; every normal exit disarms first.
+///
+/// The slot lock is only ever held *within* a turn, and a mid-turn
+/// cancellation drops the turn (and its lock guard) before this guard runs,
+/// so `try_lock` normally succeeds and the worker dies on the spot (later
+/// calls fail with "already finished"). The `abandoned` marker is the
+/// fallback when the lock is contended (e.g. a concurrent `feed_run` inside
+/// its turn): the next drive then finishes the discard.
+struct AbandonGuard {
+    checkout: SharedCheckout,
+    abandoned: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl Drop for AbandonGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            match self.checkout.try_lock() {
+                // dropping the Checkout kills the worker and frees capacity
+                Ok(mut slot) => *slot = None,
+                Err(_) => self.abandoned.store(true, Ordering::Release),
+            }
+        }
+    }
+}
+
+/// The drive loop itself: protocol turns are awaited directly on the runtime;
 /// coroutine external functions are spawned as tasks and resolved via
 /// `ResolveFutures`.
-async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
+async fn drive_async_inner(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyResult<Py<PyAny>> {
     let FeedArgs {
         code,
         inputs,
@@ -1282,23 +1349,6 @@ async fn drive_async(args: FeedArgs, external_lookup: Option<Py<PyDict>>) -> PyR
         dc_registry,
     } = args;
     let mut join_set: JoinSet<(u32, ExtFunctionResult)> = JoinSet::new();
-
-    // A suspension already pending as a new feed starts means the previous
-    // `feed_run` future was cancelled mid-suspension (this loop otherwise
-    // always answers or discards): its coroutine tasks died with it, so the
-    // suspension can never be answered. Discard the worker and fail cleanly
-    // instead of wedging the session behind a worker nobody can resume.
-    let abandoned = checkout
-        .lock()
-        .await
-        .as_ref()
-        .is_some_and(Checkout::has_pending_suspension);
-    if abandoned {
-        discard_checkout(&checkout).await;
-        return Err(PyRuntimeError::new_err(
-            "a previous feed_run was cancelled while a suspension awaited an answer; the worker was discarded",
-        ));
-    }
 
     let mut event = run_turn_async(
         &checkout,
