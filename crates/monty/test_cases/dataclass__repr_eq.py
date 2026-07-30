@@ -146,7 +146,9 @@ assert repr(left) == 'Node(x=Node(x=...))'
 
 # Comparing two *distinct* cyclic dataclasses re-enters the field walk once per
 # level; CPython raises RecursionError, and Monty must bound it rather than
-# overflowing the host stack.
+# overflowing the host stack. Only the type is asserted, never the message:
+# CPython picks between its depth counter ('maximum recursion depth exceeded')
+# and its C-stack guard ('Stack overflow (used N kB) in comparison') by platform.
 cyc_a = Node(None)
 cyc_b = Node(None)
 cyc_a.x = cyc_a
@@ -154,14 +156,14 @@ cyc_b.x = cyc_b
 try:
     cyc_a == cyc_b
     assert False, 'expected RecursionError from cyclic dataclass equality'
-except RecursionError as e:
-    assert str(e) == 'maximum recursion depth exceeded'
+except RecursionError:
+    pass
 # Mutually cyclic dataclasses recurse the same way.
 try:
     left == cyc_a
     assert False, 'expected RecursionError from mutually cyclic dataclasses'
-except RecursionError as e:
-    assert str(e) == 'maximum recursion depth exceeded'
+except RecursionError:
+    pass
 # A cycle reached through a container recurses through that container's guard,
 # whichever container it is.
 box_a = Node(None)
@@ -171,8 +173,8 @@ box_b.x = [box_b]
 try:
     box_a == box_b
     assert False, 'expected RecursionError from a cycle through a list field'
-except RecursionError as e:
-    assert str(e) == 'maximum recursion depth exceeded'
+except RecursionError:
+    pass
 
 dict_a = Node(None)
 dict_b = Node(None)
@@ -181,8 +183,8 @@ dict_b.x = {'k': dict_b}
 try:
     dict_a == dict_b
     assert False, 'expected RecursionError from a cycle through a dict field'
-except RecursionError as e:
-    assert str(e) == 'maximum recursion depth exceeded'
+except RecursionError:
+    pass
 
 tuple_a = Node(None)
 tuple_b = Node(None)
@@ -191,8 +193,8 @@ tuple_b.x = (tuple_b,)
 try:
     tuple_a == tuple_b
     assert False, 'expected RecursionError from a cycle through a tuple field'
-except RecursionError as e:
-    assert str(e) == 'maximum recursion depth exceeded'
+except RecursionError:
+    pass
 # The identity shortcut still resolves a cyclic dataclass against itself.
 assert cyc_a == cyc_a
 # The guard releases its level on the way out, so later comparisons still run.
