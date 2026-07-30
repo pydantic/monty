@@ -1,0 +1,19 @@
+crates/monty/tests/resource_limits.rs
+  s_343a4e3a4d777a::t_657c1cda2e407a 1546,1548
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e936787b862743febc3972b617f2e26aa6b517d0",
+  "prompts": {},
+  "sessions": {
+    "s_343a4e3a4d777a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e724a8a9-abb7-42ad-8330-f9c6ae6d8827",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
