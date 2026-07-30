@@ -23,7 +23,7 @@ use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValu
 use monty_types::{MontyObject, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
 
 /// Locates (building once if needed) the `monty` CLI binary the workers run.
 /// Mirrors the resolution used by `monty-pool`'s integration tests: honour
@@ -56,9 +56,20 @@ fn monty_binary() -> PathBuf {
 /// The shared tokio runtime all benchmark iterations run on. One static
 /// runtime (rather than one per bench) so workers' process handles and pipe
 /// registrations outlive the individual `block_on` calls that use them.
+///
+/// Current-thread flavor: `block_on` then drives the io/timer drivers on the
+/// benchmark thread itself, so a turn's wakeup is a plain `epoll_wait` return
+/// rather than a cross-thread handoff from a worker thread. That measures the
+/// pool's own overhead, not the multi-thread scheduler's wakeup latency —
+/// matching the pre-async benches, which had no scheduler at all.
 fn runtime() -> &'static Runtime {
     static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| Runtime::new().expect("tokio runtime"))
+    RUNTIME.get_or_init(|| {
+        Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+    })
 }
 
 /// Discards sandbox `print()` output — none of these benchmarks print.

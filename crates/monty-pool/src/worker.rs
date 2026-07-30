@@ -14,7 +14,7 @@
 //! inside the `WebSocketStream`, and `Stream::poll_next` is cancel-safe.
 
 use std::{
-    env, mem,
+    env,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::Once,
@@ -22,7 +22,7 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_vec, encode_to_capped_vec, pb};
+use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -64,6 +64,8 @@ struct SubprocessWorker {
     child: Child,
     stdin: ChildStdin,
     recv: FrameRecv,
+    /// Reused encode buffer for outgoing frames (see [`Worker::send`]).
+    send_buf: Vec<u8>,
 }
 
 /// A remote child reached over a WebSocket. One binary message per protocol
@@ -121,6 +123,7 @@ impl Worker {
                 child,
                 stdin,
                 recv: FrameRecv::new(stdout),
+                send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
             })),
             checkouts_served: 0,
         })
@@ -157,10 +160,15 @@ impl Worker {
     pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => {
-                // prefix + body in one buffer: a single write syscall, and a
-                // pipe write needs no flush
-                let framed = encode_framed_vec(request)?;
-                w.stdin.write_all(&framed).await?;
+                // prefix + body in one reused buffer: a single write syscall
+                // per request, no per-frame allocation, and a pipe write needs
+                // no flush
+                encode_framed_into(request, &mut w.send_buf)?;
+                w.stdin.write_all(&w.send_buf).await?;
+                // don't let one huge frame pin its capacity for the worker's life
+                if w.send_buf.capacity() > RETAIN_BUF_MAX {
+                    w.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
+                }
                 Ok(())
             }
             WorkerKind::WebSocket(w) => {
@@ -268,88 +276,107 @@ impl Worker {
     }
 }
 
+/// Chunk size for speculative frame reads: large enough that a typical
+/// prefix + body arrives in a single `read` syscall, small enough to sit
+/// permanently in every idle worker.
+const READ_CHUNK: usize = 8 * 1024;
+
+/// Cap above which the reused send/recv buffers are dropped after use, so one
+/// huge frame does not pin megabytes for the worker's lifetime.
+const RETAIN_BUF_MAX: usize = 64 * 1024;
+
+/// Initial capacity of the reused send buffer: covers control frames,
+/// resumes with small values, and `Configure` (~150 bytes) without a realloc;
+/// only large feeds/values grow past it (via `encode_framed_into`'s reserve).
+const SEND_BUF_CAPACITY: usize = 1024;
+
 /// A cancel-safe reader of length-prefixed frames from the child's stdout.
 ///
 /// Async `read_exact` is not cancel-safe — dropping it mid-frame loses the
-/// bytes already read. Here the buffer and fill offset are fields, and each
-/// await is a single `read` (which never consumes bytes when it returns
-/// `Pending`), so a `recv` future dropped at any await point leaves the
-/// accumulated bytes in place for the next call to resume from.
+/// bytes already read. Here the accumulation buffer and fill offset are
+/// fields, and each await is a single `read` (which never consumes bytes when
+/// it returns `Pending`), so a `recv` future dropped at any await point
+/// leaves the accumulated bytes in place for the next call to resume from.
+///
+/// Reads accumulate into one buffer rather than prefix-then-body, so the
+/// common whole-frame-ready case costs a single `read` syscall; bytes past
+/// the frame boundary (coalesced print events) are retained for the next call.
 struct FrameRecv {
     stdout: ChildStdout,
-    state: RecvState,
-}
-
-/// Read progress on the current frame; survives a cancelled `recv`.
-enum RecvState {
-    /// Accumulating the 4-byte LE length prefix.
-    Len { buf: [u8; 4], filled: usize },
-    /// Accumulating a body whose length the prefix announced.
-    Body { buf: Vec<u8>, filled: usize },
+    /// Zero-initialized read buffer; `buf[consumed..filled]` is unparsed data.
+    buf: Vec<u8>,
+    /// Bytes already handed out as decoded frames.
+    consumed: usize,
+    /// Bytes read from the pipe so far.
+    filled: usize,
 }
 
 impl FrameRecv {
     fn new(stdout: ChildStdout) -> Self {
         Self {
             stdout,
-            state: RecvState::Len { buf: [0; 4], filled: 0 },
+            buf: Vec::new(),
+            consumed: 0,
+            filled: 0,
         }
     }
 
-    /// Reads and decodes one frame, enforcing [`MAX_FRAME_LEN`] before
-    /// allocating the body. `Ok(None)` on EOF at a frame boundary — the peer
-    /// closed between messages; EOF inside a frame is [`FrameError::Truncated`].
+    /// Reads and decodes one frame, enforcing [`MAX_FRAME_LEN`] before growing
+    /// the buffer to the announced size. `Ok(None)` on EOF at a frame boundary
+    /// — the peer closed between messages; EOF inside a frame is
+    /// [`FrameError::Truncated`].
     async fn recv(&mut self) -> Result<Option<pb::ChildEvent>, FrameError> {
+        // move leftover bytes from a previous coalesced read to the front so
+        // the parse below always works from offset 0
+        if self.consumed > 0 {
+            self.buf.copy_within(self.consumed..self.filled, 0);
+            self.filled -= self.consumed;
+            self.consumed = 0;
+        }
         loop {
-            match &mut self.state {
-                RecvState::Len { buf, filled } => {
-                    while *filled < buf.len() {
-                        let n = self.stdout.read(&mut buf[*filled..]).await?;
-                        if n == 0 {
-                            // EOF at the boundary is a clean close; inside the
-                            // prefix the peer died mid-write.
-                            return if *filled == 0 {
-                                Ok(None)
-                            } else {
-                                Err(FrameError::Truncated)
-                            };
-                        }
-                        *filled += n;
-                    }
-                    let len = u32::from_le_bytes(*buf);
-                    if len > MAX_FRAME_LEN {
-                        return Err(FrameError::FrameTooLarge {
-                            len,
-                            max: MAX_FRAME_LEN,
-                        });
-                    }
-                    // Allocation is up front but bounded by MAX_FRAME_LEN
-                    // (256 MiB), keeping byzantine peers bounded to one frame
-                    // buffer per worker.
-                    self.state = RecvState::Body {
-                        buf: vec![0u8; len as usize],
-                        filled: 0,
-                    };
+            if self.filled >= 4 {
+                let len = u32::from_le_bytes(self.buf[..4].try_into().expect("4 bytes"));
+                if len > MAX_FRAME_LEN {
+                    return Err(FrameError::FrameTooLarge {
+                        len,
+                        max: MAX_FRAME_LEN,
+                    });
                 }
-                RecvState::Body { buf, filled } => {
-                    while *filled < buf.len() {
-                        let n = self.stdout.read(&mut buf[*filled..]).await?;
-                        if n == 0 {
-                            // EOF after a length prefix is always mid-frame.
-                            return Err(FrameError::Truncated);
-                        }
-                        *filled += n;
-                    }
-                    let done = mem::replace(&mut self.state, RecvState::Len { buf: [0; 4], filled: 0 });
-                    let RecvState::Body { buf: body, .. } = done else {
-                        unreachable!("matched Body above");
-                    };
+                let end = 4 + len as usize;
+                if self.filled >= end {
                     // `decode_frame` resets the per-frame decode budget;
-                    // decoding is fully synchronous, so the thread-local budget
-                    // cannot interleave with another worker's frame.
-                    return decode_frame::<pb::ChildEvent>(&body).map(Some);
+                    // decoding is fully synchronous, so the thread-local
+                    // budget cannot interleave with another worker's frame.
+                    let event = decode_frame::<pb::ChildEvent>(&self.buf[4..end]).map(Some);
+                    self.consumed = end;
+                    // a fully drained oversize buffer is dropped rather than
+                    // pinned for the worker's lifetime
+                    if self.buf.len() > RETAIN_BUF_MAX && self.filled == end {
+                        self.buf = Vec::new();
+                        self.consumed = 0;
+                        self.filled = 0;
+                    }
+                    return event;
                 }
+                // Growth is validated against MAX_FRAME_LEN above, keeping
+                // byzantine peers bounded to one frame buffer per worker.
+                if self.buf.len() < end {
+                    self.buf.resize(end, 0);
+                }
+            } else if self.buf.len() < READ_CHUNK {
+                self.buf.resize(READ_CHUNK, 0);
             }
+            let n = self.stdout.read(&mut self.buf[self.filled..]).await?;
+            if n == 0 {
+                // EOF at a frame boundary is a clean close; mid-frame the
+                // peer died while writing.
+                return if self.filled == 0 {
+                    Ok(None)
+                } else {
+                    Err(FrameError::Truncated)
+                };
+            }
+            self.filled += n;
         }
     }
 }
