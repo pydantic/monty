@@ -629,29 +629,39 @@ impl<C: ContainsHeap> DropWithContext<C> for ResolvedPattern {
     }
 }
 
-/// One slot of [`RePatternCache`], holding the key hash, the pattern text, the
-/// flags (text + flags are rechecked on a hash hit to rule out collisions), and
-/// the compiled pattern shared with callers.
-type ReCacheEntry = Option<(u64, Box<str>, u16, Rc<RePattern>)>;
+/// One slot of [`RePatternCache`]: the key hash plus the compiled pattern shared
+/// with callers. The key itself is not stored — `RePattern` already owns the
+/// source text and flags, so a hash hit rechecks against those
+/// ([`RePattern::is_compiled_from`]) rather than against a second copy.
+type ReCacheEntry = Option<(u64, Rc<RePattern>)>;
 
 /// Slot count of [`RePatternCache`] — power of two so the index modulo is a mask;
 /// 256 (vs CPython's 512 `re._MAXCACHE`) to halve the untracked worst-case retained
-/// memory of `CACHE_CAPACITY × CACHED_SIZE_LIMIT`.
+/// memory of `CACHE_CAPACITY × (CACHED_SIZE_LIMIT + CACHED_PATTERN_LIMIT)`.
 const CACHE_CAPACITY: usize = 256;
 
 /// `delegate_size_limit` for compiles that will be retained in the cache. The cache
-/// is invisible to the resource tracker, so this caps its worst-case footprint at
-/// ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`; patterns whose compiled form is bigger
+/// is invisible to the resource tracker, so this caps the retained *compiled* size
+/// at ~`CACHE_CAPACITY × CACHED_SIZE_LIMIT`; patterns whose compiled form is bigger
 /// still work — they are recompiled per call at default limits and never retained.
 const CACHED_SIZE_LIMIT: usize = 64 * 1024;
+
+/// Longest *source* pattern the cache will retain, the text-side counterpart of
+/// [`CACHED_SIZE_LIMIT`]. A retained entry keeps the source text outside the
+/// resource tracker (in `RePattern` and again in each `fancy_regex` engine it has
+/// compiled), and source length is unrelated to compiled size — verbose-mode
+/// comments (`(?x)a#…`) compile to nothing, so without this cap a run could pin
+/// `CACHE_CAPACITY` arbitrarily large patterns while staying under its own memory
+/// limit. Longer patterns still work, just uncached (recompiled per call).
+const CACHED_PATTERN_LIMIT: usize = 4 * 1024;
 
 /// Fixed-size, per-run cache of compiled patterns for module-level `re.*` calls,
 /// keyed on `(pattern, flags)` — so `re.split(r'\s+', text)` in a loop compiles
 /// once, not per call. Direct-mapped with 5-slot linear probing and
-/// LRU-on-collision (jiter's `py_string_cache` design), so retained
-/// compiled-regex memory is hard-bounded by `CACHE_CAPACITY` entries of at most
-/// [`CACHED_SIZE_LIMIT`] each. Mirrors CPython's `re._cache`; not snapshotted
-/// (rebuilt on demand).
+/// LRU-on-collision (jiter's `py_string_cache` design), so retained memory is
+/// hard-bounded by `CACHE_CAPACITY` entries, each capped on both axes by
+/// [`CACHED_SIZE_LIMIT`] (compiled form) and [`CACHED_PATTERN_LIMIT`] (source
+/// text). Mirrors CPython's `re._cache`; not snapshotted (rebuilt on demand).
 ///
 /// The `CACHE_CAPACITY`-slot backing store is allocated lazily on first use:
 /// every VM constructs a `RePatternCache`, but the vast majority never touch
@@ -662,10 +672,17 @@ pub(crate) struct RePatternCache(Option<(Box<[ReCacheEntry]>, RandomState)>);
 
 impl RePatternCache {
     /// Returns the compiled pattern for `(pattern, flags)`, compiling and caching
-    /// on a miss. Compile errors propagate and nothing is cached; patterns whose
-    /// compiled form exceeds [`CACHED_SIZE_LIMIT`] are returned uncached. The
-    /// backing store is allocated here on the first call.
+    /// on a miss. Compile errors propagate and nothing is cached; patterns too big
+    /// to retain — source over [`CACHED_PATTERN_LIMIT`] or compiled form over
+    /// [`CACHED_SIZE_LIMIT`] — are returned uncached. The backing store is
+    /// allocated here on the first cacheable call.
     fn get_or_compile(&mut self, pattern: &str, flags: u16) -> RunResult<Rc<RePattern>> {
+        // Checked before the store is touched, so a run that only ever uses
+        // oversized patterns never allocates the slots at all.
+        if pattern.len() > CACHED_PATTERN_LIMIT {
+            return Ok(Rc::new(RePattern::compile(pattern.to_owned(), flags)?));
+        }
+
         let (entries, hash_builder) = self
             .0
             .get_or_insert_with(|| (vec![None; CACHE_CAPACITY].into_boxed_slice(), RandomState::default()));
@@ -679,8 +696,8 @@ impl RePatternCache {
         let mut empty_slot = None;
         for index in hash_index..hash_index + 5 {
             match entries.get(index) {
-                Some(Some((entry_hash, entry_pattern, entry_flags, compiled))) => {
-                    if *entry_hash == hash && *entry_flags == flags && &**entry_pattern == pattern {
+                Some(Some((entry_hash, compiled))) => {
+                    if *entry_hash == hash && compiled.is_compiled_from(pattern, flags) {
                         return Ok(Rc::clone(compiled));
                     }
                 }
@@ -710,7 +727,7 @@ impl RePatternCache {
         // every probed slot was occupied.
         let compiled = Rc::new(compiled);
         let slot = empty_slot.unwrap_or(hash_index);
-        entries[slot] = Some((hash, Box::from(pattern), flags, Rc::clone(&compiled)));
+        entries[slot] = Some((hash, Rc::clone(&compiled)));
         Ok(compiled)
     }
 }
@@ -895,6 +912,35 @@ mod tests {
         cache.get_or_compile(OVERSIZE_PATTERN, 0).unwrap();
         let again = cache.get_or_compile("abc", 0).unwrap();
         // The small pattern's entry survives the uncached oversize compile.
+        assert!(Rc::ptr_eq(&small, &again));
+        assert_eq!(occupied(&cache), 1);
+    }
+
+    /// A pattern whose source is far past [`CACHED_PATTERN_LIMIT`] but whose
+    /// compiled form is tiny: `(?x)` verbose mode discards everything from `#`
+    /// to the newline, so this is just `a`.
+    fn long_source_pattern() -> String {
+        format!("(?x)a#{}\n", "z".repeat(CACHED_PATTERN_LIMIT))
+    }
+
+    #[test]
+    fn long_source_pattern_compiles_but_is_not_retained() {
+        let mut cache = RePatternCache::default();
+        let pattern = long_source_pattern();
+        let first = cache.get_or_compile(&pattern, 0).unwrap();
+        let second = cache.get_or_compile(&pattern, 0).unwrap();
+        // Both calls succeed but nothing is retained: each call recompiles.
+        assert!(!Rc::ptr_eq(&first, &second));
+        assert_eq!(occupied(&cache), 0);
+    }
+
+    #[test]
+    fn long_source_pattern_does_not_disturb_cached_entries() {
+        let mut cache = RePatternCache::default();
+        let small = cache.get_or_compile("abc", 0).unwrap();
+        cache.get_or_compile(&long_source_pattern(), 0).unwrap();
+        let again = cache.get_or_compile("abc", 0).unwrap();
+        // The small pattern's entry survives the uncached long-source compile.
         assert!(Rc::ptr_eq(&small, &again));
         assert_eq!(occupied(&cache), 1);
     }

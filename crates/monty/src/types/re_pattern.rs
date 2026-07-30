@@ -121,6 +121,15 @@ impl RePattern {
         })
     }
 
+    /// True when this was compiled from exactly `(pattern, flags)`.
+    ///
+    /// Lets the `re` module's pattern cache confirm a slot on a hash hit without
+    /// storing its own copy of the key — the compiled pattern already owns both,
+    /// and duplicating the source text is what makes a cached entry expensive.
+    pub(crate) fn is_compiled_from(&self, pattern: &str, flags: u16) -> bool {
+        self.flags == flags && self.pattern == pattern
+    }
+
     /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
     fn compile_inner(pattern: String, flags: u16, delegate_size_limit: Option<usize>) -> Result<Self, RegexError> {
         let compiled = compile_regex_limited(&pattern, flags, delegate_size_limit)?;
