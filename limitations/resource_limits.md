@@ -62,6 +62,10 @@ catch them. `RecursionError` is catchable, as in CPython.
 
 - The host can set a `max_duration` budget; if exceeded the VM stops on
   the next bytecode boundary with `ResourceError`.
+- Enforcement is polled, not preemptive: a single bytecode instruction may
+  run a long native operation (a `bytes` substring scan, a sort, an iterator
+  drain), and those poll the clock at a coarse granularity. A run can
+  therefore overshoot `max_duration` slightly before stopping.
 - The budget covers cumulative **execution time**, not wall-clock time:
   the clock runs only while the interpreter executes bytecode, and is
   paused while execution is suspended waiting on the host (external

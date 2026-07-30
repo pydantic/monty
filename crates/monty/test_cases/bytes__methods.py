@@ -540,3 +540,45 @@ except AttributeError as e:
     msg = str(e)
     assert 'bytes' in msg, f'error should mention bytes, got: {e}'
     assert 'nonexistent' in msg, f'error should mention method name, got: {e}'
+
+# === Large-haystack substring searches ===
+# The native scanner walks large haystacks in chunks; matches straddling a
+# chunk boundary must still be found, at whole-haystack offsets.
+needle = b'a' * 64 + b'b'
+tail = b'c' * 200
+for offset in (65_500, 65_535, 65_536, 65_537, 131_000, 131_072):
+    head = b'a' * offset
+    hay = head + needle + tail
+    assert hay.find(needle) == offset
+    assert hay.rfind(needle) == offset
+    assert hay.index(needle) == offset
+    assert hay.rindex(needle) == offset
+    assert needle in hay
+    assert hay.count(needle) == 1
+    assert hay.partition(needle) == (head, needle, tail)
+    assert hay.rpartition(needle) == (head, needle, tail)
+    assert hay.split(needle) == [head, tail]
+    assert hay.rsplit(needle) == [head, tail]
+    assert hay.replace(needle, b'-') == head + b'-' + tail
+
+# matches on both sides of a chunk boundary
+hay2 = b'x' * 65_530 + b'|' + b'y' * 20 + b'|' + b'z' * 10
+assert hay2.count(b'|') == 2
+assert hay2.find(b'|') == 65_530
+assert hay2.rfind(b'|') == 65_551
+assert hay2.split(b'|') == [b'x' * 65_530, b'y' * 20, b'z' * 10]
+
+# needle longer than the scanner's chunk stride
+long_needle = b'n' * 70_000
+hay3 = b'm' * 1000 + long_needle + b'm' * 1000
+assert hay3.find(long_needle) == 1000
+assert hay3.rfind(long_needle) == 1000
+assert long_needle in hay3
+assert hay3.count(long_needle) == 1
+
+# near-match probe at a size where a quadratic scan would stall
+missing = b'a' * 99 + b'b'
+assert (b'a' * 200_000).find(missing) == -1
+assert (b'a' * 200_000).rfind(missing) == -1
+assert (missing in b'a' * 200_000) is False
+assert (b'a' * 200_000).count(missing) == 0

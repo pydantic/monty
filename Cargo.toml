@@ -99,6 +99,9 @@ unicode-general-category = "1"
 # or lead CPython's, affecting only recently (re)assigned code points.
 unicode_names2 = "1"
 unicode-normalization = "0.1"
+# Linear-time substring search over `[u8]`, which std only provides for `str`.
+# Already linked transitively via ruff/fancy-regex; this just names it directly.
+memchr = "2.7"
 # bigint and related crates
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
