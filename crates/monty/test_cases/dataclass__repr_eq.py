@@ -154,15 +154,16 @@ cyc_b.x = cyc_b
 try:
     cyc_a == cyc_b
     assert False, 'expected RecursionError from cyclic dataclass equality'
-except RecursionError:
-    pass
+except RecursionError as e:
+    assert str(e) == 'maximum recursion depth exceeded'
 # Mutually cyclic dataclasses recurse the same way.
 try:
     left == cyc_a
     assert False, 'expected RecursionError from mutually cyclic dataclasses'
-except RecursionError:
-    pass
-# A cycle reached through a container recurses through that container's guard.
+except RecursionError as e:
+    assert str(e) == 'maximum recursion depth exceeded'
+# A cycle reached through a container recurses through that container's guard,
+# whichever container it is.
 box_a = Node(None)
 box_b = Node(None)
 box_a.x = [box_a]
@@ -170,10 +171,32 @@ box_b.x = [box_b]
 try:
     box_a == box_b
     assert False, 'expected RecursionError from a cycle through a list field'
-except RecursionError:
-    pass
+except RecursionError as e:
+    assert str(e) == 'maximum recursion depth exceeded'
+
+dict_a = Node(None)
+dict_b = Node(None)
+dict_a.x = {'k': dict_a}
+dict_b.x = {'k': dict_b}
+try:
+    dict_a == dict_b
+    assert False, 'expected RecursionError from a cycle through a dict field'
+except RecursionError as e:
+    assert str(e) == 'maximum recursion depth exceeded'
+
+tuple_a = Node(None)
+tuple_b = Node(None)
+tuple_a.x = (tuple_a,)
+tuple_b.x = (tuple_b,)
+try:
+    tuple_a == tuple_b
+    assert False, 'expected RecursionError from a cycle through a tuple field'
+except RecursionError as e:
+    assert str(e) == 'maximum recursion depth exceeded'
 # The identity shortcut still resolves a cyclic dataclass against itself.
 assert cyc_a == cyc_a
+# The guard releases its level on the way out, so later comparisons still run.
+assert Node(1) == Node(1)
 
 # The comparison chain short-circuits, so an earlier unequal field is reported
 # before the uninitialized one is ever read; and identity wins outright, since
