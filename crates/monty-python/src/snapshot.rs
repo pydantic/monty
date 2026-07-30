@@ -42,7 +42,7 @@ use pyo3::{
     prelude::*,
     types::{PyBytes, PyDict, PyTuple},
 };
-use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
+use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
@@ -50,8 +50,8 @@ use crate::{
     exceptions::MontyError,
     external::{CallResult, ExternalLookup},
     pool::{
-        FeedArgs, SharedCheckout, TurnFuture, discard_checkout, dispatch_os_parts, ext_to_resume, pool_err_to_py,
-        run_turn_async, run_turn_sync, turn_fn,
+        FeedArgs, SharedCheckout, TurnFuture, block_on_sync, discard_checkout, discard_checkout_sync,
+        dispatch_os_parts, ext_to_resume, pool_err_to_py, run_turn_async, run_turn_sync, turn_fn,
     },
     print_target::PrintTarget,
 };
@@ -353,7 +353,7 @@ impl SnapshotState {
         let resumed = &self.resumed;
         let state = py
             .detach(|| {
-                get_runtime().block_on(async {
+                block_on_sync(async {
                     let mut guard = checkout.lock().await;
                     if resumed.load(Ordering::SeqCst) {
                         return Ok(None);
@@ -363,7 +363,7 @@ impl SnapshotState {
                         None => Err(PoolError::Finished),
                     }
                 })
-            })
+            })?
             .map_err(|e| pool_err_to_py(py, e))?;
         match state {
             Some(state) => Ok(PyBytes::new(py, &state).unbind()),
@@ -610,7 +610,7 @@ impl PyFunctionSnapshot {
                     // "coroutine was never awaited" ResourceWarning: a sync
                     // session has no event loop to drive it.
                     let _ = coro.bind(py).call_method0(intern!(py, "close"));
-                    py.detach(|| get_runtime().block_on(discard_checkout(&ctx.checkout)));
+                    discard_checkout_sync(py, &ctx.checkout);
                     return Err(PyRuntimeError::new_err("async external functions require AsyncMonty"));
                 }
             }
@@ -838,7 +838,7 @@ impl PyNameLookupSnapshot {
         let value = match resolve_captured_name(py, &ctx, &self.0.name) {
             Ok(value) => value,
             Err(err) => {
-                py.detach(|| get_runtime().block_on(discard_checkout(&ctx.checkout)));
+                discard_checkout_sync(py, &ctx.checkout);
                 return Err(err);
             }
         };

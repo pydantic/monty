@@ -16,6 +16,7 @@ from pydantic_monty import (
     AsyncMonty,
     AsyncMontySession,
     MemoryFile,
+    Monty,
     MontyRuntimeError,
     MontySyntaxError,
     OSAccess,
@@ -1052,3 +1053,38 @@ async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMont
             await second
         assert await first == snapshot(199999990000000)
         assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+# === Nested sync Monty inside AsyncMonty callbacks ===
+
+
+def _nested_sync_run(code: str) -> object:
+    """Runs `code` through a fresh sync pool — used from async callbacks."""
+    with Monty() as pool:
+        with pool.checkout() as session:
+            return session.feed_run(code)
+
+
+async def test_sync_monty_inside_async_external_function(asession: AsyncMontySession):
+    """The sync API from a sync external function under `AsyncMonty` must not
+    panic on the nested `block_on` (it runs on a tokio worker thread)."""
+
+    def run_sync_monty() -> object:
+        return _nested_sync_run('1 + 1')
+
+    result = await asession.feed_run('run_sync_monty()', external_lookup={'run_sync_monty': run_sync_monty})
+    assert result == snapshot(2)
+    # the outer session is unharmed
+    assert await asession.feed_run('3 + 4') == snapshot(7)
+
+
+async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
+    """Same as above via `print_callback`, which follows a different binding
+    path (invoked mid-turn rather than between turns)."""
+    seen: list[tuple[str, object]] = []
+
+    def on_print(stream: str, text: str) -> None:
+        seen.append((text, _nested_sync_run('2 + 2')))
+
+    await asession.feed_run("print('hi')", print_callback=on_print)
+    assert seen == snapshot([('hi\n', 4)])

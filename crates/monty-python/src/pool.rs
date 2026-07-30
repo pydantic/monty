@@ -21,9 +21,11 @@
 //! every protocol turn is a future driven on the pyo3-async-runtimes tokio
 //! runtime. `AsyncMonty` awaits those futures from the asyncio event loop via
 //! `future_into_py`; `Monty` blocks the calling thread on the same futures
-//! with `Runtime::block_on` (GIL released). External functions may be
-//! coroutines under `AsyncMonty`. Python callbacks — external functions,
-//! `os=`, `print_callback` — always execute in the host process.
+//! via [`block_on_sync`] (GIL released), which also supports being called from
+//! inside a multi-thread Tokio runtime — e.g. a sync callback invoked by an
+//! `AsyncMonty` drive loop. External functions may be coroutines under
+//! `AsyncMonty`. Python callbacks — external functions, `os=`,
+//! `print_callback` — always execute in the host process.
 
 use std::{
     future::{Future, ready},
@@ -49,7 +51,11 @@ use pyo3::{
     types::{PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple},
 };
 use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
-use tokio::{sync::Mutex as AsyncMutex, task::JoinSet};
+use tokio::{
+    runtime::{Handle, RuntimeFlavor},
+    sync::Mutex as AsyncMutex,
+    task::{JoinSet, block_in_place},
+};
 
 use crate::{
     async_dispatch::{dispatch_function_call, spawn_coroutine_task, wait_for_futures},
@@ -138,7 +144,7 @@ impl PyMonty {
         let this = slf.get();
         let config = this.config.clone();
         let pool = py
-            .detach(|| get_runtime().block_on(Pool::new(config)))
+            .detach(|| block_on_sync(Pool::new(config)))?
             .map_err(|e| pool_err_to_py(py, e))?;
         *lock(&this.pool) = Some(Arc::new(pool));
         Ok(slf)
@@ -147,9 +153,9 @@ impl PyMonty {
     /// Shuts the pool down: idle workers exit, capacity is gone. Sessions
     /// still checked out keep their workers until they exit.
     #[pyo3(signature = (*_args))]
-    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
+    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) -> PyResult<()> {
         let pool = lock(&self.pool).take();
-        py.detach(|| get_runtime().block_on(close_pool(pool)));
+        py.detach(|| block_on_sync(close_pool(pool)))
     }
 
     /// Prepares a REPL session; the worker is checked out by `with`.
@@ -218,12 +224,12 @@ impl PyMontySession {
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
         py.detach(|| {
-            get_runtime().block_on(async {
+            block_on_sync(async {
                 let checkout = pool.checkout(&repl_config).await?;
                 *slot.lock().await = Some(checkout);
                 Ok(())
             })
-        })
+        })?
         .map_err(|e: PoolError| pool_err_to_py(py, e))?;
         Ok(slf)
     }
@@ -232,9 +238,9 @@ impl PyMontySession {
     /// already been discarded and replaced). The slot is taken with the GIL
     /// released, like [`__enter__`](Self::__enter__).
     #[pyo3(signature = (*_args))]
-    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) {
+    fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) -> PyResult<()> {
         let slot = Arc::clone(&self.checkout);
-        py.detach(move || get_runtime().block_on(finish_checkout(&slot)));
+        py.detach(move || block_on_sync(finish_checkout(&slot)))
     }
 
     /// Executes one snippet in the worker, driving external function calls,
@@ -325,7 +331,7 @@ impl PyMontySession {
     fn load_session(&self, py: Python<'_>, state: Vec<u8>) -> PyResult<()> {
         // an idle session has no snapshot, so the restored script name is unused
         if self.restore_turn(py, state, Vec::new())?.0.is_some() {
-            py.detach(|| get_runtime().block_on(discard_checkout(&self.checkout)));
+            discard_checkout_sync(py, &self.checkout);
             return Err(PyRuntimeError::new_err(
                 "this dump is a suspended snapshot — use load_snapshot() to resume it",
             ));
@@ -368,7 +374,7 @@ impl PyMontySession {
         let ext = external_lookup.map(|d| d.clone().unbind());
         let (event, script_name) = self.restore_turn(py, state, mounts)?;
         let Some(event) = event else {
-            py.detach(|| get_runtime().block_on(discard_checkout(&self.checkout)));
+            discard_checkout_sync(py, &self.checkout);
             return Err(PyRuntimeError::new_err(
                 "this dump is an idle session — use load_session() to restore it",
             ));
@@ -390,7 +396,7 @@ impl PyMontySession {
     /// bytes via monty's existing dump format. The session stays usable.
     fn dump<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let state = py
-            .detach(|| get_runtime().block_on(dump_checkout(&self.checkout)))
+            .detach(|| block_on_sync(dump_checkout(&self.checkout)))?
             .map_err(|e| pool_err_to_py(py, e))?;
         Ok(PyBytes::new(py, &state))
     }
@@ -405,7 +411,7 @@ impl PyMontySession {
     /// thread with the GIL released, bounded by the pool's `request_timeout`.
     fn install_dependencies(&self, py: Python<'_>, requirements: Vec<String>) -> PyResult<()> {
         self.used.store(true, Ordering::Relaxed);
-        py.detach(|| get_runtime().block_on(install_deps_checkout(&self.checkout, requirements)))
+        py.detach(|| block_on_sync(install_deps_checkout(&self.checkout, requirements)))?
             .map_err(|e| pool_err_to_py(py, e))
     }
 
@@ -440,7 +446,7 @@ impl PyMontySession {
             return Err(session_used_err());
         }
         let checkout = Arc::clone(&self.checkout);
-        let result = py.detach(|| get_runtime().block_on(restore_turn(&checkout, state, mounts)));
+        let result = py.detach(|| block_on_sync(restore_turn(&checkout, state, mounts)))?;
         result.map_err(|e| pool_err_to_py(py, e))
     }
 }
@@ -1000,6 +1006,14 @@ pub(crate) async fn discard_checkout(checkout: &SharedCheckout) {
     drop(taken);
 }
 
+/// Best-effort [`discard_checkout`] for sync error paths. By the time a
+/// discard is needed a turn has already blocked successfully in this runtime
+/// context, so a [`block_on_sync`] refusal is not normally reachable; if it
+/// does occur the worker is left to the session teardown instead.
+pub(crate) fn discard_checkout_sync(py: Python<'_>, checkout: &SharedCheckout) {
+    let _ = py.detach(|| block_on_sync(discard_checkout(checkout)));
+}
+
 /// Gracefully closes a pool taken out of its shared slot (a no-op when the
 /// context manager was never entered). Shared by the sync `__exit__` and the
 /// async `__aexit__`s.
@@ -1220,7 +1234,7 @@ fn drive_sync(py: Python<'_>, args: FeedArgs, external_lookup: Option<&Bound<'_,
             event => match sync_turn_answer(py, event, &lookup, &dc_registry) {
                 Ok(answer) => answer,
                 Err(err) => {
-                    py.detach(|| get_runtime().block_on(discard_checkout(&checkout)));
+                    discard_checkout_sync(py, &checkout);
                     return Err(err);
                 }
             },
@@ -1568,6 +1582,28 @@ pub(crate) async fn run_turn<T: TurnOutcome>(
     (result, print_err)
 }
 
+/// Blocks on `future` using the pyo3-async-runtimes runtime, adapting to the
+/// caller's Tokio context — every sync entry point routes through here.
+///
+/// Outside a runtime this is a plain `block_on`. On a multi-thread runtime
+/// worker (a sync callback invoked by an `AsyncMonty` drive loop) a bare
+/// `block_on` panics, so the wait is wrapped in `block_in_place`, which hands
+/// the worker's queued tasks to another thread. Inside a current-thread
+/// runtime blocking would starve the tasks this future needs, so that raises
+/// `RuntimeError`. Call with the GIL released (`py.detach`): other tasks may
+/// need the GIL while this thread waits.
+pub(crate) fn block_on_sync<F: Future>(future: F) -> PyResult<F::Output> {
+    match Handle::try_current() {
+        Err(_) => Ok(get_runtime().block_on(future)),
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            Ok(block_in_place(|| get_runtime().block_on(future)))
+        }
+        Ok(_) => Err(PyRuntimeError::new_err(
+            "the synchronous Monty API cannot run inside a current-thread Tokio runtime",
+        )),
+    }
+}
+
 /// Blocks the calling thread on one protocol turn (GIL released) and
 /// finalizes it — the sync sessions' counterpart of [`run_turn_async`].
 pub(crate) fn run_turn_sync<T: TurnOutcome + Send>(
@@ -1576,7 +1612,7 @@ pub(crate) fn run_turn_sync<T: TurnOutcome + Send>(
     print_target: &PrintTarget,
     turn: impl for<'a> FnOnce(&'a mut Checkout, OnPrint<'a>) -> TurnFuture<'a, T> + Send,
 ) -> PyResult<T> {
-    let (result, print_err) = py.detach(|| get_runtime().block_on(run_turn(checkout, print_target, turn)));
+    let (result, print_err) = py.detach(|| block_on_sync(run_turn(checkout, print_target, turn)))?;
     finalize_turn(py, result, print_err)
 }
 

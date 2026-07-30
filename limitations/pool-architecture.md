@@ -174,6 +174,17 @@ properties that real CPython does not provide, per the caveat above.
   protocol turn, not mid-`print`; if that turn had suspended (an external
   function, OS call, or name lookup), the binding resets/discards the
   suspension before surfacing the print error so later feeds can continue.
+- **The sync API adapts to the caller's Tokio context.** `Monty` methods block
+  the calling thread on the binding's Tokio runtime. Called from a worker
+  thread of a multi-thread runtime — e.g. a sync external function or
+  `print_callback` invoked by an `AsyncMonty` drive — the wait is wrapped in
+  `tokio::task::block_in_place`, so opening an independent nested sync
+  pool/session works (each concurrent nested call occupies an extra OS thread
+  while it waits). Called from any *current-thread* Tokio runtime context,
+  blocking would starve the tasks that drive the pool, so every sync method
+  raises `RuntimeError: the synchronous Monty API cannot run inside a
+  current-thread Tokio runtime`. Only independent nested pools/sessions are
+  supported — recursive use of the same session is not.
 - **Mounts are host-side.** `MountDir` objects contribute configuration only;
   the pool builds a fresh mount table per feed on the *host* and services the
   worker's filesystem OS calls itself — the worker never sees host paths, so
