@@ -1,0 +1,19 @@
+.devcontainer/devcontainer.json
+  s_6423d4ced7be2e::t_9d1bcb4804a1c0 11-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4c6a7d654f1d41e545509f688c995acd4e469e0a",
+  "prompts": {},
+  "sessions": {
+    "s_6423d4ced7be2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "50f87df3-2914-431d-9d27-d9bd545d8f61",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
