@@ -1,0 +1,19 @@
+limitations/resource_limits.md
+  s_5dfd437de4aec6::t_454b350775b1f4 30,35-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b5137575a51ce0dfc33f4671c1e1818ea565881a",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": null
+    }
+  }
+}
