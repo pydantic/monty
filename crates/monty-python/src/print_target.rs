@@ -248,6 +248,11 @@ impl PrintTarget {
     /// worker process as pre-rendered `(stream, text)` events rather than
     /// through a `PrintWriter`. Safe to call without the GIL held — the
     /// `Callback` variant attaches internally.
+    //
+    // TODO: support `async def` print callbacks under `AsyncMonty` by having
+    // this return the callback's coroutine as the turn's `PrintFuture`
+    // (converted via `into_future_with_locals`, with the drive's `TaskLocals`
+    // threaded through `run_turn`), instead of blocking a runtime thread.
     pub fn write_event(&self, stream: PrintStream, text: &str) -> Result<(), MontyException> {
         match self {
             Self::Stdout => {

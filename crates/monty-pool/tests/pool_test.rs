@@ -106,6 +106,28 @@ fn kill_pid(pid: u32) {
 // Happy path
 // =============================================================================
 
+/// A value bigger than the 64 KiB decode-offload threshold round-trips
+/// intact: large child frames decode on the blocking pool rather than inline
+/// (see `decode_event_offload` in `worker.rs`), and the offload must not
+/// corrupt, lose, or reorder frames.
+#[tokio::test]
+async fn large_value_roundtrips_through_offloaded_decode() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    let event = session
+        .feed("'x' * 200_000", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::String("x".repeat(200_000)));
+    // the session stays healthy for an ordinary inline-decoded turn
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap();
+    assert_eq!(expect_complete(event), MontyObject::Int(2));
+    session.finish().await.unwrap();
+}
+
 #[tokio::test]
 async fn feed_and_finish_reuses_the_worker() {
     let pool = Pool::new(config()).await.unwrap();
