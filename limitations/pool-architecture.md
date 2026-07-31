@@ -215,7 +215,11 @@ properties that real CPython does not provide, per the caveat above.
   host I/O is the embedder's responsibility, as for `print_callback` and
   external functions. The I/O runs on Tokio's blocking thread pool, so a
   stalled mount ties up its own feed and one blocking thread — not the
-  runtime workers that drive other sessions' turns and timers. Each covered
+  runtime workers that drive other sessions' turns and timers. Cancelling the
+  feed does not cancel the filesystem call: the detached operation keeps its
+  blocking thread until it returns, and a `read-write` mount's write, rename,
+  or delete can complete on the host *after* cancellation was observed (and
+  the worker discarded). Each covered
   call is answered by its own turn, so a *loop* of mounted reads resets
   `request_timeout` every iteration, exactly like a loop of external calls.
   `max_duration` still bounds such a feed's worker execution, but nothing

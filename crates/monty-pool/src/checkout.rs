@@ -432,6 +432,7 @@ impl Checkout {
     /// treated exactly like a cancellation mid-turn: the worker is discarded
     /// on the next call.
     pub async fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
+        self.ensure_ready()?;
         let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
         };
@@ -698,15 +699,7 @@ impl Checkout {
         deadline: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<ControlEvent, PoolError> {
-        if self.worker.is_none() {
-            return Err(PoolError::Finished);
-        }
-        if self.turn_in_flight {
-            self.discard_worker();
-            return Err(PoolError::Protocol(
-                "a previous protocol turn was cancelled mid-flight; the worker was discarded".into(),
-            ));
-        }
+        self.ensure_ready()?;
         self.turn_in_flight = true;
         self.armed_deadline = deadline;
         let outcome = match deadline {
@@ -718,6 +711,24 @@ impl Checkout {
         };
         self.turn_in_flight = false;
         outcome
+    }
+
+    /// Fails fast when the checkout cannot start protocol work: the worker is
+    /// gone (`Finished`), or a previous turn / mount servicing was cancelled
+    /// mid-flight — the worker can no longer be trusted, so it is discarded
+    /// here. Every public operation must hit this before its own validation,
+    /// so cancellation surfaces as the contract's error, not a state check.
+    fn ensure_ready(&mut self) -> Result<(), PoolError> {
+        if self.worker.is_none() {
+            Err(PoolError::Finished)
+        } else if self.turn_in_flight {
+            self.discard_worker();
+            Err(PoolError::Protocol(
+                "a previous protocol turn was cancelled mid-flight; the worker was discarded".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     /// One request/reply exchange: send the request, stream prints, classify

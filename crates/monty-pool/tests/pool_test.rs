@@ -1036,11 +1036,18 @@ async fn hard_child_crash_does_not_harm_the_pool() {
 #[tokio::test]
 async fn deadline_kills_hung_worker_after_request_timeout() {
     let mut config = config();
-    // generous enough that the checkout's Configure turn cannot trip it even
-    // under a fully loaded test machine (the memory-heavy tests run alongside)
     config.request_timeout = Some(Duration::from_secs(1));
     let pool = Pool::new(config).await.unwrap();
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // The checkout's Configure turn shares the pool-wide deadline, and a cold
+    // child on a fully loaded test machine has (rarely) missed it — retry so
+    // the setup is independent of the deadline actually under test below.
+    let mut session = loop {
+        match pool.checkout(&ReplConfig::default()).await {
+            Ok(session) => break session,
+            Err(PoolError::Timeout { .. }) => {}
+            Err(err) => panic!("checkout failed: {err:?}"),
+        }
+    };
     let err = session
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
         .await
@@ -1345,7 +1352,10 @@ async fn cancelled_turn_discards_the_worker_on_next_use() {
     let PoolError::Protocol(message) = err else {
         panic!("expected Protocol, got {err:?}");
     };
-    assert!(message.contains("cancelled mid-flight"), "got {message}");
+    assert_eq!(
+        message,
+        "a previous protocol turn was cancelled mid-flight; the worker was discarded"
+    );
 
     // the worker was discarded and the pool serves a fresh one
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
@@ -1355,6 +1365,32 @@ async fn cancelled_turn_discards_the_worker_on_next_use() {
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().await.unwrap();
+}
+
+/// A cancellation condemns the worker on *any* next call: `resume_from_mounts`
+/// must hit the cancellation check before its own pending-state validation
+/// and report the discard, not a state error.
+#[tokio::test]
+async fn cancelled_turn_discards_the_worker_on_resume_from_mounts() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    {
+        let mut printer = no_print;
+        let feed = session.feed("while True:\n    pass", vec![], vec![], false, &mut printer);
+        tokio::select! {
+            _result = feed => panic!("the feed cannot complete"),
+            () = sleep(Duration::from_millis(10)) => {}
+        }
+    }
+
+    let err = session.resume_from_mounts(&mut no_print).await.unwrap_err();
+    let PoolError::Protocol(message) = err else {
+        panic!("expected Protocol, got {err:?}");
+    };
+    assert_eq!(
+        message,
+        "a previous protocol turn was cancelled mid-flight; the worker was discarded"
+    );
 }
 
 // =============================================================================
