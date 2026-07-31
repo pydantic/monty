@@ -68,14 +68,14 @@ properties that real CPython does not provide, per the caveat above.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
-- Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...) does
-  not interrupt the sandbox, and it **loses the session**: the protocol turn
-  was abandoned mid-flight, so its worker can no longer be trusted — the next
-  call on the session (or its `__aexit__`) discards the worker, and a new
-  call raises `RuntimeError`. The pool itself stays healthy. To bound
-  execution, use sandbox `limits` and/or the pool's `request_timeout` (which
-  kills the worker); Ctrl-C in sync code still cannot interrupt a turn
-  blocked on the worker.
+- Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...)
+  **loses the session**: the protocol turn was abandoned mid-flight, so its
+  worker can no longer be trusted — it is killed immediately, or, when the
+  checkout is contended by a concurrent call, discarded by the next call,
+  which raises `RuntimeError`. A call cancelled while still queued behind
+  another call never touched the worker, so the session stays usable. The
+  pool itself stays healthy either way; Ctrl-C in sync code still cannot
+  interrupt a turn blocked on the worker.
 - **Workers never spawn subprocesses, and the pool depends on it.** The
   interpreter exposes no `fork`/`exec`/subprocess surface. `request_timeout`
   (and the `max_duration` backstop) is enforced by abandoning the turn at the

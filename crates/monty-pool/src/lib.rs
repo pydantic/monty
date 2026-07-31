@@ -124,7 +124,8 @@ pub enum PoolError {
     },
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
-    /// worker; caller misuse leaves it intact.
+    /// worker; caller misuse leaves it intact — except a turn cancelled
+    /// mid-flight, where the abandoned worker is discarded too.
     Protocol(Cow<'static, str>),
     /// The sandboxed code raised a Python exception. The worker and its
     /// session remain alive and usable.

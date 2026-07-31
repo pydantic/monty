@@ -22,10 +22,10 @@ async futures) until the snippet completes, then `Checkout::finish` returns the 
 pool for reuse. A `Checkout` dropped without `finish` kills its worker instead — mid-execution
 state cannot be trusted back into the pool.
 
-The pool is async end-to-end and runs on [tokio](https://tokio.rs): each worker's frames are
-pumped by a dedicated task, and turn deadlines are ordinary timers rather than a watchdog
-thread. Turn futures are not resumable after being dropped mid-flight — the checkout notices,
-discards the worker, and fails the next call cleanly.
+The pool is async end-to-end and runs on [tokio](https://tokio.rs): frame reads are
+cancel-safe (partial-frame state lives in the worker), and turn deadlines are ordinary timers
+rather than a watchdog thread. Turn futures are not resumable after being dropped mid-flight —
+the checkout notices, discards the worker, and fails the next call cleanly.
 
 ## Usage
 

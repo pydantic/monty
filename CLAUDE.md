@@ -134,10 +134,9 @@ subprocesses:
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.
 - `crates/monty-pool` — the parent: an async (tokio) elastic pool of workers
-  with crash detection/replacement and a hard per-turn timeout. Each worker's
-  frames are read by a dedicated pump task (async frame reads are not
-  cancel-safe), and turn deadlines are tokio timers rather than a watchdog
-  thread.
+  with crash detection/replacement and a hard per-turn timeout. Frame reads
+  are cancel-safe (partial-frame state lives in the worker, no pump task),
+  and turn deadlines are tokio timers rather than a watchdog thread.
 - `pydantic_monty.Monty` / `pydantic_monty.AsyncMonty` — the ONLY Python
   execution surface (there is no in-process Python API): sync and async pools
   of workers (`with Monty() as pool: with pool.checkout() as session:

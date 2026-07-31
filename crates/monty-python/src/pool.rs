@@ -686,10 +686,8 @@ pub struct PyAsyncMontySession {
     /// `load_snapshot` are valid only while unset. See
     /// [`PyMontySession::load_snapshot`].
     used: AtomicBool,
-    /// Set by [`AbandonGuard`] when a `feed_run` future is dropped mid-drive
-    /// (asyncio cancellation): the drive's coroutine tasks died with it, so any
-    /// suspension it was servicing can never be answered. The next `feed_run`
-    /// discards the worker and fails cleanly instead of wedging the session.
+    /// Set by [`AbandonGuard`] when a `feed_run` future is cancelled mid-drive
+    /// but the discard had to be deferred; the next drive finishes it.
     drive_abandoned: Arc<AtomicBool>,
 }
 
@@ -730,7 +728,7 @@ impl PyAsyncMontySession {
     /// (which may be coroutines, awaited concurrently), OS callbacks, and
     /// print callbacks in this process. Session state persists across feeds.
     ///
-    /// Worker I/O runs off the event loop via tokio's blocking pool.
+    /// Worker I/O runs on the tokio runtime, off the asyncio event loop.
     #[pyo3(signature = (code, *, inputs=None, external_lookup=None, print_callback=None, mount=None, os=None, skip_type_check=false))]
     #[expect(clippy::too_many_arguments)]
     fn feed_run<'py>(
@@ -1289,17 +1287,9 @@ fn sync_turn_answer(
     }
 }
 
-/// Async drive loop entry: detects a drive abandoned by asyncio cancellation
-/// before running a new one.
-///
-/// `abandoned` is the session's cancelled-drive marker. A `feed_run` future
-/// dropped mid-drive orphans whatever it was doing — in particular a
-/// suspension whose answering coroutine tasks died with it — so the next call
-/// discards the worker and fails cleanly instead of wedging the session. The
-/// marker is set by [`AbandonGuard`] only on genuine cancellation: it is
-/// disarmed in the same poll that completes the inner drive, so normal `Ok` /
-/// `Err` returns never trip it, and a *concurrent* `feed_run` (or a suspension
-/// parked by `feed_start`) is never mistaken for an abandoned one.
+/// Async drive loop entry: finishes the deferred discard of a drive cancelled
+/// earlier, then runs this drive under an [`AbandonGuard`] — see its docs for
+/// the full cancellation contract.
 async fn drive_async(
     args: FeedArgs,
     external_lookup: Option<Py<PyDict>>,
@@ -1324,21 +1314,20 @@ async fn drive_async(
 }
 
 /// Discards the session's worker when the drive future is cancelled — dropped
-/// while still armed; every normal exit disarms first.
+/// while still armed. Every normal exit disarms in the same poll that
+/// completes the drive, so `Ok`/`Err` returns (and concurrent drives) never
+/// trip the guard.
 ///
-/// `started` gates the whole reaction: it is set inside the drive's first
-/// turn closure, which runs only once the slot lock is held (no await point
-/// separates acquisition from closure entry). A drive cancelled *before*
-/// that — e.g. dropped while still queued on the slot mutex behind another
-/// drive's turn — touched no protocol state, so its death must not poison
-/// the session.
-///
-/// After `started`, the slot lock is only ever held *within* a turn, and a
-/// mid-turn cancellation drops the turn (and its lock guard) before this
-/// guard runs, so `try_lock` normally succeeds and the worker dies on the
-/// spot (later calls fail with "already finished"). The `abandoned` marker
-/// is the fallback when the lock is contended (e.g. a concurrent `feed_run`
-/// inside its turn): the next drive then finishes the discard.
+/// `started` gates the reaction: it is set inside the drive's first turn
+/// closure, which runs only once the slot lock is held, so a drive cancelled
+/// while still queued on the lock touched no protocol state and must not
+/// poison the session. After that, a cancelled drive has orphaned its turn
+/// and any coroutine tasks answering a suspension: `try_lock` normally
+/// succeeds (the lock is only held *within* a turn, dropped before this guard
+/// runs) and the worker dies on the spot — later calls fail with "already
+/// finished". When the lock is contended (a concurrent drive mid-turn), the
+/// `abandoned` marker defers the discard to the next drive, which fails with
+/// a clear `RuntimeError`.
 struct AbandonGuard {
     checkout: SharedCheckout,
     abandoned: Arc<AtomicBool>,
