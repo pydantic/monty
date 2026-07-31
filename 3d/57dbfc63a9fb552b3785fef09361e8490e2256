@@ -1,0 +1,43 @@
+crates/monty-bench/benches/decode.rs
+  s_5deda87ef74f4d::t_963dcd3d147e18 60
+  s_5deda87ef74f4d::t_64e0dfb2da16f8 65,67
+  s_5deda87ef74f4d::t_3f6d55c15bc06d 1-4
+  s_5deda87ef74f4d::t_c3e71df1b1f95c 5-17,20-21,23-59,61-64,66,68-111
+  s_5deda87ef74f4d::t_b906614b093db9 18-19,22
+Makefile
+  s_5deda87ef74f4d::t_e7ee38567f08cd 221-224
+crates/monty-bench/Cargo.toml
+  s_5deda87ef74f4d::t_3792adf00e1b5e 15
+  s_5deda87ef74f4d::t_779acbf9c901c3 36-39
+crates/monty-pool/src/worker.rs
+  s_5deda87ef74f4d::t_b2226e7b633f8e 389,396,399-402
+  s_5deda87ef74f4d::t_8a2b70e5c5cb1e 17
+  s_5deda87ef74f4d::t_4d6efbfe5ac7b2 297,299
+  s_5deda87ef74f4d::t_f75a32b15a6fd7 31-32,37
+  s_5deda87ef74f4d::t_cc398de5f68a06 202,207-216,218-219,222
+  s_5deda87ef74f4d::t_63514b58b25e37 355
+  s_5deda87ef74f4d::t_b43eede6d8d562 153
+  s_5deda87ef74f4d::t_a379d68524880e 298
+  s_5deda87ef74f4d::t_6aa495b50f29a1 391-395,397-398
+crates/monty-pool/Cargo.toml
+  s_5deda87ef74f4d::t_c5b4849f094b8b 24-26
+crates/monty-pool/tests/pool_test.rs
+  s_5deda87ef74f4d::t_4b9de2d61438bf 109-110,116-117,123-124
+  s_5deda87ef74f4d::t_51405285584ea0 111,113-115,118-122,125,129,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3d57dbfc63a9fb552b3785fef09361e8490e2256",
+  "prompts": {},
+  "sessions": {
+    "s_5deda87ef74f4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66b2908d-a70e-4550-a862-ec9bab925dc7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
