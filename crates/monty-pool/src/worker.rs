@@ -14,7 +14,7 @@
 //! inside the `WebSocketStream`, and `Stream::poll_next` is cancel-safe.
 
 use std::{
-    env, io,
+    env,
     path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::Once,
@@ -28,12 +28,13 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     process::{Child, ChildStdin, ChildStdout, Command},
-    task::spawn_blocking,
+    runtime::{Handle, RuntimeFlavor},
+    task::block_in_place,
     time::timeout,
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
-    tungstenite::{Bytes, Error as WsError, Message, protocol::WebSocketConfig},
+    tungstenite::{Error as WsError, Message, protocol::WebSocketConfig},
 };
 
 use crate::{MontyTransport, PoolConfig, PoolError};
@@ -75,11 +76,6 @@ struct SubprocessWorker {
 /// connection — the async analogue of killing a child.
 struct WebSocketWorker {
     stream: Option<WsStream>,
-    /// A message received but not yet decoded, held across the (awaitable)
-    /// big-frame decode so a `recv` future dropped mid-decode loses nothing —
-    /// the stream has already yielded the message, unlike [`FrameRecv`] where
-    /// undecoded bytes simply stay in the buffer.
-    pending_frame: Option<Bytes>,
 }
 
 impl Worker {
@@ -154,10 +150,7 @@ impl Worker {
             .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
             .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
         Ok(Self {
-            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker {
-                stream: Some(stream),
-                pending_frame: None,
-            })),
+            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker { stream: Some(stream) })),
             checkouts_served: 0,
         })
     }
@@ -206,42 +199,27 @@ impl Worker {
                 None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
             },
             WorkerKind::WebSocket(w) => {
-                // Resume a frame stashed by a `recv` cancelled mid-decode, or
-                // read the next binary message. Ping/Pong are handled by
+                // Read the next binary message. Ping/Pong are handled by
                 // tokio-tungstenite itself and skipped here; a close, EOF, or
                 // any frame the protocol never uses is surfaced as
                 // `Truncated`, which the checkout classifies as
                 // `PoolError::Disconnected`.
-                let data = if let Some(data) = w.pending_frame.take() {
-                    data
-                } else {
-                    let Some(stream) = &mut w.stream else {
-                        return Err(FrameError::Truncated);
-                    };
-                    loop {
-                        match stream.next().await {
-                            Some(Ok(Message::Binary(data))) => break data,
-                            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-                            // A clean close, or text/raw frames the protocol never uses.
-                            Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
-                                return Err(FrameError::Truncated);
-                            }
-                            Some(Err(WsError::Io(err))) => return Err(FrameError::Io(err)),
-                            Some(Err(_)) => return Err(FrameError::Truncated),
+                let Some(stream) = &mut w.stream else {
+                    return Err(FrameError::Truncated);
+                };
+                let data = loop {
+                    match stream.next().await {
+                        Some(Ok(Message::Binary(data))) => break data,
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                        // A clean close, or text/raw frames the protocol never uses.
+                        Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
+                            return Err(FrameError::Truncated);
                         }
+                        Some(Err(WsError::Io(err))) => return Err(FrameError::Io(err)),
+                        Some(Err(_)) => return Err(FrameError::Truncated),
                     }
                 };
-                if data.len() < DECODE_OFFLOAD_MIN {
-                    decode_frame(data.as_ref())
-                } else {
-                    // Stash across the decode await (`Bytes` clones are
-                    // refcounted): the message has already left the stream, so
-                    // a dropped future must find it here on the next call.
-                    w.pending_frame = Some(data.clone());
-                    let event = decode_event_offload(data).await;
-                    w.pending_frame = None;
-                    event
-                }
+                decode_event(&data)
             }
         }
     }
@@ -316,10 +294,9 @@ const RETAIN_BUF_MAX: usize = 64 * 1024;
 /// only large feeds/values grow past it (via `encode_framed_into`'s reserve).
 const SEND_BUF_CAPACITY: usize = 1024;
 
-/// Frames at or above this size decode on the blocking pool (see
-/// [`decode_event_offload`]); smaller ones — every control event and print
-/// fragment — decode inline, where dispatch overhead would dominate.
-const DECODE_OFFLOAD_MIN: usize = 64 * 1024;
+/// Frames at or above this size decode under `block_in_place` (see
+/// [`decode_event`]); below it (< ~4ms) inline decode beats the handoff.
+const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
 
 /// A cancel-safe reader of length-prefixed frames from the child's stdout.
 ///
@@ -375,20 +352,7 @@ impl FrameRecv {
                 }
                 let end = 4 + len as usize;
                 if self.filled >= end {
-                    // Decode before advancing `consumed`: a big-frame decode
-                    // awaits the blocking pool, and a future dropped there
-                    // must leave the frame in the buffer for the next call to
-                    // re-decode. The threshold check here only decides whether
-                    // the offload's owned copy is needed at all.
-                    let event = if (len as usize) < DECODE_OFFLOAD_MIN {
-                        // The thread-local decode budget is reset by each
-                        // `decode_frame` call, and every decode is one
-                        // synchronous call on whichever thread runs it, so
-                        // budgets cannot interleave across workers.
-                        decode_frame::<pb::ChildEvent>(&self.buf[4..end])?
-                    } else {
-                        decode_event_offload(self.buf[4..end].to_vec()).await?
-                    };
+                    let event = decode_event(&self.buf[4..end])?;
                     self.consumed = end;
                     // a fully drained oversize buffer is dropped rather than
                     // pinned for the worker's lifetime
@@ -422,22 +386,20 @@ impl FrameRecv {
     }
 }
 
-/// Decodes one complete frame body on the blocking pool. Callers dispatch
-/// frames of at least [`DECODE_OFFLOAD_MIN`] here and decode smaller ones
-/// inline.
+/// Decodes one complete frame body, synchronously on the current thread.
 ///
-/// Decoding validates as it goes, so a max-size (256 MiB) frame from the
-/// (sandbox-influenced) child can cost seconds of CPU — enough concurrent
-/// sessions could pin every runtime worker and delay the timers enforcing
-/// other sessions' deadlines. Cancel-safe: no reader state is touched, so
-/// callers must keep the encoded bytes until this returns (`FrameRecv`'s
-/// buffer / the WebSocket `pending_frame` stash).
-async fn decode_event_offload(body: impl AsRef<[u8]> + Send + 'static) -> Result<pb::ChildEvent, FrameError> {
-    match spawn_blocking(move || decode_frame(body.as_ref())).await {
-        Ok(event) => event,
-        Err(err) => Err(FrameError::Io(io::Error::other(format!(
-            "frame decode task failed: {err}"
-        )))),
+/// A max-size frame can cost ~1s of CPU (see `benches/decode.rs`), so frames
+/// ≥ [`DECODE_OFFLOAD_MIN`] decode under `block_in_place`: the decode borrows
+/// the bytes (no copy), can't outlive a cancelled turn (unlike
+/// `spawn_blocking`), and the runtime keeps its worker count. On a
+/// current-thread runtime, where `block_in_place` panics, decode is inline.
+fn decode_event(body: &[u8]) -> Result<pb::ChildEvent, FrameError> {
+    // each decode is one synchronous call, so the thread-local decode budgets
+    // (reset by every `decode_frame`) cannot interleave
+    if body.len() < DECODE_OFFLOAD_MIN || Handle::current().runtime_flavor() != RuntimeFlavor::MultiThread {
+        decode_frame(body)
+    } else {
+        block_in_place(|| decode_frame(body))
     }
 }
 

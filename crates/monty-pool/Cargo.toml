@@ -21,8 +21,9 @@ monty-fs = { workspace = true }
 monty-proto = { workspace = true }
 # The pool is async end-to-end: workers are tokio child processes (or WebSocket
 # connections) read via cancel-safe in-worker frame state, and turn deadlines
-# are tokio timers.
-tokio = { workspace = true, features = ["rt", "process", "io-util", "sync", "time", "macros"] }
+# are tokio timers. (rt-multi-thread is needed for `block_in_place` in
+# `worker::decode_event`.)
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
 # Async WebSocket client for the remote (Websocket) transport; rustls gives
 # `wss://` support without a system TLS dependency.
 tokio-tungstenite = { workspace = true }

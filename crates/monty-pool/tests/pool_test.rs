@@ -106,20 +106,30 @@ fn kill_pid(pid: u32) {
 // Happy path
 // =============================================================================
 
-/// A value bigger than the 64 KiB decode-offload threshold round-trips
-/// intact: large child frames decode on the blocking pool rather than inline
-/// (see `decode_event_offload` in `worker.rs`), and the offload must not
-/// corrupt, lose, or reorder frames.
-#[tokio::test]
+/// An over-threshold frame round-trips through `decode_event`'s
+/// `block_in_place` branch (multi-thread runtime) without corruption.
+#[tokio::test(flavor = "multi_thread")]
 async fn large_value_roundtrips_through_offloaded_decode() {
+    large_value_roundtrip().await;
+}
+
+/// The same roundtrip on a current-thread runtime, exercising the inline
+/// fallback (`block_in_place` would panic there).
+#[tokio::test]
+async fn large_value_roundtrips_on_current_thread_runtime() {
+    large_value_roundtrip().await;
+}
+
+/// Feeds a 2 MB string (over the offload threshold), then a small turn to
+/// show the session stayed healthy.
+async fn large_value_roundtrip() {
     let pool = Pool::new(config()).await.unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     let event = session
-        .feed("'x' * 200_000", vec![], vec![], false, &mut no_print)
+        .feed("'x' * 2_000_000", vec![], vec![], false, &mut no_print)
         .await
         .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::String("x".repeat(200_000)));
-    // the session stays healthy for an ordinary inline-decoded turn
+    assert_eq!(expect_complete(event), MontyObject::String("x".repeat(2_000_000)));
     let event = session
         .feed("1 + 1", vec![], vec![], false, &mut no_print)
         .await

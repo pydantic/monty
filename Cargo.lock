@@ -2044,6 +2044,7 @@ dependencies = [
  "criterion",
  "monty",
  "monty-pool",
+ "monty-proto",
  "monty-types",
  "pprof",
  "pyo3",

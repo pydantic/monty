@@ -12,6 +12,7 @@ publish = false
 monty = { workspace = true, features = ["test-hooks"] }
 monty-types = { workspace = true }
 monty-pool = { workspace = true }
+monty-proto = { workspace = true }
 # The pool is async: benchmarks drive it via `Runtime::block_on`.
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
@@ -30,6 +31,10 @@ harness = false
 
 [[bench]]
 name = "pool"
+harness = false
+
+[[bench]]
+name = "decode"
 harness = false
 
 [lints]
