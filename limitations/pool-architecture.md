@@ -103,7 +103,9 @@ properties that real CPython does not provide, per the caveat above.
   worker's replies, sessions restored via the Rust `Checkout::restore`
   regain the backstop too. A *compromised* worker could under-report its
   total, stretching each turn to the full budget plus grace — turns stay
-  bounded, and `request_timeout` applies independently.
+  bounded, and `request_timeout` applies independently. Both deadlines fire
+  between the turn's polls, so decoding one maximal reply frame (~1s worst
+  case) can delay enforcement by that long.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure
@@ -184,7 +186,8 @@ properties that real CPython does not provide, per the caveat above.
   blocking would starve the tasks that drive the pool, so every sync method
   raises `RuntimeError: the synchronous Monty API cannot run inside a
   current-thread Tokio runtime`. Only independent nested pools/sessions are
-  supported — recursive use of the same session is not.
+  supported — re-entering the *same* session from its own callback deadlocks
+  on the session's internal lock.
 - **Mounts are host-side.** `MountDir` objects contribute configuration only;
   the pool builds a fresh mount table per feed on the *host* and services the
   worker's filesystem OS calls itself — the worker never sees host paths, so

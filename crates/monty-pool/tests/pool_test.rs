@@ -1391,6 +1391,13 @@ async fn cancelled_turn_discards_the_worker_on_resume_from_mounts() {
         message,
         "a previous protocol turn was cancelled mid-flight; the worker was discarded"
     );
+
+    // the discard already happened: every later call reports the dead checkout
+    let err = session
+        .resume(ResumeValue::Return(MontyObject::None), &mut no_print)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Finished), "got {err:?}");
 }
 
 // =============================================================================

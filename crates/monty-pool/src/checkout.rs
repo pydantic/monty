@@ -315,13 +315,19 @@ impl Checkout {
         mounts: Vec<MountSpec>,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
+        self.ensure_ready()?;
+        // Build mounts before touching any state: this await is the only
+        // cancellation point before the Load turn, and a cancelled build must
+        // leave the checkout unchanged (notably `duration_budget`, whose loss
+        // would silently drop the parent-side backstop from later feeds).
+        let feed_mounts = self.build_feed_mounts(mounts).await?;
         // the dump carries its own limits/consumed time/script name — forget
         // what the worker's Configure established and re-adopt from the reply
         self.pending = None;
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
-        self.feed_mounts = self.build_feed_mounts(mounts).await?;
+        self.feed_mounts = feed_mounts;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let event = match self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
@@ -354,6 +360,7 @@ impl Checkout {
         skip_type_check: bool,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
+        self.ensure_ready()?;
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
                 "feed called while a suspension is awaiting an answer".into(),
@@ -377,6 +384,7 @@ impl Checkout {
 
     /// Answers a [`TurnEvent::FunctionCall`] or [`TurnEvent::OsCall`].
     pub async fn resume(&mut self, value: ResumeValue, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
+        self.ensure_ready()?;
         let Some(Pending::Call {
             call_id,
             function_name,
@@ -499,6 +507,7 @@ impl Checkout {
         value: Option<MontyObject>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
+        self.ensure_ready()?;
         if !matches!(self.pending, Some(Pending::NameLookup)) {
             return Err(PoolError::Protocol("no suspended name lookup to resume".into()));
         }
@@ -524,6 +533,7 @@ impl Checkout {
         results: Vec<(u32, ResumeValue)>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
+        self.ensure_ready()?;
         if !matches!(self.pending, Some(Pending::Futures)) {
             return Err(PoolError::Protocol("no suspended futures to resume".into()));
         }
@@ -568,6 +578,7 @@ impl Checkout {
     /// package specifier is rejected with [`PoolError::Runtime`] (a
     /// `ValueError`). See [`validate_requirement`] for the rationale.
     pub async fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
+        self.ensure_ready()?;
         if self.pending.is_some() {
             return Err(PoolError::Protocol(
                 "install_dependencies called while a suspension is awaiting an answer".into(),
