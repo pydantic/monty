@@ -1,0 +1,31 @@
+limitations/pool-architecture.md
+  s_5deda87ef74f4d::t_c454878a0460ba 208-209,211-222
+crates/monty-pool/src/checkout.rs
+  s_5deda87ef74f4d::t_9a90c6bcd7b2a1 17
+  s_5deda87ef74f4d::t_1fa96567374275 920
+  s_5deda87ef74f4d::t_944fd0b9dc40e7 1114-1115,1117-1119
+  s_5deda87ef74f4d::t_16fcde3403cd89 363
+  s_5deda87ef74f4d::t_d053b3ec207555 446-462
+  s_5deda87ef74f4d::t_5f764f4231707f 197-199
+  s_5deda87ef74f4d::t_64f544eb075314 1134
+  s_5deda87ef74f4d::t_de7cae40ec6636 428-433
+  s_5deda87ef74f4d::t_80fa8c359d376a 912-919,921-939
+  s_5deda87ef74f4d::t_ac12b4599bffbc 665-666
+  s_5deda87ef74f4d::t_19b4a059fda5c9 324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "530c13d0d39db7cc20034b51d97b4bc7fa564a86",
+  "prompts": {},
+  "sessions": {
+    "s_5deda87ef74f4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66b2908d-a70e-4550-a862-ec9bab925dc7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
