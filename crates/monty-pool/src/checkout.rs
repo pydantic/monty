@@ -14,7 +14,7 @@ use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, valida
 use monty_types::{
     AssertMessageAnnotations, ExcType, MontyException, MontyObject, OsFunctionCall, PrintStream, ResourceLimits,
 };
-use tokio::time::timeout;
+use tokio::{task::spawn_blocking, time::timeout};
 
 use crate::{
     CrashCause, PoolError,
@@ -194,8 +194,9 @@ where
 /// # Cancellation
 ///
 /// Turn futures (`feed`, `resume*`, `dump`, ...) are **not** resumable after
-/// being dropped mid-flight: the request may already be on the wire, so the
-/// protocol state is unknowable. The checkout notices on its next call,
+/// being dropped mid-flight: the request may already be on the wire (or a
+/// mount's host I/O abandoned mid-service), so the protocol state is
+/// unknowable. The checkout notices on its next call,
 /// discards the worker, and fails with [`PoolError::Protocol`]; `finish` on
 /// such a session likewise discards the worker rather than returning it.
 pub struct Checkout {
@@ -320,7 +321,7 @@ impl Checkout {
         self.duration_budget = None;
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
-        self.feed_mounts = build_mount_table(mounts)?;
+        self.feed_mounts = self.build_feed_mounts(mounts).await?;
         let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
         let event = match self
             .request_turn(&request, self.pool.config.request_timeout, on_print)
@@ -359,7 +360,7 @@ impl Checkout {
             ));
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
-        self.feed_mounts = build_mount_table(mounts)?;
+        self.feed_mounts = self.build_feed_mounts(mounts).await?;
         let request = request(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs: inputs
@@ -424,6 +425,12 @@ impl Checkout {
     /// auto-answering driver tries mounts first and falls back to its handler,
     /// while a caller driving suspensions by hand can ignore mounts entirely.
     /// Path containment inside covered calls is enforced by the [`MountTable`].
+    ///
+    /// Covered calls perform real host filesystem I/O, serviced on tokio's
+    /// blocking pool so a stalled volume cannot pin a runtime worker. Dropping
+    /// this future mid-servicing abandons the feed's mount state and is
+    /// treated exactly like a cancellation mid-turn: the worker is discarded
+    /// on the next call.
     pub async fn resume_from_mounts(&mut self, on_print: OnPrint<'_>) -> Result<Option<TurnEvent>, PoolError> {
         let Some(Pending::Call { os_call, .. }) = &mut self.pending else {
             return Err(PoolError::Protocol("no suspended call to resume".into()));
@@ -436,8 +443,23 @@ impl Checkout {
         // The call is *moved* into the table so a covered write's payload
         // reaches overlay storage without a copy; an uncovered call comes back
         // unchanged and is put back for the caller to answer.
-        let outcome = match self.feed_mounts.as_mut() {
-            Some(mounts) => mounts.handle_os_call(*call),
+        let outcome = match self.feed_mounts.take() {
+            Some(mut mounts) => {
+                // Table and call move into the blocking task and back out.
+                // `turn_in_flight` spans the await: a caller cancelling here
+                // abandons both, condemning the worker via the same mechanism
+                // as a cancellation mid-turn-I/O (see `request_turn`).
+                self.turn_in_flight = true;
+                let (mounts, outcome) = self
+                    .run_blocking(move || {
+                        let outcome = mounts.handle_os_call(*call);
+                        (mounts, outcome)
+                    })
+                    .await?;
+                self.feed_mounts = Some(mounts);
+                self.turn_in_flight = false;
+                outcome
+            }
             None => MountCallOutcome::NotHandled(*call),
         };
         match outcome {
@@ -640,8 +662,8 @@ impl Checkout {
     /// the execution budget remaining after the time the worker has reported
     /// consuming so far, plus the configured grace. The child enforces the
     /// limit itself with a clean `TimeoutError`; this deadline only fires
-    /// when that enforcement fails (e.g. a blocking syscall inside a mount
-    /// that the sandbox's periodic time check never reaches).
+    /// when that enforcement fails (e.g. a wedged or compromised child that
+    /// stops checking its clock).
     fn backstop_deadline(&self) -> Option<Duration> {
         let budget = self.duration_budget?;
         let grace = self.pool.config.duration_limit_grace?;
@@ -887,6 +909,34 @@ impl Checkout {
         }
     }
 
+    /// Builds this feed's mount table on the blocking pool — mount validation
+    /// (existence checks, canonicalization) is host filesystem I/O. Skips the
+    /// dispatch entirely for the common mount-less feed. Cancel-safe: nothing
+    /// is mutated until the built table is returned.
+    async fn build_feed_mounts(&mut self, mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
+        if mounts.is_empty() {
+            Ok(None)
+        } else {
+            self.run_blocking(move || build_mount_table(mounts)).await?.map(Some)
+        }
+    }
+
+    /// Runs blocking host mount work on tokio's blocking pool, so a stalled
+    /// filesystem (NFS, FUSE) occupies a blocking thread instead of a runtime
+    /// worker shared with other sessions' turns and timers. A blocking-task
+    /// failure (panic / runtime shutdown) discards the worker — callers'
+    /// error contracts promise that any non-`Runtime`/`Typing` error means
+    /// exactly that.
+    async fn run_blocking<T: Send + 'static>(
+        &mut self,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<T, PoolError> {
+        match spawn_blocking(work).await {
+            Ok(value) => Ok(value),
+            Err(err) => Err(self.protocol_violation(format!("blocking mount task failed: {err}"))),
+        }
+    }
+
     /// Discards the worker after it violated the protocol on an intact stream
     /// (unexpected event kind, undecodable payload). Unlike [`Self::poison`]
     /// this is not a crash — the worker answered, just wrongly — so it maps
@@ -1061,16 +1111,12 @@ fn min_deadline(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-/// Builds the parent-side [`MountTable`] for one feed from its specs;
-/// `Ok(None)` when `mounts` is empty (every OS call then surfaces to the
-/// caller). An invalid mount (host path missing, not a directory, relative
+/// Builds the parent-side [`MountTable`] for one feed from its (non-empty)
+/// specs. An invalid mount (host path missing, not a directory, relative
 /// virtual path, …) fails as a session-preserving [`PoolError::Runtime`] —
-/// callers invoke this before sending any frame, so the worker never sees a
-/// half-configured feed.
-fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolError> {
-    if mounts.is_empty() {
-        return Ok(None);
-    }
+/// [`Checkout::build_feed_mounts`] runs this on the blocking pool before any
+/// frame is sent, so the worker never sees a half-configured feed.
+fn build_mount_table(mounts: Vec<MountSpec>) -> Result<MountTable, PoolError> {
     let mut table = MountTable::new();
     for mount in mounts {
         let mode = match mount.mode {
@@ -1085,5 +1131,5 @@ fn build_mount_table(mounts: Vec<MountSpec>) -> Result<Option<MountTable>, PoolE
             .with_memory_usage_limit(mount.memory_usage_limit);
         table.push_mount(mount);
     }
-    Ok(Some(table))
+    Ok(table)
 }

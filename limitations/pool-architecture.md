@@ -205,18 +205,21 @@ properties that real CPython does not provide, per the caveat above.
 - **Special files are rejected.** Reading, writing, or `open()`ing a
   non-regular file in a mounted directory (FIFO, socket, device) raises
   `PermissionError` instead of blocking — CPython would block until a peer
-  appears, but mount I/O runs on the host thread driving the session and must
-  never block on sandbox-reachable input.
+  appears, but mount I/O blocks the feed (and holds a host thread) for its
+  full duration and must never wait on sandbox-reachable input.
 - **Mount I/O is not bounded by any timeout.** Covered filesystem calls run
-  synchronously on the host *between* protocol turns, with no watchdog armed —
-  and its only lever, killing the worker, could not interrupt host I/O anyway.
-  Special files are rejected (above) so sandbox code cannot hang the host, but
-  a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free host I/O is
-  the embedder's responsibility, as for `print_callback` and external
-  functions. Each covered call is answered by its own turn, so a *loop* of
-  mounted reads resets `request_timeout` every iteration, exactly like a loop
-  of external calls. `max_duration` still bounds such a feed's worker
-  execution, but nothing bounds its wall clock.
+  on the host *between* protocol turns, with no turn deadline armed — and the
+  deadline's only lever, killing the worker, could not interrupt host I/O
+  anyway. Special files are rejected (above) so sandbox code cannot hang the
+  host, but a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free
+  host I/O is the embedder's responsibility, as for `print_callback` and
+  external functions. The I/O runs on Tokio's blocking thread pool, so a
+  stalled mount ties up its own feed and one blocking thread — not the
+  runtime workers that drive other sessions' turns and timers. Each covered
+  call is answered by its own turn, so a *loop* of mounted reads resets
+  `request_timeout` every iteration, exactly like a loop of external calls.
+  `max_duration` still bounds such a feed's worker execution, but nothing
+  bounds its wall clock.
 - **`os=` fallback** receives `(function_name, args, kwargs)`. On the
   automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
   mount-covered filesystem calls never reach the callback. Under `feed_start`
