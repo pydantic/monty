@@ -1,0 +1,29 @@
+crates/monty-pool/tests/pool_test.rs
+  s_5deda87ef74f4d::t_1cbc88f3b950f2 1394-1400
+limitations/pool-architecture.md
+  s_5deda87ef74f4d::t_8205117b5ea6a7 189-190
+  s_5deda87ef74f4d::t_1772a11b958748 106-108
+crates/monty-pool/src/checkout.rs
+  s_5deda87ef74f4d::t_c10771e02ec534 363
+  s_5deda87ef74f4d::t_ad6e7be054497c 318-323,330
+  s_5deda87ef74f4d::t_7110da4692bd7e 536
+  s_5deda87ef74f4d::t_ae81099c01a8df 387
+  s_5deda87ef74f4d::t_b171c8a267c4a8 510
+  s_5deda87ef74f4d::t_f4c8e1caade3cf 581
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0edf283018103f5266cb7880ef52fc22e62eb1f3",
+  "prompts": {},
+  "sessions": {
+    "s_5deda87ef74f4d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "66b2908d-a70e-4550-a862-ec9bab925dc7",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
