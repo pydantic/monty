@@ -1,0 +1,19 @@
+crates/monty-pool/tests/pool_test.rs
+  s_5dfd437de4aec6::t_33449560643b0c 1207-1212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d4179935ecd0c8a2454d5c8db4afb4c2deb47c70",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
