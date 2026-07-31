@@ -143,9 +143,12 @@ pub(crate) fn feed_start_sync(
         print_target,
         checkout,
         dc_registry,
+        max_duration,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
-    drive_sync(py, ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p))
+    drive_sync(py, ctx, move |c, p| {
+        c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
+    })
 }
 
 /// Async counterpart of [`feed_start_sync`]: the returned coroutine runs the
@@ -166,10 +169,14 @@ pub(crate) fn feed_start_async(
         print_target,
         checkout,
         dc_registry,
+        max_duration,
     } = args;
     let ctx = DriveContext::new(checkout, dc_registry, print_target, script_name, external_lookup, os);
     future_into_py(py, async move {
-        drive_async(ctx, move |c, p| c.feed(&code, inputs, mounts, skip_type_check, p)).await
+        drive_async(ctx, move |c, p| {
+            c.feed(&code, inputs, mounts, skip_type_check, max_duration, p)
+        })
+        .await
     })
 }
 

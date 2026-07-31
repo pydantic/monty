@@ -27,6 +27,7 @@ fn feed() -> pb::ParentRequest {
             code: "1 + 1".to_owned(),
             inputs: vec![],
             skip_type_check: false,
+            max_duration_micros: None,
         })),
         trace_parent: None,
     }

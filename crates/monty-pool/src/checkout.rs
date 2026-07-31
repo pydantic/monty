@@ -249,9 +249,8 @@ impl Checkout {
     /// calls can still be answered by [`Checkout::resume_from_mounts`]. A dump
     /// taken mid-OS-call re-announces the call in full, so the returned event
     /// is that same [`TurnEvent::OsCall`] — restoring never answers it here.
-    /// The session's resource budget is taken from the dump, so the prior
-    /// `Configure` limits are dropped here and re-adopted from the worker's
-    /// reply.
+    /// The session's resource budget is taken from the dump unless
+    /// `max_duration` re-arms it with a fresh execution-time budget.
     ///
     /// Returns the re-announced suspension (`Some` — a suspended dump) or `None`
     /// (an idle dump), paired with the worker's adopted script name (the dump's,
@@ -260,6 +259,7 @@ impl Checkout {
         &mut self,
         state: Vec<u8>,
         mounts: Vec<MountSpec>,
+        max_duration: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<(Option<TurnEvent>, Option<String>), PoolError> {
         // the dump carries its own limits/consumed time/script name — forget
@@ -269,7 +269,10 @@ impl Checkout {
         self.reported_execution = Duration::ZERO;
         self.restored_script_name = None;
         self.feed_mounts = build_mount_table(mounts)?;
-        let request = request(pb::parent_request::Kind::Load(pb::Load { state }));
+        let request = request(pb::parent_request::Kind::Load(pb::Load {
+            state,
+            max_duration_micros: duration_micros(max_duration),
+        }));
         let event = match self.request_turn(&request, self.pool.config.request_timeout, on_print)? {
             ControlEvent::Ok => None,
             ControlEvent::Turn(event) => Some(event),
@@ -296,6 +299,7 @@ impl Checkout {
         inputs: Vec<(String, MontyObject)>,
         mounts: Vec<MountSpec>,
         skip_type_check: bool,
+        max_duration: Option<Duration>,
         on_print: OnPrint<'_>,
     ) -> Result<TurnEvent, PoolError> {
         if self.pending.is_some() {
@@ -315,6 +319,7 @@ impl Checkout {
                 })
                 .collect(),
             skip_type_check,
+            max_duration_micros: duration_micros(max_duration),
         }));
         self.expect_turn(&request, on_print)
     }
@@ -564,7 +569,10 @@ impl Checkout {
     /// turns where the sandbox runs code), so the watchdog deadline includes
     /// [`Self::backstop_deadline`] on top of the configured request timeout.
     fn expect_turn(&mut self, request: &pb::ParentRequest, on_print: OnPrint<'_>) -> Result<TurnEvent, PoolError> {
-        let deadline = min_deadline(self.pool.config.request_timeout, self.backstop_deadline());
+        let backstop = request_max_duration(request)
+            .and_then(|budget| self.pool.config.duration_limit_grace.map(|grace| budget + grace))
+            .or_else(|| self.backstop_deadline());
+        let deadline = min_deadline(self.pool.config.request_timeout, backstop);
         match self.request_turn(request, deadline, on_print)? {
             ControlEvent::Turn(event) => Ok(event),
             other => Err(self.protocol_violation(format!("expected a turn event, got {other:?}"))),
@@ -636,6 +644,10 @@ impl Checkout {
                 )),
                 _ => self.poison("sending a request"),
             });
+        }
+        if let Some(budget) = request_max_duration(request) {
+            self.duration_budget = Some(budget);
+            self.reported_execution = Duration::ZERO;
         }
         let outcome = loop {
             let event = match self.worker.as_mut().expect("checked above").recv() {
@@ -965,6 +977,22 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
 /// Python `ValueError`.
 fn invalid_requirement(message: String) -> PoolError {
     PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message)))
+}
+
+/// Encodes a host duration for the protocol without wrapping values above
+/// `u64::MAX` microseconds.
+fn duration_micros(duration: Option<Duration>) -> Option<u64> {
+    duration.map(|value| u64::try_from(value.as_micros()).unwrap_or(u64::MAX))
+}
+
+/// Reads a fresh execution-time budget carried by a `Feed` or `Load`.
+fn request_max_duration(request: &pb::ParentRequest) -> Option<Duration> {
+    let micros = match request.kind.as_ref()? {
+        pb::parent_request::Kind::Feed(feed) => feed.max_duration_micros,
+        pb::parent_request::Kind::Load(load) => load.max_duration_micros,
+        _ => None,
+    }?;
+    Some(Duration::from_micros(micros))
 }
 
 /// The tighter of two optional deadlines (`None` means no deadline).

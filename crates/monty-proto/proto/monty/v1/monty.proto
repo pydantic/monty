@@ -392,6 +392,9 @@ message Feed {
   repeated NamedValue inputs = 2;
   // Skip type checking for this feed even when the session enables it.
   bool skip_type_check = 3;
+  // Re-arm the sandbox execution-time budget for this feed. Absent preserves
+  // the session's existing cumulative budget and elapsed execution time.
+  optional uint64 max_duration_micros = 4;
 }
 
 // Answers a `FunctionCall` or `OsCall` suspension. `call_id` must match the
@@ -427,6 +430,9 @@ message Dump {}
 // the parent learns the resume point; otherwise it replies `Ok`.
 message Load {
   bytes state = 1;
+  // Re-arm the restored execution-time budget. This is primarily used when
+  // restoring a suspended feed whose serialized budget was partly consumed.
+  optional uint64 max_duration_micros = 2;
 }
 
 // Ends the checkout: the child drops all session state and returns to the

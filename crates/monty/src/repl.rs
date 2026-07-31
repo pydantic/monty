@@ -530,6 +530,20 @@ impl ReplProgress {
             Self::Complete { repl, .. } => repl.tracker(),
         }
     }
+
+    /// Returns mutable access to the resource tracker in any progress state.
+    ///
+    /// Snapshot hosts use this to re-arm execution limits after restoring a
+    /// suspended feed, before any resume runs sandbox code.
+    pub fn tracker_mut(&mut self) -> &mut ResourceTracker {
+        match self {
+            Self::FunctionCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::OsCall(call) => call.snapshot.repl.tracker_mut(),
+            Self::ResolveFutures(state) => state.repl.tracker_mut(),
+            Self::NameLookup(lookup) => lookup.snapshot.repl.tracker_mut(),
+            Self::Complete { repl, .. } => repl.tracker_mut(),
+        }
+    }
 }
 
 impl ReplProgress {

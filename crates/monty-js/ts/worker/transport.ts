@@ -21,6 +21,12 @@ import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js
 
 type OnPrint = (stream: 'stdout' | 'stderr', text: string) => void
 
+/** Feed controls shared structurally with the napi binding. */
+interface NativeFeedOptions {
+  skipTypeCheck: boolean
+  maxDurationSecs?: number
+}
+
 /** Resource limits enforced inside the worker, mirroring the napi pool's. */
 export interface ResourceLimits {
   maxDurationSecs?: number
@@ -116,7 +122,7 @@ export class WorkerTransport {
     code: string,
     inputs: Record<string, unknown> | null,
     mounts: readonly unknown[],
-    skipTypeCheck: boolean,
+    options: NativeFeedOptions,
     onPrint: OnPrint,
   ): Promise<NativeTurn> {
     if (mounts.length > 0) {
@@ -130,7 +136,8 @@ export class WorkerTransport {
       named.lengthDelimited(2, encodeMontyObject(value)) // NamedValue.value
       feed.lengthDelimited(2, named.finish()) // ReplFeed.inputs
     }
-    if (skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
+    if (options.skipTypeCheck) feed.bool(3, true) // Feed.skip_type_check
+    if (options.maxDurationSecs !== undefined) feed.uint(4, durationMicros(options.maxDurationSecs)) // Feed.max_duration_micros
     return this.turn(Req.ReplFeed, feed.finish(), onPrint)
   }
 
@@ -226,6 +233,7 @@ export class WorkerTransport {
   async restore(
     state: Uint8Array,
     mounts: readonly unknown[],
+    maxDurationSecs: number | undefined,
     onPrint: OnPrint,
   ): Promise<NativeTurn | { kind: 'loaded' }> {
     if (mounts.length > 0) {
@@ -233,6 +241,7 @@ export class WorkerTransport {
     }
     const load = new Writer()
     load.bytes(1, state) // Load.state
+    if (maxDurationSecs !== undefined) load.uint(2, durationMicros(maxDurationSecs)) // Load.max_duration_micros
     const event = await this.run(Req.Load, load.finish(), onPrint)
     if (!event) return crashed('worker exited without a turn-ending event')
     if (event.kind === Ev.Ok) return { kind: 'loaded' }
@@ -759,7 +768,7 @@ function decodeSingleString(bytes: Uint8Array): string {
 /** Encodes a `ResourceLimits` message (durations are seconds -> microseconds). */
 function encodeLimits(limits: ResourceLimits): Uint8Array {
   const w = new Writer()
-  if (limits.maxDurationSecs !== undefined) w.uint(1, Math.round(limits.maxDurationSecs * 1_000_000)) // max_duration_micros
+  if (limits.maxDurationSecs !== undefined) w.uint(1, durationMicros(limits.maxDurationSecs)) // max_duration_micros
   if (limits.maxMemory !== undefined) w.uint(2, limits.maxMemory) // max_memory_bytes
   if (limits.gcInterval !== undefined) w.uint(3, limits.gcInterval) // gc_interval
   if (limits.maxRecursionDepth !== undefined) w.uint(4, limits.maxRecursionDepth) // max_recursion_depth
@@ -796,6 +805,18 @@ function functionValue(name: string): Uint8Array {
   const obj = new Writer()
   obj.lengthDelimited(25, fn.finish()) // MontyObject.function
   return obj.finish()
+}
+
+/** Encodes a JS seconds duration as the protocol's saturated `uint64` microseconds. */
+function durationMicros(secs: number): bigint {
+  if (!Number.isFinite(secs) || secs < 0) {
+    throw new RangeError('maxDurationSecs must be a finite non-negative number')
+  }
+  const micros = Math.round(secs * 1_000_000)
+  if (!Number.isFinite(micros)) {
+    throw new RangeError('maxDurationSecs is too large')
+  }
+  return micros >= 2 ** 64 ? 0xffff_ffff_ffff_ffffn : BigInt(micros)
 }
 
 function crashed(message: string): NativeTurn {

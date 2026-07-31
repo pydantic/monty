@@ -64,7 +64,7 @@ fn drives_a_session_over_websocket() {
     assert_eq!(checkout.pid(), None);
 
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, None, &mut |_, _| {})
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
@@ -173,6 +173,7 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
                 memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
+            None,
             &mut no_print,
         )
         .expect("feed");
@@ -237,6 +238,7 @@ fn malformed_os_call_is_a_protocol_error() {
                 memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
+            None,
             &mut no_print,
         )
         .expect_err("malformed fs call must fail the feed");
@@ -275,7 +277,7 @@ fn duration_backstop_kills_an_unresponsive_worker() {
         })
         .expect("checkout");
     let err = checkout
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
@@ -324,6 +326,7 @@ fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
                 MountSpecMode::ReadOnly,
             )],
             false,
+            None,
             &mut no_print,
         )
         .expect_err("the turn must exhaust the request timeout");
@@ -367,11 +370,13 @@ fn restored_session_rearms_the_duration_backstop() {
 
     let pool = Pool::new(config).expect("pool");
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
-    let (event, script_name) = checkout.restore(vec![1, 2, 3], vec![], &mut no_print).expect("restore");
+    let (event, script_name) = checkout
+        .restore(vec![1, 2, 3], vec![], None, &mut no_print)
+        .expect("restore");
     assert!(event.is_none());
     assert_eq!(script_name.as_deref(), Some("restored.py"));
     let err = checkout
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
@@ -498,7 +503,7 @@ fn shutdown_hands_back_a_restorable_dump() {
     let pool = websocket_pool(port);
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
     let err = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, None, &mut |_, _| {})
         .expect_err("a draining server must not run the feed");
     let PoolError::Shutdown { dump: Some(dump) } = err else {
         panic!("expected Shutdown with a dump, got {err:?}");
@@ -508,10 +513,10 @@ fn shutdown_hands_back_a_restorable_dump() {
     // the checkout's worker is gone; a fresh one restores the dump and the
     // never-executed feed can simply be re-run
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
-    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    let (event, _name) = checkout.restore(dump, vec![], None, &mut |_, _| {}).expect("restore");
     assert!(event.is_none(), "an idle dump has no suspension to re-announce");
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, None, &mut |_, _| {})
         .expect("feed on the restored session");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
@@ -547,7 +552,7 @@ fn shutdown_during_a_suspension_carries_the_suspended_dump() {
     let pool = websocket_pool(port);
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
     let event = checkout
-        .feed("ext()", vec![], vec![], false, &mut |_, _| {})
+        .feed("ext()", vec![], vec![], false, None, &mut |_, _| {})
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::FunctionCall { call_id: 7, .. }),
@@ -563,7 +568,7 @@ fn shutdown_during_a_suspension_carries_the_suspended_dump() {
 
     // restoring re-announces the suspension, so the host can answer it again
     let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
-    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    let (event, _name) = checkout.restore(dump, vec![], None, &mut |_, _| {}).expect("restore");
     assert!(
         matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
         "got {event:?}"
@@ -617,7 +622,7 @@ fn a_dropped_connection_is_a_disconnect() {
 
     let (_pool, mut checkout) = websocket_checkout(port);
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, None, &mut |_, _| {})
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
@@ -627,7 +632,7 @@ fn a_dropped_connection_is_a_disconnect() {
     // next feed — the failure mode this test pins
     server.join().expect("mock server thread");
     let err = checkout
-        .feed("x", vec![], vec![], false, &mut |_, _| {})
+        .feed("x", vec![], vec![], false, None, &mut |_, _| {})
         .expect_err("a closed connection must fail the turn");
     assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
 }

@@ -106,11 +106,13 @@ fn feed_and_finish_reuses_the_worker() {
     let first_pid = session.pid().unwrap();
 
     let event = session
-        .feed("x = 40\nx + 2", vec![], vec![], false, &mut no_print)
+        .feed("x = 40\nx + 2", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(42));
     // session state persists across feeds on the same checkout
-    let event = session.feed("x * 2", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("x * 2", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(80));
     session.finish().unwrap();
     assert_eq!(pool.idle_workers(), 1);
@@ -120,7 +122,7 @@ fn feed_and_finish_reuses_the_worker() {
     // at NameLookup and resolving it as undefined raises NameError
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(session.pid().unwrap(), first_pid);
-    let event = session.feed("x", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session.feed("x", vec![], vec![], false, None, &mut no_print).unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { name } if name == "x"));
     let err = session.resume_name_lookup(None, &mut no_print).unwrap_err();
     let PoolError::Runtime(exc) = err else {
@@ -137,7 +139,7 @@ fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     // a cyclic dict completes with a `Cycle` placeholder in the payload; the
     // parent must decode it rather than discarding the worker as misbehaving
     let event = session
-        .feed("d = {}\nd['self'] = d\nd", vec![], vec![], false, &mut no_print)
+        .feed("d = {}\nd['self'] = d\nd", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     let MontyObject::Dict(pairs) = expect_complete(event) else {
         panic!("expected Dict");
@@ -147,7 +149,9 @@ fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
     assert_eq!(pairs[0].0, MontyObject::String("self".to_owned()));
     assert!(matches!(&pairs[0].1, MontyObject::Cycle(_, placeholder) if placeholder == "{...}"));
     // the session must still be usable on the same worker
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().unwrap();
     assert_eq!(pool.idle_workers(), 1);
@@ -157,7 +161,9 @@ fn cyclic_return_value_decodes_and_keeps_the_worker_alive() {
 fn name_lookup_value_too_deep_for_the_wire_is_rejected_cleanly() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
-    let event = session.feed("missing", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("missing", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
     // a value nested past the wire depth bound would produce a frame the
     // worker cannot decode; it must fail as a session-preserving error
@@ -200,6 +206,7 @@ fn non_utf8_mount_path_works() {
             memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }],
         false,
+        None,
         &mut no_print,
     );
     let event = feed_with_mounts(&mut session, result).unwrap();
@@ -228,6 +235,7 @@ fn invalid_mount_host_path_is_rejected_cleanly() {
                 memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
             false,
+            None,
             &mut no_print,
         )
         .unwrap_err();
@@ -241,7 +249,9 @@ fn invalid_mount_host_path_is_rejected_cleanly() {
         exc.message()
     );
     // nothing was sent, so the worker is still synced and the session usable
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().unwrap();
 }
@@ -271,6 +281,7 @@ fn mounted_filesystem_ops_are_serviced_by_the_parent() {
         vec![],
         mount(),
         false,
+        None,
         &mut no_print,
     );
     let event = feed_with_mounts(&mut session, result).unwrap();
@@ -283,7 +294,7 @@ Path('/mnt/sub/out.txt').rename('/mnt/sub/renamed.txt')
 with open('/mnt/sub/renamed.txt') as f:
     body = f.read()
 body";
-    let result = session.feed(code, vec![], mount(), false, &mut no_print);
+    let result = session.feed(code, vec![], mount(), false, None, &mut no_print);
     let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("written".to_owned()));
     assert_eq!(
@@ -318,6 +329,7 @@ fn read_only_and_overlay_mount_semantics() {
         vec![],
         mount(MountSpecMode::ReadOnly),
         false,
+        None,
         &mut no_print,
     );
     let err = feed_with_mounts(&mut session, result).unwrap_err();
@@ -330,7 +342,7 @@ fn read_only_and_overlay_mount_semantics() {
 from pathlib import Path
 Path('/mnt/data.txt').write_text('changed')
 Path('/mnt/data.txt').read_text()";
-    let result = session.feed(code, vec![], mount(MountSpecMode::Overlay), false, &mut no_print);
+    let result = session.feed(code, vec![], mount(MountSpecMode::Overlay), false, None, &mut no_print);
     let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(expect_complete(event), MontyObject::String("changed".to_owned()));
     // the host file is untouched and the overlay does not persist to the next feed
@@ -340,6 +352,7 @@ Path('/mnt/data.txt').read_text()";
         vec![],
         mount(MountSpecMode::Overlay),
         false,
+        None,
         &mut no_print,
     );
     let event = feed_with_mounts(&mut session, result).unwrap();
@@ -372,6 +385,7 @@ msg";
             memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }],
         false,
+        None,
         &mut no_print,
     );
     let event = feed_with_mounts(&mut session, result).unwrap();
@@ -402,7 +416,7 @@ except MemoryError as exc:
 msg";
     let mut spec = MountSpec::new("/mnt".to_owned(), dir.path().to_path_buf(), MountSpecMode::Overlay);
     spec.memory_usage_limit = 1_000;
-    let result = session.feed(code, vec![], vec![spec], false, &mut no_print);
+    let result = session.feed(code, vec![], vec![spec], false, None, &mut no_print);
     let event = feed_with_mounts(&mut session, result).unwrap();
     assert_eq!(
         expect_complete(event),
@@ -435,6 +449,7 @@ covered + ':' + Path('/elsewhere/file.txt').read_text()";
             memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }],
         false,
+        None,
         &mut no_print,
     );
     // the covered `/mnt` read is answered by the mount; the `/elsewhere` one
@@ -484,13 +499,13 @@ fn suspended_feed_restores_with_mounts_re_supplied() {
 from pathlib import Path
 external = Path('/external/answer.txt').read_text()
 external + ' ' + Path('/mnt/data.txt').read_text()";
-    let event = session.feed(code, vec![], mount(), false, &mut no_print).unwrap();
+    let event = session.feed(code, vec![], mount(), false, None, &mut no_print).unwrap();
     assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
     let state = session.dump().unwrap();
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
-    let (event, _) = restored.restore(state, mount(), &mut no_print).unwrap();
+    let (event, _) = restored.restore(state, mount(), None, &mut no_print).unwrap();
     // the re-announcement carries the full call payload, so the uncovered
     // call surfaces exactly like a fresh suspension — name and args intact;
     // answering it lets the feed continue, and its remaining mounted read is
@@ -533,6 +548,7 @@ fn restored_os_call_is_serviced_by_restore_mounts() {
             vec![],
             vec![],
             false,
+            None,
             &mut no_print,
         )
         .unwrap();
@@ -553,6 +569,7 @@ fn restored_os_call_is_serviced_by_restore_mounts() {
                 write_bytes_limit: None,
                 memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
             }],
+            None,
             &mut no_print,
         )
         .unwrap();
@@ -584,7 +601,14 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     // sent. The worker never receives the request, so the session survives.
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session
-        .feed("data", vec![("data".to_owned(), huge)], vec![], false, &mut no_print)
+        .feed(
+            "data",
+            vec![("data".to_owned(), huge)],
+            vec![],
+            false,
+            None,
+            &mut no_print,
+        )
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime for oversize input, got {err:?}");
@@ -595,13 +619,15 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
         "unexpected message: {:?}",
         exc.message()
     );
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 
     // (2) child -> parent: a result larger than the frame limit cannot be sent
     // back. The worker answers with a clean error and keeps the session.
     let err = session
-        .feed(&format!("'x' * {OVERSIZE}"), vec![], vec![], false, &mut no_print)
+        .feed(&format!("'x' * {OVERSIZE}"), vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime for oversize result, got {err:?}");
@@ -612,7 +638,9 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
         "unexpected message: {:?}",
         exc.message()
     );
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 
     // (3) child -> parent suspension: external-call arguments larger than the
@@ -626,6 +654,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
             vec![],
             vec![],
             false,
+            None,
             &mut no_print,
         )
         .unwrap_err();
@@ -638,7 +667,9 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
         "unexpected message: {:?}",
         exc.message()
     );
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
 
     session.finish().unwrap();
@@ -649,7 +680,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     // A fresh checkout, so the earlier steps' namespace cannot interfere.
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let event = session
-        .feed("len(grab())", vec![], vec![], false, &mut no_print)
+        .feed("len(grab())", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
     let huge = MontyObject::String("x".repeat(OVERSIZE));
@@ -674,7 +705,9 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
 
     // (5) parent -> child name-lookup resume: same invariant as (4) — the
     // rejected answer leaves the lookup answerable.
-    let event = session.feed("missing", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("missing", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert!(matches!(event, TurnEvent::NameLookup { ref name } if name == "missing"));
     let huge = MontyObject::String("x".repeat(OVERSIZE));
     let err = session.resume_name_lookup(Some(huge), &mut no_print).unwrap_err();
@@ -695,7 +728,7 @@ fn oversize_frames_are_rejected_without_killing_the_worker() {
     // (6) parent -> child future resolution: the pending futures stay
     // resolvable after an oversize result is rejected.
     let code = "import asyncio\nasync def main():\n    return await go()\nasyncio.run(main())";
-    let event = session.feed(code, vec![], vec![], false, &mut no_print).unwrap();
+    let event = session.feed(code, vec![], vec![], false, None, &mut no_print).unwrap();
     let TurnEvent::FunctionCall { call_id, .. } = event else {
         panic!("expected FunctionCall, got {event:?}");
     };
@@ -736,7 +769,7 @@ fn oversize_dump_while_suspended_fails_cleanly_and_resumes() {
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     // a tiny suspension announcement on top of a heap too big to dump
     let code = "data = 'x' * (300 * 1024 * 1024)\nf()\nlen(data)";
-    let event = session.feed(code, vec![], vec![], false, &mut no_print).unwrap();
+    let event = session.feed(code, vec![], vec![], false, None, &mut no_print).unwrap();
     assert!(matches!(event, TurnEvent::FunctionCall { .. }), "got {event:?}");
 
     let err = session.dump().unwrap_err();
@@ -769,6 +802,7 @@ fn inputs_and_prints() {
             vec![("name".to_owned(), MontyObject::String("monty".to_owned()))],
             vec![],
             false,
+            None,
             &mut |_, text| output.push_str(text),
         )
         .unwrap();
@@ -782,7 +816,7 @@ fn external_function_round_trip() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let event = session
-        .feed("fetch('https://x') + '!'", vec![], vec![], false, &mut no_print)
+        .feed("fetch('https://x') + '!'", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     let TurnEvent::FunctionCall {
         function_name, args, ..
@@ -807,17 +841,27 @@ fn runtime_error_keeps_session_and_worker() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(
-        expect_complete(session.feed("kept = 1", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("kept = 1", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::None
     );
-    let err = session.feed("1 / 0", vec![], vec![], false, &mut no_print).unwrap_err();
+    let err = session
+        .feed("1 / 0", vec![], vec![], false, None, &mut no_print)
+        .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.message(), Some("division by zero"));
     // session and worker survive
     assert_eq!(
-        expect_complete(session.feed("kept + 41", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("kept + 41", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(42)
     );
     session.finish().unwrap();
@@ -840,7 +884,7 @@ fn sigkill_mid_request_is_a_clean_crash_and_the_pool_recovers() {
         kill_pid(pid);
     });
     let err = session
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     killer.join().unwrap();
     assert!(matches!(err, PoolError::Crashed { .. }), "got {err:?}");
@@ -849,7 +893,11 @@ fn sigkill_mid_request_is_a_clean_crash_and_the_pool_recovers() {
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_ne!(session.pid().unwrap(), pid);
     assert_eq!(
-        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(2)
     );
     session.finish().unwrap();
@@ -866,7 +914,11 @@ fn worker_killed_while_idle_is_replaced_transparently() {
 
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(
-        expect_complete(session.feed("2 + 2", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("2 + 2", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(4)
     );
     session.finish().unwrap();
@@ -886,7 +938,9 @@ fn hard_child_crash_does_not_harm_the_pool() {
     for _ in 0..150_000 {
         code.push_str(".x");
     }
-    let err = session.feed(&code, vec![], vec![], false, &mut no_print).unwrap_err();
+    let err = session
+        .feed(&code, vec![], vec![], false, None, &mut no_print)
+        .unwrap_err();
     assert!(
         matches!(err, PoolError::Crashed { .. } | PoolError::Runtime(_)),
         "got {err:?}"
@@ -894,7 +948,11 @@ fn hard_child_crash_does_not_harm_the_pool() {
 
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(
-        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(2)
     );
     session.finish().unwrap();
@@ -907,14 +965,18 @@ fn watchdog_kills_hung_worker_after_request_timeout() {
     let pool = Pool::new(config).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let err = session
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     assert!(matches!(err, PoolError::Timeout { .. }), "got {err:?}");
 
     // pool still healthy
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(
-        expect_complete(session.feed("3 + 3", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("3 + 3", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(6)
     );
     session.finish().unwrap();
@@ -930,7 +992,7 @@ fn child_resource_limits_do_not_kill_the_worker() {
         })
         .unwrap();
     let err = session
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     // the SANDBOX limit fired (TimeoutError exception), not the watchdog —
     // the worker process is alive and finishable
@@ -966,6 +1028,7 @@ fn special_files_in_mounts_are_rejected_without_blocking() {
             memory_usage_limit: monty_fs::DEFAULT_MEMORY_USAGE_LIMIT,
         }],
         false,
+        None,
         &mut no_print,
     );
     let err = feed_with_mounts(&mut session, result).unwrap_err();
@@ -990,7 +1053,7 @@ fn suspension_time_does_not_consume_the_duration_budget() {
         })
         .unwrap();
     let event = session
-        .feed("fetch('https://x') + '!'", vec![], vec![], false, &mut no_print)
+        .feed("fetch('https://x') + '!'", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     assert!(matches!(event, TurnEvent::FunctionCall { .. }));
 
@@ -1022,16 +1085,94 @@ fn loaded_session_keeps_its_duration_budget() {
     drop(session);
 
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
-    let (event, _script_name) = restored.restore(state, vec![], &mut no_print).unwrap();
+    let (event, _script_name) = restored.restore(state, vec![], None, &mut no_print).unwrap();
     assert!(event.is_none(), "idle dump should restore without a suspension");
     let err = restored
-        .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .feed("while True:\n    pass", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     let PoolError::Runtime(exc) = err else {
         panic!("expected Runtime, got {err:?}");
     };
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     restored.finish().unwrap();
+}
+
+#[test]
+fn per_feed_max_duration_rearms_the_exhausted_budget() {
+    // The session's `max_duration` is *cumulative*: once a runaway feed burns
+    // it, every later feed on that session trips the limit immediately. A
+    // per-feed `max_duration` re-arms the budget from zero, so the session
+    // becomes usable again without a new checkout.
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    expect_timeout(&mut session, "while True:\n    pass", None);
+    // the budget is spent, so even a trivial feed cannot run
+    expect_timeout(&mut session, "1 + 1", None);
+
+    // a fresh budget revives the session, and is itself enforced
+    assert_eq!(
+        expect_complete(
+            session
+                .feed(
+                    "1 + 1",
+                    vec![],
+                    vec![],
+                    false,
+                    Some(Duration::from_millis(100)),
+                    &mut no_print,
+                )
+                .unwrap()
+        ),
+        MontyObject::Int(2)
+    );
+    expect_timeout(&mut session, "while True:\n    pass", Some(Duration::from_millis(100)));
+    session.finish().unwrap();
+}
+
+#[test]
+fn restore_can_rearm_the_duration_budget() {
+    // A dump carries the execution time already consumed, so a snapshot taken
+    // late in a long-running session would resume with almost no budget left.
+    // `restore`'s `max_duration` replaces both the budget and that consumed
+    // time, letting the resumed feed run with a full allowance.
+    let pool = Pool::new(config()).unwrap();
+    let mut session = pool
+        .checkout(&ReplConfig {
+            limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
+            ..ReplConfig::default()
+        })
+        .unwrap();
+    let state = session.dump().unwrap();
+    drop(session);
+
+    let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
+    let (event, _script_name) = restored
+        .restore(state, vec![], Some(Duration::from_secs(30)), &mut no_print)
+        .unwrap();
+    assert!(event.is_none(), "idle dump should restore without a suspension");
+    assert_eq!(
+        expect_complete(
+            restored
+                .feed("sum(range(10_000))", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
+        MontyObject::Int(49_995_000)
+    );
+    restored.finish().unwrap();
+}
+
+/// Feeds `code` and asserts the sandbox's execution-time limit stopped it.
+#[track_caller]
+fn expect_timeout(session: &mut monty_pool::Checkout, code: &str, max_duration: Option<Duration>) {
+    match session.feed(code, vec![], vec![], false, max_duration, &mut no_print) {
+        Err(PoolError::Runtime(exc)) => assert_eq!(exc.exc_type().to_string(), "TimeoutError"),
+        other => panic!("expected a TimeoutError, got {other:?}"),
+    }
 }
 
 // =============================================================================
@@ -1068,14 +1209,20 @@ fn dropping_a_checkout_kills_the_worker_but_frees_capacity() {
 
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     let pid = session.pid().unwrap();
-    let _ = session.feed("x = 1", vec![], vec![], false, &mut no_print).unwrap();
+    let _ = session
+        .feed("x = 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     drop(session); // abandoned mid-session: worker killed, capacity released
 
     // with max_processes=1 this checkout only succeeds if capacity was freed
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_ne!(session.pid().unwrap(), pid);
     assert_eq!(
-        expect_complete(session.feed("5 + 5", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("5 + 5", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(10)
     );
     session.finish().unwrap();
@@ -1109,7 +1256,7 @@ fn concurrent_checkouts_run_in_parallel() {
             scope.spawn(|| {
                 let mut session = pool.checkout(&ReplConfig::default()).unwrap();
                 let event = session
-                    .feed("sum(range(1000))", vec![], vec![], false, &mut no_print)
+                    .feed("sum(range(1000))", vec![], vec![], false, None, &mut no_print)
                     .unwrap();
                 assert_eq!(expect_complete(event), MontyObject::Int(499_500));
                 session.finish().unwrap();
@@ -1129,7 +1276,7 @@ fn typing_error_via_pool() {
         })
         .unwrap();
     let err = session
-        .feed("x: int = 'nope'", vec![], vec![], false, &mut no_print)
+        .feed("x: int = 'nope'", vec![], vec![], false, None, &mut no_print)
         .unwrap_err();
     let PoolError::Typing(diagnostics) = err else {
         panic!("expected Typing, got {err:?}");
@@ -1137,7 +1284,11 @@ fn typing_error_via_pool() {
     assert!(diagnostics.contains("invalid-assignment"), "{diagnostics}");
     // the session survives a typing rejection
     assert_eq!(
-        expect_complete(session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::Int(2)
     );
     session.finish().unwrap();
@@ -1152,11 +1303,15 @@ fn dump_survives_worker_death_and_loads_elsewhere() {
     let pool = Pool::new(config()).unwrap();
     let mut session = pool.checkout(&ReplConfig::default()).unwrap();
     assert_eq!(
-        expect_complete(session.feed("base = 40", vec![], vec![], false, &mut no_print).unwrap()),
+        expect_complete(
+            session
+                .feed("base = 40", vec![], vec![], false, None, &mut no_print)
+                .unwrap()
+        ),
         MontyObject::None
     );
     let event = session
-        .feed("base + ext()", vec![], vec![], false, &mut no_print)
+        .feed("base + ext()", vec![], vec![], false, None, &mut no_print)
         .unwrap();
     let TurnEvent::FunctionCall {
         call_id: _,
@@ -1173,7 +1328,7 @@ fn dump_survives_worker_death_and_loads_elsewhere() {
 
     // restore into a fresh worker by loading over its empty session
     let mut restored = pool.checkout(&ReplConfig::default()).unwrap();
-    let (event, script_name) = restored.restore(state, vec![], &mut no_print).unwrap();
+    let (event, script_name) = restored.restore(state, vec![], None, &mut no_print).unwrap();
     // the worker echoes the dump's adopted script name back to the parent
     assert_eq!(script_name.as_deref(), Some("main.py"));
     let Some(TurnEvent::FunctionCall { ref function_name, .. }) = event else {
@@ -1211,7 +1366,9 @@ fn worker_environment_is_empty() {
     );
 
     // The worker is fully functional without an environment.
-    let event = session.feed("1 + 1", vec![], vec![], false, &mut no_print).unwrap();
+    let event = session
+        .feed("1 + 1", vec![], vec![], false, None, &mut no_print)
+        .unwrap();
     assert_eq!(expect_complete(event), MontyObject::Int(2));
     session.finish().unwrap();
 }

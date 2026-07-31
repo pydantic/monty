@@ -38,8 +38,9 @@ fn main() -> Result<(), PoolError> {
     let mut on_print = |_stream, text: &str| print!("{text}");
 
     // session state persists between feeds on the same checkout
-    session.feed("x = 21", vec![], vec![], false, &mut on_print)?;
-    let event = session.feed("x * 2", vec![], vec![], false, &mut on_print)?;
+    // (args: code, inputs, mounts, skip_type_check, per-feed max_duration)
+    session.feed("x = 21", vec![], vec![], false, None, &mut on_print)?;
+    let event = session.feed("x * 2", vec![], vec![], false, None, &mut on_print)?;
     match event {
         TurnEvent::Complete(value) => println!("result: {value:?}"), // Int(42)
         // other events are suspensions (external function calls, OS calls,
@@ -56,7 +57,9 @@ fn main() -> Result<(), PoolError> {
 
 `ReplConfig` also enables per-session sandbox `ResourceLimits` and type checking of every fed
 snippet; `Checkout::feed` accepts inputs (host values exposed as sandbox globals) and
-per-feed filesystem mounts (`MountSpec`). Sessions can be snapshotted with `Checkout::dump`
+per-feed filesystem mounts (`MountSpec`). Since the session's `max_duration` budget is
+cumulative across feeds, `feed`/`restore` take an optional `max_duration` that re-arms it
+with a fresh allowance for that turn. Sessions can be snapshotted with `Checkout::dump`
 and restored later — including on a different worker or machine — with `Checkout::restore`.
 
 ## Protections over in-process execution

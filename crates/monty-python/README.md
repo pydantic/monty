@@ -185,6 +185,13 @@ protocol turn, and sessions with the limit are additionally killed
 the remaining budget expires, covering hangs the in-sandbox limit cannot
 catch (its check only runs at interpreter checkpoints).
 
+Because the budget is cumulative, one runaway feed leaves the whole session
+timed out. Pass `max_duration_secs=...` to `feed_run` / `feed_start` to give a
+feed its own budget instead: it replaces the limit *and* zeroes the elapsed
+execution time, so the turn starts fresh. `load_snapshot(...,
+max_duration_secs=...)` does the same for a restored snapshot, whose dump would
+otherwise carry the time the original session had already consumed.
+
 ```python
 from pydantic_monty import Monty, MontyRuntimeError
 

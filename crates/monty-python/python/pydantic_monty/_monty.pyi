@@ -456,6 +456,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
+        max_duration_secs: float | None = None,
     ) -> Any:
         """
         Execute one snippet in the worker and return its result.
@@ -489,6 +490,8 @@ class MontySession:
                 or an `AbstractOS` instance.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            max_duration_secs: Re-arm the sandbox execution-time limit with
+                this fresh per-feed budget. `None` preserves cumulative timing.
 
         Raises:
             MontyRuntimeError: The code raised an exception (session survives).
@@ -507,6 +510,7 @@ class MontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
+        max_duration_secs: float | None = None,
     ) -> SyncSnapshot:
         """
         Start a snippet and return a snapshot at each external call, OS call,
@@ -553,6 +557,8 @@ class MontySession:
                 OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            max_duration_secs: Re-arm the sandbox execution-time limit with
+                this fresh budget for the feed and all snapshot resumes.
         """
 
     def load_session(self, state: bytes) -> None:
@@ -578,6 +584,7 @@ class MontySession:
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
         os: OsHandler | None = None,
+        max_duration_secs: float | None = None,
     ) -> SyncSnapshot:
         """
         Restore a snapshot generated while a block of code is running (e.g.
@@ -600,6 +607,9 @@ class MontySession:
         `FutureSnapshot`'s pending coroutines are gone (they lived in the
         previous process), so `resume_auto()` on it raises — resolve it manually
         with `resume({call_id: ...})`.
+
+        `max_duration_secs` replaces the serialized cumulative execution time
+        with a fresh budget before any snapshot resume.
         """
 
     def dump(self) -> bytes:
@@ -788,6 +798,7 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | AbstractOS | None = None,
         skip_type_check: bool = False,
+        max_duration_secs: float | None = None,
     ) -> Any:
         """
         Execute one snippet in the worker and return its result.
@@ -821,6 +832,8 @@ class AsyncMontySession:
                 or an `AbstractOS` instance.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            max_duration_secs: Re-arm the sandbox execution-time limit with
+                this fresh per-feed budget. `None` preserves cumulative timing.
         """
 
     async def feed_start(
@@ -833,6 +846,7 @@ class AsyncMontySession:
         mount: MountDir | list[MountDir] | None = None,
         os: OsHandler | None = None,
         skip_type_check: bool = False,
+        max_duration_secs: float | None = None,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.feed_start`: resolves to a snapshot
@@ -869,6 +883,8 @@ class AsyncMontySession:
                 OS calls as snapshots.
             skip_type_check: Skip type checking for this feed even when the
                 session was checked out with `type_check=True`.
+            max_duration_secs: Re-arm the sandbox execution-time limit with
+                this fresh budget for the feed and all snapshot resumes.
         """
 
     async def load_session(self, state: bytes) -> None:
@@ -882,6 +898,7 @@ class AsyncMontySession:
         print_callback: PrintCallback | None = None,
         external_lookup: dict[str, Any] | None = None,
         os: OsHandler | None = None,
+        max_duration_secs: float | None = None,
     ) -> AsyncSnapshot:
         """
         Async counterpart of `MontySession.load_snapshot`.
@@ -892,6 +909,9 @@ class AsyncMontySession:
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
         cannot be driven with `resume_auto()` — its pending coroutines are gone).
+
+        `max_duration_secs` replaces the serialized cumulative execution time
+        with a fresh budget before any snapshot resume.
         """
 
     async def dump(self) -> bytes:

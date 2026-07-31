@@ -104,6 +104,16 @@ pub struct NativeCheckoutOptions {
     pub assert_message_annotations: Option<u32>,
 }
 
+/// Per-feed controls normalized by the TypeScript layer.
+#[napi(object, js_name = "NativeFeedOptions")]
+pub struct NativeFeedOptions {
+    /// Skip type checking for this feed.
+    pub skip_type_check: bool,
+    /// Fresh in-sandbox execution-time budget in seconds, re-arming the
+    /// session's `maxDurationSecs`; absent keeps the cumulative budget.
+    pub max_duration_secs: Option<f64>,
+}
+
 /// One mount entry for a feed, pre-validated by the TypeScript `MountDir`.
 #[napi(object, js_name = "NativeMount")]
 pub struct NativeMount {
@@ -236,6 +246,8 @@ impl NativeSession {
 
     /// Runs one feed turn: executes `code` until completion or the first
     /// suspension, streaming prints to `on_print`. Resolves to a turn object.
+    /// `options.max_duration_secs` re-arms the sandbox execution-time budget
+    /// for this feed; `None` keeps the session's cumulative budget.
     #[napi]
     pub fn feed<'env>(
         &self,
@@ -243,7 +255,7 @@ impl NativeSession {
         code: String,
         inputs: Option<Object<'env>>,
         mounts: Vec<NativeMount>,
-        skip_type_check: bool,
+        options: NativeFeedOptions,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let inputs = convert_inputs(env, inputs)?;
@@ -251,8 +263,9 @@ impl NativeSession {
             .into_iter()
             .map(MountSpec::try_from)
             .collect::<Result<Vec<_>>>()?;
+        let max_duration = options.max_duration_secs.map(duration_from_secs).transpose()?;
         self.run_turn(env, on_print, move |checkout, on_print| {
-            checkout.feed(&code, inputs, mounts, skip_type_check, on_print)
+            checkout.feed(&code, inputs, mounts, options.skip_type_check, max_duration, on_print)
         })
     }
 
@@ -408,23 +421,27 @@ impl NativeSession {
     /// Restores a dump into this session's freshly configured worker. Resolves
     /// to a turn object: a suspension when the dump was mid-feed, or `loaded`
     /// for an idle dump. The TypeScript `loadSession` / `loadSnapshot` split
-    /// inspects the kind and enforces "fresh session only".
+    /// inspects the kind and enforces "fresh session only". `max_duration_secs`
+    /// replaces the dump's serialized cumulative execution time with a fresh
+    /// budget, so a restored snapshot resumes with a full allowance.
     #[napi]
     pub fn restore<'env>(
         &self,
         env: &'env Env,
         state: Buffer,
         mounts: Vec<NativeMount>,
+        max_duration_secs: Option<f64>,
         on_print: PrintCallback<'env>,
     ) -> Result<PromiseRaw<'env, Object<'env>>> {
         let mounts = mounts
             .into_iter()
             .map(MountSpec::try_from)
             .collect::<Result<Vec<_>>>()?;
+        let max_duration = max_duration_secs.map(duration_from_secs).transpose()?;
         let state = state.to_vec();
         self.run_outcome(env, on_print, move |checkout, on_print| {
             // JS snapshots expose no script name, so the restored name is unused
-            match checkout.restore(state, mounts, on_print) {
+            match checkout.restore(state, mounts, max_duration, on_print) {
                 Ok((Some(event), _)) => TurnOutcome::Event(event),
                 Ok((None, _)) => TurnOutcome::LoadedIdle,
                 Err(err) => TurnOutcome::from(Err(err)),
@@ -875,6 +892,12 @@ fn bytes_limit(limit: f64, name: &str) -> Result<u64> {
 /// Converts a millisecond count from JS into a `Duration`.
 fn duration_from_ms(ms: f64) -> Result<Duration> {
     Duration::try_from_secs_f64(ms / 1000.0).map_err(|err| invalid(&format!("invalid timeout: {err}")))
+}
+
+/// Converts a second count from JS into a `Duration`, matching the validation
+/// `extract_limits` applies to the session-wide `maxDurationSecs`.
+fn duration_from_secs(secs: f64) -> Result<Duration> {
+    Duration::try_from_secs_f64(secs).map_err(|err| invalid(&format!("invalid maxDurationSecs: {err}")))
 }
 
 /// Locks a shared slot, ignoring poisoning (a panic elsewhere must not wedge

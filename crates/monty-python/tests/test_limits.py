@@ -8,7 +8,7 @@ import pytest
 from conftest import RunMonty
 from inline_snapshot import snapshot
 
-from pydantic_monty import Monty, MontyRuntimeError, ResourceLimits
+from pydantic_monty import AsyncMonty, FunctionSnapshot, Monty, MontyRuntimeError, ResourceLimits
 
 
 def test_resource_limits_typed_dict():
@@ -92,6 +92,49 @@ def test_session_exhausted_after_resource_error_but_worker_reusable(pool: Monty)
     # a new session reuses the worker without issue
     with pool.checkout() as session:
         assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_feed_max_duration_rearms_the_cumulative_budget(pool: Monty):
+    """`max_duration_secs` measures cumulative execution time across feeds; a
+    per-feed budget resets it, reviving a session exhausted by an earlier feed."""
+    with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+        with pytest.raises(MontyRuntimeError):
+            session.feed_run('while True:\n    pass')
+        # the cumulative budget is spent, so even a trivial feed fails
+        with pytest.raises(MontyRuntimeError):
+            session.feed_run('1 + 1')
+        assert session.feed_run('1 + 1', max_duration_secs=0.1) == snapshot(2)
+        # the fresh budget is itself enforced
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            session.feed_run('while True:\n    pass', max_duration_secs=0.1)
+        assert isinstance(exc_info.value.exception(), TimeoutError)
+
+
+async def test_async_feed_max_duration_rearms_the_cumulative_budget():
+    async with AsyncMonty() as pool:
+        async with pool.checkout(limits={'max_duration_secs': 0.1}) as session:
+            with pytest.raises(MontyRuntimeError):
+                await session.feed_run('while True:\n    pass')
+            with pytest.raises(MontyRuntimeError):
+                await session.feed_run('1 + 1')
+            assert await session.feed_run('1 + 1', max_duration_secs=0.1) == snapshot(2)
+
+
+def test_load_snapshot_max_duration_replaces_the_dumps_budget(pool: Monty):
+    """A dump carries its own budget and the execution time already consumed;
+    `max_duration_secs` on `load_snapshot` replaces both, so the resumed feed
+    runs against the fresh limit rather than the serialized one."""
+    with pool.checkout() as session:
+        snap = session.feed_start('fetch()\nwhile True:\n    pass')
+        assert isinstance(snap, FunctionSnapshot)
+        blob = snap.dump()
+
+    with pool.checkout() as session:
+        loaded = session.load_snapshot(blob, max_duration_secs=0.1)
+        assert isinstance(loaded, FunctionSnapshot)
+        with pytest.raises(MontyRuntimeError) as exc_info:
+            loaded.resume({'return_value': None})
+        assert isinstance(exc_info.value.exception(), TimeoutError)
 
 
 def test_limits_with_inputs(monty_run: RunMonty):
