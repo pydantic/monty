@@ -1,0 +1,25 @@
+.devcontainer/setup.sh
+  s_5dfd437de4aec6::t_380ea9b4fd95fc 27-39,44
+scripts/hard_memory_sweep.py
+  s_5dfd437de4aec6::t_836fe59ad0d86c 104-109
+limitations/resource_limits.md
+  s_5dfd437de4aec6::t_1cbd7bb05f3c27 60-65
+.devcontainer/devcontainer.json
+  s_5dfd437de4aec6::t_0bef5e7e9033c0 28-30,33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2704f0314b6f0d39088e3176f8c4c04193f2fdf4",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
