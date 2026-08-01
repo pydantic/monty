@@ -153,6 +153,11 @@ exclude = [
     # annotation quote-normalization test: `e: "it's"` is a string literal under
     # test, which pyright reads as a malformed forward reference
     "crates/monty/test_cases/class__annotations.py",
+    # `break`/`return`/`continue` exiting a `finally` block (PEP 765) is the
+    # behavior under test; basedpyright rejects it unconditionally
+    "crates/monty/test_cases/async__control_flow.py",
+    "crates/monty/test_cases/refcount__finally_swallow.py",
+    "crates/monty/test_cases/try_finally__control_flow.py",
     # break/continue outside loop tests intentionally test error handling
     "crates/monty/test_cases/loop__break_outside_error.py",
     "crates/monty/test_cases/loop__continue_outside_error.py",

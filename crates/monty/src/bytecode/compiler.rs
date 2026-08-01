@@ -3568,6 +3568,17 @@ impl<'a> Compiler<'a> {
             return Ok(());
         }
 
+        // If the return expression ends with a call, an exception escaping the
+        // callee's frame is delivered at the *next* instruction's offset (the
+        // VM syncs `instruction_ip` to the parent's post-call ip). The unwind
+        // below interrupts every enclosing protected region exactly there, so
+        // without padding `try: return f()` would skip except/finally/__exit__
+        // when `f` raises. The Nop keeps that offset inside the regions (same
+        // idea as the in-region JUMP in compile_try_finally's fall-through).
+        if expr.is_some() && self.fblocks.iter_mut().any(|b| b.region_mut().is_some()) {
+            self.code.emit(Opcode::Nop)?;
+        }
+
         let popped = self.emit_unwind(self.fblocks.len(), true)?;
         self.code.emit(Opcode::ReturnValue)?;
         self.restore_fblocks(popped);

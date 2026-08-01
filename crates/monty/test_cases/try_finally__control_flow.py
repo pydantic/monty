@@ -563,3 +563,83 @@ for i in range(2):
         finally:
             events.append('finally')
 assert events == ['enter', 0, 'finally', 'exit True', 'enter', 1, 'finally', 'exit True']
+
+# === exception raised by the call in `return f()` still reaches handlers ===
+# Regression: the return's unwind used to interrupt the protected region at
+# exactly the callee's exception-delivery offset (the instruction after the
+# call), so except/finally/__exit__ were all skipped when the call raised.
+
+
+def boom():
+    raise ValueError('boom')
+
+
+def return_call_except():
+    try:
+        return boom()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_call_except() == 'caught boom'
+
+events = []
+
+
+def return_call_finally():
+    try:
+        return boom()
+    finally:
+        events.append('finally')
+
+
+try:
+    return_call_finally()
+except ValueError as e:
+    events.append(str(e))
+assert events == ['finally', 'boom']
+
+events = []
+
+
+def return_call_with():
+    with Recorder():
+        return boom()
+
+
+try:
+    return_call_with()
+except ValueError:
+    events.append('caught')
+assert events == ['enter', 'exit False', 'caught']
+
+events = []
+
+
+def return_call_nested():
+    try:
+        try:
+            return boom()
+        except ValueError:
+            events.append('inner')
+            raise
+    finally:
+        events.append('finally')
+
+
+try:
+    return_call_nested()
+except ValueError:
+    events.append('outer')
+assert events == ['inner', 'finally', 'outer']
+
+
+def return_call_in_loop():
+    for i in range(3):
+        try:
+            return boom()
+        except ValueError:
+            return f'caught in loop {i}'
+
+
+assert return_call_in_loop() == 'caught in loop 0'
