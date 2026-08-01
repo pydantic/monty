@@ -78,7 +78,6 @@ known-first-party = ["pydantic_monty"]
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
     "F704", # await outside function - needed for testing top-level async/await
-    "PLE1142", # await outside async function - same top-level await support as F704
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F823", # chained-assign test intentionally reads a local before its first assignment
