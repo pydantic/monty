@@ -332,6 +332,16 @@ fn generate_large_dict_literal(count: usize) -> String {
     code
 }
 
+/// Generates one `try/finally` with many independent return sites.
+fn generate_many_finally_return_sites(count: usize) -> String {
+    let mut code = String::from("def f(x):\n    try:\n");
+    for i in 0..count {
+        writeln!(code, "        if x == {i}:\n            return {i}").unwrap();
+    }
+    code.push_str("    finally:\n        x = 0\n");
+    code
+}
+
 mod stack_effect_limits {
     use super::*;
 
@@ -353,5 +363,16 @@ mod stack_effect_limits {
             .expect("20000-entry dict literal should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "20000-entry dict literal should run: {result:?}");
+    }
+}
+
+mod finally_copy_limits {
+    use super::*;
+
+    #[test]
+    fn excessive_inline_finally_copies_return_syntax_error() {
+        let code = generate_many_finally_return_sites(1025);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
     }
 }

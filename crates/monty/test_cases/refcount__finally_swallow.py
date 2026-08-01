@@ -22,4 +22,12 @@ for i in range(2):
         raise ValueError('swallowed by continue')
     finally:
         continue
+
+try:
+    try:
+        raise ValueError('abandoned handler')
+    except ValueError as abandoned:
+        raise TypeError('replacement')
+except TypeError:
+    pass
 # ref-counts={'result': 1}

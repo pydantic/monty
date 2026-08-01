@@ -220,6 +220,26 @@ except NameError:
     pass
 
 
+# === handler target is cleared before an exceptional exit reaches finally ===
+handler_cleanup = []
+try:
+    try:
+        try:
+            raise ValueError('original')
+        except ValueError as abandoned:
+            raise TypeError('replacement')
+    finally:
+        try:
+            abandoned
+        except NameError:
+            handler_cleanup.append('unbound')
+        else:
+            handler_cleanup.append('bound')
+except TypeError as replacement:
+    handler_cleanup.append(str(replacement))
+assert handler_cleanup == ['unbound', 'replacement']
+
+
 # === handler variable is unbound after return out of the handler ===
 def return_from_handler():
     try:
@@ -582,6 +602,36 @@ def return_call_except():
 
 
 assert return_call_except() == 'caught boom'
+
+
+def return_call_short_circuit():
+    try:
+        return False or boom()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_call_short_circuit() == 'caught boom'
+
+
+def return_call_ternary_fallthrough():
+    try:
+        return 0 if False else boom()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_call_ternary_fallthrough() == 'caught boom'
+
+
+def return_call_ternary_jump():
+    try:
+        return boom() if True else 0
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_call_ternary_jump() == 'caught boom'
 
 events = []
 

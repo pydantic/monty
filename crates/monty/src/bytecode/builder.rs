@@ -306,6 +306,12 @@ impl CodeBuilder {
         Offset(self.bytecode.len())
     }
 
+    /// Returns the current source position for compile-time diagnostics.
+    #[must_use]
+    pub fn current_position(&self) -> CodeRange {
+        self.current_location.unwrap_or_default()
+    }
+
     /// Returns a `JumpTarget` capturing both the current bytecode position and
     /// the stack depth at that position.
     #[must_use]

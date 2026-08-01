@@ -5,6 +5,17 @@ code bounded. Memory limits surface to the host as terminal `MemoryError`s,
 while time limits surface as terminal `TimeoutError`s; sandboxed code cannot
 catch them. `RecursionError` is catchable, as in CPython.
 
+## Compilation
+
+`ResourceLimits` starts when the VM is created; parsing, preparation, and
+bytecode compilation are not charged to its memory or duration budgets.
+Compilation has separate structural caps for parser nesting, bytecode operand
+sizes, comprehension nesting, and repeated `finally` expansion. In particular,
+a code object requiring more than 1,024 emitted copies of `finally` bodies is
+rejected with `SyntaxError`; CPython has no equivalent limit. Production hosts
+should still isolate compilation when accepting untrusted source, as the
+subprocess and WebAssembly runtimes do.
+
 ## Memory / size limits
 
 - Memory tracking is global; the host sets the bytes budget when
