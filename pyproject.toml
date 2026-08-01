@@ -78,6 +78,7 @@ known-first-party = ["pydantic_monty"]
     "F701", # break outside loop - needed for testing break error handling
     "F702", # continue not properly in loop - needed for testing continue error handling
     "F704", # await outside function - needed for testing top-level async/await
+    "PLE1142", # await outside async function - same top-level await support as F704
     "F811", # Redefinition of unused variable
     "F821", # traceback undefined call test intentionally uses undefined name
     "F823", # chained-assign test intentionally reads a local before its first assignment
@@ -102,6 +103,14 @@ known-first-party = ["pydantic_monty"]
 
 "crates/monty/test_cases/refcount__finally_swallow.py" = [
     "B012", # break/continue/return inside finally is the subject of the test
+]
+
+"crates/monty/test_cases/async__control_flow.py" = [
+    "B012", # break/return inside finally swallowing awaited exceptions is under test
+]
+
+"crates/monty/test_cases/loop__else_control_flow.py" = [
+    "PLW0120", # else on a loop without break is exactly the construct under test
 ]
 
 "crates/monty/test_cases/class__annotations.py" = [

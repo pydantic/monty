@@ -369,3 +369,197 @@ for i in range(2):
 else:
     xs.append('else')
 assert xs == []
+
+# === break targeting a loop *inside* the finally does not swallow ===
+# The loop lives entirely within the finally body, so its break must not
+# discard the in-flight exception.
+xs = []
+try:
+    try:
+        raise ValueError('kept')
+    finally:
+        for k in range(5):
+            xs.append(k)
+            break
+        xs.append('after inner loop')
+except ValueError as e:
+    xs.append(str(e))
+assert xs == [0, 'after inner loop', 'kept']
+
+
+# === break targeting a loop inside an except body keeps handler state ===
+def break_in_handler_loop():
+    try:
+        raise ValueError('original')
+    except ValueError:
+        while True:
+            break
+        try:
+            raise
+        except ValueError as e:
+            return str(e)
+
+
+assert break_in_handler_loop() == 'original'
+
+
+# === for+break inside an except body, then bare raise propagates ===
+def for_break_then_reraise():
+    try:
+        raise ValueError('kept by handler')
+    except ValueError:
+        for i in [1, 2]:
+            break
+        raise
+
+
+try:
+    for_break_then_reraise()
+    assert False, 'expected ValueError'
+except ValueError as e:
+    assert str(e) == 'kept by handler'
+
+
+# === return crossing two nested finallys runs both, inner first ===
+order = []
+
+
+def return_two_finallys():
+    try:
+        try:
+            return 'value'
+        finally:
+            order.append('inner')
+    finally:
+        order.append('outer')
+
+
+assert return_two_finallys() == 'value'
+assert order == ['inner', 'outer']
+
+# === return in inner finally swallows exception, still crosses outer finally ===
+order = []
+
+
+def swallow_then_outer():
+    try:
+        try:
+            raise ValueError
+        finally:
+            order.append('inner')
+            return 'swallowed'
+    finally:
+        order.append('outer')
+
+
+assert swallow_then_outer() == 'swallowed'
+assert order == ['inner', 'outer']
+
+# === break from a non-first except handler runs the finally ===
+xs = []
+while True:
+    try:
+        raise KeyError('k')
+    except ValueError:
+        xs.append('wrong handler')
+    except KeyError:
+        xs.append('key')
+        break
+    finally:
+        xs.append('finally')
+assert xs == ['key', 'finally']
+
+# === break inside with inside except handler unwinds both ===
+events = []
+
+
+class Recorder:
+    def __enter__(self):
+        events.append('enter')
+        return self
+
+    def __exit__(self, typ, val, tb):
+        events.append(f'exit {typ is None}')
+        return False
+
+
+while True:
+    try:
+        raise ValueError
+    except ValueError:
+        with Recorder():
+            break
+assert events == ['enter', 'exit True']
+
+
+# === __exit__ swallowing the exception, then loop control flow continues ===
+class Swallow:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, typ, val, tb):
+        return True
+
+
+xs = []
+for i in range(3):
+    with Swallow():
+        raise ValueError(str(i))
+    xs.append(f'resumed {i}')
+assert xs == ['resumed 0', 'resumed 1', 'resumed 2']
+
+xs = []
+for i in range(3):
+    with Swallow():
+        if i == 1:
+            raise ValueError('swallowed')
+        xs.append(i)
+    xs.append(f'after {i}')
+assert xs == [0, 'after 0', 'after 1', 2, 'after 2']
+
+# === try/finally inside with body: break swallows, __exit__ sees no exception ===
+events = []
+while True:
+    with Recorder():
+        try:
+            raise ValueError
+        finally:
+            events.append('finally')
+            break
+assert events == ['enter', 'finally', 'exit True']
+
+# === exception propagating out of with body reaches __exit__ with the type ===
+events = []
+try:
+    with Recorder():
+        raise ValueError('through exit')
+except ValueError as e:
+    events.append(str(e))
+assert events == ['enter', 'exit False', 'through exit']
+
+# === for → with → try/finally → return unwinds innermost first ===
+events = []
+
+
+def deep_mixed():
+    for i in range(3):
+        with Recorder():
+            try:
+                return 'deep'
+            finally:
+                events.append('finally')
+
+
+assert deep_mixed() == 'deep'
+assert events == ['enter', 'finally', 'exit True']
+
+# === continue crossing with + finally in one step ===
+events = []
+for i in range(2):
+    with Recorder():
+        try:
+            events.append(i)
+            continue
+        finally:
+            events.append('finally')
+assert events == ['enter', 0, 'finally', 'exit True', 'enter', 1, 'finally', 'exit True']

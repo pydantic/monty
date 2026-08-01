@@ -158,3 +158,22 @@ for x in [1, 2, 3]:
     continue
     result.append('after')  # unreachable
 assert result == [1, 2, 3]
+
+# === StopIteration raised in a for body propagates, it does not end the loop ===
+log = []
+try:
+    for x in [1, 2, 3]:
+        log.append(x)
+        raise StopIteration
+except StopIteration:
+    log.append('propagated')
+assert log == [1, 'propagated']
+
+# === StopIteration raised in a while body propagates too ===
+log = []
+try:
+    while True:
+        raise StopIteration
+except StopIteration:
+    log.append('propagated')
+assert log == ['propagated']

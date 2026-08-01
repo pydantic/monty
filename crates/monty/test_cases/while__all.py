@@ -204,3 +204,37 @@ while i < 2:
         result.append('inner-else')
     i += 1
 assert result == [0, 0]
+
+
+# === Exception raised by the condition is caught by an enclosing try ===
+def exploding_condition():
+    raise ValueError('cond boom')
+
+
+log = []
+try:
+    while exploding_condition():
+        log.append('unreached')
+except ValueError as e:
+    log.append(str(e))
+assert log == ['cond boom']
+
+# === Condition raising on a later evaluation, after iterations ran ===
+count = 0
+
+
+def cond():
+    global count
+    count += 1
+    if count == 3:
+        raise ValueError('third check')
+    return True
+
+
+log = []
+try:
+    while cond():
+        log.append(count)
+except ValueError as e:
+    log.append(str(e))
+assert log == [1, 2, 'third check']
