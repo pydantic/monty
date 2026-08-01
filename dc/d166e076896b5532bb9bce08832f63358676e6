@@ -1,0 +1,27 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_c61071e31b1c57::t_60cf2b8649197c 341-343,1563-1564
+crates/monty/src/bytecode/vm/exceptions.rs
+  s_c61071e31b1c57::t_60cf2b8649197c 18-20,277-278,288-289
+crates/monty/src/bytecode/compiler.rs
+  s_c61071e31b1c57::t_60cf2b8649197c 300,302,304,354,364-366,376,386,391,466-468,470,472,496-498
+  s_c61071e31b1c57::t_d58efab2f2877f 604
+  s_c61071e31b1c57::t_3ff70571085db4 2741-2743,2779-2781,2792-2793,2804,2812,2834,3580-3582,3607-3609,3618-3620,3649,3666-3668,3683,3697,3705-3707,3720,3724,3727,3739,3742,3749,3760
+crates/monty/src/bytecode/code.rs
+  s_c61071e31b1c57::t_60cf2b8649197c 255-257,286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "dcd166e076896b5532bb9bce08832f63358676e6",
+  "prompts": {},
+  "sessions": {
+    "s_c61071e31b1c57": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbeb5-d906-7522-b567-9a92289deeb7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
