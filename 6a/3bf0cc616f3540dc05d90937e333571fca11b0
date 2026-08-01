@@ -1,0 +1,28 @@
+crates/monty/test_cases/try_finally__control_flow.py
+  s_be3783f875d647::t_622a4010b1124f 566-645
+crates/monty/test_cases/ext_call__ext_exc.py
+  s_be3783f875d647::t_8b20ce339ce5bd 172-201
+crates/monty/src/bytecode/compiler.rs
+  s_be3783f875d647::t_0f783449298111 3571-3581
+pyproject.toml
+  s_be3783f875d647::t_eec662aa5fe4d4 156-160
+crates/monty/test_cases/async__ext_exc.py
+  s_be3783f875d647::t_f44d9dea70432c 289,301
+  s_be3783f875d647::t_8bfcbae9f6115a 280-288,290-300,302-310
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6a3bf0cc616f3540dc05d90937e333571fca11b0",
+  "prompts": {},
+  "sessions": {
+    "s_be3783f875d647": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fbbe8b2f-ba5a-438c-99fb-39899805b645",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
