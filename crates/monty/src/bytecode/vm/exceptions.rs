@@ -15,13 +15,9 @@ use crate::{
 };
 
 impl VM<'_> {
-    /// Returns the current frame's name for traceback generation: the
-    /// function name for user-defined functions, or `<module>` for
-    /// module-level code. The empty-frames branch is defensive — async
-    /// error paths now charge their tracker growth *before* draining
-    /// `self.frames`, so any caller reaching this with an empty stack
-    /// indicates a bug elsewhere; the `<module>` fallback keeps
-    /// traceback generation total rather than panicking.
+    /// Returns the current function name, or `<module>` outside a function.
+    /// The empty-stack fallback keeps traceback generation total after async
+    /// paths drain their frames.
     fn current_frame_name(&self) -> StringId {
         match self.frames.last() {
             Some(frame) => match frame.function_id {
@@ -278,13 +274,8 @@ impl VM<'_> {
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = frame.code.find_exception_handler(ip) {
-                // Found a handler! Unwind stack and jump to it.
-                // The operand stack lives directly above the locals region.
-                // `entry.stack_depth()` is the compiler's operand-stack depth
-                // at the try region, so the absolute stack index to unwind to
-                // is `stack_base + locals_count + stack_depth`. Any in-flight
-                // comprehension variables sit on the operand stack inside this
-                // depth window and get cleaned up by the same drain.
+                // Unwind operands to the compiler-recorded region depth,
+                // including any in-flight comprehension values.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
@@ -294,12 +285,8 @@ impl VM<'_> {
                     value.drop_with(this.heap);
                 }
 
-                // Drop any `exception_stack` entries left behind by handlers
-                // the propagating exception is bypassing — without this, a
-                // handler whose body terminated via `raise` (so its
-                // fall-through `ClearException` is dead code) would leak its
-                // exception onto `exception_stack`, where a later bare
-                // `raise` could resurrect it.
+                // Drop exceptions from bypassed handlers so a later bare
+                // `raise` cannot revive them.
                 while this.exception_stack.len() > target_exc_stack_depth {
                     let value = this.exception_stack.pop().unwrap();
                     value.drop_with(this);

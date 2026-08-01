@@ -338,17 +338,9 @@ pub struct CallFrame<'code> {
     /// For function frames, this equals `func.namespace_size`.
     locals_count: u16,
 
-    /// Base index into the VM-wide `exception_stack` for this frame.
-    ///
-    /// Entries pushed by `except` handlers in this frame live at
-    /// `exception_stack[exception_stack_base..]`, while
-    /// `exception_stack[..exception_stack_base]` belongs to caller frames.
-    /// `ExceptionEntry.exception_stack_count` is relative to this base —
-    /// on exception unwind, the VM drains entries down to
-    /// `exception_stack_base + entry.exception_stack_count()` so that
-    /// handlers abandoned by the propagating exception (whose
-    /// fall-through `ClearException` is dead code) don't leave residue
-    /// that a later bare `raise` would resurrect.
+    /// Base of this frame's entries in the VM-wide `exception_stack`.
+    /// Recorded region depths are relative to this index, keeping caller
+    /// exceptions intact when abandoned handlers are unwound.
     exception_stack_base: usize,
 
     /// Function ID (for tracebacks). None for module-level code.
@@ -1568,15 +1560,8 @@ impl<'h> VM<'h> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {
-                    // Re-raise the currently-being-handled exception (top of
-                    // exception_stack), keeping the original entry in place
-                    // — popping would lose track of the enclosing handler
-                    // when the bare raise is locally caught (the local
-                    // handler's `ClearException` would otherwise pop the
-                    // enclosing entry instead of its own new one). When the
-                    // re-raised exception propagates past handler boundaries,
-                    // the unwind drain via `exception_stack_count` cleans up
-                    // any leftover entries.
+                    // Clone rather than pop: a locally caught bare raise must
+                    // preserve its enclosing handler's active exception.
                     let error = if let Some(exc) = self.exception_stack.last() {
                         let exc = exc.clone_with_heap(self.heap);
                         self.make_exception(exc, true) // is_raise=true for reraise

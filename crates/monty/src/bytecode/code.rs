@@ -252,17 +252,9 @@ pub struct ExceptionEntry {
     /// pushes the exception value.
     stack_depth: u16,
 
-    /// Number of THIS frame's exceptions that should be on `exception_stack`
-    /// when execution is inside this try region — i.e., the count of
-    /// enclosing `except`/exception-path-`finally` bodies recorded by the
-    /// compiler at region entry (`Compiler::exc_stack_count`). Used by the
-    /// VM during exception unwind to pop entries left behind by handlers
-    /// that the new exception is propagating past
-    /// (e.g. `try: raise; except: raise NewError` — the inner except's
-    /// entry needs to be dropped because the inner handler is abandoned
-    /// even though its fall-through `ClearException` is dead code). Without
-    /// this, a later bare `raise` could resurrect an exception whose handler
-    /// had been abandoned via `raise`/`return`/`break`/`continue`.
+    /// This frame's `exception_stack` depth at region entry.
+    /// Unwinding trims later entries so bare `raise` cannot revive exceptions
+    /// from abandoned handlers.
     exception_stack_count: u16,
 }
 
@@ -291,8 +283,7 @@ impl ExceptionEntry {
         self.stack_depth
     }
 
-    /// Returns the number of this-frame `exception_stack` entries expected
-    /// at the try region — see the field docs.
+    /// Returns this frame's exception-stack depth at region entry.
     #[must_use]
     pub fn exception_stack_count(&self) -> u16 {
         self.exception_stack_count

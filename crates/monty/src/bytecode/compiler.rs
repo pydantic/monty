@@ -297,20 +297,11 @@ pub struct Compiler<'a> {
     assert_message_annotations: bool,
 }
 
-/// Information about a loop for break/continue handling.
-///
-/// Tracks the bytecode locations needed for compiling break and continue statements:
-/// - `start`: where continue should jump to (the ForIter instruction for `for` loops,
-///   or condition evaluation for `while` loops)
-/// - `break_jumps`: pending jumps from break statements that need to be patched
-///   to jump past the loop's else block
+/// Jump targets needed to compile `break` and `continue`.
 struct LoopInfo {
-    /// Bytecode position + stack depth at loop start (for continue).
-    /// `emit_jump_to` uses the depth to enforce the backward-jump merge invariant.
+    /// Loop start and its stack depth, used by `continue`.
     start: JumpTarget,
-    /// Jump labels that need patching to loop end (for break).
-    /// Entries from breaks emitted in dead state are no-op labels — `patch_jump`
-    /// ignores them silently.
+    /// `break` jumps awaiting the loop's final target.
     break_jumps: Vec<JumpLabel>,
 }
 
@@ -360,10 +351,7 @@ impl Region {
         self.open_start = Some(at);
     }
 
-    /// Closes the region at `end` and emits one exception-table entry per
-    /// non-empty sub-range, all routing to `handler`. Entries are added
-    /// innermost-first overall because inner constructs finish compiling
-    /// before their enclosing ones.
+    /// Emits each non-empty sub-range, innermost-first, to `handler`.
     fn add_entries(mut self, end: Offset, code: &mut CodeBuilder, handler: Offset) -> Result<(), CompileError> {
         self.interrupt(end);
         for (start, end) in self.ranges {
@@ -373,14 +361,9 @@ impl Region {
     }
 }
 
-/// A frame block: one syntactic construct that `break`/`continue`/`return`
-/// must emit cleanup code for when jumping out of it. Mirrors CPython's
-/// compiler `fblockinfo` (`compile.c`); the unwind actions live in
-/// [`Compiler::emit_block_unwind`].
-///
-/// `try/except/finally` is desugared as in CPython: a `FinallyTry` block
-/// whose body is the whole `try/except/else`, so a single unwind walk covers
-/// every combination.
+/// Enclosing construct whose cleanup runs for non-local control flow.
+/// Mirrors CPython's `fblockinfo`; combined `try` forms use an outer
+/// `FinallyTry` around their `try/except/else` body.
 enum FBlock<'a> {
     /// A `while` loop. No stack contribution.
     WhileLoop(LoopInfo),
@@ -390,10 +373,7 @@ enum FBlock<'a> {
     /// The protected body of a `try` with handlers; exceptions route to the
     /// handler-dispatch code.
     TryExcept { region: Region },
-    /// The protected body of a `try` with a `finally`. The finally AST is
-    /// compiled inline at every exit: fall-through, and each `return`/
-    /// `break`/`continue` site (with the block masked, so control flow inside
-    /// the finally body unwinds to *outer* blocks only).
+    /// A protected `try/finally`; `finally` is emitted inline for each exit.
     FinallyTry {
         region: Region,
         finally: &'a [PreparedNode],
@@ -403,17 +383,12 @@ enum FBlock<'a> {
         name: Option<&'a Identifier>,
         region: Region,
     },
-    /// Inside a `finally` body running on the exception path: the in-flight
-    /// exception's `exception_stack` entry is discarded if control escapes
-    /// (CPython: `break`/`continue`/`return` in `finally` swallows the
-    /// exception).
+    /// An exception-path `finally` whose exception is swallowed on escape.
     FinallyEnd,
     /// A `with` body: the context manager sits on the operand stack and
     /// `__exit__` is invoked when control exits the block.
     With { region: Region },
-    /// A pending `return` value on the operand stack below the current code
-    /// (pushed while a `finally` body runs inline on the return path); it
-    /// must be discarded if control flow escapes that finally body.
+    /// A return value to discard if control escapes an inline `finally`.
     PopValue,
 }
 
@@ -488,20 +463,13 @@ impl<'a> FBlock<'a> {
     }
 }
 
-/// A simulated entry on the operand stack during comprehension target unpacking.
-///
-/// The compiler walks each comp target by recursively unpacking tuples,
-/// emitting `UnpackSequence`/`UnpackEx`/`LiftToTop` as needed, and tracks the
-/// per-step stack state in a `Vec<SimItem>`. Tracking is necessary because
-/// `LiftToTop` reorders items; without simulating, the compiler couldn't tell
-/// which final operand-stack offset each comp-var leaf ends up at.
+/// Simulated operand while compiling nested comprehension targets.
+/// Tracking is required because `LiftToTop` reorders values before their final
+/// stack offsets are known.
 enum SimItem<'a> {
-    /// A finalized comp-var leaf. Its slot gets mapped to an absolute operand-stack
-    /// offset once all unpacking has finished.
+    /// A finalized target awaiting its absolute stack offset.
     Leaf(u16),
-    /// A value that still needs to be matched against an `UnpackTarget`
-    /// (which may be a nested `Tuple`). The borrowed target tells the
-    /// compiler how to drive the next UNPACK / Lift step.
+    /// A value awaiting its next unpack or lift operation.
     Pending(&'a UnpackTarget),
 }
 
@@ -525,14 +493,9 @@ pub struct CompileResult {
 }
 
 impl<'a> Compiler<'a> {
-    /// Creates a new compiler with access to the string interner.
-    ///
-    /// `frame_locals` is the runtime `locals_count` for this code object:
-    /// 0 for module-level code (globals live in `self.globals`, not on the
-    /// stack), or the function's namespace size at function scope. Comp-var
-    /// load/store opcodes encode `frame_locals + offset` as their slot
-    /// operand so plain `LoadLocal/W` and `StoreLocal/W` reach the correct
-    /// operand-stack position at runtime.
+    /// Creates a compiler for a module or function.
+    /// `frame_locals` is zero at module scope or the function namespace size;
+    /// comprehension slots follow it on the operand stack.
     fn new(
         interns: &'a Interns,
         functions: Vec<Function>,
@@ -638,11 +601,7 @@ impl<'a> Compiler<'a> {
         Ok((compiler.code.build(num_locals), compiler.functions))
     }
 
-    /// Compiles a block of statements.
-    ///
-    /// Nodes are borrowed for the compiler's full `'a` lifetime because
-    /// `finally` bodies are stored in [`FBlock::FinallyTry`] and re-compiled
-    /// inline at each `return`/`break`/`continue` site that crosses them.
+    /// Compiles statements, retaining `finally` bodies for inline cleanup.
     fn compile_block(&mut self, nodes: &'a [PreparedNode]) -> Result<(), CompileError> {
         for node in nodes {
             if self.code.is_dead() {
@@ -2779,10 +2738,9 @@ impl<'a> Compiler<'a> {
             .rposition(|b| matches!(b, FBlock::WhileLoop(_) | FBlock::ForLoop(_)))
     }
 
-    /// Frame-relative `exception_stack` length at the current compile point:
-    /// one entry per enclosing `except` body or exception-path `finally` body.
-    /// Used as `exception_stack_count` for new protected regions so the
-    /// runtime unwinder drains exactly the entries inner code leaves behind.
+    /// Returns this frame's active exception depth at the compile point.
+    /// Protected regions record it so propagation can discard exceptions from
+    /// bypassed handlers.
     fn exc_stack_count(&self) -> u16 {
         let count = self
             .fblocks
@@ -2818,16 +2776,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Pops the top `count` frame blocks, emitting each one's unwind code
-    /// (CPython's `compiler_unwind_fblock_stack`).
-    ///
-    /// `preserve_tos` is true when a pending `return` value sits on top of
-    /// the operand stack and must survive the unwinding.
-    ///
-    /// Returns the popped blocks (innermost first); the caller must emit its
-    /// terminator (jump/return) and then hand them back to
-    /// [`restore_fblocks`](Self::restore_fblocks) — the blocks are still being
-    /// compiled, the unwind only *exits* them on this one control-flow path.
+    /// Temporarily removes `count` blocks and emits their cleanup.
+    /// `preserve_tos` protects a pending return value; callers restore the
+    /// returned blocks after emitting the path's terminator.
     fn emit_unwind(&mut self, count: usize, preserve_tos: bool) -> Result<Vec<FBlock<'a>>, CompileError> {
         let mut popped = Vec::with_capacity(count);
         for _ in 0..count {
@@ -2838,10 +2789,8 @@ impl<'a> Compiler<'a> {
         Ok(popped)
     }
 
-    /// Emits the cleanup code for exiting one frame block during unwinding
-    /// (CPython's `compiler_unwind_fblock`). The block is temporarily off the
-    /// stack, so control flow compiled here (an inline `finally` body) only
-    /// sees the blocks outside it.
+    /// Emits one block's cleanup while it is absent from the block stack.
+    /// Thus control flow inside inline cleanup sees only outer blocks.
     fn emit_block_unwind(&mut self, block: &mut FBlock<'a>, preserve_tos: bool) -> Result<(), CompileError> {
         match block {
             FBlock::WhileLoop(_) => Ok(()),
@@ -2852,9 +2801,7 @@ impl<'a> Compiler<'a> {
                 }
                 self.code.emit(Opcode::Pop)
             }
-            // No cleanup code, but the region must not cover outer blocks'
-            // unwind code emitted after this point (e.g. an outer inline
-            // finally body): control has already left this try.
+            // Exclude cleanup for outer blocks from this exited region.
             FBlock::TryExcept { region } => {
                 region.interrupt(self.code.current_offset());
                 Ok(())
@@ -2862,9 +2809,7 @@ impl<'a> Compiler<'a> {
             FBlock::FinallyTry { region, finally } => {
                 region.interrupt(self.code.current_offset());
                 let finally = *finally;
-                // A pending return value stays on the stack while the finally
-                // body runs; PopValue discards it if the body itself breaks,
-                // continues, or returns.
+                // Discard a pending return if this `finally` exits early.
                 if preserve_tos {
                     self.fblocks.push(FBlock::PopValue);
                 }
@@ -2886,9 +2831,7 @@ impl<'a> Compiler<'a> {
             // finally body swallows the exception that triggered it.
             FBlock::FinallyEnd => self.code.emit(Opcode::ClearException),
             FBlock::With { region } => {
-                // `__exit__` runs outside the region: if it raises during an
-                // early exit the exception propagates rather than re-entering
-                // this with-block's handler.
+                // Keep `__exit__` outside its own handler region.
                 region.interrupt(self.code.current_offset());
                 if preserve_tos {
                     self.code.emit(Opcode::Rot2)?;
@@ -3634,25 +3577,9 @@ impl<'a> Compiler<'a> {
     // Exception Handling Compilation
     // ========================================================================
 
-    /// Compiles a return statement.
-    ///
-    /// `expr` is the expression after `return` (`None` for a bare `return`).
-    /// Unwinds the whole frame-block stack — running inline `finally` bodies
-    /// and `__exit__` calls with the pending value preserved on the stack,
-    /// and clearing per-handler exception state — then emits `ReturnValue`.
-    ///
-    /// The unwind order (innermost first) keeps enclosing handlers' exception
-    /// state live while inner finally bodies run, e.g.:
-    ///
-    /// ```python
-    /// try:
-    ///     raise ValueError
-    /// except ValueError:
-    ///     try:
-    ///         return  # inner finally below must STILL see ValueError as
-    ///     finally:    # the active exception so bare `raise` re-raises it.
-    ///         ...
-    /// ```
+    /// Compiles a return and unwinds all enclosing control blocks.
+    /// Cleanup runs innermost-first with the return value and enclosing
+    /// exception state preserved as needed.
     fn compile_return(&mut self, expr: Option<&ExprLoc>) -> Result<(), CompileError> {
         if let Some(expr) = expr {
             self.compile_expr(expr)?;
@@ -3677,17 +3604,9 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    /// Compiles a try/except/else/finally block.
-    ///
-    /// As in CPython, `try/except/finally` desugars to a try/finally whose
-    /// protected body is the whole try/except/else — so exceptions escaping
-    /// the handlers or the else block still reach the finally, and one
-    /// unwind mechanism ([`emit_unwind`](Self::emit_unwind)) covers every
-    /// break/continue/return path.
-    ///
-    /// The finally body is emitted for fall-through, exception, and each
-    /// non-local exit because those paths have different stack state. A hard
-    /// copy limit bounds nested-source amplification during compilation.
+    /// Compiles a `try` and its `except`, `else`, or `finally` clauses.
+    /// Combined forms wrap `try/except/else` in `try/finally`; cleanup copies
+    /// are emitted per exit and bounded by [`MAX_FINALLY_COPIES`].
     fn compile_try(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
         if try_block.finally.is_empty() {
             self.compile_try_except(try_block)
@@ -3696,26 +3615,11 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Compiles the try/finally wrapper of a try statement.
-    ///
-    /// The bytecode structure is:
-    /// ```text
-    /// <protected body>       # plain body, or the whole try/except/else
-    /// JUMP normal            # also in-region padding for escaping-call resume
-    /// cleanup:               # exception path: VM pushed the exception value
-    ///   POP                  # value stays on exception_stack for bare raise
-    ///   <finally_body>       # compiled under a FinallyEnd block
-    ///   RERAISE
-    /// normal:
-    ///   <finally_body>       # fall-through copy; execution continues after
-    /// ```
-    ///
-    /// The protected region deliberately includes the `JUMP`: an exception
-    /// escaping a frame pushed by the body's *last* call resumes at the
-    /// instruction after the call, which must still route to `cleanup`.
+    /// Compiles separate normal and exceptional copies of a `finally` body.
+    /// Its protected range includes the trailing jump because a terminal
+    /// pushed call reports failure at its resume offset.
     fn compile_try_finally(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
         let Some(stack_depth) = self.code.stack_depth() else {
-            // Compiling dead code, don't need to emit anything
             return Ok(());
         };
 
@@ -3742,9 +3646,7 @@ impl<'a> Compiler<'a> {
         // === Exception-path copy ===
         let cleanup_start = self.code.current_offset();
         self.code.new_code_region(stack_depth + 1);
-        // Pop the exception value from the operand stack; it stays on
-        // exception_stack so a bare `raise` in the finally re-raises it and
-        // the trailing Reraise propagates it.
+        // Keep the exception on `exception_stack` for bare raise and Reraise.
         self.code.emit(Opcode::Pop)?;
         self.fblocks.push(FBlock::FinallyEnd);
         self.compile_finally_copy(&try_block.finally)?;
@@ -3761,32 +3663,11 @@ impl<'a> Compiler<'a> {
         region.add_entries(body_end, &mut self.code, cleanup_start)
     }
 
-    /// Compiles the try/except/else part of a try statement.
-    ///
-    /// The bytecode structure is:
-    /// ```text
-    /// <try_body>             # protected range (includes the JUMP below)
-    /// JUMP else              # skip handlers if no exception
-    /// dispatch:              # exception pushed by VM
-    ///   # for each handler:
-    ///   <check exception type>
-    ///   <handler body>
-    ///   CLEAR_EXCEPTION
-    ///   JUMP end
-    /// RERAISE                # no handler matched
-    /// else:
-    ///   <else_body>          # unprotected, as in CPython
-    /// end:
-    /// ```
-    ///
-    /// When the statement also has a finally, this whole shape sits inside
-    /// the enclosing [`compile_try_finally`](Self::compile_try_finally)
-    /// region, so exceptions raised in handlers (including the `RERAISE`)
-    /// route to the finally cleanup with the runtime unwinder draining the
-    /// handler's `exception_stack` entry.
+    /// Compiles a protected `try` body, handler dispatch, and unprotected `else`.
+    /// An enclosing `try/finally` also covers handlers so their failures run
+    /// its cleanup.
     fn compile_try_except(&mut self, try_block: &'a Try<PreparedNode>) -> Result<(), CompileError> {
         let Some(stack_depth) = self.code.stack_depth() else {
-            // Compiling dead code, don't need to emit anything
             return Ok(());
         };
 
@@ -3799,9 +3680,7 @@ impl<'a> Compiler<'a> {
             .expect("try/except compilation should retain its frame block")
             .expect_try_except();
 
-        // Jump to else/end if no exception (skip handlers); also serves as
-        // in-region padding for escaping-call resume points (see
-        // compile_try_finally).
+        // Also keeps terminal-call resume points inside the protected range.
         let else_jump = self.code.emit_jump(Opcode::Jump)?;
         let body_end = self.code.current_offset();
 
@@ -3815,8 +3694,7 @@ impl<'a> Compiler<'a> {
             self.compile_block(&try_block.or_else)?;
         }
 
-        // Handler exits land after the else block (else only runs when no
-        // exception was raised).
+        // Handler exits skip the `else` block.
         for jump in end_jumps {
             self.code.patch_jump(jump)?;
         }
@@ -3824,88 +3702,29 @@ impl<'a> Compiler<'a> {
         region.add_entries(body_end, &mut self.code, dispatch_start)
     }
 
-    /// Compiles a `with` statement: `with EXPR [as TARGET]: BODY`.
-    ///
-    /// The bytecode shape is:
-    /// ```text
-    /// <compile context expr>            ; [ctx]
-    /// BEFORE_WITH                       ; [ctx, value]
-    /// try_start:
-    ///   <store target or POP>           ; [ctx]
-    ///   <compile body>                  ; [ctx]
-    /// try_end:
-    ///   WITH_EXIT                       ; [result]
-    ///   POP                             ; []
-    ///   JUMP end                        ; skip the exception handler
-    /// handler_start:
-    ///   ; VM pushes the exception: stack is [ctx, exc]
-    ///   WITH_EXCEPT_START               ; [ctx, exc, suppress]
-    ///   JUMP_IF_TRUE swallow            ; pops suppress; falsy = continue
-    ///   POP                             ; [ctx]
-    ///   POP                             ; []
-    ///   RERAISE                         ; propagate
-    /// swallow:                          ; [ctx, exc]
-    ///   POP                             ; [ctx]
-    ///   POP                             ; []
-    ///   CLEAR_EXCEPTION                 ; falls through to end
-    /// end:
-    /// ```
-    ///
-    /// The `<store target or POP>` step lives *inside* the protected region so
-    /// `with f() as (a, b):` invokes `__exit__` when the unpack fails —
-    /// matching CPython, which similarly places `UNPACK_SEQUENCE` inside the
-    /// `BEFORE_WITH` exception-table entry. If the store raises, the unwinder
-    /// drops any partial unpack state down to the handler's expected depth
-    /// (`stack_depth + 1`) before pushing `exc` and entering `handler_start`.
-    ///
-    /// Exception-table entries cover the body, routing exceptions to
-    /// `handler_start` with stack depth `outer + 1` (the context manager). If
-    /// the cleanup itself (`__exit__` invocation) raises, the new exception
-    /// replaces the original one and propagates via the surrounding frame's
-    /// exception table — this matches CPython's behavior.
-    ///
-    /// `return`/`break`/`continue` inside the body invoke `__exit__` via the
-    /// [`FBlock::With`] unwind action in [`emit_block_unwind`]
-    /// (Self::emit_block_unwind), which interrupts the region around the
-    /// inline `WithExit` so an `__exit__` failure on an early exit cannot
-    /// re-enter this block's own handler.
+    /// Compiles normal and exceptional exits for a `with` statement.
+    /// Target binding is protected, while `__exit__` runs outside its own
+    /// handler region; non-local exits use [`FBlock::With`] cleanup.
     fn compile_with(
         &mut self,
         context: &ExprLoc,
         target: Option<&UnpackTarget>,
         body: &'a [PreparedNode],
     ) -> Result<(), CompileError> {
-        // Record outer stack depth for the exception-table entry. If we are in
-        // dead-code state there's nothing to emit.
         let Some(stack_depth) = self.code.stack_depth() else {
             return Ok(());
         };
 
-        // Evaluate context expr and invoke __enter__.
         self.compile_expr(context)?;
         self.code.emit(Opcode::BeforeWith)?;
-        // Padding between `BeforeWith` and the protected region. A user-class
-        // `__enter__` runs as a *pushed frame*; an exception escaping that
-        // frame is attributed to the parent frame's resume point — the
-        // instruction after `BeforeWith` (see `pop_frame`). That offset must
-        // sit OUTSIDE the exception-table entry, or a failing `__enter__`
-        // would incorrectly invoke `__exit__` (CPython only protects the body
-        // once `__enter__` has returned). The Nop keeps the resume point
-        // outside the region while the unpack/Pop that follows stays inside,
-        // so `with cm as (a, b):` unpack failures still call `__exit__`.
+        // Keep a pushed `__enter__` call's resume offset outside the body region.
         self.code.emit(Opcode::Nop)?;
 
         // === Body (protected region) ===
-        // `stack_depth + 1` accounts for the ctx left on the stack; the VM
-        // pushes the exception value itself on top of that.
-        // `exc_stack_count` is unchanged because the with-block does not
-        // push to exception_stack.
+        // The context manager remains below the protected body's operands.
         let region = Region::open(self.code.current_offset(), stack_depth + 1, self.exc_stack_count());
         self.fblocks.push(FBlock::With { region });
-        // Bind the __enter__ result to the `as` target (or discard it). This
-        // lives inside the protected region so `with f() as (a, b):` calls
-        // `__exit__` when the unpack fails — matching CPython, which similarly
-        // covers UNPACK_SEQUENCE with the with-block's exception table entry.
+        // Protect target binding so unpack failures invoke `__exit__`.
         if let Some(target) = target {
             self.compile_unpack_target(target)?;
         } else {
@@ -3917,28 +3736,17 @@ impl<'a> Compiler<'a> {
             .pop()
             .expect("with compilation should retain its frame block")
             .expect_with();
-        // Close the protected range BEFORE `WithExit` so the normal-exit
-        // cleanup is outside the body's exception-table entry. If
-        // `__exit__` raises here, the new exception should propagate to
-        // the outer frame's exception table (matching CPython, where an
-        // `__exit__` exception replaces any prior state). Routing it
-        // back to our own handler would invoke `__exit__` a second time
-        // with the ctx already popped, blowing up the stack-depth
-        // bookkeeping in the unwinder. (Early exits — return/break/continue
-        // inside the body — get the same treatment: emit_block_unwind
-        // interrupts the region around the inline `WithExit` it emits.)
+        // Exclude `__exit__` so its failures cannot re-enter this handler.
         let body_end = self.code.current_offset();
 
-        // Normal exit: __exit__(None, None, None); pop the (discarded) result;
-        // skip the handler.
+        // Normal exit skips the exception handler.
         self.code.emit(Opcode::WithExit)?;
         self.code.emit(Opcode::Pop)?;
         let end_jump = self.code.emit_jump(Opcode::Jump)?;
 
         // === Exception handler ===
         let handler_start = self.code.current_offset();
-        // VM unwinds to `stack_depth + 1` (the ctx) and then pushes the exception
-        // value itself, so we enter at depth `stack_depth + 2` with [ctx, exc].
+        // Entry stack: [ctx, exc].
         self.code.new_code_region(stack_depth + 2);
 
         self.code.emit(Opcode::WithExceptStart)?;
@@ -3949,8 +3757,7 @@ impl<'a> Compiler<'a> {
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Reraise)?;
 
-        // Swallow path: stack = [ctx, exc]. Drop both, clear current
-        // exception, and fall through to the merge point.
+        // Swallow path: drop [ctx, exc] and clear the active exception.
         self.code.patch_jump(swallow_jump)?;
         self.code.emit(Opcode::Pop)?;
         self.code.emit(Opcode::Pop)?;
