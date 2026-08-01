@@ -1,0 +1,42 @@
+crates/monty/test_cases/refcount__finally_swallow.py
+  s_c61071e31b1c57::t_eb82b39dc76267 25-32
+crates/monty/src/bytecode/compiler.rs
+  s_c61071e31b1c57::t_8b51250e5ed15c 3753-3754,4015,4018-4019
+  s_c61071e31b1c57::t_01cc73dd7a7286 146-150
+  s_c61071e31b1c57::t_620f1a699f7026 356
+  s_c61071e31b1c57::t_ca084d64222eee 141-145,151-154,3666-3670
+  s_c61071e31b1c57::t_6f9ea36e8573f0 431,456-464,466-468,477-488
+  s_c61071e31b1c57::t_23e8b7b75ba362 432-455,469-476,2651-2655,2709-2713,3796-3800,3915-3919
+  s_c61071e31b1c57::t_48530889190d69 77-83,264-266,269-271,317,319-320,401-404,424-428,550
+  s_c61071e31b1c57::t_f7146b4a0832bb 2795-2796,2800-2820,2871,2880-2881,2883
+  s_c61071e31b1c57::t_62d0b37fa57a66 2797-2799
+  s_c61071e31b1c57::t_b5846f5e0ddc26 420,465
+  s_c61071e31b1c57::t_036d884a05e2aa 2873-2876,3734,3737-3738,3751
+  s_c61071e31b1c57::t_301a92edbfffb2 3688-3690
+  s_c61071e31b1c57::t_26f8ca31b4ff3f 3735-3736,3750,3752,3759,4007-4009,4012,4016-4017,4020-4022,4026-4034
+crates/monty/src/bytecode/builder.rs
+  s_c61071e31b1c57::t_832d1e4106edf6 309-314
+crates/monty/test_cases/try_finally__control_flow.py
+  s_c61071e31b1c57::t_1c2cb27082b044 606-635
+  s_c61071e31b1c57::t_082ca339e72320 223-242
+crates/monty/tests/bytecode_limits.rs
+  s_c61071e31b1c57::t_5cca43a2d06e93 335-344,368-376
+limitations/resource_limits.md
+  s_c61071e31b1c57::t_3adad438809fce 8-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "997783ddbcd3c66812e5d574c72c73782fc1c836",
+  "prompts": {},
+  "sessions": {
+    "s_c61071e31b1c57": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbeb5-d906-7522-b567-9a92289deeb7",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
