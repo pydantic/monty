@@ -347,8 +347,8 @@ pub struct CallFrame<'code> {
     /// on exception unwind, the VM drains entries down to
     /// `exception_stack_base + entry.exception_stack_count()` so that
     /// handlers abandoned by the propagating exception (whose
-    /// fall-through trailers are dead code) don't leave residue that a
-    /// later bare `raise` would resurrect.
+    /// fall-through `ClearException` is dead code) don't leave residue
+    /// that a later bare `raise` would resurrect.
     exception_stack_base: usize,
 
     /// Function ID (for tracebacks). None for module-level code.

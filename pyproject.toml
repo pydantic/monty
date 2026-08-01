@@ -90,6 +90,20 @@ known-first-party = ["pydantic_monty"]
     "I001", # Import block unsorted - needed for testing `import a, b` syntax
 ]
 
+"crates/monty/test_cases/try_finally__control_flow.py" = [
+    # Control flow escaping a finally block (and the resulting exception
+    # swallowing) is the subject of these tests, not a style slip.
+    "B012",    # break/continue/return inside finally silences exceptions
+    "SIM107",  # return in finally overriding the try's return is under test
+    "PLE0704", # bare raise with no active exception is under test
+    "B018",    # bare name expressions probe NameError after handler cleanup
+    "PLW0120", # for/else without break tests that else runs after swallowed continue
+]
+
+"crates/monty/test_cases/refcount__finally_swallow.py" = [
+    "B012", # break/continue/return inside finally is the subject of the test
+]
+
 "crates/monty/test_cases/class__annotations.py" = [
     # Scoped to this file so the single-quote convention stays enforced across
     # the other test cases: these tests exist to prove that double-quoted

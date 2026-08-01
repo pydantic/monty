@@ -296,10 +296,10 @@ impl VM<'_> {
 
                 // Drop any `exception_stack` entries left behind by handlers
                 // the propagating exception is bypassing — without this, a
-                // handler whose body terminated via `raise`/`return`/`break`/
-                // `continue` (so its trailer's `ClearException` is dead code)
-                // would leak its exception onto `exception_stack`, where a
-                // later bare `raise` could resurrect it.
+                // handler whose body terminated via `raise` (so its
+                // fall-through `ClearException` is dead code) would leak its
+                // exception onto `exception_stack`, where a later bare
+                // `raise` could resurrect it.
                 while this.exception_stack.len() > target_exc_stack_depth {
                     let value = this.exception_stack.pop().unwrap();
                     value.drop_with(this);

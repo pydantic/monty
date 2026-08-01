@@ -69,6 +69,14 @@ with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
 that best fits.
 
+## Control flow in `finally`
+
+`break`/`continue`/`return` inside a `finally` block follows CPython
+semantics (the finally body runs exactly once and a `return`/`break`/
+`continue` that exits it discards any in-flight exception), but Monty does
+not emit CPython 3.14's PEP 765 `SyntaxWarning` for such statements — Monty
+has no warnings machinery.
+
 ## Traceback behaviour
 
 Tracebacks are formatted to match CPython, including the
