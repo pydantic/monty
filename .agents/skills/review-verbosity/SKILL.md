@@ -5,12 +5,8 @@ description: Rewrite excessively verbose comments and docstrings added by this b
 
 # Verbosity review
 
-New docstrings and comments are often excessively verbose. Rewrite them to communicate
-the relevant information more concisely. This skill **edits** — it does not just report.
-
-## Instructions
-
-Review the branch against its merge base, exhaustively:
+New comments and docstrings are usually too verbose. Rewrite them concisely. This skill
+**edits** — it doesn't just report.
 
 ```bash
 git fetch origin main
@@ -18,41 +14,29 @@ git diff --stat origin/main...HEAD   # which crates changed
 git diff origin/main...HEAD
 ```
 
-Dispatch one sub-agent per changed crate to go through that crate's diff in full — the
-point is exhaustive coverage, which a single pass over a large diff will not achieve.
-Have each sub-agent report the edits it made, then review the result yourself.
+Dispatch one sub-agent per changed crate — a single pass over a large diff won't be
+exhaustive — then review their edits yourself. In every comment the branch touched:
 
-In every comment and docstring added or changed by the branch:
-
-- **Cut it down.** Comments and field docstrings should almost never exceed 3 lines,
-  mostly 1. Function and struct docstrings should be <= 5 lines.
-- **Delete tautology.** A comment restating what the code plainly says earns nothing.
-- **Delete unnecessary detail** — narration of the obvious, restated type signatures,
-  history of how the code came to be, hedging.
-- **Keep the motivation.** Why the code exists, what it is for, and the foot-guns of
-  using it are the valuable parts. Do not remove important or relevant information to
-  hit a line count.
-- **Drop over-long examples.** Examples belong only on public items and must be <= 8
-  lines; anything longer goes. Every example must run in tests — never `ignore`.
-- **Fix anything out of date.** A comment the branch made wrong must be corrected, not
-  left.
+- **Cut it down.** Comments and field docstrings rarely over 3 lines, mostly 1; function
+  and struct docstrings <= 5.
+- **Delete tautology** — restating what the code plainly says earns nothing.
+- **Delete narration** of the obvious, restated type signatures, how the code came to
+  be, hedging.
+- **Keep the motivation** — why the code exists and its foot-guns are the valuable part.
+  Don't cut real information to hit a line count.
+- **Drop over-long examples.** Public items only, <= 8 lines, and every one must run in
+  tests — never `ignore`.
+- **Fix what's out of date.** A comment the branch made wrong gets corrected, not left.
 
 Python docstrings are markdown: single backticks, never RST double-backticks.
 
-## Afterwards
+Only touch what this branch added or changed, unless asked for a wider sweep. Don't
+change behaviour — if a comment is wrong because the *code* is wrong, say so rather than
+rewording it to match. Concision, not terseness: an unfollowable comment is worse than a
+long one.
 
 ```bash
-make format-rs
-make lint-rs
+make format-rs && make lint-rs
 ```
 
-Report what you cut, by file, in a couple of lines — not a full inventory.
-
-## Guidelines
-
-- Only touch comments and docstrings this branch added or changed, unless the user asks
-  for a wider sweep.
-- Do not change code behaviour. If a comment is wrong because the *code* is wrong, say
-  so rather than rewording the comment to match.
-- Concision is the goal, not terseness: a comment nobody can follow is worse than a
-  long one.
+Then report what you cut, by file, in a couple of lines — not a full inventory.
