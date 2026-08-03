@@ -25,6 +25,7 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
+        instance::instance_index,
         long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
@@ -1172,19 +1173,13 @@ fn extract_string_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<String> {
 }
 
 /// Extracts an integer from a Value, returning an error if not an integer.
+///
+/// Delegates rather than re-matching: [`Value::as_int`] is the one place that
+/// knows about `LongInt` and a user `__index__`, and its wording is CPython's
+/// (`'str' object cannot be interpreted as an integer`, `Python int too large
+/// to convert to C ssize_t`) where the hand-rolled version here was not.
 fn extract_int_arg(value: &Value, vm: &mut VM<'_>) -> RunResult<i64> {
-    match value {
-        Value::Int(i) => Ok(*i),
-        Value::Ref(heap_id) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*heap_id) {
-                // Try to convert to i64
-                li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))
-            } else {
-                Err(ExcType::type_error("expected int"))
-            }
-        }
-        _ => Err(ExcType::type_error("expected int")),
-    }
+    value.as_int(vm)
 }
 
 /// Extracts an optional slice index from a `Value`, treating `None` as `default`.
@@ -1202,6 +1197,16 @@ fn optional_index(value: &Value, default: usize, str_len: usize, vm: &mut VM<'_>
         Value::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
             let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
             Ok(normalize_sequence_index(i, str_len))
+        }
+        Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
+            let Some(index) = instance_index(*heap_id, vm)? else {
+                return Err(ExcType::type_error_slice_indices());
+            };
+            // Recurses exactly once: `instance_index` validates an int result,
+            // so the arms above take it. Recursing rather than converting here
+            // keeps the too-large message identical for both routes.
+            defer_drop!(index, vm);
+            optional_index(index, default, str_len, vm)
         }
         _ => Err(ExcType::type_error_slice_indices()),
     }

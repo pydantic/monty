@@ -173,7 +173,7 @@ fn normalize_bool(value: Value) -> Value {
 /// Negative counts clamp to zero (`repeat(x, -1)` is empty) and a `times` too
 /// large for a machine integer raises `OverflowError`, matching the conversion
 /// to `Py_ssize_t`. `bool` is accepted because it is an `int` subclass.
-fn repeat_times(value: &Value, vm: &VM<'_>) -> RunResult<usize> {
+fn repeat_times(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
     let count = match value {
         Value::Bool(b) => i64::from(*b),
         other => other.as_int(vm)?,

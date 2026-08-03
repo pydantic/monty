@@ -21,7 +21,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    types::PyTrait,
+    types::{PyTrait, instance::instance_index},
     value::Value,
 };
 
@@ -186,10 +186,39 @@ impl FromValue for Value {
     }
 }
 
+/// Replaces a user instance with the `int` its `__index__` returns, leaving
+/// every other value untouched.
+///
+/// Runs before the fixed-width int impls match, so they only ever see real ints
+/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. A
+/// class without `__index__` is returned unchanged, so the caller still reports
+/// its own `WrongType`.
+fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValueFail> {
+    let Value::Ref(id) = &value else {
+        return Ok(value);
+    };
+    if !matches!(vm.heap.get(*id), HeapData::Instance(_)) {
+        return Ok(value);
+    }
+    let id = *id;
+    match instance_index(id, vm) {
+        Ok(Some(index)) => {
+            value.drop_with(vm);
+            Ok(index)
+        }
+        Ok(None) => Ok(value),
+        Err(err) => {
+            value.drop_with(vm);
+            Err(FromValueFail::Raise(err))
+        }
+    }
+}
+
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             // Overflow is a *value* failure: the argument is a genuine int,
@@ -219,6 +248,7 @@ impl FromValue for i64 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
+        let value = resolve_index_dunder(value, vm)?;
         let result = match value {
             Value::Bool(b) => Ok(Self::from(b)),
             Value::Int(i) => Ok(i),

@@ -19,7 +19,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type},
+    types::{PyTrait, Type, instance::instance_index},
     value::{EitherStr, Value},
 };
 
@@ -57,31 +57,30 @@ impl Slice {
     ///
     /// Each argument can be None to indicate "use default".
     pub fn init(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
-        let pos_args = args.into_pos_only("slice", heap)?;
-        defer_drop!(pos_args, heap);
+        let pos_args = args.into_pos_only("slice", vm.heap)?;
+        defer_drop!(pos_args, vm);
 
         let slice = match pos_args.as_slice() {
             [] => return Err(ExcType::type_error_at_least("slice", 1, 0)),
             [first_arg] => {
-                let stop = value_to_option_i64(first_arg)?;
+                let stop = value_to_option_i64(first_arg, vm)?;
                 Self::new(None, stop, None)
             }
             [first_arg, second_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
                 Self::new(start, stop, None)
             }
             [first_arg, second_arg, third_arg] => {
-                let start = value_to_option_i64(first_arg)?;
-                let stop = value_to_option_i64(second_arg)?;
-                let step = value_to_option_i64(third_arg)?;
+                let start = value_to_option_i64(first_arg, vm)?;
+                let stop = value_to_option_i64(second_arg, vm)?;
+                let step = value_to_option_i64(third_arg, vm)?;
                 Self::new(start, stop, step)
             }
             _ => return Err(ExcType::type_error_at_most("slice", 3, pos_args.len())),
         };
 
-        Ok(Value::Ref(heap.allocate(HeapData::Slice(slice))))
+        Ok(Value::Ref(vm.heap.allocate(HeapData::Slice(slice))))
     }
 
     /// Computes concrete indices for a sequence of the given length.
@@ -138,13 +137,23 @@ impl Slice {
 /// Converts a Value to Option<i64>, treating None as None.
 ///
 /// Used for slice construction from both `slice()` builtin and `[start:stop:step]` syntax.
-/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools,
-/// or Err(TypeError) for other types.
-pub(crate) fn value_to_option_i64(value: &Value) -> RunResult<Option<i64>> {
+/// Returns Ok(None) for Value::None, Ok(Some(i)) for integers/bools, a user
+/// `__index__` result for instances, or Err(TypeError) for other types — which
+/// is what the "or have an `__index__` method" in the error message promises.
+pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<Option<i64>> {
     match value {
         Value::None => Ok(None),
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
+        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => {
+            let Some(index) = instance_index(*id, vm)? else {
+                return Err(ExcType::type_error_slice_indices());
+            };
+            // Recurses exactly once: `instance_index` validates an int result,
+            // so the arms above take it on the way back in.
+            defer_drop!(index, vm);
+            value_to_option_i64(index, vm)
+        }
         _ => Err(ExcType::type_error_slice_indices()),
     }
 }

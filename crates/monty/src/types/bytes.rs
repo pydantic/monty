@@ -905,18 +905,22 @@ fn parse_bytes_sub_args(
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
+    // `sub` is copied out before the bounds are read: `extract_bytes_only` borrows
+    // the heap, and reading a bound may run a user `__index__` that needs it
+    // mutably. Copying first keeps CPython's left-to-right argument order, which
+    // reordering the two would not.
     let (sub, start, end) = match pos.as_slice() {
         [sub_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
+            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
             (sub, 0, len)
         }
         [sub_value, start_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
+            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             (sub, start, len)
         }
         [sub_value, start_value, end_value] => {
-            let sub = extract_bytes_only(sub_value, vm)?;
+            let sub = extract_bytes_only(sub_value, vm)?.to_owned();
             let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             let end = normalize_sequence_index(end_value.as_int(vm)?, len);
             (sub, start, end)
@@ -926,7 +930,7 @@ fn parse_bytes_sub_args(
     };
 
     // Ensure start <= end to prevent slice panics (Python treats start > end as empty slice)
-    Ok((sub.to_owned(), start, end.max(start)))
+    Ok((sub, start, end.max(start)))
 }
 
 // =============================================================================
@@ -1926,31 +1930,41 @@ fn parse_bytes_justify_args(method: &str, args: ArgValues, vm: &mut VM<'_>) -> R
     let pos = args.into_pos_only(method, vm.heap)?;
     defer_drop!(pos, vm);
 
-    let extract_width = |v: &Value| -> RunResult<usize> {
-        let w = v.as_int(vm)?;
-        Ok(if w < 0 {
-            0
-        } else {
-            usize::try_from(w).unwrap_or(usize::MAX)
-        })
-    };
-
-    let extract_fill = |v: &Value| -> RunResult<u8> {
-        let fill_bytes = extract_bytes_only(v, vm)?;
-        if fill_bytes.len() != 1 {
-            return Err(ExcType::type_error(format!(
-                "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
-                fill_bytes.len()
-            )));
-        }
-        Ok(fill_bytes[0])
-    };
-
+    // Free functions rather than closures: `extract_width` needs `&mut VM` for a
+    // user `__index__`, which cannot coexist with a second closure capturing the
+    // same `vm` immutably.
     match pos.as_slice() {
-        [width_value] => Ok((extract_width(width_value)?, b' ')),
-        [width_value, fillbyte_value] => Ok((extract_width(width_value)?, extract_fill(fillbyte_value)?)),
+        [width_value] => Ok((extract_justify_width(width_value, vm)?, b' ')),
+        [width_value, fillbyte_value] => {
+            // Width first, so its error wins for `center('x', 'y')` as in CPython.
+            let width = extract_justify_width(width_value, vm)?;
+            Ok((width, extract_justify_fill(method, fillbyte_value, vm)?))
+        }
         [] => Err(ExcType::type_error_at_least(method, 1, 0)),
         _ => Err(ExcType::type_error_at_most(method, 2, pos.len())),
+    }
+}
+
+/// Reads a justify method's `width`, clamping negatives to zero as CPython does.
+fn extract_justify_width(value: &Value, vm: &mut VM<'_>) -> RunResult<usize> {
+    let width = value.as_int(vm)?;
+    Ok(if width < 0 {
+        0
+    } else {
+        usize::try_from(width).unwrap_or(usize::MAX)
+    })
+}
+
+/// Reads a justify method's `fillbyte`, which must be exactly one byte.
+fn extract_justify_fill(method: &str, value: &Value, vm: &VM<'_>) -> RunResult<u8> {
+    let fill_bytes = extract_bytes_only(value, vm)?;
+    if fill_bytes.len() == 1 {
+        Ok(fill_bytes[0])
+    } else {
+        Err(ExcType::type_error(format!(
+            "{method}() argument 2 must be a byte string of length 1, not bytes of length {}",
+            fill_bytes.len()
+        )))
     }
 }
 
