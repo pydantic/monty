@@ -13,8 +13,9 @@ git diff --stat origin/main...HEAD   # which crates changed
 git diff origin/main...HEAD
 ```
 
-Dispatch one sub-agent per changed crate — a single pass over a large diff won't be
-exhaustive — then review their edits yourself. In every comment the branch touched:
+Dispatch one sub-agent per changed area — a crate, or any other group of changed files,
+so nothing outside `crates/` is missed — then review their edits yourself. A single pass
+over a large diff won't be exhaustive. In every comment the branch touched:
 
 - **Cut it down.** Comments and field docstrings rarely over 3 lines, mostly 1; function
   and struct docstrings <= 5.
@@ -36,6 +37,7 @@ long one.
 
 ```bash
 make format-rs && make lint-rs
+git diff --stat   # format-rs is `cargo +nightly fmt --all` — check it touched only your files
 ```
 
 Then report what you cut, by file, in a couple of lines — not a full inventory.

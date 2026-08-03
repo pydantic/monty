@@ -12,14 +12,16 @@ git diff origin/main...HEAD
 
 Read the changed files in full — a hunk is rarely enough to judge correctness. Look for:
 
-- **Bugs** — logic errors, refcount leaks (missing `drop_with` on an early-return or
-  `continue`), borrow/aliasing mistakes, unhandled error paths.
+- **Bugs** — logic errors, `DropWithContext` values not released on every exit path (the
+  fix is `defer_drop!`/`DropGuard`, not more `drop_with` calls), borrow/aliasing
+  mistakes, unhandled error paths.
 - **CPython divergence** — different results, exception types or messages, missing
   attributes. Check anything you're unsure of with `python-playground`.
 - **Sandbox escapes** — sandboxed code reaching the host filesystem, environment,
   network or subprocesses.
-- **Resource-limit escapes** — untracked allocations (`String` without `StringBuilder`),
-  unbounded loops, recursion without a depth guard.
+- **Resource-limit escapes** — allocations not charged to the tracker (an unbounded or
+  amplifying `String` build without `StringBuilder`), unbounded loops, recursion without
+  a depth guard.
 - **Performance** — regressions the branch introduces, and improvements you spot.
 - **Verbose comments** — docstrings and comments should be concise as per `CLAUDE.md`.
 - **Cleanups** — duplication, misplaced logic, functions grown too complex.

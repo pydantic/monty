@@ -29,11 +29,11 @@ is in scope even if it isn't in the diff. Ask:
 - **Panics or aborts?** `unwrap`/`expect` reachable from sandboxed input, unbounded
   recursion hitting a stack-overflow abort.
 
-Weight both classes by which side they land on. In the interpreter and runtime the
-process dies, the pool replaces the child and the parent raises an exception — contained.
-The same bug in host/parent code — `monty-pool`, `monty-proto` decoding, `monty-fs`, the
-bindings — takes down the embedding application, with nothing to contain it. **Scrutinise
-parent-side code hardest**, especially anything handling a frame from a child.
+Weight both classes by where they land. In a pool worker the process dies, the parent
+replaces the child and raises an exception — contained. Nothing else is: in host/parent
+code (`monty-pool`, `monty-proto` decoding, `monty-fs`, the bindings), or in a Rust
+embedder calling the `monty` crate in-process, the same bug takes down the application.
+**Scrutinise those hardest**, especially anything handling a frame from a child.
 
 `crates/monty/src/heap.rs` and `crates/monty-fs/src/path_security.rs` are the two most
 security-critical files; any change to either needs careful justification. Also check the

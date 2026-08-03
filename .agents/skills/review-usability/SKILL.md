@@ -1,6 +1,6 @@
 ---
 name: review-usability
-description: Check whether common Python an LLM would plausibly write still works on this branch, testing real cases in ./playground against CPython. Use to find behaviour that diverges from CPython or trips up ordinary idiomatic code.
+description: Check whether the common Python code an LLM would plausibly write still works on this branch, testing real cases in ./playground against CPython. Use to find behaviour that diverges from CPython or trips up ordinary idiomatic code.
 ---
 
 # Usability review
