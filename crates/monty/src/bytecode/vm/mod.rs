@@ -1548,8 +1548,21 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    // Re-raise an instance as-is so `raise e` preserves `e`'s
+                    // identity, like CPython. A bare type or non-exception has
+                    // nothing to reuse and rebuilds from the error.
+                    let raised = match &exc {
+                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => {
+                            Some(exc.clone_with_heap(self.heap))
+                        }
+                        _ => None,
+                    };
                     let error = self.make_exception(exc, true); // is_raise=true, hide caret
-                    catch_sync!(self, cached_frame, error);
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
                 }
                 Opcode::Assert => {
                     match decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode") {
@@ -1566,14 +1579,24 @@ impl<'h> VM<'h> {
                 Opcode::Reraise => {
                     // Clone rather than pop: a locally caught bare raise must
                     // preserve its enclosing handler's active exception.
-                    let error = if let Some(exc) = self.exception_stack.last() {
-                        let exc = exc.clone_with_heap(self.heap);
-                        self.make_exception(exc, true) // is_raise=true for reraise
-                    } else {
+                    let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
+                    let error = match &raised {
+                        Some(exc) => {
+                            // `make_exception` consumes its argument, so give it
+                            // a second reference and keep `raised` for reuse.
+                            let exc = exc.clone_with_heap(self.heap);
+                            self.make_exception(exc, true) // is_raise=true for reraise
+                        }
                         // No active exception - create a RuntimeError
-                        SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        None => {
+                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        }
                     };
-                    catch_sync!(self, cached_frame, error);
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack

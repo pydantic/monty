@@ -239,27 +239,42 @@ impl VM<'_> {
     /// 2. Pushes the exception value onto the stack
     /// 3. Sets `current_exception` for bare `raise`
     /// 4. Jumps to the handler code
-    pub(super) fn handle_exception(&mut self, mut error: RunError) -> Option<RunError> {
+    pub(super) fn handle_exception(&mut self, error: RunError) -> Option<RunError> {
+        self.handle_exception_with_value(error, None)
+    }
+
+    /// [`handle_exception`](Self::handle_exception) reusing an already-built
+    /// exception instead of reallocating an identical one per level; this also
+    /// preserves its identity, as CPython does. Owned: dropped if unused.
+    pub(super) fn handle_exception_with_value(
+        &mut self,
+        mut error: RunError,
+        raised: Option<Value>,
+    ) -> Option<RunError> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
         // For terminal resource errors such as memory limits,
         // we still need to unwind the stack to collect all frames for the traceback
         if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
+            if let Some(raised) = raised {
+                raised.drop_with(self);
+            }
             return Some(self.unwind_for_traceback(error));
         }
 
-        // Only catchable exceptions can be handled
-        let exc_info = match &error {
-            RunError::Exc(exc) => exc.clone(),
-            RunError::UncatchableExc(_) | RunError::Internal(_) => unreachable!(),
-        };
-
-        // Create exception value to push on stack
-        let exc_value = self.create_exception_value(&exc_info);
-        let exc_value = match exc_value {
-            Ok(v) => v,
-            Err(e) => return Some(e),
+        let exc_value = if let Some(raised) = raised {
+            raised
+        } else {
+            // Nothing to reuse: build it from `error`, borrowed rather than
+            // cloned since it is a local and so cannot alias `self`.
+            let RunError::Exc(exc) = &error else {
+                unreachable!("terminal errors returned above")
+            };
+            match self.create_exception_value(exc) {
+                Ok(v) => v,
+                Err(e) => return Some(e),
+            }
         };
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
@@ -279,6 +294,7 @@ impl VM<'_> {
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
+                let pushes_exception = entry.pushes_exception();
 
                 // Unwind stack to target depth (drop excess values)
                 for value in this.stack.drain(target_stack_depth..).rev() {
@@ -292,9 +308,12 @@ impl VM<'_> {
                     value.drop_with(this);
                 }
 
-                // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(this);
-                this.push(exc_for_stack);
+                // Push the exception only for handlers that read it; cleanup
+                // handlers re-raise straight from `exception_stack`.
+                if pushes_exception {
+                    let exc_for_stack = exc_value.clone_with_heap(this);
+                    this.push(exc_for_stack);
+                }
 
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack
                 let (exc_value, this) = exc_guard.into_parts();

@@ -812,3 +812,53 @@ assert _two_finally_log == [
     ('inner_finally', 'TypeError', 'B'),
     ('outer_finally', 'ValueError', 'A'),
 ], f'unexpected log {_two_finally_log!r}'
+
+
+# === re-raising preserves the exception object's identity ===
+# `raise e` and a bare `raise` both propagate the very object that was caught,
+# rather than an equal copy, matching CPython.
+def _bare_raise_identity():
+    try:
+        try:
+            raise ValueError('ident')
+        except ValueError as inner:
+            captured = inner
+            raise
+    except ValueError as outer:
+        return outer is captured
+
+
+assert _bare_raise_identity() is True, 'bare raise should re-raise the same object'
+
+
+def _explicit_raise_identity():
+    try:
+        raise ValueError('ident')
+    except ValueError as first:
+        captured = first
+    try:
+        raise captured
+    except ValueError as second:
+        return second is captured
+
+
+assert _explicit_raise_identity() is True, 'raise <instance> should re-raise the same object'
+
+
+# identity survives propagation through intervening finally blocks
+def _identity_through_finally():
+    order = []
+    try:
+        try:
+            raise ValueError('deep')
+        except ValueError as inner:
+            captured = inner
+            try:
+                raise
+            finally:
+                order.append('finally')
+    except ValueError as outer:
+        return outer is captured, order
+
+
+assert _identity_through_finally() == (True, ['finally'])

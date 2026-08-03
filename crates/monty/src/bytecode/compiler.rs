@@ -15,7 +15,7 @@ use monty_types::{MontyException, StackFrame};
 use super::{
     RESERVED_MODULE_DUNDERS,
     builder::{CodeBuilder, JumpLabel, JumpTarget, Offset},
-    code::Code,
+    code::{Code, HandlerKind},
     op::{FORMAT_VALUE_HAS_SPEC, FORMAT_VALUE_STATIC_SPEC, Opcode, assert_flags},
 };
 use crate::{
@@ -351,13 +351,30 @@ impl Region {
         self.open_start = Some(at);
     }
 
-    /// Emits each non-empty sub-range, innermost-first, to `handler`.
-    fn add_entries(mut self, end: Offset, code: &mut CodeBuilder, handler: Offset) -> Result<(), CompileError> {
-        self.interrupt(end);
-        for (start, end) in self.ranges {
-            code.add_exception_entry(start, end, handler, self.stack_depth, self.exc_stack_count)?;
+    /// Emits each non-empty sub-range, in emission order, to `handler`.
+    /// Uninterrupted regions — all but those split by a non-local exit — emit
+    /// their single range without allocating.
+    fn add_entries(
+        mut self,
+        end: Offset,
+        code: &mut CodeBuilder,
+        handler: Offset,
+        kind: HandlerKind,
+    ) -> Result<(), CompileError> {
+        if self.ranges.is_empty() {
+            match self.open_start {
+                Some(start) if start != end => {
+                    code.add_exception_entry(start, end, handler, self.stack_depth, self.exc_stack_count, kind)
+                }
+                _ => Ok(()),
+            }
+        } else {
+            self.interrupt(end);
+            for (start, end) in self.ranges {
+                code.add_exception_entry(start, end, handler, self.stack_depth, self.exc_stack_count, kind)?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -3644,10 +3661,10 @@ impl<'a> Compiler<'a> {
         let body_end = self.code.current_offset();
 
         // === Exception-path copy ===
+        // A `Cleanup` entry leaves the exception only on `exception_stack`,
+        // where bare `raise` and `Reraise` read it — nothing to pop here.
         let cleanup_start = self.code.current_offset();
-        self.code.new_code_region(stack_depth + 1);
-        // Keep the exception on `exception_stack` for bare raise and Reraise.
-        self.code.emit(Opcode::Pop)?;
+        self.code.new_code_region(stack_depth);
         self.fblocks.push(FBlock::FinallyEnd);
         self.compile_finally_copy(&try_block.finally)?;
         self.fblocks
@@ -3660,7 +3677,7 @@ impl<'a> Compiler<'a> {
         self.code.patch_jump(normal_jump)?;
         self.compile_finally_copy(&try_block.finally)?;
 
-        region.add_entries(body_end, &mut self.code, cleanup_start)
+        region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)
     }
 
     /// Compiles a protected `try` body, handler dispatch, and unprotected `else`.
@@ -3699,7 +3716,7 @@ impl<'a> Compiler<'a> {
             self.code.patch_jump(jump)?;
         }
 
-        region.add_entries(body_end, &mut self.code, dispatch_start)
+        region.add_entries(body_end, &mut self.code, dispatch_start, HandlerKind::Consuming)
     }
 
     /// Compiles normal and exceptional exits for a `with` statement.
@@ -3766,7 +3783,7 @@ impl<'a> Compiler<'a> {
         // === Merge point for the normal-exit and swallowed-exception paths ===
         self.code.patch_jump(end_jump)?;
 
-        region.add_entries(body_end, &mut self.code, handler_start)
+        region.add_entries(body_end, &mut self.code, handler_start, HandlerKind::Consuming)
     }
 
     /// Compiles the exception handlers for a try block.
@@ -3830,15 +3847,13 @@ impl<'a> Compiler<'a> {
             self.code.emit(Opcode::ClearException)?;
             end_jumps.push(self.code.emit_jump(Opcode::Jump)?);
 
-            // The runtime entry discarded the abandoned handler exception
-            // before pushing the replacement. Drop its operand copy, clear
-            // the `as` target, then propagate the replacement.
+            // The runtime already discarded the abandoned handler's exception,
+            // so just clear the `as` target and propagate the replacement.
             let cleanup_start = self.code.current_offset();
-            self.code.new_code_region(stack_depth + 1);
-            self.code.emit(Opcode::Pop)?;
+            self.code.new_code_region(stack_depth);
             self.compile_clear_handler_name(name)?;
             self.code.emit(Opcode::Reraise)?;
-            region.add_entries(body_end, &mut self.code, cleanup_start)?;
+            region.add_entries(body_end, &mut self.code, cleanup_start, HandlerKind::Cleanup)?;
 
             if let Some(no_match_jump) = no_match_jump {
                 // No-match landing: stack is [exception]. Falls through into
