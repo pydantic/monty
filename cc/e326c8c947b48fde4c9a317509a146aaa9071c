@@ -1,0 +1,33 @@
+.agents/skills/review-verbosity/SKILL.md
+  s_083044b4e98c87::t_1e9bc56798cf09 40
+  s_083044b4e98c87::t_88197bc971bfce 16-18
+.agents/skills/review-general/SKILL.md
+  s_083044b4e98c87::t_e503d039b3dc86 15-17
+  s_083044b4e98c87::t_99b87561b06a83 22-24
+.agents/skills/fix-pr-comments/pr-threads.sh
+  s_083044b4e98c87::t_0c885791e274c3 9-12,18-24,26-38,62
+  s_083044b4e98c87::t_374ac6135d86d8 40-44,47-48,55
+.agents/skills/review-usability/SKILL.md
+  s_083044b4e98c87::t_cf5f10652ab165 3
+.agents/skills/review-security/SKILL.md
+  s_083044b4e98c87::t_62926c4be0b4bb 32-36
+.agents/skills/fix-pr-comments/SKILL.md
+  s_083044b4e98c87::t_198b2be2913701 18-21
+  s_083044b4e98c87::t_b3691c6da92911 38-40,43-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cce326c8c947b48fde4c9a317509a146aaa9071c",
+  "prompts": {},
+  "sessions": {
+    "s_083044b4e98c87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38a48049-4984-49d2-b060-b34a1f0bc927",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
