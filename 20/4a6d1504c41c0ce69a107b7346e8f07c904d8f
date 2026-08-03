@@ -1,0 +1,24 @@
+.agents/skills/fix-pr-comments/pr-threads.sh
+  s_083044b4e98c87::t_d4756dcdef1cad 1-46
+.agents/skills/fix-pr-comments/SKILL.md
+  s_083044b4e98c87::t_5c8afc02ae85a1 33
+  s_083044b4e98c87::t_0014729f29169f 8,10,27-29,49-50
+  s_083044b4e98c87::t_a522041df2bb5c 14,17-20,22-23,25,31,35,37-38,47
+  s_083044b4e98c87::t_8f9513ff679a0e 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "204a6d1504c41c0ce69a107b7346e8f07c904d8f",
+  "prompts": {},
+  "sessions": {
+    "s_083044b4e98c87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38a48049-4984-49d2-b060-b34a1f0bc927",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
