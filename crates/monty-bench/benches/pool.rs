@@ -12,7 +12,7 @@ use std::{
     future::ready,
     path::{Path, PathBuf},
     process::Command,
-    sync::{Once, OnceLock},
+    sync::Once,
 };
 
 #[cfg(codspeed)]
@@ -23,7 +23,10 @@ use monty_pool::{Checkout, Pool, PoolConfig, PrintFuture, ReplConfig, ResumeValu
 use monty_types::{MontyObject, PrintStream};
 #[cfg(all(not(codspeed), unix))]
 use pprof::criterion::{Output, PProfProfiler};
-use tokio::runtime::{Builder, Runtime};
+use tokio::{
+    runtime::{Builder, Runtime},
+    sync::Mutex,
+};
 
 /// Locates (building once if needed) the `monty` CLI binary the workers run.
 /// Mirrors the resolution used by `monty-pool`'s integration tests: honour
@@ -53,23 +56,16 @@ fn monty_binary() -> PathBuf {
     path
 }
 
-/// The shared tokio runtime all benchmark iterations run on. One static
-/// runtime (rather than one per bench) so workers' process handles and pipe
-/// registrations outlive the individual `block_on` calls that use them.
+/// Creates the current-thread tokio runtime for one benchmark.
 ///
-/// Current-thread flavor: `block_on` then drives the io/timer drivers on the
-/// benchmark thread itself, so a turn's wakeup is a plain `epoll_wait` return
-/// rather than a cross-thread handoff from a worker thread. That measures the
-/// pool's own overhead, not the multi-thread scheduler's wakeup latency —
-/// matching the pre-async benches, which had no scheduler at all.
-fn runtime() -> &'static Runtime {
-    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
-        Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime")
-    })
+/// This drives the I/O and timer drivers on the benchmark thread itself, so a
+/// turn's wakeup is a plain `epoll_wait` return rather than a cross-thread
+/// handoff.
+fn runtime() -> Runtime {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
 }
 
 /// Discards sandbox `print()` output — none of these benchmarks print.
@@ -111,18 +107,17 @@ async fn drive_answering_calls(session: &mut Checkout, mut event: TurnEvent) -> 
 /// spawns and tears down a worker, so this is dominated by process startup —
 /// the price paid once per fresh pool.
 fn pool_create_session_run(bench: &mut Bencher) {
+    let runtime = runtime();
     let binary = monty_binary();
-    bench.iter(|| {
-        runtime().block_on(async {
-            let pool = Pool::new(PoolConfig::subprocess(&binary)).await.unwrap();
-            let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-            let event = session
-                .feed("1 + 1", vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
-            black_box(expect_complete(event));
-            session.finish().await.unwrap();
-        });
+    bench.to_async(&runtime).iter(|| async {
+        let pool = Pool::new(PoolConfig::subprocess(&binary)).await.unwrap();
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        black_box(expect_complete(event));
+        session.finish().await.unwrap();
     });
 }
 
@@ -130,19 +125,18 @@ fn pool_create_session_run(bench: &mut Bencher) {
 /// per-session checkout handshake plus a trivial `1 + 1` feed — the overhead
 /// every request pays once the pool is warm.
 fn session_checkout_run(bench: &mut Bencher) {
-    let pool = runtime()
+    let runtime = runtime();
+    let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
-    bench.iter(|| {
-        runtime().block_on(async {
-            let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-            let event = session
-                .feed("1 + 1", vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
-            black_box(expect_complete(event));
-            session.finish().await.unwrap();
-        });
+    bench.to_async(&runtime).iter(|| async {
+        let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+        let event = session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        black_box(expect_complete(event));
+        session.finish().await.unwrap();
     });
 }
 
@@ -159,20 +153,21 @@ for i in range(1000):
 /// protobuf channel on a single warm session. Reuses the session across
 /// iterations so only the messaging cost is measured, not checkout.
 fn ext_calls_1000(bench: &mut Bencher) {
-    let pool = runtime()
+    let runtime = runtime();
+    let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
-    let mut session = runtime().block_on(pool.checkout(&ReplConfig::default())).unwrap();
-    bench.iter(|| {
-        runtime().block_on(async {
-            let event = session
-                .feed(EXT_CALL_LOOP, vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
-            black_box(drive_answering_calls(&mut session, event).await);
-        });
+    let session = runtime.block_on(pool.checkout(&ReplConfig::default())).unwrap();
+    let session = Mutex::new(session);
+    bench.to_async(&runtime).iter(|| async {
+        let mut session = session.lock().await;
+        let event = session
+            .feed(EXT_CALL_LOOP, vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        black_box(drive_answering_calls(&mut session, event).await);
     });
-    runtime().block_on(session.finish()).unwrap();
+    runtime.block_on(session.into_inner().finish()).unwrap();
 }
 
 /// Sums `amount * quantity` over every row of every external-call result —
@@ -220,38 +215,39 @@ fn make_rows() -> MontyObject {
 /// encode/decode and heap conversion of realistic tool results — the
 /// dominant wire cost for data-analysis agents.
 fn ext_call_rows(bench: &mut Bencher) {
+    let runtime = runtime();
     let rows = make_rows();
     // Expected sandbox result: 20 identical calls, each summing amount * quantity.
     let per_call: i64 = (0..100).map(|i| ((i * 37) % 500 + 1) * (i % 7 + 1)).sum();
     let expected = MontyObject::Int(per_call * 20);
-
-    let pool = runtime()
+    let pool = runtime
         .block_on(Pool::new(PoolConfig::subprocess(monty_binary())))
         .unwrap();
-    let mut session = runtime().block_on(pool.checkout(&ReplConfig::default())).unwrap();
-    bench.iter(|| {
-        runtime().block_on(async {
-            let mut event = session
-                .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
-                .await
-                .unwrap();
-            let value = loop {
-                match event {
-                    TurnEvent::Complete(value) => break value,
-                    TurnEvent::FunctionCall { .. } => {
-                        event = session
-                            .resume(ResumeValue::Return(rows.clone()), &mut no_print)
-                            .await
-                            .unwrap();
-                    }
-                    other => panic!("expected Complete or FunctionCall, got {other:?}"),
+    let session = runtime.block_on(pool.checkout(&ReplConfig::default())).unwrap();
+    let session = Mutex::new(session);
+
+    bench.to_async(&runtime).iter(|| async {
+        let mut session = session.lock().await;
+        let mut event = session
+            .feed(EXT_ROWS_LOOP, vec![], vec![], false, &mut no_print)
+            .await
+            .unwrap();
+        let value = loop {
+            match event {
+                TurnEvent::Complete(value) => break value,
+                TurnEvent::FunctionCall { .. } => {
+                    event = session
+                        .resume(ResumeValue::Return(rows.clone()), &mut no_print)
+                        .await
+                        .unwrap();
                 }
-            };
-            assert_eq!(value, expected);
-            black_box(value);
-        });
+                other => panic!("expected Complete or FunctionCall, got {other:?}"),
+            }
+        };
+        assert_eq!(value, expected);
+        black_box(value);
     });
-    runtime().block_on(session.finish()).unwrap();
+    runtime.block_on(session.into_inner().finish()).unwrap();
 }
 
 /// Configures the pool benchmarks.
