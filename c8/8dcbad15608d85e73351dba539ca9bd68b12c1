@@ -1,0 +1,34 @@
+crates/monty/src/dump_format.rs
+  s_0d0190b42c825c::t_43d23f888a5cdd 14
+crates/monty/src/types/tuple.rs
+  s_0d0190b42c825c::t_804b6b9c9339ff 58
+  s_0d0190b42c825c::t_920c6cf5e4717a 154
+  s_0d0190b42c825c::t_9013b9a43fb465 89
+  s_0d0190b42c825c::t_7ec304379cfd32 168
+crates/monty/src/types/dict.rs
+  s_0d0190b42c825c::t_f7a2faa2e39643 180-182
+  s_0d0190b42c825c::t_f6e97cf366c565 1509-1511
+  s_0d0190b42c825c::t_015567a7a94fd8 139-150
+  s_0d0190b42c825c::t_03353b35129367 197-199
+crates/monty/src/modules/collections/mod.rs
+  s_0d0190b42c825c::t_dc0be376da6866 174-184
+  s_0d0190b42c825c::t_28cb7a13b02009 39
+crates/monty/tests/binary_serde.rs
+  s_0d0190b42c825c::t_a64ef3a89df6d3 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c88dcbad15608d85e73351dba539ca9bd68b12c1",
+  "prompts": {},
+  "sessions": {
+    "s_0d0190b42c825c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e9b5eafb-9316-4273-9a57-1971ad91eb6e",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
