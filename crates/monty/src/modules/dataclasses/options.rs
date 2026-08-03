@@ -41,8 +41,10 @@ impl Default for DataclassOptions {
 /// The `__dataclass_params__` object `@dataclass` writes into a class
 /// namespace: CPython's `dataclasses._DataclassParams`.
 ///
-/// Holds no heap references, so it is the cheap half of a class's metadata —
-/// `__dataclass_fields__` owns the captured defaults.
+/// A report of what the class was decorated with, never a control — the options
+/// the class acts on live on the `Class` itself. Holds no heap references, so it
+/// is the cheap half of a class's metadata; `__dataclass_fields__` owns the
+/// captured defaults.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DataclassParams {
     options: DataclassOptions,
@@ -53,12 +55,6 @@ impl DataclassParams {
     #[must_use]
     pub fn new(options: DataclassOptions) -> Self {
         Self { options }
-    }
-
-    /// The options this object records.
-    #[must_use]
-    pub fn options(&self) -> DataclassOptions {
-        self.options
     }
 }
 

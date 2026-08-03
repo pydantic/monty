@@ -106,17 +106,9 @@ default_factory`), and so is a non-default field after a defaulted one
 - **`__dataclass_params__` reads back normalised.** `C.__dataclass_params__`
   exists, reprs like CPython's and answers all ten flags, but each is the `bool`
   Monty acted on: `@dataclass(frozen=1)` reports `frozen=True` where CPython
-  echoes the `1` you passed. Assigning to it (`C.__dataclass_params__ = 5`) puts
-  the class back on `eq=True, frozen=False` rather than un-marking it the way
-  overwriting `__dataclass_fields__` does.
-- **The options take effect when read, not when applied.** Every `__setattr__`,
-  `__eq__` and `__hash__` consults `__dataclass_params__` as it runs, so handing
-  a class another one — `C.__dataclass_params__ = Frozen.__dataclass_params__` —
-  retro-freezes it, including instances built before the assignment. CPython
-  bakes the options into dunders at decoration, so the same assignment changes
-  nothing. Hashing such an instance can therefore re-enter the field walk (a
-  frozen class of Monty's own can never hold a cycle); that raises
-  `RecursionError`, where CPython still reports the class unhashable.
+  echoes the `1` you passed. As in CPython the object only reports the options —
+  the class acts on what it was decorated with — so assigning another one
+  changes what you read back and nothing else.
 
 ## Architectural gaps (cannot match)
 

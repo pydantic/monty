@@ -198,6 +198,26 @@ try:
 except AttributeError as e:
     assert str(e) == "'_DataclassParams' object has no attribute 'nope'"
 
+
+# === The params report the options, they do not carry them ===
+# The class acts on what it was decorated with, so lending it another class's
+# params changes what you read back and nothing else.
+@dataclass
+class Borrower:
+    x: int
+
+
+Borrower.__dataclass_params__ = Point.__dataclass_params__
+assert Borrower.__dataclass_params__.frozen is True
+b = Borrower(1)
+b.x = 2
+assert b.x == 2, 'the borrowed params must not freeze the class'
+try:
+    hash(b)
+    assert False, 'the borrowed params must not make the class hashable'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'Borrower'"
+
 # A plain class has no params, just as it has no fields.
 
 

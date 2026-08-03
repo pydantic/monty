@@ -231,6 +231,9 @@ fn apply_dataclass(vm: &mut VM<'_>, cls: Value, options: DataclassOptions) -> Ru
     // can still fail; a class left with fields alone reads back as a default one.
     store_dataclass_fields(&mut class, fields, vm)?;
     store_dataclass_params(&mut class, options, vm)?;
+    // Last, so the options a class acts on are only ever those of a decoration
+    // that ran to completion.
+    class.set_dataclass_options(options, vm);
     Ok(guard.into_inner())
 }
 
@@ -298,8 +301,9 @@ fn store_dataclass_fields<'h>(class: &mut HeapRead<'h, Class>, fields: Value, vm
 /// Writes `__dataclass_params__` into the class namespace, as CPython's
 /// `_DataclassParams` records the same options.
 ///
-/// Beside `__dataclass_fields__` rather than on the `Class` so every reader
-/// reaches the metadata one way, and re-decorating replaces both.
+/// Purely introspection: the options the class *acts* on live on the [`Class`],
+/// so overwriting this entry reports something else without changing behaviour,
+/// exactly as it does in CPython.
 fn store_dataclass_params<'h>(
     class: &mut HeapRead<'h, Class>,
     options: DataclassOptions,
@@ -479,43 +483,30 @@ fn class_fields_dict_id(class_id: HeapId, vm: &VM<'_>) -> Option<HeapId> {
     }
 }
 
-/// The options a class namespace records in `__dataclass_params__`, or `None`
-/// when it holds no params object, as [`fields_dict_id`] treats its own entry.
-fn namespace_options(namespace: &Dict, vm: &VM<'_>) -> Option<DataclassOptions> {
-    match namespace.get_by_str(StaticStrings::DataclassParams.into(), vm.heap, vm.interns) {
-        Some(Value::Ref(id)) => match vm.heap.get(*id) {
-            HeapData::DataclassParams(params) => Some(params.options()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The options `@dataclass` recorded for `class_id`, or `None` for a class that
+/// The options `@dataclass` recorded on `class_id`, or `None` for a class that
 /// is not a dataclass — the split the `Instance` dunders branch on.
 ///
-/// Falls back to CPython's defaults when only the params were replaced: the
-/// fields still say dataclass, so it behaves like a bare `@dataclass`.
+/// Still gated on the fields, which stay the mark of a dataclass: overwriting
+/// `__dataclass_fields__` un-marks the class, as it does for `is_dataclass`.
 pub(crate) fn dataclass_options(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassOptions> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return None;
     };
-    let namespace = class.namespace();
-    fields_dict_id(namespace, vm)?;
-    Some(namespace_options(namespace, vm).unwrap_or_default())
+    fields_dict_id(class.namespace(), vm)?;
+    Some(class.dataclass_options())
 }
 
 /// The error assigning `name` raises on a `frozen=True` dataclass instance, or
 /// `None` when the write may proceed.
 ///
-/// Every instance assignment passes through here, so it reads the params alone:
-/// only a decorated class has them, so [`dataclass_options`]' field lookup
-/// would be redundant work on this path.
+/// Every instance assignment passes through here, so it reads the class's
+/// options alone: only a decoration sets them, so [`dataclass_options`]' field
+/// lookup would be redundant work on this path.
 pub(crate) fn frozen_assignment_error(class_id: HeapId, name: &Value, vm: &VM<'_>) -> Option<RunError> {
     let HeapData::Class(class) = vm.heap.get(class_id) else {
         return None;
     };
-    if !namespace_options(class.namespace(), vm).is_some_and(|options| options.frozen) {
+    if !class.dataclass_options().frozen {
         return None;
     }
     // Refused for any attribute, declared field or not, as CPython's generated

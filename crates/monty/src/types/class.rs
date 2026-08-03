@@ -8,6 +8,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
     heap::{BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    modules::dataclasses::DataclassOptions,
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
@@ -32,13 +33,35 @@ pub(crate) struct Class {
     name: EitherStr,
     /// Members: method name / class-variable name -> value.
     namespace: Dict,
+    /// The `@dataclass(...)` options this class was decorated with, left at
+    /// CPython's defaults for a class that was not. Baked in here at decoration
+    /// rather than read back from `__dataclass_params__`, because CPython bakes
+    /// them into the dunders it generates and never consults that object again.
+    options: DataclassOptions,
 }
 
 impl Class {
     /// Creates a new class object from its name and member namespace.
+    ///
+    /// Dataclass options start at their defaults; `@dataclass` sets them with
+    /// [`HeapRead::set_dataclass_options`] once it has built the class.
     #[must_use]
     pub fn new(name: EitherStr, namespace: Dict) -> Self {
-        Self { name, namespace }
+        Self {
+            name,
+            namespace,
+            options: DataclassOptions::default(),
+        }
+    }
+
+    /// The `@dataclass(...)` options in force for this class.
+    ///
+    /// Meaningful only once [`dataclass_options`](crate::modules::dataclasses::dataclass_options)
+    /// has confirmed the class is a dataclass — a plain class reports the
+    /// defaults it was never decorated with.
+    #[must_use]
+    pub fn dataclass_options(&self) -> DataclassOptions {
+        self.options
     }
 
     /// Returns the class name (interned or heap-owned).
@@ -66,6 +89,16 @@ impl<'h> HeapRead<'h, Class> {
     /// fall through to this namespace.
     pub fn set_attr(&mut self, name: Value, value: Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {
         self.namespace_mut().set(name, value, vm)
+    }
+
+    /// Records what `@dataclass(...)` decorated this class with.
+    ///
+    /// Called once per decoration, so re-decorating replaces the options as it
+    /// replaces the fields. Assigning to `__dataclass_params__` afterwards does
+    /// not reach here, which is what makes that object a report rather than a
+    /// control.
+    pub fn set_dataclass_options(&mut self, options: DataclassOptions, vm: &mut VM<'h>) {
+        self.get_mut(vm.heap).options = options;
     }
 }
 
