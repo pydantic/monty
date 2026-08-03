@@ -88,9 +88,11 @@ default_factory`), and so is a non-default field after a defaulted one
   the bound options but its own value. Applying it to a class is identical, and
   it reprs as `<function dataclass at 0x..>`, but `type()` says
   `builtin_function_or_method` where CPython says `function`, and CPython's repr
-  names the closure (`dataclass.<locals>.wrap`). Fixable only if Monty gains
-  closures over native functions; nothing else depends on that, so it is not
-  planned.
+  names the closure (`dataclass.<locals>.wrap`). Having nowhere to live but the
+  value, the options *are* the value: `dataclass(frozen=True) is
+  dataclass(frozen=True)` is `True`, where each CPython call builds a fresh
+  closure. Fixable only if Monty gains closures over native functions; nothing
+  else depends on that, so it is not planned.
 - **`del obj.field` on a frozen instance never raises `cannot delete field`**,
   because Monty's parser has no `del` statement at all. (Assignment matches
   CPython, message included, and `dataclasses.FrozenInstanceError` is
