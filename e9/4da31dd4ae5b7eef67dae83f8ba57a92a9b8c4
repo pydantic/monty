@@ -1,0 +1,62 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_c3b066eb06fc98::t_05d0af80e87ff0 1582-1584,1587-1589,1595-1599
+  s_c3b066eb06fc98::t_83dbe9ba30400f 1585-1586
+  s_c3b066eb06fc98::t_b75192b1dfd511 1554-1559,1561-1565
+  s_c3b066eb06fc98::t_c5a377645c7b4f 1551-1553
+  s_c3b066eb06fc98::t_e5d531ed3b84f4 1591-1593
+crates/monty/tests/binary_serde.rs
+  s_c3b066eb06fc98::t_7f0adc212f91bd 28
+crates/monty/test_cases/try_except__all.py
+  s_c3b066eb06fc98::t_5812e48cce884b 815-864
+crates/monty/src/bytecode/builder.rs
+  s_c3b066eb06fc98::t_1403746b4d2843 7
+  s_c3b066eb06fc98::t_4f4f8d8de3769c 417,422
+crates/monty/src/bytecode/vm/exceptions.rs
+  s_c3b066eb06fc98::t_7dfb8ba660a0cc 297
+  s_c3b066eb06fc98::t_313c1681cb4f64 246
+  s_c3b066eb06fc98::t_cd5f4d07818bd6 269-270
+  s_c3b066eb06fc98::t_87dcce1f2651dd 247-248
+  s_c3b066eb06fc98::t_dee7d6c49d0cea 311-316
+  s_c3b066eb06fc98::t_9e046b28526636 242-245,249-253,260-262,277
+  s_c3b066eb06fc98::t_b7c3789d926b53 266-268,271-276
+crates/monty/src/bytecode/code.rs
+  s_c3b066eb06fc98::t_5341d4d0c875e1 270-272,278-285,292,296-299
+  s_c3b066eb06fc98::t_c17b263f67bb1b 221
+  s_c3b066eb06fc98::t_d2050bf92a9828 216,219-220,222,224-226
+  s_c3b066eb06fc98::t_8adfa8b4cd2b9f 223
+  s_c3b066eb06fc98::t_0fc41237d21d70 217-218
+perf_analysis.md
+  s_c3b066eb06fc98::t_76c5644c57fafc 157-177
+  s_c3b066eb06fc98::t_18d9e760f07d70 1-32,49,55-156,178-192
+  s_c3b066eb06fc98::t_1cd6a10592f524 33-48,50-54
+crates/monty/src/dump_format.rs
+  s_c3b066eb06fc98::t_6dc2819fff95f7 14
+crates/monty/src/bytecode/compiler.rs
+  s_c3b066eb06fc98::t_fd3840c9a9c3f1 355-356
+  s_c3b066eb06fc98::t_4660d921908712 3719
+  s_c3b066eb06fc98::t_fc557ff1a3e1d6 3850-3851
+  s_c3b066eb06fc98::t_1ca09973acb486 3680
+  s_c3b066eb06fc98::t_f02cab9ee161a1 357-363,367,374
+  s_c3b066eb06fc98::t_4820ff0973ed49 18
+  s_c3b066eb06fc98::t_a6ebbd268cb095 354,364-366,368-373,375-376
+  s_c3b066eb06fc98::t_b22843120fdb5e 3786
+  s_c3b066eb06fc98::t_f35f6c832d0df9 3853,3856
+  s_c3b066eb06fc98::t_2560d0cb2eccb0 3667
+  s_c3b066eb06fc98::t_10ae9a36d9194b 3664-3665
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "e94da31dd4ae5b7eef67dae83f8ba57a92a9b8c4",
+  "prompts": {},
+  "sessions": {
+    "s_c3b066eb06fc98": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7ee4903-f496-47f9-aeaf-4c6f74704f36",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
