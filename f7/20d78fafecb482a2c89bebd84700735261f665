@@ -1,0 +1,72 @@
+crates/monty/src/modules/collections/counter.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 3
+crates/monty/src/heap.rs
+  s_18d9ea429c0dee::t_7e12f3bb4f1948 586-592,597-611,613,637-640,658-659,679,682,685-687
+  s_18d9ea429c0dee::t_8c0536869bce3e 660,676
+crates/monty/src/types/tuple.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 50,57
+crates/monty/src/modules/os.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 102
+crates/monty/src/modules/itertools.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 49
+crates/monty/src/modules/sys.rs
+  s_18d9ea429c0dee::t_7e12f3bb4f1948 82
+  s_18d9ea429c0dee::t_8c0536869bce3e 94
+crates/monty/src/modules/datetime.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 50
+crates/monty/src/modules/math.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 199
+crates/monty/src/modules/asyncio.rs
+  s_18d9ea429c0dee::t_7e12f3bb4f1948 128
+  s_18d9ea429c0dee::t_8c0536869bce3e 57
+crates/monty/src/heap_data.rs
+  s_18d9ea429c0dee::t_7e12f3bb4f1948 34-35,37-38,50,52,87,92,144,150,161,171,191
+  s_18d9ea429c0dee::t_082428b4880e6b 196
+  s_18d9ea429c0dee::t_8c0536869bce3e 36,96,135,192,195
+  s_18d9ea429c0dee::t_891dce63d9f835 193-194
+crates/monty/src/modules/unicodedata.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 88
+crates/monty/src/modules/collections/defaultdict.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 3
+crates/monty/src/modules/re.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 183
+crates/monty/src/modules/typing.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 38
+crates/monty/src/modules/pathlib.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 33
+crates/monty/src/types/dict.rs
+  s_18d9ea429c0dee::t_4ddd492fed3dea 87-92,101-102,105-111,121-138
+  s_18d9ea429c0dee::t_188019e4f81e06 161,172,178,183,189,201-206,213,223-226,241-243,256-259,1498,1533-1535
+  s_18d9ea429c0dee::t_63be8f483fe2e8 1405,1407
+crates/monty/src/types/re_pattern.rs
+  s_18d9ea429c0dee::t_7e12f3bb4f1948 192
+  s_18d9ea429c0dee::t_62d696009a83d0 267
+crates/monty/src/modules/collections/mod.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 72
+crates/monty/src/modules/json/mod.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 68
+crates/monty/src/types/type.rs
+  s_18d9ea429c0dee::t_188019e4f81e06 407,412
+crates/monty/src/modules/dataclasses.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 57
+crates/monty/src/modules/gc.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 56
+crates/monty/src/bytecode/vm/call.rs
+  s_18d9ea429c0dee::t_8c0536869bce3e 948
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f720d78fafecb482a2c89bebd84700735261f665",
+  "prompts": {},
+  "sessions": {
+    "s_18d9ea429c0dee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ce9ce288-1215-4805-9199-36972a841e3f",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
