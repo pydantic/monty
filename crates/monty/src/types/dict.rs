@@ -136,6 +136,18 @@ impl DictKind {
     pub fn counter() -> Self {
         Self(Some(Box::new(DictSpecial::Counter)))
     }
+
+    /// Bytes the boxed [`DictSpecial`] adds on top of `size_of::<Dict>()`.
+    ///
+    /// Code that turns an *already allocated* dict special must charge this
+    /// with [`Heap::track_growth`], because [`Dict::py_estimate_size`] adds it
+    /// unconditionally and the refund at free time reads the current size.
+    pub const SPECIAL_SIZE: usize = mem::size_of::<DictSpecial>();
+
+    /// Heap bytes owned by this kind beyond the `DictKind` word itself.
+    fn estimate_size(&self) -> usize {
+        if self.0.is_some() { Self::SPECIAL_SIZE } else { 0 }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -165,6 +177,9 @@ impl Dict {
     /// Marks this dict as a `defaultdict` with the given factory (a callable or
     /// `None`), taking ownership of the factory reference. Called once at
     /// construction; the factory joins the dict's `contains_refs` accounting.
+    ///
+    /// If the dict is already on the heap, the caller must first charge
+    /// [`DictKind::SPECIAL_SIZE`] with [`Heap::track_growth`].
     pub fn make_defaultdict(&mut self, factory: Option<Value>) {
         if matches!(factory, Some(Value::Ref(_))) {
             self.contains_refs = true;
@@ -179,6 +194,9 @@ impl Dict {
     }
 
     /// Marks this dict as a `collections.Counter`.
+    ///
+    /// Same tracker contract as [`Dict::make_defaultdict`]: charge
+    /// [`DictKind::SPECIAL_SIZE`] first if the dict is already allocated.
     pub fn make_counter(&mut self) {
         self.kind = DictKind::counter();
     }
@@ -1488,8 +1506,9 @@ impl<'h> HeapRead<'h, Dict> {
 
 impl HeapItem for Dict {
     fn py_estimate_size(&self) -> usize {
-        // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
+        // Dict size: struct overhead + the boxed kind state (defaultdict/Counter)
+        // + entries (2 Values per entry for key+value)
+        mem::size_of::<Self>() + self.kind.estimate_size() + self.len() * 2 * VALUE_SIZE
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {

@@ -55,7 +55,7 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 /// Python tuple value stored on the heap.
 ///
 /// Uses `SmallVec<[Value; 2]>` internally to avoid separate heap allocation
-/// for tuples with 3 or fewer elements. This is a significant optimization
+/// for tuples with 2 or fewer elements. This is a significant optimization
 /// since small tuples are very common (enumerate, dict items, returns, etc.).
 ///
 /// # Reference Counting
@@ -86,7 +86,7 @@ impl Tuple {
     /// Automatically computes the `contains_refs` flag by checking if any value
     /// is a `Value::Ref`. Since tuples are immutable, this flag never changes.
     ///
-    /// For tuples with 3 or fewer elements, the items are stored inline in the
+    /// For tuples with 2 or fewer elements, the items are stored inline in the
     /// SmallVec without additional heap allocation.
     ///
     /// Note: This does NOT increment reference counts - the caller must
@@ -151,7 +151,7 @@ impl From<Tuple> for TupleVec {
 ///
 /// This is the preferred way to allocate tuples as it provides:
 /// - Empty tuple interning: `() is ()` returns `True`
-/// - SmallVec optimization for small tuples (≤3 elements)
+/// - SmallVec optimization for small tuples (≤2 elements)
 ///
 /// # Example Usage
 /// ```ignore
@@ -165,7 +165,7 @@ pub fn allocate_tuple(items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>, heap: &He
     if items.is_empty() {
         Ok(heap.get_empty_tuple())
     } else {
-        // Allocate a new tuple (SmallVec will inline if ≤3 elements)
+        // Allocate a new tuple (SmallVec will inline if ≤2 elements)
         let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
