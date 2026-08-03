@@ -12,7 +12,6 @@ worst kind of bug, because the model has no way to know it must write something 
 Think hard on this one.
 
 ```bash
-git fetch origin main
 git diff origin/main...HEAD
 ```
 

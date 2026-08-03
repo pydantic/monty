@@ -9,7 +9,6 @@ New comments and docstrings are usually too verbose. Rewrite them concisely. Thi
 **edits** — it doesn't just report.
 
 ```bash
-git fetch origin main
 git diff --stat origin/main...HEAD   # which crates changed
 git diff origin/main...HEAD
 ```

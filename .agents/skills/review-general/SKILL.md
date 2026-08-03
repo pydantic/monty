@@ -6,7 +6,6 @@ description: Review the current branch against its merge base for bugs, CPython 
 # General branch review
 
 ```bash
-git fetch origin main
 git diff --stat origin/main...HEAD   # scope first
 git diff origin/main...HEAD
 ```

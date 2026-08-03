@@ -8,7 +8,6 @@ description: Security review of the current branch against its merge base — sa
 Monty runs untrusted, potentially malicious Python. Review this branch on that basis.
 
 ```bash
-git fetch origin main
 git diff origin/main...HEAD
 ```
 
