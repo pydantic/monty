@@ -262,6 +262,24 @@ except NameError:
     pass
 
 
+# === owning frame reads the handler variable after cleanup: UnboundLocalError ===
+# only the nested closure's read (above) is the free-variable NameError; the
+# frame that owns the cell gets UnboundLocalError, like any unassigned local
+def owner_read_after_cleanup():
+    try:
+        raise ValueError('x')
+    except ValueError as exc3:
+        hold = lambda: exc3
+    return exc3
+
+
+try:
+    owner_read_after_cleanup()
+    assert False, 'expected UnboundLocalError'
+except UnboundLocalError as e:
+    assert str(e) == "cannot access local variable 'exc3' where it is not associated with a value"
+
+
 # === handler variable is unbound after continue out of the handler ===
 for i in range(2):
     try:

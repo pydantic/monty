@@ -2250,15 +2250,22 @@ impl<'h> VM<'h> {
             _ => panic!("LoadCell: entry is not a Cell"),
         };
 
-        // Check for undefined value - raise NameError for unbound free variable
+        // An undefined value raises the error CPython picks by cell kind: the
+        // free-variable NameError only for a cell *captured* from an enclosing
+        // function; an unbound cell this frame owns (a local captured by
+        // nested functions) is an ordinary UnboundLocalError, like any local.
         if matches!(value, Value::Undefined) {
             value.drop_with(self);
             let name = cached_frame.code.local_name(slot);
-            return Err(self.free_var_error(name));
+            Err(if self.is_free_var_slot(slot) {
+                self.free_var_error(name)
+            } else {
+                self.unbound_local_error(slot, name)
+            })
+        } else {
+            self.push(value);
+            Ok(())
         }
-
-        self.push(value);
-        Ok(())
     }
 
     /// Extracts the cell `HeapId` from a local variable slot on the stack.
@@ -2269,6 +2276,20 @@ impl<'h> VM<'h> {
             Value::Ref(cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
         }
+    }
+
+    /// Whether `slot` holds a cell captured from an enclosing function (a
+    /// free variable), as opposed to a cell this frame owns. Module frames
+    /// (`function_id: None`) own all their cells — the only module-level
+    /// cells are inlined-comprehension captures.
+    fn is_free_var_slot(&self, slot: u16) -> bool {
+        self.current_frame().function_id.is_some_and(|id| {
+            self.interns
+                .get_function(id)
+                .free_var_slots
+                .iter()
+                .any(|s| s.as_u16() == slot)
+        })
     }
 
     /// Creates a NameError for an unbound free variable.
