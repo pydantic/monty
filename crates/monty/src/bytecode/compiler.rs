@@ -79,7 +79,7 @@ const MAX_COMP_GENERATORS: usize = 255;
 /// Non-local exits require stack-specific copies, and nested `finally` blocks
 /// can otherwise amplify a small source tree exponentially before VM resource
 /// limits exist.
-const MAX_FINALLY_COPIES: usize = 1024;
+const MAX_FINALLY_COPIES: u16 = 1024;
 
 /// Converts a `usize` namespace size into the `u16` slot count expected by
 /// the bytecode, surfacing a `CompileError` if the limit is exceeded.
@@ -267,7 +267,7 @@ pub struct Compiler<'a> {
     fblocks: Vec<FBlock<'a>>,
 
     /// Number of `finally` body copies emitted into this code object.
-    finally_copies: usize,
+    finally_copies: u16,
 
     /// Whether the compiler is currently compiling module-level code.
     ///
