@@ -240,6 +240,32 @@ except TypeError as replacement:
 assert handler_cleanup == ['unbound', 'replacement']
 
 
+# === captured handler target is cleared on an exceptional exit ===
+# The cleanup path for a replacement exception uses DeleteCell when a closure
+# captures the handler target; normal fall-through and return use other paths.
+def exceptional_handler_cell_cleanup():
+    probe = None
+    try:
+        try:
+            raise ValueError('original')
+        except ValueError as captured:
+            probe = lambda: captured
+            raise TypeError('replacement')
+    except TypeError:
+        pass
+
+    try:
+        probe()
+        return 'still bound'
+    except NameError as e:
+        return str(e)
+
+
+assert exceptional_handler_cell_cleanup() == (
+    "cannot access free variable 'captured' where it is not associated with a value in enclosing scope"
+)
+
+
 # === handler variable is unbound after return out of the handler ===
 # the probe closure captures `exc2`, so calling it after the return observes
 # the handler cleanup unbinding the cell (a module-level lookup could not —
@@ -314,6 +340,44 @@ while True:
         events.append('finally')
         break
 assert events == ['enter', 'exit', 'finally']
+
+# === __exit__ failure replaces return and is caught by the enclosing region ===
+events = []
+
+
+class ExplodingExit:
+    def __init__(self, tag):
+        self.tag = tag
+
+    def __enter__(self):
+        events.append(f'enter {self.tag}')
+        return self
+
+    def __exit__(self, typ, val, tb):
+        events.append(f'exit {self.tag}')
+        raise RuntimeError(f'exit failed {self.tag}')
+
+
+def return_through_exploding_exit():
+    try:
+        with ExplodingExit('return'):
+            return 'discarded'
+    except RuntimeError as e:
+        return str(e)
+
+
+assert return_through_exploding_exit() == 'exit failed return'
+assert events == ['enter return', 'exit return']
+
+# === __exit__ failure replaces break and is caught outside the loop ===
+events = []
+try:
+    while True:
+        with ExplodingExit('break'):
+            break
+except RuntimeError as e:
+    events.append(str(e))
+assert events == ['enter break', 'exit break', 'exit failed break']
 
 # === break inside with inside finally calls __exit__ once ===
 events = []
@@ -403,6 +467,36 @@ while True:
     finally:
         xs.append('finally')
 assert xs == ['except', 'finally']
+
+
+# === continue clears a named handler before the enclosing finally runs ===
+def continue_from_handler_through_finally():
+    seen = []
+    for i in range(2):
+        try:
+            try:
+                raise ValueError(str(i))
+            except ValueError as current:
+                seen.append(f'handler {current}')
+                continue
+        finally:
+            try:
+                current
+                seen.append('bound')
+            except UnboundLocalError:
+                seen.append('unbound')
+            seen.append(f'finally {i}')
+    return seen
+
+
+assert continue_from_handler_through_finally() == [
+    'handler 0',
+    'unbound',
+    'finally 0',
+    'handler 1',
+    'unbound',
+    'finally 1',
+]
 
 # === continue in exception-path finally keeps looping, then loop ends normally ===
 xs = []
@@ -649,6 +743,47 @@ def return_call_short_circuit():
 
 
 assert return_call_short_circuit() == 'caught boom'
+
+
+# Attribute and indirect calls have distinct bytecode call shapes, while `and`
+# reaches its right operand through the same fall-through path as `or`.
+class ReturnBoom:
+    def fail(self):
+        raise ValueError('attribute boom')
+
+
+def return_attr_call_except():
+    try:
+        return ReturnBoom().fail()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_attr_call_except() == 'caught attribute boom'
+
+
+def get_boom():
+    return boom
+
+
+def return_indirect_call_except():
+    try:
+        return get_boom()()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_indirect_call_except() == 'caught boom'
+
+
+def return_call_and_fallthrough():
+    try:
+        return True and boom()
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_call_and_fallthrough() == 'caught boom'
 
 
 def return_call_ternary_fallthrough():

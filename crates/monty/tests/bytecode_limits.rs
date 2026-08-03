@@ -342,6 +342,20 @@ fn generate_many_finally_return_sites(count: usize) -> String {
     code
 }
 
+/// Generates nested `try/finally` suites inside a return-path `finally`.
+///
+/// Each outer copy recompiles the nested suite, producing exponential copy
+/// growth from source whose size is only linear in `depth`.
+fn generate_nested_finally_suites(depth: usize) -> String {
+    let mut code = String::from("def f():\n    try:\n        return 1\n    finally:\n");
+    for level in 0..depth {
+        let indent = "    ".repeat(level + 2);
+        writeln!(code, "{indent}try:\n{indent}    pass\n{indent}finally:").unwrap();
+    }
+    writeln!(code, "{}pass\n\nassert f() == 1", "    ".repeat(depth + 2)).unwrap();
+    code
+}
+
 mod stack_effect_limits {
     use super::*;
 
@@ -391,5 +405,25 @@ mod finally_copy_limits {
             .expect("1024 inline finally copies should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "1024 inline finally copies should run: {result:?}");
+    }
+
+    /// Ten nested suites exceed the cap through repeated expansion even
+    /// though the generated source contains only eleven `finally` statements.
+    #[test]
+    fn nested_finally_amplification_returns_syntax_error() {
+        let code = generate_nested_finally_suites(10);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// Nine nested suites produce 1,023 copies and exercise the return path,
+    /// guarding the compact-source test against an overly conservative limit.
+    #[test]
+    fn nested_finally_amplification_below_limit_runs() {
+        let code = generate_nested_finally_suites(9);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("nested finally expansion below the copy limit should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "nested finally expansion should run: {result:?}");
     }
 }
