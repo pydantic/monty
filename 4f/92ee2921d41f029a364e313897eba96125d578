@@ -1,0 +1,24 @@
+crates/monty/test_cases/try_finally__control_flow.py
+  s_cf8bdbf6a1ca03::t_de44b7f75dbf31 265-282
+crates/monty/src/bytecode/vm/mod.rs
+  s_cf8bdbf6a1ca03::t_7af4486f230a6c 2253-2256,2260-2264
+  s_cf8bdbf6a1ca03::t_2cb7387246f0d5 2281-2294
+crates/monty/test_cases/closure__undefined_nonlocal.py
+  s_cf8bdbf6a1ca03::t_6af3ca644a6912 1-6,17-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4f92ee2921d41f029a364e313897eba96125d578",
+  "prompts": {},
+  "sessions": {
+    "s_cf8bdbf6a1ca03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfa1fba4-dca5-48b1-ac7a-0231cc13c599",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
