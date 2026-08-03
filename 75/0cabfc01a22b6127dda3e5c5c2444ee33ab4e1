@@ -1,0 +1,24 @@
+crates/monty/src/bytecode/vm/mod.rs
+  s_c3b066eb06fc98::t_a75bebc64bd1e1 1585
+  s_c3b066eb06fc98::t_df132afca29246 1551,1556-1559
+crates/monty/src/bytecode/vm/exceptions.rs
+  s_c3b066eb06fc98::t_a23892a2b61ff8 82
+  s_c3b066eb06fc98::t_b8d32f149ec4f1 98,100
+  s_c3b066eb06fc98::t_0d39e1fc0d5e25 75-76,78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "750cabfc01a22b6127dda3e5c5c2444ee33ab4e1",
+  "prompts": {},
+  "sessions": {
+    "s_c3b066eb06fc98": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b7ee4903-f496-47f9-aeaf-4c6f74704f36",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
