@@ -80,5 +80,26 @@ try:
 except ValueError:
     pass
 
+
+# Exhausting an adaptor releases its source THERE AND THEN, not at destruction,
+# so whatever the source itself holds is reclaimed as soon as it is spent. Each
+# source is named separately, so its count is 1 only if the spent adaptor let go
+# of it — a retained source would leave 2. The adaptors stay bound so that it is
+# the release, not their destruction, being measured.
+spent_source = iter([1, 2])
+spent_pairwise = itertools.pairwise(spent_source)
+list(spent_pairwise)
+
+# islice has two spending paths and only one runs here: reaching `stop` before
+# the source ends, which must release without waiting for a StopIteration.
+stopped_source = iter([1, 2, 3])
+stopped_islice = itertools.islice(stopped_source, 1)
+list(stopped_islice)
+
+# The other islice path: `stop` is never reached, so the source runs out first.
+drained_source = iter([1, 2])
+drained_islice = itertools.islice(drained_source, 5)
+list(drained_islice)
+
 len('done')
-# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1}
+# ref-counts={'itertools': 1, 'live': 1, 'primed': 1, 'cyclic': 2, 'paired': 1, 'sliced': 1, 'chained': 1, 'cycled': 1, 'replaying': 1, 'Boom': 2, 'erroring': 1, 'spent_source': 1, 'spent_pairwise': 1, 'stopped_source': 1, 'stopped_islice': 1, 'drained_source': 1, 'drained_islice': 1}

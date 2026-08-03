@@ -39,7 +39,7 @@ use crate::{
 
 /// The state of one `itertools` iterator, whichever adaptor produced it.
 ///
-/// Held inline: `HeapData` is 160 bytes and the widest adaptor needs 88. If one
+/// Held inline: `HeapData` is 160 bytes and the widest adaptor needs 56. If one
 /// ever exceeds that, box it in its variant here — never at the `HeapData`
 /// boundary, where `heap_read_boxed` is only sound for reads.
 #[derive(Debug, Serialize, Deserialize)]

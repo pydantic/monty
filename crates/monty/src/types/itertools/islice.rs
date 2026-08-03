@@ -6,7 +6,7 @@ use crate::{
     bytecode::VM,
     defer_drop,
     exception_private::RunResult,
-    heap::{HeapId, HeapRead},
+    heap::{DropWithContext, HeapId, HeapRead},
     types::itertools::ItertoolsIter,
     value::Value,
 };
@@ -17,7 +17,9 @@ use crate::{
 /// pulled rather than buffered.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Islice {
-    source: Value,
+    /// The iterator being sliced; `None` once the source or `stop` is reached,
+    /// which both latches the adaptor as spent and releases the source.
+    source: Option<Value>,
     /// How many items have been pulled from `source` so far.
     consumed: usize,
     /// Position, in source order, of the item to yield next.
@@ -26,8 +28,6 @@ pub(crate) struct Islice {
     stop: Option<usize>,
     /// Positions between yields; always at least 1.
     step: usize,
-    /// Latches once the source or `stop` is reached.
-    done: bool,
 }
 
 impl Islice {
@@ -35,25 +35,26 @@ impl Islice {
     /// step: CPython does not touch the iterator until the first `next()`.
     pub(crate) fn new(source: Value, start: usize, stop: Option<usize>, step: usize) -> Self {
         Self {
-            source,
+            source: Some(source),
             consumed: 0,
             next_index: start,
             stop,
             step,
-            done: false,
         }
     }
 
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, mut on_child: impl FnMut(HeapId)) {
-        if let Value::Ref(id) = &self.source {
+        if let Some(Value::Ref(id)) = &self.source {
             on_child(*id);
         }
     }
 
     /// Releases the ref this iterator owns (mirrors `for_each_child_id`).
     pub(crate) fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.source.py_dec_ref_ids(stack);
+        if let Some(source) = &mut self.source {
+            source.py_dec_ref_ids(stack);
+        }
     }
 }
 
@@ -64,17 +65,22 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
         let ItertoolsIter::Islice(islice) = iter.get(vm.heap) else {
             unreachable!("dispatched on Kind::Islice")
         };
-        if islice.done {
-            return Ok(None);
-        }
-        // Reaching `stop` spends the adaptor without pulling again, so a
-        // bounded slice never over-consumes its source.
-        if islice.stop.is_some_and(|stop| islice.consumed >= stop) {
+        // Every read of the state happens here, before `finish` needs the heap
+        // mutably. Reaching `stop` spends the adaptor without pulling again, so
+        // a bounded slice never over-consumes its source; a spent adaptor has
+        // no source left to pull from at all.
+        let reached_stop = islice.stop.is_some_and(|stop| islice.consumed >= stop);
+        let skipping = islice.consumed < islice.next_index;
+        let source = if reached_stop {
+            None
+        } else {
+            islice.source.as_ref().map(|source| source.clone_with_heap(vm.heap))
+        };
+
+        let Some(source) = source else {
             finish(iter, vm);
             return Ok(None);
-        }
-        let skipping = islice.consumed < islice.next_index;
-        let source = islice.source.clone_with_heap(vm.heap);
+        };
         defer_drop!(source, vm);
 
         let item = {
@@ -102,11 +108,14 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
     }
 }
 
-/// Latches the adaptor as spent, so neither `stop` nor an exhausted source
-/// drives it again.
+/// Releases the source, which both latches the adaptor as spent — neither
+/// `stop` nor an exhausted source drives it again — and lets whatever the
+/// source holds be reclaimed now rather than at destruction.
+///
+/// Idempotent, so the two exits in `next` can share it.
 fn finish<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) {
     let ItertoolsIter::Islice(islice) = iter.get_mut(vm.heap) else {
         unreachable!("dispatched on Kind::Islice")
     };
-    islice.done = true;
+    islice.source.take().drop_with(vm);
 }
