@@ -1,13 +1,15 @@
-//! The `__dataclass_fields__` mapping `@dataclass` writes and the `Field`
-//! objects in it, where the behaviour cannot be dual-run against CPython —
-//! Monty stringizes annotations and has no `MISSING` sentinel to render.
+//! The metadata `@dataclass` writes onto a class — the `__dataclass_fields__`
+//! mapping with the `Field` objects in it, and `__dataclass_params__` — where
+//! the behaviour cannot be dual-run against CPython: Monty stringizes
+//! annotations, has no `MISSING` sentinel to render, and reads the options live
+//! where CPython bakes them into dunders at decoration.
 //!
 //! Everything the two interpreters agree on lives in
 //! `test_cases/dataclass__is_dataclass.py` instead.
 
 use insta::assert_snapshot;
 use monty::MontyRun;
-use monty_types::{CompileOptions, MontyObject};
+use monty_types::{CompileOptions, ExcType, MontyObject, PrintWriter, ResourceLimits, ResourceTracker};
 
 const POINT: &str = r"
 from dataclasses import dataclass
@@ -89,4 +91,37 @@ fn unmodelled_field_attributes_are_not_implemented() {
 #[test]
 fn classvars_are_absent_from_the_mapping() {
     assert_snapshot!(eval_str("repr(list(Point.__dataclass_fields__))"), @"['x', 'y']");
+}
+
+/// Because the options are read live, borrowing a frozen class's params freezes
+/// a class whose instances may already cycle — the one way the field-wise hash
+/// can re-enter itself, so it must be bounded rather than overflow the host
+/// stack. CPython cannot reach this: it hashes with the `__hash__` its
+/// decoration generated, so the borrowed params change nothing and `Point`
+/// stays unhashable.
+///
+/// Run against a tightened ceiling: the default depth is bounded only by the
+/// interpreter thread's stack, which a test thread does not have.
+#[test]
+fn a_retro_frozen_cycle_hits_the_recursion_limit() {
+    let code = format!(
+        "{POINT}
+@dataclass(frozen=True)
+class Frozen:
+    v: int
+
+cyclic = Point(1)
+cyclic.y = cyclic
+Point.__dataclass_params__ = Frozen.__dataclass_params__
+hash(cyclic)
+"
+    );
+    let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default()).expect("code should compile");
+    let limits = ResourceLimits::default().max_recursion_depth(10);
+    let err = run
+        .run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout)
+        .expect_err("hashing a cyclic instance should exceed the recursion depth");
+
+    assert_eq!(err.exc_type(), ExcType::RecursionError);
+    assert_snapshot!(err.message().expect("RecursionError carries a message"), @"maximum recursion depth exceeded");
 }

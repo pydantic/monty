@@ -835,7 +835,8 @@ pub enum StaticStrings {
     #[strum(serialize = "__dataclass_fields__")]
     DataclassFields,
 
-    // ===================    // collections module strings. Appended at the enum end: discriminants are
+    // ==========================
+    // collections module strings. Appended at the enum end: discriminants are
     // serialized `StringId`s, so mid-enum insertion would shift every later id.
     /// Module name for `import collections`.
     Collections,

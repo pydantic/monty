@@ -799,6 +799,12 @@ pub(crate) fn dataclass_eq(
 /// uninitialised one raises too.
 pub(crate) fn dataclass_hash(self_id: HeapId, field_names: &[StringId], vm: &mut VM<'_>) -> RunResult<HashValue> {
     let class_id = instance_class(self_id, vm);
+    // Charge a recursion level, as `dataclass_eq` does: a frozen class cannot
+    // build a cycle itself, but options are read live, so retro-freezing a class
+    // whose instances already cycle (`C.__dataclass_params__ = Frozen...`) would
+    // otherwise re-enter here per level and overflow the host stack.
+    let mut guard = vm.recursion_guard()?;
+    let vm = &mut *guard;
     // Same walk as `Tuple::py_hash`, so `hash(Point(1, 2)) == hash((1, 2))`.
     let mut hasher = DefaultHasher::new();
     for name_id in field_names {

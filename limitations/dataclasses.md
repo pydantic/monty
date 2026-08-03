@@ -107,6 +107,14 @@ default_factory`), and so is a non-default field after a defaulted one
   echoes the `1` you passed. Assigning to it (`C.__dataclass_params__ = 5`) puts
   the class back on `eq=True, frozen=False` rather than un-marking it the way
   overwriting `__dataclass_fields__` does.
+- **The options take effect when read, not when applied.** Every `__setattr__`,
+  `__eq__` and `__hash__` consults `__dataclass_params__` as it runs, so handing
+  a class another one — `C.__dataclass_params__ = Frozen.__dataclass_params__` —
+  retro-freezes it, including instances built before the assignment. CPython
+  bakes the options into dunders at decoration, so the same assignment changes
+  nothing. Hashing such an instance can therefore re-enter the field walk (a
+  frozen class of Monty's own can never hold a cycle); that raises
+  `RecursionError`, where CPython still reports the class unhashable.
 
 ## Architectural gaps (cannot match)
 
