@@ -72,17 +72,14 @@ impl VM<'_> {
 
     /// Creates a RunError from a Value that should be an exception.
     ///
-    /// Takes ownership of the exception value and drops it properly.
+    /// Borrows the value so callers that already own one can keep it — the
+    /// `raise`/`Reraise` paths reuse it as the raised object itself.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
-    pub(super) fn make_exception(&mut self, exc_value: Value, is_raise: bool) -> RunError {
-        let this = self;
-        defer_drop!(exc_value, this);
-
+    pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = this.heap.get(*heap_id) {
-                    // Clone the exception (guard handles cleanup at scope exit)
+                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
                     exc.clone()
                 } else {
                     // Not an exception type
@@ -98,9 +95,9 @@ impl VM<'_> {
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(this.current_position().unwrap_or_default(), this.current_frame_name())
+            RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name())
         } else {
-            this.make_stack_frame()
+            self.make_stack_frame()
         };
 
         RunError::Exc(ExceptionRaise {

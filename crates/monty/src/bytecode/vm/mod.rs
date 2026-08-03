@@ -1548,16 +1548,17 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
+                    let error = self.make_exception(&exc, true); // is_raise=true, hide caret
                     // Re-raise an instance as-is so `raise e` preserves `e`'s
                     // identity, like CPython. A bare type or non-exception has
                     // nothing to reuse and rebuilds from the error.
                     let raised = match &exc {
-                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => {
-                            Some(exc.clone_with_heap(self.heap))
+                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        _ => {
+                            exc.drop_with(self);
+                            None
                         }
-                        _ => None,
                     };
-                    let error = self.make_exception(exc, true); // is_raise=true, hide caret
                     if let Some(result) = self.handle_exception_with_value(error, raised) {
                         return Err(result);
                     }
@@ -1581,12 +1582,7 @@ impl<'h> VM<'h> {
                     // preserve its enclosing handler's active exception.
                     let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
                     let error = match &raised {
-                        Some(exc) => {
-                            // `make_exception` consumes its argument, so give it
-                            // a second reference and keep `raised` for reuse.
-                            let exc = exc.clone_with_heap(self.heap);
-                            self.make_exception(exc, true) // is_raise=true for reraise
-                        }
+                        Some(exc) => self.make_exception(exc, true), // is_raise=true for reraise
                         // No active exception - create a RuntimeError
                         None => {
                             SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
