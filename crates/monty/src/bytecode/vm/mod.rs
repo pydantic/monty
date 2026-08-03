@@ -1107,6 +1107,10 @@ impl<'h> VM<'h> {
                     let slot = cached_frame.fetch_u16();
                     self.store_cell(&cached_frame, slot);
                 }
+                Opcode::DeleteCell => {
+                    let slot = cached_frame.fetch_u16();
+                    self.delete_cell(&cached_frame, slot);
+                }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
                 Opcode::BinarySub => try_catch_sync!(self, cached_frame, self.binary_sub()),
@@ -2288,6 +2292,24 @@ impl<'h> VM<'h> {
         let cell_id = this.cell_id_from_local(cached_frame, slot);
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
+        };
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
+    }
+
+    /// Unbinds a closure cell: replaces its contents with `Undefined`, so a
+    /// later [`Self::load_cell`] raises the free-variable `NameError` —
+    /// CPython's `DELETE_DEREF` cleanup of a captured `except ... as` target.
+    /// The only emitter stores `None` first, so the cell is never already
+    /// unbound here (no error path, unlike [`Self::delete_global`]).
+    fn delete_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
+        let value = Value::Undefined;
+        // the guard drops the cell's previous contents after the swap
+        let this = self;
+        defer_drop_mut!(value, this);
+
+        let cell_id = this.cell_id_from_local(cached_frame, slot);
+        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+            panic!("DeleteCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
     }

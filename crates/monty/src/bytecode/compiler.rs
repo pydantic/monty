@@ -3887,10 +3887,9 @@ impl<'a> Compiler<'a> {
                 self.code.emit_u16(Opcode::DeleteGlobal, slot)?;
             }
             NameScope::Cell => {
-                // Delete cell not commonly needed
-                // For now, just store None
-                self.code.emit(Opcode::LoadNone)?;
-                self.compile_store(target)?;
+                // unbind the cell (CPython's DELETE_DEREF) so a captured
+                // `except ... as` target reads as unbound after cleanup
+                self.code.emit_u16(Opcode::DeleteCell, slot)?;
             }
             NameScope::CompVar => unreachable!("no syntax exists to `del` a comprehension variable"),
         }

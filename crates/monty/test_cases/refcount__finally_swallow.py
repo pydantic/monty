@@ -16,6 +16,7 @@ def swallow_return():
 
 
 result = swallow_return()
+assert result == ['done']
 
 for i in range(2):
     try:

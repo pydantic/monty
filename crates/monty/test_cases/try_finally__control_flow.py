@@ -241,16 +241,35 @@ assert handler_cleanup == ['unbound', 'replacement']
 
 
 # === handler variable is unbound after return out of the handler ===
+# the probe closure captures `exc2`, so calling it after the return observes
+# the handler cleanup unbinding the cell (a module-level lookup could not —
+# it would be NameError regardless)
+
+
 def return_from_handler():
     try:
         raise ValueError('x')
     except ValueError as exc2:
-        return 'returned'
+        return 'returned', lambda: exc2
 
 
-assert return_from_handler() == 'returned'
+value, probe = return_from_handler()
+assert value == 'returned'
 try:
-    exc2
+    probe()
+    assert False, 'expected NameError'
+except NameError:
+    pass
+
+
+# === handler variable is unbound after continue out of the handler ===
+for i in range(2):
+    try:
+        raise ValueError('x')
+    except ValueError as caught2:
+        continue
+try:
+    caught2
     assert False, 'expected NameError'
 except NameError:
     pass

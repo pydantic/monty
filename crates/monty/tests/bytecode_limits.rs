@@ -366,13 +366,30 @@ mod stack_effect_limits {
     }
 }
 
+// `n` return sites emit `n + 2` finally copies: one per return site, plus the
+// exception-path and fall-through copies every `try/finally` emits — hence
+// the 1024-copy boundary sits at 1022/1023 sites.
 mod finally_copy_limits {
     use super::*;
 
+    /// The failure side of the boundary: 1023 sites are 1025 copies, one past
+    /// `MAX_FINALLY_COPIES` (1024).
     #[test]
     fn excessive_inline_finally_copies_return_syntax_error() {
-        let code = generate_many_finally_return_sites(1025);
+        let code = generate_many_finally_return_sites(1023);
         let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
         assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// The success side of the boundary: 1022 sites are exactly
+    /// `MAX_FINALLY_COPIES` (1024) copies, so an off-by-one in the limit
+    /// guard or the constant cannot slip through the failure-only test above.
+    #[test]
+    fn max_inline_finally_copies_compile_and_run() {
+        let code = generate_many_finally_return_sites(1022);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("1024 inline finally copies should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "1024 inline finally copies should run: {result:?}");
     }
 }
