@@ -1,0 +1,19 @@
+.agents/skills/fix-pr-comments/SKILL.md
+  s_083044b4e98c87::t_548e8c2210c55f 16-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "167a7048613f11b893e0e1c1a0b1700db7fd5fb8",
+  "prompts": {},
+  "sessions": {
+    "s_083044b4e98c87": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "38a48049-4984-49d2-b060-b34a1f0bc927",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
