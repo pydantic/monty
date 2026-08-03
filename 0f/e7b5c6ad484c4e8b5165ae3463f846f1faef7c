@@ -1,0 +1,27 @@
+.agents/skills/fix-pr-comments/SKILL.md
+  s_6444213fc17c56::t_ad9d6eb914977b 1-96
+.agents/skills/review-usability/SKILL.md
+  s_6444213fc17c56::t_b55fb8ad6c1fbd 1-58
+.agents/skills/review-general/SKILL.md
+  s_6444213fc17c56::t_9abf2d812a4380 1-47
+.agents/skills/review-verbosity/SKILL.md
+  s_6444213fc17c56::t_9057b032d89b75 1-58
+.agents/skills/review-security/SKILL.md
+  s_6444213fc17c56::t_d2bac85cb8d74d 1-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0fe7b5c6ad484c4e8b5165ae3463f846f1faef7c",
+  "prompts": {},
+  "sessions": {
+    "s_6444213fc17c56": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef5d3472-b32d-4791-86a2-dc718adf2ad6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
