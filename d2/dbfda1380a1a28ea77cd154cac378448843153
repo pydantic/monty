@@ -1,0 +1,23 @@
+crates/monty-pool/src/worker.rs
+  s_6dda27170c30e0::t_3415b9eba6af8d 20,55-57,90,106,131,152,166
+crates/monty-pool/src/telemetry.rs
+  s_6dda27170c30e0::t_3415b9eba6af8d 15,62-65,88,104,230,846-847,895,962,1012,1048,1099
+crates/monty-pool/src/pool.rs
+  s_6dda27170c30e0::t_3415b9eba6af8d 50,52,77-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d2dbfda1380a1a28ea77cd154cac378448843153",
+  "prompts": {},
+  "sessions": {
+    "s_6dda27170c30e0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8624e570-570c-4dd4-9d15-f44a17a890f0",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
