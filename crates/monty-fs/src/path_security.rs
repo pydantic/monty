@@ -130,6 +130,7 @@ impl ResolutionRequest {
         let relative = strip_mount_prefix(&normalized_virtual, mount_virtual_path)
             .ok_or_else(|| MountError::NoMountPoint(virtual_path.to_owned()))?
             .to_owned();
+        reject_drive_or_unc_segments(&relative, &normalized_virtual)?;
 
         let candidate_host = if relative.is_empty() {
             mount_host_path.to_path_buf()
@@ -299,6 +300,29 @@ pub(super) fn reject_overlong_path(normalized: &str, original: &str) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Rejects segments a host parser treats as drive/UNC/root-absolute (VERIA-3):
+/// on Windows `PathBuf::join` discards the mount base for `C:\x`, `C:`, or
+/// `\\host\share`, escaping before any boundary check. Runs on all hosts for
+/// consistent behavior, and must precede the `candidate_host` join.
+fn reject_drive_or_unc_segments(relative: &str, normalized_virtual_path: &str) -> Result<(), MountError> {
+    // A backslash can only smuggle a Windows separator/UNC/root prefix; `X:` a drive.
+    let has_escape_prefix = relative.contains('\\') || relative.split('/').any(is_windows_drive_prefix);
+    if has_escape_prefix {
+        Err(MountError::PathEscape {
+            virtual_path: normalized_virtual_path.to_owned(),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Whether `segment` starts with a Windows drive prefix (`X:`), which
+/// `PathBuf::join` treats as base-clobbering.
+fn is_windows_drive_prefix(segment: &str) -> bool {
+    let bytes = segment.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Rejects `..` components in the joined host candidate as defense in depth.

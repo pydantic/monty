@@ -72,6 +72,12 @@ The host enforces these invariants on every path operation:
 - Canonicalization happens *after* mapping virtual → host paths.
 - The canonical path must remain inside the mount; `..` traversal cannot
   escape (raises `PermissionError`).
+- A path segment that a host parser would treat as absolute — one containing
+  a backslash (`\`) or a `X:` drive prefix — is rejected (`PermissionError`)
+  before it is joined onto the mount, on every host OS. So a POSIX virtual
+  path like `C:\Windows` or `\\host\share` cannot escape the mount on Windows,
+  and a backslash is never a literal filename character even on Unix (where
+  CPython would allow it).
 - Symlinks pointing outside the mount are rejected on resolution.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
