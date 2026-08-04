@@ -72,23 +72,11 @@ The host enforces these invariants on every path operation:
 - Canonicalization happens *after* mapping virtual → host paths.
 - The canonical path must remain inside the mount; `..` traversal cannot
   escape (raises `PermissionError`).
-- A path segment that a host parser would treat as absolute — one containing
-  a backslash (`\`) or starting with a `X:` drive prefix — is rejected
-  (`PermissionError`) before it is joined onto the mount, on every host OS and
-  in every mount mode (including the in-memory keys of `OverlayMemory`, which
-  never reach a host path at all). So a virtual path like `C:\Windows` or
-  `\\host\share` cannot escape the mount on Windows.
-
-  Because the rule is uniform across hosts, it also refuses names that are
-  legal on Unix and that CPython would accept there:
-
-  - a backslash is never a literal filename character, so `open('a\\b.txt')`
-    raises `PermissionError` rather than creating a file called `a\b.txt`;
-  - any segment whose first two characters are a letter followed by a colon
-    is refused, so `a:b.txt`, `C:.txt` and `z:` are all rejected — Windows
-    parses these as drive-relative, so they cannot be allowed on one host and
-    refused on another. Colons elsewhere in a name are fine (`note:2026.txt`,
-    `log:12:30.txt`, `::double.txt` all work).
+- Path segments a host parser reads as absolute are rejected
+  (`PermissionError`) on every OS and in every mount mode: any segment
+  containing a backslash or starting with `X:`. So names CPython allows on
+  Unix — `a\b.txt`, `a:b.txt` — are refused there too, since Windows would
+  read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
 - Symlinks pointing outside the mount are rejected on resolution.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are

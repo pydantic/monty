@@ -1247,6 +1247,23 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
     }
 }
 
+/// Classifies an outcome for comparisons that must ignore the echoed path.
+///
+/// Error messages quote the virtual path the caller supplied, which the caller
+/// already knows — comparing raw `Debug` output would therefore report two
+/// identical refusals as different. The `Io` kind is kept, since a `NotFound`
+/// where another path gives `PermissionDenied` would itself be an oracle.
+fn outcome_class(result: &Option<Result<MontyObject, MountError>>) -> String {
+    match result {
+        None => "NotHandled".to_owned(),
+        Some(Ok(value)) => format!("Ok({value:?})"),
+        Some(Err(MountError::PathEscape { .. })) => "PathEscape".to_owned(),
+        Some(Err(MountError::NoMountPoint(_))) => "NoMountPoint".to_owned(),
+        Some(Err(MountError::Io(err, _))) => format!("Io({:?})", err.kind()),
+        Some(Err(other)) => format!("Other({other})"),
+    }
+}
+
 #[test]
 fn host_absolute_segment_rejected_in_all_modes() {
     for payload in HOST_ABSOLUTE_PAYLOADS {
@@ -1343,7 +1360,7 @@ fn host_absolute_exists_is_not_an_oracle() {
                 // Drive-prefixed on Windows, plain nested on Unix; either way the
                 // two must be indistinguishable from inside the sandbox.
                 let payload = format!("/mnt/{}", p.to_str().expect("temp path is UTF-8"));
-                format!("{:?}", call(&mut mt, PathOp::Exists, &payload))
+                outcome_class(&call(&mut mt, PathOp::Exists, &payload))
             })
             .collect();
         assert_eq!(
