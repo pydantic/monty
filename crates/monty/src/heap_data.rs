@@ -102,9 +102,6 @@ pub(crate) enum HeapData {
     /// One `dataclasses.Field` of a `@dataclass`, held by the class's
     /// `__dataclass_fields__` dict.
     DataclassField(DataclassField),
-    /// The `@dataclass(...)` options of a `@dataclass`, held by the class's
-    /// `__dataclass_params__` entry.
-    DataclassParams(DataclassParams),
     /// `list_iterator` object.
     ListIterator(ListIterator),
     /// `_collections._deque_iterator` object.
@@ -192,6 +189,9 @@ pub(crate) enum HeapData {
     /// One variant for the whole family — nothing outside `types::itertools`
     /// dispatches on which adaptor it is.
     Itertools(ItertoolsIter),
+    /// The `@dataclass(...)` options of a `@dataclass`, held by the class's
+    /// `__dataclass_params__` entry.
+    DataclassParams(DataclassParams),
 }
 
 // `HeapData` is memcpy'd on every allocate and free, so its inline size is paid on
