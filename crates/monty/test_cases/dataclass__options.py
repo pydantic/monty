@@ -91,6 +91,92 @@ except FrozenInstanceError as e:
     assert str(e) == "cannot assign to field 'x'"
 
 
+# === A generated hash outranks the class body's own __eq__/__hash__ ===
+# CPython writes the hash after the body has run, and treats a `__hash__ = None`
+# sitting beside an `__eq__` as the opt-out `type` inserted rather than one the
+# author wrote — so `eq=True, frozen=True` hashes by fields through both.
+@dataclass(frozen=True)
+class BodyEq:
+    x: int
+
+    def __eq__(self, other):
+        return True
+
+
+assert hash(BodyEq(1)) == hash((1,))
+
+
+@dataclass(frozen=True)
+class BodyEqNoneHash:
+    x: int
+
+    def __eq__(self, other):
+        return True
+
+    __hash__ = None
+
+
+assert hash(BodyEqNoneHash(1)) == hash((1,))
+
+
+# A `__hash__ = None` with no `__eq__` beside it is deliberate, and survives.
+@dataclass(frozen=True)
+class NoneHash:
+    x: int
+
+    __hash__ = None
+
+
+try:
+    hash(NoneHash(1))
+    assert False, 'expected an explicit __hash__ = None to stay unhashable'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'NoneHash'"
+
+
+# So does a real one, which no decoration overwrites.
+@dataclass(frozen=True)
+class BodyHash:
+    x: int
+
+    def __hash__(self):
+        return 7
+
+
+assert hash(BodyHash(1)) == 7
+
+
+# === eq=False generates no hash, so the body's __eq__ opt-out stands ===
+@dataclass(eq=False, frozen=True)
+class NoEqBodyEq:
+    x: int
+
+    def __eq__(self, other):
+        return True
+
+
+try:
+    hash(NoEqBodyEq(1))
+    assert False, 'expected a body __eq__ to leave the class unhashable'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'NoEqBodyEq'"
+
+
+@dataclass(eq=False)
+class NoEqBodyEqMutable:
+    x: int
+
+    def __eq__(self, other):
+        return True
+
+
+try:
+    hash(NoEqBodyEqMutable(1))
+    assert False, 'expected a body __eq__ to leave the class unhashable'
+except TypeError as e:
+    assert str(e) == "unhashable type: 'NoEqBodyEqMutable'"
+
+
 # === An unknown keyword is rejected ===
 def unknown_keyword():
     @dataclass(bogus=True)

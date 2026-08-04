@@ -37,7 +37,7 @@ use crate::{
     types::{
         Class, Dict, Instance, LazyHeapSet, Module, PyTrait,
         dataclass::write_dataclass_repr,
-        instance::{class_name, instance_attr},
+        instance::{class_defines, class_dunder, class_name, instance_attr},
     },
     value::Value,
 };
@@ -494,6 +494,39 @@ pub(crate) fn dataclass_options(class_id: HeapId, vm: &VM<'_>) -> Option<Datacla
     };
     fields_dict_id(class.namespace(), vm)?;
     Some(class.dataclass_options())
+}
+
+/// The `__hash__` a `@dataclass` decoration generates, where it generates one.
+///
+/// The cells of CPython's `_hash_action` table that write a `__hash__`; every
+/// other cell leaves the class to its own body, which [`hash_action`] reports as
+/// `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataclassHash {
+    /// CPython's `_hash_add`: hash by the field values, as a tuple of them does.
+    FieldWise,
+    /// CPython's `_hash_set_none`: value equality without immutability.
+    Unhashable,
+}
+
+/// Which [`DataclassHash`] `class_id`'s decoration generated, or `None` when
+/// CPython would leave the class's own `__hash__` standing — including for a
+/// plain class, which is most callers' path.
+///
+/// Monty refuses `unsafe_hash`, so CPython's four-way table collapses to `eq`,
+/// `frozen`, and whether the body set a `__hash__` of its own.
+pub(crate) fn hash_action(class_id: HeapId, vm: &VM<'_>) -> Option<DataclassHash> {
+    let options = dataclass_options(class_id, vm)?;
+    // CPython's `has_explicit_hash`: a `__hash__ = None` beside a body `__eq__`
+    // is the opt-out `type` inserted, not one the author wrote, so a generated
+    // hash overwrites it. Alone, it is deliberate and survives.
+    let explicit_hash = class_dunder(class_id, "__hash__", vm)
+        .is_some_and(|hash| !(matches!(hash, Value::None) && class_defines(class_id, "__eq__", vm)));
+    match (options.eq, options.frozen, explicit_hash) {
+        (true, true, false) => Some(DataclassHash::FieldWise),
+        (true, false, false) => Some(DataclassHash::Unhashable),
+        _ => None,
+    }
 }
 
 /// The error assigning `name` raises on a `frozen=True` dataclass instance, or

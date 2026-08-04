@@ -13,7 +13,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
-    modules::dataclasses,
+    modules::dataclasses::{self, DataclassHash},
     types::allocate_string,
     value::{EitherStr, Value},
 };
@@ -125,34 +125,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
 
     /// Hashes an instance, following CPython's precedence.
     ///
-    /// A user `__hash__` wins and `__hash__ = None` is the explicit unhashable
-    /// opt-out; failing that, a class defining `__eq__` is unhashable, because
-    /// CPython sets `__hash__ = None` implicitly whenever `__eq__` is defined.
-    /// A dataclass then follows its options — `frozen=True` hashes by field
-    /// values, value equality alone is unhashable — and anything left hashes by
-    /// identity.
+    /// A `@dataclass` decoration generating a `__hash__` wins, since CPython
+    /// writes it into the class after the body has run. Otherwise the body
+    /// decides: a `__hash__` is used, `__hash__ = None` is the unhashable
+    /// opt-out, and defining `__eq__` is the same opt-out implicitly. What is
+    /// left hashes by identity.
     fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h>) -> RunResult<Option<HashValue>> {
         let class_id = self.get(vm.heap).class();
-        if class_defines(class_id, "__hash__", vm) {
-            return if class_defines_not_none(class_id, "__hash__", vm) {
-                instance_user_hash(self_id, vm)
-            } else {
-                Ok(None)
-            };
-        }
-        if class_defines(class_id, "__eq__", vm) {
-            return Ok(None);
-        }
-        match dataclasses::dataclass_options(class_id, vm) {
-            Some(options) if options.eq && options.frozen => {
+        match dataclasses::hash_action(class_id, vm) {
+            Some(DataclassHash::FieldWise) => {
                 let field_names = dataclasses::dataclass_fields(class_id, vm).unwrap_or_default();
                 dataclasses::dataclass_hash(self_id, &field_names, vm).map(Some)
             }
-            // Value equality without immutability is unhashable, like CPython's
-            // default `eq=True, frozen=False`.
-            Some(options) if options.eq => Ok(None),
-            // `eq=False` keeps identity equality, so identity hashing stands.
-            _ => Ok(Some(identity_hash(self_id))),
+            Some(DataclassHash::Unhashable) => Ok(None),
+            None if class_defines(class_id, "__hash__", vm) => {
+                if class_defines_not_none(class_id, "__hash__", vm) {
+                    instance_user_hash(self_id, vm)
+                } else {
+                    Ok(None)
+                }
+            }
+            // CPython's `type` sets `__hash__ = None` whenever `__eq__` is defined.
+            None if class_defines(class_id, "__eq__", vm) => Ok(None),
+            None => Ok(Some(identity_hash(self_id))),
         }
     }
 
@@ -630,8 +625,10 @@ pub(crate) fn class_defines_not_none(class_id: HeapId, dunder: &str, vm: &VM<'_>
 /// Borrows a dunder out of `class_id`'s namespace, or `None` if absent.
 ///
 /// Backs the existence checks above without the `clone_with_heap` that
-/// [`class_member`] pays to hand out an owned value.
-fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
+/// [`class_member`] pays to hand out an owned value. Callers needing to tell a
+/// `None` member apart from an absent one — CPython's `has_explicit_hash` does
+/// — want this rather than either check.
+pub(crate) fn class_dunder<'v>(class_id: HeapId, dunder: &str, vm: &'v VM<'_>) -> Option<&'v Value> {
     match vm.heap.get(class_id) {
         HeapData::Class(class) => class.namespace().get_by_str(dunder, vm.heap, vm.interns),
         _ => None,
