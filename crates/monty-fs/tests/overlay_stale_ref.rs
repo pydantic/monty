@@ -8,10 +8,6 @@
 //! each is exercised here: `read_text`, `read_bytes`, and the `existing_file_len`
 //! / `existing_file_bytes` pair an append goes through.
 
-#[cfg(unix)]
-use std::os::unix::fs::symlink as unix_symlink;
-#[cfg(windows)]
-use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
 #[cfg(windows)]
 use std::process::Command;
 use std::{
@@ -22,6 +18,9 @@ use std::{
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{MontyObject, OsFunctionCall, PathStringDataArgs, RenameCallArgs};
 use tempfile::TempDir;
+
+mod common;
+use common::{symlink_dir, symlink_file};
 
 /// Marker written to the out-of-mount file; its appearance in any result is
 /// the disclosure these tests guard against.
@@ -50,31 +49,6 @@ fn rename_call(src: &str, dst: &str) -> OsFunctionCall {
         src: src.into(),
         dst: dst.into(),
     })
-}
-
-/// Creates a file symlink, handling platform differences.
-#[cfg(unix)]
-fn symlink_file(original: &Path, link: &Path) {
-    unix_symlink(original, link).expect("failed to create symlink");
-}
-
-/// Creates a file symlink, handling platform differences.
-#[cfg(windows)]
-fn symlink_file(original: &Path, link: &Path) {
-    win_symlink_file(original, link).expect("failed to create symlink (enable Windows Developer Mode or run elevated)");
-}
-
-/// Creates a directory symlink, handling platform differences.
-#[cfg(unix)]
-fn symlink_dir(original: &Path, link: &Path) {
-    unix_symlink(original, link).expect("failed to create directory symlink");
-}
-
-/// Creates a directory symlink, handling platform differences.
-#[cfg(windows)]
-fn symlink_dir(original: &Path, link: &Path) {
-    win_symlink_dir(original, link)
-        .expect("failed to create directory symlink (enable Windows Developer Mode or run elevated)");
 }
 
 /// A mount holding one cached `RealFileRef` at `/mnt/moved.txt` that a
@@ -214,7 +188,7 @@ fn direct_read_through_escaping_symlink_is_rejected() {
 
     let secret = outside_dir.path().join("secret.txt");
     fs::write(&secret, SECRET).unwrap();
-    symlink_file(&secret, &mount_dir.path().join("link.txt"));
+    symlink_file(&secret, mount_dir.path().join("link.txt"));
 
     let mut mt = mount_overlay(mount_dir.path());
     let outcome = dispatch(&mut mt, OsFunctionCall::ReadText("/mnt/link.txt".into()));
@@ -252,7 +226,7 @@ fn renaming_escaping_symlink_into_overlay_is_rejected() {
 
     let secret = outside_dir.path().join("secret.txt");
     fs::write(&secret, SECRET).unwrap();
-    symlink_file(&secret, &mount_dir.path().join("link.txt"));
+    symlink_file(&secret, mount_dir.path().join("link.txt"));
 
     let mut mt = mount_overlay(mount_dir.path());
     let rename_outcome = dispatch(&mut mt, rename_call("/mnt/link.txt", "/mnt/captured.txt"));

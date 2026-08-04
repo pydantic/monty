@@ -6,9 +6,7 @@
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
-#[cfg(windows)]
-use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
-use std::{fmt, fs, path::Path};
+use std::{fmt, fs};
 
 use monty_fs::{MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -16,6 +14,9 @@ use monty_types::{
     PathStringDataArgs,
 };
 use tempfile::TempDir;
+
+mod common;
+use common::{symlink_dir, symlink_file};
 
 // =============================================================================
 // Helpers
@@ -196,28 +197,6 @@ fn all_modes() -> Vec<(&'static str, MountMode)> {
         ("ReadOnly", MountMode::ReadOnly),
         ("OverlayMemory", MountMode::OverlayMemory(OverlayState::new())),
     ]
-}
-
-/// Cross-platform symlink to a file.
-///
-/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
-/// `std::os::windows::fs::symlink_file`.
-fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
-    #[cfg(unix)]
-    symlink(original.as_ref(), link.as_ref()).unwrap();
-    #[cfg(windows)]
-    win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
-}
-
-/// Cross-platform symlink to a directory.
-///
-/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
-/// `std::os::windows::fs::symlink_dir`.
-fn symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) {
-    #[cfg(unix)]
-    symlink(original.as_ref(), link.as_ref()).unwrap();
-    #[cfg(windows)]
-    win_symlink_dir(original.as_ref(), link.as_ref()).unwrap();
 }
 
 // =============================================================================

@@ -53,7 +53,8 @@ Key rules:
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
 - Tests in `crates/*/tests/` should be cross-platform; use helper functions for
   OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
-  `crates/monty-fs/tests/fs_security.rs`)
+  `crates/monty-fs/tests/common/mod.rs`, shared via `mod common;` — each
+  `tests/*.rs` is its own crate, so helpers used by more than one belong there)
 - CI runs `cargo test -p monty --features memory-model-checks` and `cargo test -p monty-fs`
   on Linux, macOS, and Windows
 
