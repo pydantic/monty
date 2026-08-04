@@ -1299,10 +1299,33 @@ fn host_absolute_mkdir_parents_is_rejected() {
     }
 }
 
-/// A POSIX-absolute-looking segment is not rejected — it has no host meaning,
-/// so it is confined as an ordinary nested path. Verifies that, not assumes it.
+/// A leading-slash segment has no host meaning on any platform, so it is
+/// normalized and confined as an ordinary nested path rather than rejected.
+///
+/// Uses a literal POSIX-absolute payload, not a temp-dir path: the latter is
+/// drive-prefixed on Windows and would be refused there, leaving the
+/// confinement unexercised on the platform this check exists for.
 #[test]
 fn posix_absolute_segment_is_confined_inside_the_mount() {
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+
+    let result = call_mkdir(&mut mt, "/mnt//etc/monty_probe", true, false);
+    assert!(matches!(result, Some(Ok(_))), "expected confinement, got {result:?}");
+
+    let nested = dir.path().join("etc").join("monty_probe");
+    assert!(
+        nested.exists(),
+        "expected creation inside the mount, at {}",
+        nested.display()
+    );
+}
+
+/// Whatever a payload names, `mkdir(parents=True)` must create nothing at that
+/// host location. Uses a real out-of-mount path so the assertion has a genuine
+/// target to check on either platform.
+#[test]
+fn mkdir_parents_creates_nothing_at_the_host_location() {
     let outside = TempDir::new().unwrap();
     let target = outside.path().join("pwned");
     assert!(!target.exists(), "precondition: target must not pre-exist");
@@ -1317,7 +1340,8 @@ fn posix_absolute_segment_is_confined_inside_the_mount() {
         "SANDBOX ESCAPE: mkdir created {} outside the mount",
         target.display()
     );
-    // Whatever it did, it stayed under the mount root.
+    // Confined rather than refused (Unix), or refused outright (Windows,
+    // where the temp path carries a drive prefix) — never anything else.
     if matches!(result, Some(Ok(_))) {
         let nested = dir.path().join(target.strip_prefix("/").unwrap_or(&target));
         assert!(
@@ -1332,26 +1356,45 @@ fn posix_absolute_segment_is_confined_inside_the_mount() {
 /// `exists` leaks host filesystem layout.
 #[test]
 fn host_absolute_exists_is_not_an_oracle() {
-    let outside = TempDir::new().unwrap();
-    let present = outside.path().join("present.txt");
-    fs::write(&present, "x").unwrap();
-    let absent = outside.path().join("absent.txt");
+    // A literal drive-prefixed pair rather than a temp path, whose shape would
+    // differ per platform. One names a file that exists on a Windows host, the
+    // other one that cannot; both must look identical from inside the sandbox.
+    let payloads = [
+        r"/mnt/C:\Windows\System32\ntdll.dll",
+        r"/mnt/C:\Windows\no_such_file_xyz",
+    ];
 
     for (mode_name, mode) in all_modes() {
         let dir = create_test_dir();
         let mut mt = mount_at_mnt(&dir, mode);
-        let outcomes: Vec<String> = [&present, &absent]
+        let outcomes: Vec<String> = payloads
             .iter()
-            .map(|p| {
-                // Drive-prefixed on Windows, plain nested on Unix; either way the
-                // two must be indistinguishable from inside the sandbox.
-                let payload = format!("/mnt/{}", p.to_str().expect("temp path is UTF-8"));
-                outcome_class(call(&mut mt, PathOp::Exists, &payload).as_ref())
-            })
+            .map(|payload| outcome_class(call(&mut mt, PathOp::Exists, payload).as_ref()))
             .collect();
         assert_eq!(
             outcomes[0], outcomes[1],
             "[{mode_name}] existence oracle: present and absent out-of-mount paths differ"
+        );
+    }
+}
+
+/// The oracle test above only bites if `exists` still answers truthfully for
+/// paths inside the mount — a build that refused everything would satisfy it
+/// while being useless. This is what makes that pair meaningful on every host.
+#[test]
+fn exists_still_discriminates_inside_the_mount() {
+    for (mode_name, mode) in all_modes() {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+        assert_eq!(
+            outcome_class(call(&mut mt, PathOp::Exists, "/mnt/hello.txt").as_ref()),
+            "Ok(Bool(true))",
+            "[{mode_name}] an in-mount file should be visible"
+        );
+        assert_eq!(
+            outcome_class(call(&mut mt, PathOp::Exists, "/mnt/no_such_file.txt").as_ref()),
+            "Ok(Bool(false))",
+            "[{mode_name}] a missing in-mount file should report false"
         );
     }
 }
