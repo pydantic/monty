@@ -1384,10 +1384,15 @@ fn host_absolute_segment_is_not_an_overlay_key() {
     }
 }
 
-/// Names containing a colon that is not a drive prefix must still work, so the
-/// check does not over-reject beyond the documented divergence.
+/// A colon that is not a drive prefix must not trip the boundary check, so the
+/// rejection does not reach beyond the documented divergence.
+///
+/// Whether the *host* then accepts the name is its own business and differs by
+/// platform: Windows refuses `::double.txt` outright and stores `note:2026.txt`
+/// as an alternate data stream. Only `PathEscape` is a failure here; where the
+/// host did accept the name, it must round-trip.
 #[test]
-fn colon_names_that_are_not_drive_prefixes_still_work() {
+fn colon_names_that_are_not_drive_prefixes_are_not_rejected_by_the_check() {
     for name in ["note:2026.txt", "::double.txt", "ab:cd.txt", "log:12:30.txt"] {
         let dir = create_test_dir();
         let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
@@ -1400,14 +1405,16 @@ fn colon_names_that_are_not_drive_prefixes_still_work() {
             }),
         );
         assert!(
-            matches!(wrote, Some(Ok(_))),
-            "writing {name} should succeed, got {wrote:?}"
+            !matches!(wrote, Some(Err(MountError::PathEscape { .. }))),
+            "the boundary check should not reject {name}, got {wrote:?}"
         );
-        let read = call(&mut mt, PathOp::ReadText, &path);
-        assert!(
-            matches!(read, Some(Ok(MontyObject::String(ref s))) if s == "ok"),
-            "reading {name} should round-trip, got {read:?}"
-        );
+        if matches!(wrote, Some(Ok(_))) {
+            let read = call(&mut mt, PathOp::ReadText, &path);
+            assert!(
+                matches!(read, Some(Ok(MontyObject::String(ref s))) if s == "ok"),
+                "reading {name} should round-trip, got {read:?}"
+            );
+        }
     }
 }
 
