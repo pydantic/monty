@@ -128,6 +128,19 @@ impl ItertoolsIter {
         }
     }
 
+    /// Bytes an adaptor holds in its own `Vec`, on top of the inline struct.
+    ///
+    /// Exhaustive rather than wildcarded, like the walkers above: a new adaptor
+    /// that buffers must answer this deliberately, since an under-report here
+    /// lets its buffer grow outside the memory limit.
+    pub(crate) fn buffered_size(&self) -> usize {
+        match self {
+            Self::Count(_) | Self::Repeat(_) | Self::Pairwise(_) | Self::Compress(_) | Self::Islice(_) => 0,
+            Self::Chain(chain) => chain.buffered_size(),
+            Self::Cycle(cycle) => cycle.buffered_size(),
+        }
+    }
+
     /// Invokes `on_child` for each heap id this iterator owns (GC trace hook).
     pub(crate) fn for_each_child_id(&self, on_child: impl FnMut(HeapId)) {
         match self {
@@ -143,8 +156,10 @@ impl ItertoolsIter {
 }
 
 impl HeapItem for ItertoolsIter {
+    /// Includes each adaptor's buffer, not just the inline struct: `cycle`
+    /// charges its slots as it grows them, and this is what `on_free` gives back.
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>()
+        mem::size_of::<Self>() + self.buffered_size()
     }
 
     /// Mirrors [`ItertoolsIter::for_each_child_id`] — the two must stay in sync.

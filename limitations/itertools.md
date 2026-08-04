@@ -86,3 +86,9 @@ or duration limit — it then raises `MemoryError` rather than exhausting. Under
 `ResourceLimits::default()`, which sets neither (only a recursion depth), it
 runs until the host itself runs out of memory. This is the same exposure as a
 `while True:` loop, not something specific to `itertools`.
+
+`cycle(iterable)` must buffer every item it has seen so far in order to replay
+them, and that buffer is charged against `max_memory` as it grows — so cycling
+over a very long source raises `MemoryError` at the limit rather than at the
+point the source is exhausted. CPython buffers the same items with no such
+ceiling.

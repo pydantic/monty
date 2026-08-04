@@ -8,7 +8,7 @@ use crate::{
     exception_private::RunResult,
     heap::{DropWithContext, HeapId, HeapRead},
     types::itertools::ItertoolsIter,
-    value::Value,
+    value::{VALUE_SIZE, Value},
 };
 
 /// Yields the source's items, then replays the saved copy indefinitely.
@@ -54,6 +54,15 @@ impl Cycle {
             item.py_dec_ref_ids(stack);
         }
     }
+
+    /// Bytes held in `saved`, on top of the inline struct.
+    ///
+    /// Charged slot-by-slot as the buffer grows (see [`next`]), so it MUST be
+    /// reported here too: `py_estimate_size` is what `on_free` releases, and a
+    /// flat estimate would return less than was taken.
+    pub(crate) fn buffered_size(&self) -> usize {
+        self.saved.len() * VALUE_SIZE
+    }
 }
 
 /// Yields from the source while it lasts, saving each item, then replays.
@@ -72,6 +81,14 @@ pub(super) fn next<'h>(iter: &mut HeapRead<'h, ItertoolsIter>, vm: &mut VM<'h>) 
             read.py_next(vm)
         };
         if let Some(item) = item? {
+            // `saved` grows once per item with no bound of its own, so the slot
+            // is charged with the tracker BEFORE it is taken — otherwise a long
+            // `cycle` grows the buffer entirely outside `max_memory`. Charged
+            // before the clone so a rejection leaves nothing to release.
+            if let Err(error) = vm.heap.track_growth(VALUE_SIZE) {
+                item.drop_with(vm);
+                return Err(error.into());
+            }
             // Saved AND yielded, so the buffer holds its own reference.
             let retained = item.clone_with_heap(vm.heap);
             let ItertoolsIter::Cycle(cycle) = iter.get_mut(vm.heap) else {
