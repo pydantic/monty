@@ -258,6 +258,32 @@ try:
 except TypeError as exc:
     assert str(exc) == 'cycle() takes no keyword arguments'
 
+
+# starmap has no spent flag either, so a source that stops and then yields again
+# is re-driven rather than treated as finished.
+class StutteringPairs:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 2:
+            raise StopIteration
+        return (self.calls, 2)
+
+
+starred = itertools.starmap(pow, StutteringPairs())
+assert next(starred) == 1
+try:
+    next(starred)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+assert next(starred) == 9
+
 # === Iterator protocol ===
 # Every adaptor is its own iterator, and exhaustion raises StopIteration rather
 # than returning a sentinel.
@@ -439,6 +465,31 @@ for adaptor in (
     except StopIteration:
         pass
     assert next(adaptor) == 3
+
+
+# Latching stops the source being touched, not only the predicate being called:
+# a second drain must not reach it. `Counting` reports how often it was asked.
+class Counting:
+    def __init__(self, items):
+        self.items = list(items)
+        self.reads = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.reads += 1
+        if not self.items:
+            raise StopIteration
+        return self.items.pop(0)
+
+
+counted = Counting([1, 5, 2])
+latched = itertools.takewhile(lambda x: x < 3, counted)
+assert list(latched) == [1]
+assert counted.reads == 2
+assert list(latched) == []
+assert counted.reads == 2
 
 # === dropwhile ===
 assert list(itertools.dropwhile(lambda x: x < 3, [1, 2, 3, 4, 1])) == [3, 4, 1]
