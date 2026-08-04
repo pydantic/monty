@@ -12,9 +12,12 @@ publish = false
 monty = { workspace = true, features = ["test-hooks"] }
 monty-types = { workspace = true }
 monty-pool = { workspace = true }
+monty-proto = { workspace = true }
+# The pool benchmarks use Criterion's Tokio async executor.
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
-codspeed-criterion-compat = "4.2.1"
-criterion = "0.5"
+codspeed-criterion-compat = { version = "4.2.1", features = ["async_tokio"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
@@ -28,6 +31,10 @@ harness = false
 
 [[bench]]
 name = "pool"
+harness = false
+
+[[bench]]
+name = "decode"
 harness = false
 
 [lints]

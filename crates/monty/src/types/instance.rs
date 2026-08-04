@@ -1,6 +1,6 @@
 use std::{borrow::Cow, fmt::Write, mem};
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::{ArgValues, KwargsValues},
     builtins::Builtins,
@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -92,18 +92,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<bool>> {
-        let self_id = self_id.expect("instance equality requires its heap ID");
-        if let Some(result) = instance_user_eq(self_id, other, vm)? {
-            defer_drop!(result, vm);
-            if result.is_not_implemented() {
-                Ok(None)
-            } else {
-                Ok(Some(result.py_bool(vm)?))
-            }
-        } else {
-            instance_dataclass_eq(self_id, other, vm)
-        }
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let mut value_guard = DropGuard::new(value, vm);
+        let name = attribute_name_value(name, value_guard.ctx())?;
+        let (value, vm) = value_guard.into_parts();
+        let old_value = self.set_attr(name, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
+    }
+
+    /// Returns `NotImplemented`; comparisons dispatch at the `Value` level because
+    /// user and synthesized dataclass equality require the instance's `HeapId`.
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
+        Ok(None)
     }
 
     /// Hashes an instance, following CPython's precedence.
@@ -342,7 +343,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, BoundMethod> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

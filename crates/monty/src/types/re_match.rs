@@ -318,7 +318,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ReMatch> {
         None
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // Match objects use identity equality (handled before the heap read).
         Ok(None)
     }

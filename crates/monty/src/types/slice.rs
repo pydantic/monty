@@ -168,7 +168,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Slice(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

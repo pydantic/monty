@@ -261,7 +261,7 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'_>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'_>) -> RunResult<Option<bool>> {
         match self {
             // `Undefined` is a sentinel and is never equal to anything.
             Self::Undefined => Ok(Some(false)),
@@ -307,7 +307,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm, Some(*id)),
+            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -1554,7 +1554,7 @@ impl Value {
             } else {
                 Ok(Self::NotImplemented)
             }
-        } else if let Some(result) = self.py_eq_impl(other, vm, None)? {
+        } else if let Some(result) = self.py_eq_impl(other, vm)? {
             Ok(Self::Bool(result))
         } else {
             Ok(Self::NotImplemented)
@@ -1756,55 +1756,15 @@ impl Value {
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
     }
 
-    /// Sets an attribute on this value.
-    ///
-    /// Only Dataclass objects, user-defined class instances, and class objects
-    /// support attribute setting. Returns AttributeError for other types.
-    ///
-    /// Takes ownership of `value` and drops it on error.
-    /// On success, drops the old attribute value if one existed.
+    /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
-            let old_value = match vm.heap.read(*heap_id) {
-                HeapReadOutput::Dataclass(mut dc) => dc.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
-                HeapReadOutput::Instance(mut instance) => {
-                    instance.set_attr(Self::attr_name_value(name, vm)?, value, vm)?
-                }
-                HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
-                // `defaultdict.default_factory = ...`; every other dict attribute
-                // raises the generic no-setattr error inside this method.
-                HeapReadOutput::Dict(mut dict) => dict.set_default_factory_attr(name, value, vm)?,
-                other => {
-                    let type_ = other.py_type(vm);
-                    let type_name = type_.name(vm.heap, vm.interns);
-                    value.drop_with(vm);
-                    // `deque.maxlen` exists but is read-only, which CPython reports
-                    // differently from an attribute that isn't there at all.
-                    return if type_ == Type::Deque && name.static_string() == Some(StaticStrings::Maxlen) {
-                        Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
-                    } else {
-                        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
-                    };
-                }
-            };
-            old_value.drop_with(vm);
-            Ok(())
+            vm.heap.read(*heap_id).py_set_attr(name, value, vm)
         } else {
-            let type_name = self.py_type_name(vm);
             value.drop_with(vm);
+            let type_name = self.py_type_name(vm);
             Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
         }
-    }
-
-    /// Converts an attribute `name` into a dict-key `Value` for `set_attr` calls,
-    /// reusing the interned id when available.
-    fn attr_name_value(name: &EitherStr, vm: &VM<'_>) -> RunResult<Self> {
-        Ok(match name {
-            EitherStr::Interned(string_id) => Self::InternString(*string_id),
-            // TODO: should avoid needing to clone String via `EitherStr` - maybe
-            // `EitherStr` should store a `HeapRead<Str>`?
-            EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
-        })
     }
 
     /// Extracts an integer value from the Value.

@@ -1,6 +1,6 @@
 //! Runtime behaviour for `collections.defaultdict`.
 //!
-//! A defaultdict is a `dict` tagged with [`DictKind::Default`](crate::types::DictKind),
+//! A defaultdict is a `dict` tagged with a defaultdict [`DictKind`](crate::types::DictKind),
 //! carrying its `default_factory`. The only behavioural addition is the
 //! missing-key hook below; everything else is the inherited dict surface.
 

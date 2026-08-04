@@ -1,6 +1,6 @@
 //! Runtime behaviour for `collections.Counter`.
 //!
-//! A Counter is a `dict` tagged with [`DictKind::Counter`](crate::types::DictKind);
+//! A Counter is a `dict` tagged with a `Counter` [`DictKind`](crate::types::DictKind);
 //! everything here operates on that dict through the VM by [`HeapId`] rather than
 //! on `Dict`'s internals, which is why it lives beside the module surface instead
 //! of in `types/dict.rs`. The dict method surface is inherited as-is — only the
@@ -14,7 +14,7 @@ use smallvec::smallvec;
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
-    defer_drop_mut,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{DropGuard, DropWithContext, HeapData, HeapId, HeapReadOutput},
     resource_checks::check_repeat_size,
@@ -253,25 +253,19 @@ fn counter_merge_mapping(
         };
         dict.get(vm.heap).is_empty()
     };
-    let mut pairs = pairs.into_iter();
-    while let Some((key, count)) = pairs.next() {
+    // A merge can fail on an unhashable key or a non-numeric count; the guard
+    // releases the pairs it never reached.
+    let pairs = pairs.into_iter();
+    defer_drop_mut!(pairs, vm);
+    for (key, count) in pairs.by_ref() {
         // The fast path stores `count` itself, while a bump only reads it — so
         // that branch owns the release.
-        let outcome = if is_empty && !subtract {
-            counter_set(dict_id, key, count, vm)
+        if is_empty && !subtract {
+            counter_set(dict_id, key, count, vm)?;
         } else {
             let outcome = counter_bump(dict_id, key, &count, subtract, true, vm);
             count.drop_with(vm);
-            outcome
-        };
-        if let Err(e) = outcome {
-            // A merge can fail on an unhashable key or a non-numeric count —
-            // drop the pairs we have not consumed yet.
-            for (key, count) in pairs {
-                key.drop_with(vm);
-                count.drop_with(vm);
-            }
-            return Err(e);
+            outcome?;
         }
     }
     Ok(())
@@ -307,12 +301,8 @@ pub(crate) fn counter_update_method(
     // CPython names the specific method (with the `Counter.` qualifier) here.
     let name = if subtract { "Counter.subtract" } else { "Counter.update" };
     if total > 1 {
-        if let Some(source) = source {
-            source.drop_with(vm);
-        }
-        for extra in pos {
-            extra.drop_with(vm);
-        }
+        source.drop_with(vm);
+        pos.drop_with(vm);
         kwargs.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(name, 1, 2, total + 1, 0));
     }
@@ -365,9 +355,7 @@ pub(crate) fn counter_order(counts: Vec<Value>, vm: &mut VM<'_>) -> RunResult<Ve
             }
         }
     });
-    for count in counts {
-        count.drop_with(vm);
-    }
+    counts.drop_with(vm);
     match failure {
         Some(e) => Err(e),
         None => Ok(order),
@@ -554,76 +542,51 @@ fn counter_binary_extreme(
     op: ExtremeOp,
     vm: &mut VM<'_>,
 ) -> RunResult<()> {
-    let mut l_pairs = counter_snapshot(l_id, vm).into_iter();
-    let outcome = loop {
-        let Some((key, count)) = l_pairs.next() else {
-            break Ok(());
-        };
-        let other = match counter_lookup(r_id, &key, vm) {
-            Ok(existing) => existing.unwrap_or(Value::Int(0)),
-            Err(e) => {
-                key.drop_with(vm);
-                count.drop_with(vm);
-                break Err(e);
-            }
-        };
+    // Two guards cover every failure below, so each one is a plain `?`: the outer
+    // releases the entries the loop never reached, the inner the one in flight.
+    let l_pairs = counter_snapshot(l_id, vm).into_iter();
+    defer_drop_mut!(l_pairs, vm);
+    for entry in l_pairs.by_ref() {
+        let mut entry = DropGuard::new(entry, vm);
+        let ((key, count), vm) = entry.as_parts_mut();
+        let other = counter_lookup(r_id, key, vm)?.unwrap_or(Value::Int(0));
+        let mut other = DropGuard::new(other, vm);
+        let (other_count, vm) = other.as_parts_mut();
         // `count < other`: `|` keeps `count` when it is *not* smaller, `&` keeps
         // it when it *is* smaller. The loser is released.
-        let picked = match count_holds(&count, &other, CountCmp::Lt, vm) {
-            Ok(count_is_smaller) => {
-                let keep_count = match op {
-                    ExtremeOp::Max => !count_is_smaller,
-                    ExtremeOp::Min => count_is_smaller,
-                };
-                if keep_count {
-                    other.drop_with(vm);
-                    count
-                } else {
-                    count.drop_with(vm);
-                    other
-                }
-            }
-            Err(e) => {
-                count.drop_with(vm);
-                other.drop_with(vm);
-                key.drop_with(vm);
-                break Err(e);
-            }
+        let count_is_smaller = count_holds(count, other_count, CountCmp::Lt, vm)?;
+        let keep_count = match op {
+            ExtremeOp::Max => !count_is_smaller,
+            ExtremeOp::Min => count_is_smaller,
         };
-        if let Err(e) = counter_set(result_id, key, picked, vm) {
-            break Err(e);
-        }
-    };
-    drain_pairs(l_pairs, vm);
-    outcome?;
+        let other = other.into_inner();
+        let ((key, count), vm) = entry.into_parts();
+        let picked = if keep_count {
+            other.drop_with(vm);
+            count
+        } else {
+            count.drop_with(vm);
+            other
+        };
+        // `counter_set` consumes both, releasing them itself if the store fails.
+        counter_set(result_id, key, picked, vm)?;
+    }
 
     if matches!(op, ExtremeOp::Max) {
-        let mut r_pairs = counter_snapshot(r_id, vm).into_iter();
-        let outcome = loop {
-            let Some((key, count)) = r_pairs.next() else {
-                break Ok(());
-            };
-            match counter_lookup(l_id, &key, vm) {
-                // Shared keys were already resolved in the left pass.
-                Ok(Some(existing)) => {
-                    existing.drop_with(vm);
-                    key.drop_with(vm);
-                    count.drop_with(vm);
-                }
-                Ok(None) => {
-                    if let Err(e) = counter_set(result_id, key, count, vm) {
-                        break Err(e);
-                    }
-                }
-                Err(e) => {
-                    key.drop_with(vm);
-                    count.drop_with(vm);
-                    break Err(e);
-                }
+        let r_pairs = counter_snapshot(r_id, vm).into_iter();
+        defer_drop_mut!(r_pairs, vm);
+        for entry in r_pairs.by_ref() {
+            let mut entry = DropGuard::new(entry, vm);
+            let ((key, _), vm) = entry.as_parts_mut();
+            // Shared keys were already resolved in the left pass, so the guard
+            // releases this entry; only a right-only key reaches the result.
+            if let Some(existing) = counter_lookup(l_id, key, vm)? {
+                existing.drop_with(vm);
+            } else {
+                let ((key, count), vm) = entry.into_parts();
+                counter_set(result_id, key, count, vm)?;
             }
-        };
-        drain_pairs(r_pairs, vm);
-        outcome?;
+        }
     }
     Ok(())
 }
@@ -662,58 +625,40 @@ pub(crate) fn counter_compare(l_id: HeapId, r_id: HeapId, cmp: CounterCmp, vm: &
     // tracks whether every compared pair matched, which the strict forms need.
     let mut holds = true;
     let mut equal = true;
-    // `counter_union_counts` hands back owned pairs the caller must drop. Iterate
-    // by hand so a short-circuit (`!holds`) or a failing comparison still drains
-    // the un-compared remainder — a bare `for` loop drops them via plain `Drop`,
-    // which never debits the heap refcount, leaking every remaining pair.
-    let mut pairs = counter_union_counts(l_id, r_id, vm)?.into_iter();
-    while let Some((l, r)) = pairs.next() {
+    // `counter_union_counts` hands back owned pairs the caller must drop. The
+    // guard covers every exit — a short-circuit (`!holds`), a failing comparison,
+    // and normal exhaustion — releasing whatever the loop never compared.
+    let pairs = counter_union_counts(l_id, r_id, vm)?.into_iter();
+    defer_drop_mut!(pairs, vm);
+    for pair in pairs.by_ref() {
+        defer_drop!(pair, vm);
+        let (l, r) = pair;
         // One `py_cmp` yields both the loose check and the equality the strict
         // forms need. A `NaN` pair is unordered: the loose comparison fails (as
         // in CPython, `nan <= x` is false) and the pair counts as not-equal.
-        match l.py_cmp(&r, vm) {
-            Ok(CmpOrder::Ordered(Ordering::Equal)) => {}
-            Ok(CmpOrder::Ordered(ordering)) => {
+        match l.py_cmp(r, vm)? {
+            CmpOrder::Ordered(Ordering::Equal) => {}
+            CmpOrder::Ordered(ordering) => {
                 holds &= op.holds(ordering);
                 equal = false;
             }
-            Ok(CmpOrder::Unordered) => {
+            CmpOrder::Unordered => {
                 holds = false;
                 equal = false;
             }
-            Ok(CmpOrder::Incomparable) => {
-                let e = ExcType::type_error_ordering(op.symbol(), &l.py_type_name(vm), &r.py_type_name(vm));
-                l.drop_with(vm);
-                r.drop_with(vm);
-                drain_pairs(pairs, vm);
-                return Err(e);
-            }
-            Err(e) => {
-                l.drop_with(vm);
-                r.drop_with(vm);
-                drain_pairs(pairs, vm);
-                return Err(e);
+            CmpOrder::Incomparable => {
+                return Err(ExcType::type_error_ordering(
+                    op.symbol(),
+                    &l.py_type_name(vm),
+                    &r.py_type_name(vm),
+                ));
             }
         }
-        l.drop_with(vm);
-        r.drop_with(vm);
         if !holds {
             break;
         }
     }
-    // Release any pairs left after an early `break` (a no-op once exhausted).
-    drain_pairs(pairs, vm);
     Ok(holds && (!strict || !equal))
-}
-
-/// Drops every remaining `(Value, Value)` pair from an iterator, debiting the
-/// heap refcount each holds. Used to release the un-consumed tail after an early
-/// exit, where a plain `Drop` of the iterator would leak (it never sees the VM).
-fn drain_pairs(pairs: impl Iterator<Item = (Value, Value)>, vm: &mut VM<'_>) {
-    for (a, b) in pairs {
-        a.drop_with(vm);
-        b.drop_with(vm);
-    }
 }
 
 /// Pairs up the counts of two Counters over the union of their keys, with a
@@ -722,47 +667,37 @@ fn drain_pairs(pairs: impl Iterator<Item = (Value, Value)>, vm: &mut VM<'_>) {
 /// Returns owned clones so the caller can run comparisons that need `&mut VM`.
 /// Every returned pair must be dropped by the caller.
 fn counter_union_counts(l_id: HeapId, r_id: HeapId, vm: &mut VM<'_>) -> RunResult<Vec<(Value, Value)>> {
-    let mut pairs = Vec::new();
+    // Three guards, so a failing lookup is a plain `?`: the pairs accumulated so
+    // far, the entries not yet visited, and the entry in flight all get released.
+    let mut pairs = DropGuard::new(Vec::new(), vm);
     // Left keys against their right counterparts, then the right-only keys.
     for (keys_id, other_id, flip) in [(l_id, r_id, false), (r_id, l_id, true)] {
-        let mut entries = counter_snapshot(keys_id, vm).into_iter();
-        let outcome = loop {
-            let Some((key, count)) = entries.next() else {
-                break Ok(());
-            };
-            let other = match counter_lookup(other_id, &key, vm) {
-                Ok(other) => other,
-                Err(e) => {
-                    key.drop_with(vm);
-                    count.drop_with(vm);
-                    break Err(e);
-                }
-            };
+        let (collected, vm) = pairs.as_parts_mut();
+        let entries = counter_snapshot(keys_id, vm).into_iter();
+        defer_drop_mut!(entries, vm);
+        for entry in entries.by_ref() {
+            let mut entry = DropGuard::new(entry, vm);
+            let ((key, _), vm) = entry.as_parts_mut();
+            let other = counter_lookup(other_id, key, vm)?;
             // On the second pass only keys absent from the left are new; the
-            // shared ones were already paired, so skip them.
+            // shared ones were already paired, so skip them (the guard releases
+            // the entry); otherwise the count moves into `collected`.
             match (flip, other) {
-                (true, Some(other)) => {
-                    other.drop_with(vm);
-                    count.drop_with(vm);
+                (true, Some(other)) => other.drop_with(vm),
+                (true, None) => {
+                    let ((key, count), vm) = entry.into_parts();
+                    key.drop_with(vm);
+                    collected.push((Value::Int(0), count));
                 }
-                (true, None) => pairs.push((Value::Int(0), count)),
-                (false, other) => pairs.push((count, other.unwrap_or(Value::Int(0)))),
+                (false, other) => {
+                    let ((key, count), vm) = entry.into_parts();
+                    key.drop_with(vm);
+                    collected.push((count, other.unwrap_or(Value::Int(0))));
+                }
             }
-            key.drop_with(vm);
-        };
-        for (key, count) in entries {
-            key.drop_with(vm);
-            count.drop_with(vm);
-        }
-        if let Err(e) = outcome {
-            for (l, r) in pairs {
-                l.drop_with(vm);
-                r.drop_with(vm);
-            }
-            return Err(e);
         }
     }
-    Ok(pairs)
+    Ok(pairs.into_inner())
 }
 
 /// Applies a `Counter` algebra operator **in place**, mutating `l_id`.
@@ -789,99 +724,51 @@ pub(crate) fn counter_inplace_op(l_id: HeapId, rhs: &Value, op: CounterOp, vm: &
         //     self[elem] = other_count` — walks *other*, so new keys can appear.
         CounterOp::Or => {
             let r_id = counter_require_mapping(rhs, vm)?;
-            let mut r_pairs = counter_snapshot(r_id, vm).into_iter();
-            let outcome = loop {
-                let Some((key, other_count)) = r_pairs.next() else {
-                    break Ok(());
-                };
+            let r_pairs = counter_snapshot(r_id, vm).into_iter();
+            defer_drop_mut!(r_pairs, vm);
+            for entry in r_pairs.by_ref() {
+                let mut entry = DropGuard::new(entry, vm);
+                let ((key, other_count), vm) = entry.as_parts_mut();
                 // A key absent from `self` reads as 0 (`self[elem]`).
-                let count = match counter_lookup(l_id, &key, vm) {
-                    Ok(existing) => existing.unwrap_or(Value::Int(0)),
-                    Err(e) => {
-                        key.drop_with(vm);
-                        other_count.drop_with(vm);
-                        break Err(e);
-                    }
-                };
+                let count = counter_lookup(l_id, key, vm)?.unwrap_or(Value::Int(0));
                 // `other_count > self[elem]`: other first, so the TypeError names it first.
-                let bigger = match count_holds(&other_count, &count, CountCmp::Gt, vm) {
-                    Ok(true) => {
-                        count.drop_with(vm);
-                        Some(other_count)
-                    }
-                    Ok(false) => {
-                        count.drop_with(vm);
-                        other_count.drop_with(vm);
-                        None
-                    }
-                    Err(e) => {
-                        count.drop_with(vm);
-                        other_count.drop_with(vm);
-                        key.drop_with(vm);
-                        break Err(e);
-                    }
-                };
-                match bigger {
-                    Some(bigger) => {
-                        if let Err(e) = counter_set(l_id, key, bigger, vm) {
-                            break Err(e);
-                        }
-                    }
-                    None => key.drop_with(vm),
+                let bigger = count_holds(other_count, &count, CountCmp::Gt, vm);
+                count.drop_with(vm);
+                // A count that is not bigger leaves `self` alone, and the guard
+                // releases the entry — as it does if the comparison raised.
+                if bigger? {
+                    let ((key, other_count), vm) = entry.into_parts();
+                    counter_set(l_id, key, other_count, vm)?;
                 }
-            };
-            drain_pairs(r_pairs, vm);
-            outcome?;
+            }
         }
         // `for elem, count in self.items(): if other[elem] < count:
         //     self[elem] = other[elem]` — walks *self*, subscripting `other`.
         CounterOp::And => {
-            let mut pairs = counter_snapshot(l_id, vm).into_iter();
-            let outcome = loop {
-                let Some((key, count)) = pairs.next() else {
-                    break Ok(());
-                };
+            let pairs = counter_snapshot(l_id, vm).into_iter();
+            defer_drop_mut!(pairs, vm);
+            for entry in pairs.by_ref() {
+                let mut entry = DropGuard::new(entry, vm);
+                let ((key, count), vm) = entry.as_parts_mut();
                 // `other[elem]` is a real subscript: a Counter yields 0 for a
                 // missing key, a plain dict raises `KeyError`, and a non-mapping
                 // raises its subscript error — exactly CPython's `__iand__`. An
                 // empty `self` never reaches here, so `c &= 5` is a no-op then.
-                let other_count = match rhs.py_getitem(&key, vm) {
-                    Ok(existing) => existing,
-                    Err(e) => {
-                        key.drop_with(vm);
-                        count.drop_with(vm);
-                        break Err(e);
-                    }
-                };
+                let other_count = rhs.py_getitem(key, vm)?;
+                let mut other_count = DropGuard::new(other_count, vm);
+                let (other, vm) = other_count.as_parts_mut();
                 // `other[elem] < count`: other first, matching CPython's wording.
-                let smaller = match count_holds(&other_count, &count, CountCmp::Lt, vm) {
-                    Ok(true) => {
-                        count.drop_with(vm);
-                        Some(other_count)
-                    }
-                    Ok(false) => {
-                        other_count.drop_with(vm);
-                        count.drop_with(vm);
-                        None
-                    }
-                    Err(e) => {
-                        other_count.drop_with(vm);
-                        count.drop_with(vm);
-                        key.drop_with(vm);
-                        break Err(e);
-                    }
-                };
-                match smaller {
-                    Some(smaller) => {
-                        if let Err(e) = counter_set(l_id, key, smaller, vm) {
-                            break Err(e);
-                        }
-                    }
-                    None => key.drop_with(vm),
+                let is_smaller = count_holds(other, count, CountCmp::Lt, vm)?;
+                // Only the smaller of the two survives; the guards release the
+                // loser, the whole entry when nothing changes, and both if the
+                // comparison raised.
+                if is_smaller {
+                    let smaller = other_count.into_inner();
+                    let ((key, count), vm) = entry.into_parts();
+                    count.drop_with(vm);
+                    counter_set(l_id, key, smaller, vm)?;
                 }
-            };
-            drain_pairs(pairs, vm);
-            outcome?;
+            }
         }
     }
     counter_retain_positive(l_id, vm)
@@ -900,51 +787,37 @@ pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> Run
     // early-returns would otherwise leak.
     let mut result_guard = DropGuard::new(Value::Ref(result_id), vm);
     let vm = result_guard.ctx();
-    let mut pairs = counter_snapshot(id, vm).into_iter();
-    let outcome = loop {
-        let Some((k, c)) = pairs.next() else {
-            break Ok(());
-        };
-        // `-c` filters on `count < 0` first (reporting `<` for an unorderable
-        // count, dropping a NaN), then stores `0 - count`. `+c` copies the count
-        // through and lets the trailing `retain_positive` apply the `> 0` strip.
-        let stored = if negate {
-            match count_holds(&c, &Value::Int(0), CountCmp::Lt, vm) {
-                Ok(true) => {
-                    let negated = count_arith(&Value::Int(0), &c, true, vm);
-                    c.drop_with(vm);
-                    match negated {
-                        Ok(negated) => Some(negated),
-                        Err(e) => {
-                            k.drop_with(vm);
-                            break Err(e);
-                        }
-                    }
+    // Scoped so the iterator guard releases its borrow of `result_guard` before
+    // the result is handed back.
+    {
+        let pairs = counter_snapshot(id, vm).into_iter();
+        defer_drop_mut!(pairs, vm);
+        for entry in pairs.by_ref() {
+            let mut entry = DropGuard::new(entry, vm);
+            let ((_, count), vm) = entry.as_parts_mut();
+            // `-c` filters on `count < 0` first (reporting `<` for an unorderable
+            // count, dropping a NaN), then stores `0 - count`. `+c` copies the count
+            // through and lets the trailing `retain_positive` apply the `> 0` strip.
+            let negated = if negate {
+                if !count_holds(count, &Value::Int(0), CountCmp::Lt, vm)? {
+                    // Not negative, so nothing is stored; the guard releases the entry.
+                    continue;
                 }
-                Ok(false) => {
-                    c.drop_with(vm);
-                    None
+                Some(count_arith(&Value::Int(0), count, true, vm)?)
+            } else {
+                None
+            };
+            let ((key, count), vm) = entry.into_parts();
+            let stored = match negated {
+                Some(negated) => {
+                    count.drop_with(vm);
+                    negated
                 }
-                Err(e) => {
-                    c.drop_with(vm);
-                    k.drop_with(vm);
-                    break Err(e);
-                }
-            }
-        } else {
-            Some(c)
-        };
-        match stored {
-            Some(count) => {
-                if let Err(e) = counter_set(result_id, k, count, vm) {
-                    break Err(e);
-                }
-            }
-            None => k.drop_with(vm),
+                None => count,
+            };
+            counter_set(result_id, key, stored, vm)?;
         }
-    };
-    drain_pairs(pairs, vm);
-    outcome?;
+    }
     counter_retain_positive(result_id, vm)?;
     Ok(result_guard.into_inner())
 }
@@ -952,15 +825,13 @@ pub(crate) fn counter_unary_op(id: HeapId, negate: bool, vm: &mut VM<'_>) -> Run
 /// Folds a batch of `(key, delta)` pairs into the Counter `id`, releasing any
 /// pairs left unconsumed when a bump fails.
 fn counter_bump_all(id: HeapId, pairs: Vec<(Value, Value)>, subtract: bool, vm: &mut VM<'_>) -> RunResult<()> {
-    let mut pairs = pairs.into_iter();
-    while let Some((key, delta)) = pairs.next() {
+    let pairs = pairs.into_iter();
+    defer_drop_mut!(pairs, vm);
+    for (key, delta) in pairs.by_ref() {
         // `counter_bump` borrows the delta, so each one is released here.
         let outcome = counter_bump(id, key, &delta, subtract, false, vm);
         delta.drop_with(vm);
-        if let Err(e) = outcome {
-            drain_pairs(pairs, vm);
-            return Err(e);
-        }
+        outcome?;
     }
     Ok(())
 }
@@ -1008,43 +879,36 @@ fn counter_set(id: HeapId, key: Value, count: Value, vm: &mut VM<'_>) -> RunResu
 
 /// Removes every entry whose count is not strictly positive from the Counter `id`.
 fn counter_retain_positive(id: HeapId, vm: &mut VM<'_>) -> RunResult<()> {
-    let entries: Vec<(Value, Value)> = counter_snapshot(id, vm);
-    let mut remove: Vec<Value> = Vec::new();
-    let mut entries = entries.into_iter();
-    let outcome = loop {
-        let Some((key, count)) = entries.next() else {
-            break Ok(());
-        };
-        let positive = count_is_positive(&count, vm);
-        count.drop_with(vm);
-        match positive {
-            Ok(true) => key.drop_with(vm),
-            Ok(false) => remove.push(key),
-            Err(e) => {
-                key.drop_with(vm);
-                break Err(e);
+    // The keys to remove are collected first: the scan clones them out of the
+    // dict, so popping while iterating is not possible. Both guards release what
+    // they still hold if a count comparison — or a `pop` hashing a key — raises.
+    let mut remove = DropGuard::new(Vec::new(), vm);
+    {
+        let (remove, vm) = remove.as_parts_mut();
+        let entries = counter_snapshot(id, vm).into_iter();
+        defer_drop_mut!(entries, vm);
+        for entry in entries.by_ref() {
+            let mut entry = DropGuard::new(entry, vm);
+            let ((_, count), vm) = entry.as_parts_mut();
+            let positive = count_is_positive(count, vm)?;
+            if !positive {
+                let ((key, count), vm) = entry.into_parts();
+                count.drop_with(vm);
+                remove.push(key);
             }
         }
-    };
-    for (key, count) in entries {
-        key.drop_with(vm);
-        count.drop_with(vm);
     }
-    if let Err(e) = outcome {
-        for key in remove {
-            key.drop_with(vm);
-        }
-        return Err(e);
-    }
-    for key in remove {
+    let (remove, vm) = remove.into_parts();
+    let remove = remove.into_iter();
+    defer_drop_mut!(remove, vm);
+    for key in remove.by_ref() {
+        defer_drop!(key, vm);
         let HeapReadOutput::Dict(mut dict) = vm.heap.read(id) else {
             unreachable!("counter_retain_positive on a non-dict heap entry");
         };
-        if let Some((old_key, old_val)) = dict.pop(&key, vm)? {
-            old_key.drop_with(vm);
-            old_val.drop_with(vm);
+        if let Some(old) = dict.pop(key, vm)? {
+            old.drop_with(vm);
         }
-        key.drop_with(vm);
     }
     Ok(())
 }

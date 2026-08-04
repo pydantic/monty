@@ -1,128 +1,91 @@
 //! A single worker the pool drives over the wire protocol: either a local
 //! `monty subprocess` child (framed stdio) or a remote child reached over a
-//! WebSocket. Both expose the same send/recv/kill surface so the checkout turn
-//! loop and the watchdog are transport-agnostic.
+//! WebSocket. Both expose the same async send/recv/kill surface so the
+//! checkout turn loop is transport-agnostic.
 //!
-//! TODO(async pool): the pool is blocking/threaded, so the WebSocket worker uses
-//! a *synchronous* client and each in-flight remote turn pins one thread for the
-//! whole network round trip. To scale to many concurrent remote sandboxes,
-//! `monty-pool` should become async end-to-end (tokio + `tokio-tungstenite`) so
-//! those turns share event-loop threads instead of one blocking thread each.
+//! `recv` must be cancel-safe: the checkout races each turn against a
+//! `tokio::time` deadline, and dropping a plain `read_exact` future mid-frame
+//! would lose bytes and desync the stream. Rather than paying for a pump task
+//! and channel per worker (a cross-task wakeup per event), cancel-safety comes
+//! from keeping the partial-frame state *in the worker*: [`FrameRecv`] holds
+//! the buffer and fill offset across polls, so a dropped `recv` future loses
+//! nothing and the next call resumes exactly where it stopped. The WebSocket
+//! transport gets the same property for free — partial-message state lives
+//! inside the `WebSocketStream`, and `Stream::poll_next` is cancel-safe.
 
 use std::{
     env,
-    net::{Shutdown, TcpStream, ToSocketAddrs},
     path::PathBuf,
-    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-    sync::{
-        Arc, Mutex, MutexGuard, Once, PoisonError,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
-    time::{Duration, Instant},
+    process::{ExitStatus, Stdio},
+    sync::Once,
+    time::Duration,
 };
 
-use monty_proto::{FrameError, FrameReader, MAX_FRAME_LEN, decode_frame, encode_to_capped_vec, pb, write_frame};
+use futures_util::{SinkExt, StreamExt};
+use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
 use rustls::crypto::aws_lc_rs::default_provider;
-use tungstenite::{
-    Error as WsError, Message, WebSocket,
-    client::{IntoClientRequest, uri_mode},
-    client_tls_with_config,
-    protocol::WebSocketConfig,
-    stream::{MaybeTlsStream, Mode},
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    process::{Child, ChildStdin, ChildStdout, Command},
+    runtime::{Handle, RuntimeFlavor},
+    task::block_in_place,
+    time::timeout,
+};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
+    tungstenite::{Error as WsError, Message, protocol::WebSocketConfig},
 };
 
 use crate::{MontyTransport, PoolConfig, PoolError};
 
-/// The synchronous WebSocket client socket type for a remote worker.
-type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
+/// The async WebSocket stream type for a remote worker.
+type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-/// A worker plus its recycle counter. The transport-specific I/O state lives in
-/// [`WorkerKind`]; `checkouts_served` is shared logic.
+/// A worker plus its recycle counter. The transport-specific I/O halves live
+/// in [`WorkerKind`]; both transports keep any partial-read state inside the
+/// worker so `recv` is cancel-safe (see the module docs).
 pub(crate) struct Worker {
     kind: WorkerKind,
-    /// Shared kill channel: the watchdog clones it to interrupt this worker's
-    /// blocked read on a deadline, and the worker reads/resets the timeout flag
-    /// and kills through it during teardown. Identical for both transports, so
-    /// it lives here rather than being duplicated inside each [`WorkerKind`].
-    interrupt: Arc<Interrupt>,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
 }
 
-/// The two transports a worker can speak the protocol over.
+/// The two transports a worker can speak the protocol over. Both variants are
+/// boxed: the WebSocket stream (TLS state and buffers) and the subprocess
+/// handles + frame-read state are each far larger than a pointer, and workers
+/// move through the idle queue by value.
 enum WorkerKind {
-    Subprocess(SubprocessWorker),
-    // Boxed: the WebSocket socket (with its TLS state and buffers) is far larger
-    // than the subprocess handle, so inlining it would bloat every `Worker`.
+    Subprocess(Box<SubprocessWorker>),
     WebSocket(Box<WebSocketWorker>),
 }
 
-/// A local `monty subprocess` child with framed stdio pipes.
-///
-/// The `Child` handle lives behind `Arc<Mutex<..>>` so the watchdog can kill the
-/// process while the owning thread is blocked reading from it.
+/// A local `monty subprocess` child: the process handle (kill-on-drop), its
+/// framed stdin, and the cancel-safe stdout frame reader.
 struct SubprocessWorker {
-    /// The child handle, shared (`Arc`) with the worker's [`Interrupt`] so the
-    /// watchdog can kill the process while the owner is blocked reading it.
-    child: Arc<Mutex<Child>>,
-    writer: ChildStdin,
-    reader: FrameReader<ChildStdout>,
+    child: Child,
+    stdin: ChildStdin,
+    recv: FrameRecv,
+    /// Reused encode buffer for outgoing frames (see [`Worker::send`]).
+    send_buf: Vec<u8>,
 }
 
 /// A remote child reached over a WebSocket. One binary message per protocol
-/// frame (no length prefix — the message boundary is the frame). The watchdog
-/// interrupts a blocked read by shutting down the raw TCP socket the worker's
-/// [`Interrupt`] holds a clone of (the WebSocket analogue of killing a child).
+/// frame (no length prefix — the message boundary is the frame). `Option` so
+/// teardown can drop the stream in place: dropping it closes the TCP
+/// connection — the async analogue of killing a child.
 struct WebSocketWorker {
-    socket: WsSocket,
-    /// Set once the connection is closed/killed, so `is_dead` reports it.
-    closed: Arc<AtomicBool>,
-}
-
-impl WebSocketWorker {
-    /// Sends one event as a single binary WebSocket message (no length prefix), and
-    /// flushes — the protocol is strict alternation, so the frame must hit the wire.
-    fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
-        // encode first: an oversize frame must be rejected before any I/O so the
-        // worker stays synced (see `request_turn`)
-        let body = encode_to_capped_vec(request)?;
-        self.socket
-            .write(Message::Binary(body.into()))
-            .map_err(ws_to_frame_error)?;
-        self.socket.flush().map_err(ws_to_frame_error)
-    }
-
-    /// Reads one `ChildEvent` from the WebSocket, skipping control frames. A
-    /// close/EOF *without* a prior turn-ender means the remote worker is gone —
-    /// surfaced as [`FrameError::Truncated`], which the checkout classifies as
-    /// [`crate::PoolError::Disconnected`].
-    fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
-        loop {
-            match self.socket.read() {
-                Ok(Message::Binary(data)) => return decode_frame::<pb::ChildEvent>(data.as_ref()),
-                // tungstenite auto-queues the Pong; flush it and keep reading.
-                Ok(Message::Ping(_)) => {
-                    let _ = self.socket.flush();
-                }
-                Ok(Message::Pong(_)) => {}
-                // A clean close, or text/raw frames the protocol never uses.
-                Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_)) => return Err(FrameError::Truncated),
-                Err(WsError::Io(err)) => return Err(FrameError::Io(err)),
-                Err(_) => return Err(FrameError::Truncated),
-            }
-        }
-    }
+    stream: Option<WsStream>,
 }
 
 impl Worker {
-    pub(crate) fn new(config: &PoolConfig) -> Result<Self, PoolError> {
+    pub(crate) async fn new(config: &PoolConfig) -> Result<Self, PoolError> {
         match &config.transport {
             MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
-                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT))
+                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT)).await
             }
         }
     }
@@ -139,7 +102,10 @@ impl Worker {
             // For extra safety, spawn the worker with an empty environment.
             .env_clear()
             .stdin(Stdio::piped())
-            .stdout(Stdio::piped());
+            .stdout(Stdio::piped())
+            // the pool must never leak a live sandbox: an abandoned handle
+            // kills the child even when no explicit teardown ran
+            .kill_on_drop(true);
         // Windows processes misbehave without SystemRoot (CRT and WinAPI
         // lookups); it names the OS install directory and is not sensitive.
         if cfg!(windows)
@@ -152,107 +118,128 @@ impl Worker {
             .spawn()
             .map_err(|err| PoolError::Spawn(format!("{}: {err}", binary_path.display())))?;
 
-        let writer = child.stdin.take().expect("piped stdin");
-        let reader = FrameReader::new(child.stdout.take().expect("piped stdout"));
-        let child = Arc::new(Mutex::new(child));
-        let interrupt = Interrupt::new(InterruptKind::Subprocess(Arc::clone(&child)));
-        Ok(Self::with_kind(
-            WorkerKind::Subprocess(SubprocessWorker { child, writer, reader }),
-            interrupt,
-        ))
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        Ok(Self {
+            kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
+                child,
+                stdin,
+                recv: FrameRecv::new(stdout),
+                send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
+            })),
+            checkouts_served: 0,
+        })
     }
 
     /// Connects to a remote child over a WebSocket, dialing `url` verbatim. Any
     /// session/rendezvous routing the URL needs is the caller's responsibility.
     ///
-    /// `timeout` bounds the dial (TCP connect + TLS/WS handshake): `checkout_timeout`
-    /// only covers waiting for capacity, not the synchronous handshake that follows,
-    /// so a hung dial would otherwise stall the checkout forever.
-    fn websocket(url: &str, timeout: Duration) -> Result<Self, PoolError> {
+    /// `dial_timeout` bounds the whole dial (DNS + TCP connect + TLS/WS
+    /// handshake): `checkout_timeout` only covers waiting for capacity, so a
+    /// hung dial would otherwise stall the checkout forever. Frame/message
+    /// limits are raised to monty's [`MAX_FRAME_LEN`] so the transport never
+    /// rejects a frame the protocol itself would accept.
+    async fn websocket(url: &str, dial_timeout: Duration) -> Result<Self, PoolError> {
         install_crypto_provider();
-        let socket = dial_ws(url, timeout)?;
-        // Clone the underlying TCP socket up front for the watchdog's interrupt
-        // handle (reaching it through the TLS stream once connected). Without it
-        // the watchdog could never unblock a hung read, silently voiding the
-        // hard-timeout guarantee — so refuse the worker rather than build one we
-        // can't kill.
-        let tcp = underlying_tcp(socket.get_ref())
-            .and_then(|tcp| tcp.try_clone().ok())
-            .ok_or_else(|| {
-                PoolError::Spawn(format!(
-                    "{url}: could not clone the connection socket for timeout enforcement"
-                ))
-            })?;
-        let interrupt = Interrupt::new(InterruptKind::WebSocket(tcp));
-        Ok(Self::with_kind(
-            WorkerKind::WebSocket(Box::new(WebSocketWorker {
-                socket,
-                closed: Arc::new(AtomicBool::new(false)),
-            })),
-            interrupt,
-        ))
-    }
-
-    fn with_kind(kind: WorkerKind, interrupt: Arc<Interrupt>) -> Self {
-        Self {
-            kind,
-            interrupt,
+        let ws_config = WebSocketConfig::default()
+            .max_frame_size(Some(MAX_FRAME_LEN as usize))
+            .max_message_size(Some(MAX_FRAME_LEN as usize));
+        let dial = connect_async_tls_with_config(url, Some(ws_config), true, None);
+        let (stream, _response) = timeout(dial_timeout, dial)
+            .await
+            .map_err(|_| PoolError::Spawn(format!("{url}: connect timed out after {dial_timeout:?}")))?
+            .map_err(|err| PoolError::Spawn(format!("{url}: {err}")))?;
+        Ok(Self {
+            kind: WorkerKind::WebSocket(Box::new(WebSocketWorker { stream: Some(stream) })),
             checkouts_served: 0,
+        })
+    }
+
+    /// Sends one request, flushed to the wire — the protocol is strict
+    /// alternation, so an unflushed frame would deadlock both sides. An
+    /// oversize frame is rejected *before* any I/O so the stream stays synced
+    /// (see `Checkout::request_turn`).
+    pub(crate) async fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+        match &mut self.kind {
+            WorkerKind::Subprocess(w) => {
+                // prefix + body in one reused buffer: a single write syscall
+                // per request, no per-frame allocation, and a pipe write needs
+                // no flush
+                encode_framed_into(request, &mut w.send_buf)?;
+                w.stdin.write_all(&w.send_buf).await?;
+                // don't let one huge frame pin its capacity for the worker's life
+                if w.send_buf.capacity() > RETAIN_BUF_MAX {
+                    w.send_buf = Vec::with_capacity(SEND_BUF_CAPACITY);
+                }
+                Ok(())
+            }
+            WorkerKind::WebSocket(w) => {
+                let body = encode_to_capped_vec(request)?;
+                match &mut w.stream {
+                    Some(stream) => stream
+                        .send(Message::Binary(body.into()))
+                        .await
+                        .map_err(ws_to_frame_error),
+                    None => Err(FrameError::Truncated),
+                }
+            }
         }
     }
 
-    pub(crate) fn send(&mut self, request: &pb::ParentRequest) -> Result<(), FrameError> {
+    /// Receives one event. EOF/close is an error here because within a
+    /// checkout the child must never close its side first.
+    ///
+    /// Cancel-safe: partial-frame state persists in the worker (see the
+    /// module docs), which is what lets `Checkout` race a turn against its
+    /// deadline.
+    pub(crate) async fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
         match &mut self.kind {
-            WorkerKind::Subprocess(w) => write_frame(&mut w.writer, request),
-            WorkerKind::WebSocket(w) => w.send(request),
-        }
-    }
-
-    /// Reads one event; EOF/close is an error here because within a checkout the
-    /// child must never close its side first.
-    pub(crate) fn recv(&mut self) -> Result<pb::ChildEvent, FrameError> {
-        match &mut self.kind {
-            WorkerKind::Subprocess(w) => w.reader.read::<pb::ChildEvent>()?.ok_or(FrameError::Truncated),
-            WorkerKind::WebSocket(w) => w.recv(),
+            WorkerKind::Subprocess(w) => match w.recv.recv().await? {
+                Some(event) => Ok(event),
+                None => Err(FrameError::Truncated), // clean EOF mid-checkout is still a vanished peer
+            },
+            WorkerKind::WebSocket(w) => {
+                // Read the next binary message. Ping/Pong are handled by
+                // tokio-tungstenite itself and skipped here; a close, EOF, or
+                // any frame the protocol never uses is surfaced as
+                // `Truncated`, which the checkout classifies as
+                // `PoolError::Disconnected`.
+                let Some(stream) = &mut w.stream else {
+                    return Err(FrameError::Truncated);
+                };
+                let data = loop {
+                    match stream.next().await {
+                        Some(Ok(Message::Binary(data))) => break data,
+                        Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                        // A clean close, or text/raw frames the protocol never uses.
+                        Some(Ok(Message::Close(_) | Message::Text(_) | Message::Frame(_))) | None => {
+                            return Err(FrameError::Truncated);
+                        }
+                        Some(Err(WsError::Io(err))) => return Err(FrameError::Io(err)),
+                        Some(Err(_)) => return Err(FrameError::Truncated),
+                    }
+                };
+                decode_event(&data)
+            }
         }
     }
 
     /// The OS process id, when the worker is a local subprocess (`None` for a
-    /// remote WebSocket worker, which has no local process).
+    /// remote WebSocket worker, or once the child has been reaped).
     pub(crate) fn pid(&self) -> Option<u32> {
         match &self.kind {
-            WorkerKind::Subprocess(w) => Some(lock_ignore_poison(&w.child).id()),
+            WorkerKind::Subprocess(w) => w.child.id(),
             WorkerKind::WebSocket(_) => None,
         }
     }
 
-    /// The worker's shared kill channel. The watchdog clones it to arm a
-    /// deadline; the worker reads and resets the timeout flag through it.
-    pub(crate) fn interrupt(&self) -> &Arc<Interrupt> {
-        &self.interrupt
-    }
-
-    /// Whether the watchdog killed this worker (consumes the flag's meaning:
-    /// call once when classifying a read failure).
-    pub(crate) fn was_killed_for_timeout(&self) -> bool {
-        self.interrupt().was_killed_for_timeout()
-    }
-
-    /// Clears the sticky timeout flag at the start of a turn, scoping it to the
-    /// currently-armed deadline. The watchdog sets the flag but never clears it,
-    /// so without this reset a stale kill could misclassify the next turn's
-    /// first I/O failure as a timeout.
-    pub(crate) fn reset_killed_for_timeout(&self) {
-        self.interrupt().reset_killed_for_timeout();
-    }
-
     /// Whether the worker has already died (used to discard workers that died
     /// while idle in the pool). WebSocket workers are never pooled idle, so
-    /// this only reflects an already-observed close for them.
-    pub(crate) fn is_dead(&self) -> bool {
-        match &self.kind {
-            WorkerKind::Subprocess(w) => lock_ignore_poison(&w.child).try_wait().is_ok_and(|s| s.is_some()),
-            WorkerKind::WebSocket(w) => w.closed.load(Ordering::SeqCst),
+    /// they always report alive here.
+    pub(crate) fn is_dead(&mut self) -> bool {
+        match &mut self.kind {
+            WorkerKind::Subprocess(w) => w.child.try_wait().is_ok_and(|status| status.is_some()),
+            WorkerKind::WebSocket(_) => false,
         }
     }
 
@@ -262,52 +249,157 @@ impl Worker {
     /// For deaths the child *announces* before exiting — a `FatalError`, where
     /// it deliberately sets an exit code — killing it immediately would race
     /// its own exit and report the signal instead of that code, losing the one
-    /// diagnostic the announcement was made to carry. Polling rather than
-    /// blocking on `wait`, which has no timeout, keeps a wedged child from
-    /// hanging the caller.
-    pub(crate) fn reap_or_kill(&mut self, grace: Duration) -> Option<ExitStatus> {
-        if let WorkerKind::Subprocess(w) = &self.kind {
-            let start = Instant::now();
-            loop {
-                if let Ok(Some(status)) = lock_ignore_poison(&w.child).try_wait() {
-                    return Some(status);
-                } else if start.elapsed() >= grace {
-                    break;
-                }
-                thread::sleep(REAP_POLL_INTERVAL);
-            }
+    /// diagnostic the announcement was made to carry.
+    pub(crate) async fn reap_or_kill(&mut self, grace: Duration) -> Option<ExitStatus> {
+        if let WorkerKind::Subprocess(w) = &mut self.kind
+            && let Ok(Ok(status)) = timeout(grace, w.child.wait()).await
+        {
+            return Some(status);
         }
-        self.kill_and_reap()
+        self.kill_and_reap().await
     }
 
-    /// Tears the worker down (kills the child / closes the socket) and reaps it,
-    /// returning the process exit status when there is one.
-    pub(crate) fn kill_and_reap(&mut self) -> Option<ExitStatus> {
+    /// Tears the worker down (kills the child / closes the connection) and
+    /// reaps it, returning the process exit status when there is one.
+    pub(crate) async fn kill_and_reap(&mut self) -> Option<ExitStatus> {
         match &mut self.kind {
             WorkerKind::Subprocess(w) => {
-                let mut child = lock_ignore_poison(&w.child);
-                let _ = child.kill();
-                child.wait().ok()
+                let _ = w.child.start_kill();
+                w.child.wait().await.ok()
             }
             WorkerKind::WebSocket(w) => {
-                w.closed.store(true, Ordering::SeqCst);
-                // Shut the TCP socket down directly rather than writing a
-                // WebSocket Close frame: the socket's write timeout was cleared
-                // after the handshake, so `socket.close()` could block
-                // indefinitely on a peer that has stopped draining — and this
-                // runs on the caller's thread on the normal single-use teardown
-                // path. A FIN is read by the child as a clean EOF and it exits,
-                // so the graceful Close frame buys nothing here.
-                self.interrupt.kill();
+                // Drop the stream rather than sending a WebSocket Close frame:
+                // a peer that has stopped draining could block the close write
+                // indefinitely. With the stream gone the TCP socket closes; the
+                // child reads that as a clean EOF and exits, so the graceful
+                // Close frame buys nothing here.
+                w.stream = None;
                 None
             }
         }
     }
 }
 
-impl Drop for Worker {
-    fn drop(&mut self) {
-        self.kill_and_reap();
+/// Chunk size for speculative frame reads: large enough that a typical
+/// prefix + body arrives in a single `read` syscall, small enough to sit
+/// permanently in every idle worker.
+const READ_CHUNK: usize = 8 * 1024;
+
+/// Cap above which the reused send/recv buffers are dropped after use, so one
+/// huge frame does not pin megabytes for the worker's lifetime.
+const RETAIN_BUF_MAX: usize = 64 * 1024;
+
+/// Initial capacity of the reused send buffer: covers control frames,
+/// resumes with small values, and `Configure` (~150 bytes) without a realloc;
+/// only large feeds/values grow past it (via `encode_framed_into`'s reserve).
+const SEND_BUF_CAPACITY: usize = 1024;
+
+/// Frames at or above this size decode under `block_in_place` (see
+/// [`decode_event`]); below it (< ~4ms) inline decode beats the handoff.
+const DECODE_OFFLOAD_MIN: usize = 1024 * 1024;
+
+/// A cancel-safe reader of length-prefixed frames from the child's stdout.
+///
+/// Async `read_exact` is not cancel-safe — dropping it mid-frame loses the
+/// bytes already read. Here the accumulation buffer and fill offset are
+/// fields, and each await is a single `read` (which never consumes bytes when
+/// it returns `Pending`), so a `recv` future dropped at any await point
+/// leaves the accumulated bytes in place for the next call to resume from.
+///
+/// Reads accumulate into one buffer rather than prefix-then-body, so the
+/// common whole-frame-ready case costs a single `read` syscall; bytes past
+/// the frame boundary (coalesced print events) are retained for the next call.
+struct FrameRecv {
+    stdout: ChildStdout,
+    /// Zero-initialized read buffer; `buf[consumed..filled]` is unparsed data.
+    buf: Vec<u8>,
+    /// Bytes already handed out as decoded frames.
+    consumed: usize,
+    /// Bytes read from the pipe so far.
+    filled: usize,
+}
+
+impl FrameRecv {
+    fn new(stdout: ChildStdout) -> Self {
+        Self {
+            stdout,
+            buf: Vec::new(),
+            consumed: 0,
+            filled: 0,
+        }
+    }
+
+    /// Reads and decodes one frame, enforcing [`MAX_FRAME_LEN`] before growing
+    /// the buffer to the announced size. `Ok(None)` on EOF at a frame boundary
+    /// — the peer closed between messages; EOF inside a frame is
+    /// [`FrameError::Truncated`].
+    async fn recv(&mut self) -> Result<Option<pb::ChildEvent>, FrameError> {
+        // move leftover bytes from a previous coalesced read to the front so
+        // the parse below always works from offset 0
+        if self.consumed > 0 {
+            self.buf.copy_within(self.consumed..self.filled, 0);
+            self.filled -= self.consumed;
+            self.consumed = 0;
+        }
+        loop {
+            if self.filled >= 4 {
+                let len = u32::from_le_bytes(self.buf[..4].try_into().expect("4 bytes"));
+                if len > MAX_FRAME_LEN {
+                    return Err(FrameError::FrameTooLarge {
+                        len,
+                        max: MAX_FRAME_LEN,
+                    });
+                }
+                let end = 4 + len as usize;
+                if self.filled >= end {
+                    let event = decode_event(&self.buf[4..end])?;
+                    self.consumed = end;
+                    // a fully drained oversize buffer is dropped rather than
+                    // pinned for the worker's lifetime
+                    if self.buf.len() > RETAIN_BUF_MAX && self.filled == end {
+                        self.buf = Vec::new();
+                        self.consumed = 0;
+                        self.filled = 0;
+                    }
+                    return Ok(Some(event));
+                }
+                // Growth is validated against MAX_FRAME_LEN above, keeping
+                // byzantine peers bounded to one frame buffer per worker.
+                if self.buf.len() < end {
+                    self.buf.resize(end, 0);
+                }
+            } else if self.buf.len() < READ_CHUNK {
+                self.buf.resize(READ_CHUNK, 0);
+            }
+            let n = self.stdout.read(&mut self.buf[self.filled..]).await?;
+            if n == 0 {
+                // EOF at a frame boundary is a clean close; mid-frame the
+                // peer died while writing.
+                return if self.filled == 0 {
+                    Ok(None)
+                } else {
+                    Err(FrameError::Truncated)
+                };
+            }
+            self.filled += n;
+        }
+    }
+}
+
+/// Decodes one complete frame body, synchronously on the current thread.
+///
+/// A max-size frame can cost ~1s of CPU (see `benches/decode.rs`), so frames
+/// ≥ [`DECODE_OFFLOAD_MIN`] decode under `block_in_place`: the decode borrows
+/// the bytes (no copy), can't outlive a cancelled turn (unlike
+/// `spawn_blocking`), and the runtime keeps its worker count. On a
+/// current-thread runtime, where `block_in_place` panics, decode is inline.
+fn decode_event(body: &[u8]) -> Result<pb::ChildEvent, FrameError> {
+    // each decode is one synchronous call, so the thread-local decode budgets
+    // (reset by every `decode_frame`) cannot interleave
+    if body.len() < DECODE_OFFLOAD_MIN || Handle::current().runtime_flavor() != RuntimeFlavor::MultiThread {
+        decode_frame(body)
+    } else {
+        block_in_place(|| decode_frame(body))
     }
 }
 
@@ -319,99 +411,9 @@ fn ws_to_frame_error(err: WsError) -> FrameError {
     }
 }
 
-/// How often [`Worker::reap_or_kill`] checks whether the child is gone. Short
-/// enough that a child already exiting (the case it exists for) adds no
-/// noticeable latency to the failing turn.
-const REAP_POLL_INTERVAL: Duration = Duration::from_millis(2);
-
 /// Fallback dial budget when the pool sets no `request_timeout` (which otherwise
 /// also bounds the WebSocket dial). Generous, since it only guards a stuck dial.
 const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Dials `url` as a blocking WebSocket client, bounding both the TCP connect and
-/// the TLS/WS handshake by `timeout` so a stuck peer cannot hang a checkout. DNS
-/// resolution is left to the OS resolver (typically fast); everything after it is
-/// time-boxed. Frame/message limits are raised to monty's [`MAX_FRAME_LEN`] so
-/// the transport never rejects a frame the protocol itself would accept.
-///
-/// The handshake's socket read/write timeouts are cleared once connected: during
-/// a session, reads block and are interrupted only by the watchdog shutting the
-/// socket down, never by a per-read deadline.
-fn dial_ws(url: &str, timeout: Duration) -> Result<WsSocket, PoolError> {
-    let spawn_err = |msg: String| PoolError::Spawn(format!("{url}: {msg}"));
-
-    let request = url
-        .into_client_request()
-        .map_err(|err| spawn_err(format!("invalid WebSocket URL: {err}")))?;
-    let uri = request.uri();
-    let mode = uri_mode(uri).map_err(|err| spawn_err(err.to_string()))?;
-    let host = uri.host().ok_or_else(|| spawn_err("URL has no host".to_owned()))?;
-    // Strip the brackets from an IPv6 literal host (`[::1]` -> `::1`).
-    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    let port = uri.port_u16().unwrap_or(match mode {
-        Mode::Plain => 80,
-        Mode::Tls => 443,
-    });
-
-    let addrs = (host, port)
-        .to_socket_addrs()
-        .map_err(|err| spawn_err(format!("could not resolve {host}:{port}: {err}")))?;
-
-    // Try each resolved address in turn, bounding the *total* connect time by
-    // `timeout` so a list of dead addresses cannot multiply the budget.
-    let deadline = Instant::now() + timeout;
-    let mut stream = None;
-    let mut last_err = None;
-    for addr in addrs {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        match TcpStream::connect_timeout(&addr, remaining) {
-            Ok(tcp) => {
-                stream = Some(tcp);
-                break;
-            }
-            Err(err) => last_err = Some(err),
-        }
-    }
-    let stream = stream.ok_or_else(|| {
-        spawn_err(match last_err {
-            Some(err) => format!("connect failed: {err}"),
-            None => "connect timed out".to_owned(),
-        })
-    })?;
-    let _ = stream.set_nodelay(true);
-    // Time-box the handshake I/O too, else a peer that completes the TCP connect
-    // but stalls the TLS/WS handshake would hang the dial indefinitely.
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let ws_config = WebSocketConfig::default()
-        .max_frame_size(Some(MAX_FRAME_LEN as usize))
-        .max_message_size(Some(MAX_FRAME_LEN as usize));
-    let (socket, _response) = client_tls_with_config(request, stream, Some(ws_config), None)
-        .map_err(|err| spawn_err(format!("handshake failed: {err}")))?;
-
-    // Restore blocking reads for the session (see the fn doc).
-    if let Some(tcp) = underlying_tcp(socket.get_ref()) {
-        let _ = tcp.set_read_timeout(None);
-        let _ = tcp.set_write_timeout(None);
-    }
-    Ok(socket)
-}
-
-/// Reaches the raw `TcpStream` behind a (possibly TLS-wrapped) WebSocket stream,
-/// so it can be cloned for the watchdog's shutdown handle. Returns `None` for an
-/// unknown stream variant; [`Worker::websocket`] treats that as a dial failure
-/// (a worker the watchdog can't interrupt is worse than none).
-fn underlying_tcp(stream: &MaybeTlsStream<TcpStream>) -> Option<&TcpStream> {
-    match stream {
-        MaybeTlsStream::Plain(tcp) => Some(tcp),
-        MaybeTlsStream::Rustls(tls) => Some(tls.get_ref()),
-        _ => None,
-    }
-}
 
 /// Installs the process-level rustls `CryptoProvider` exactly once before the
 /// first `wss://` dial. rustls 0.23 panics on first TLS use when it can't pick a
@@ -424,77 +426,4 @@ fn install_crypto_provider() {
     INSTALL.call_once(|| {
         let _ = default_provider().install_default();
     });
-}
-
-/// Locks a possibly poisoned mutex; a panic elsewhere must not stop us from
-/// killing/reaping children.
-pub(crate) fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Shared kill channel between a worker and the watchdog thread.
-///
-/// Bundles the transport-specific way to interrupt the owner's blocked read
-/// with the sticky flag that lets the owner classify the resulting I/O failure
-/// as a timeout rather than a crash. The two always travel together — the
-/// watchdog sets the flag *immediately before* killing — so they live in one
-/// `Arc` the worker creates and the watchdog clones when it arms a deadline. A
-/// plain `enum` (the transport set is closed) keeps the watchdog
-/// transport-agnostic without dynamic dispatch or a per-arm allocation.
-pub(crate) struct Interrupt {
-    kind: InterruptKind,
-    /// Set by the watchdog right before it kills; read by the owner to tell a
-    /// timeout-kill from a crash. Sticky: the checkout resets it per turn so a
-    /// previous turn's kill cannot misclassify this one.
-    killed_for_timeout: AtomicBool,
-}
-
-/// Transport-specific way to unblock a worker's blocked read from another
-/// thread: kill the child process, or shut down the socket under it.
-enum InterruptKind {
-    /// Kill the child process.
-    Subprocess(Arc<Mutex<Child>>),
-    /// The raw TCP socket under the (possibly TLS-wrapped) WebSocket stream;
-    /// `shutdown(Both)` surfaces an I/O error in the owner's blocked `read`.
-    /// A WebSocket worker that can't expose this socket cannot be interrupted,
-    /// so the dial refuses to build one (see [`Worker::websocket`]) — the
-    /// socket is therefore always present here.
-    WebSocket(TcpStream),
-}
-
-impl Interrupt {
-    fn new(kind: InterruptKind) -> Arc<Self> {
-        Arc::new(Self {
-            kind,
-            killed_for_timeout: AtomicBool::new(false),
-        })
-    }
-
-    /// Interrupts the worker's blocked read. Best-effort and idempotent: any
-    /// failure is ignored because the worker is being discarded regardless.
-    pub(crate) fn kill(&self) {
-        match &self.kind {
-            InterruptKind::Subprocess(child) => {
-                let _ = lock_ignore_poison(child).kill();
-            }
-            InterruptKind::WebSocket(tcp) => {
-                let _ = tcp.shutdown(Shutdown::Both);
-            }
-        }
-    }
-
-    /// Flags the imminent kill as a deadline timeout. The watchdog MUST call
-    /// this *before* [`Interrupt::kill`] so the owner's failed read always
-    /// observes the flag.
-    pub(crate) fn flag_timeout(&self) {
-        self.killed_for_timeout.store(true, Ordering::SeqCst);
-    }
-
-    fn was_killed_for_timeout(&self) -> bool {
-        self.killed_for_timeout.load(Ordering::SeqCst)
-    }
-
-    fn reset_killed_for_timeout(&self) {
-        self.killed_for_timeout.store(false, Ordering::SeqCst);
-    }
 }

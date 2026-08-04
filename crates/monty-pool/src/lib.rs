@@ -2,7 +2,6 @@
 
 mod checkout;
 mod pool;
-mod watchdog;
 mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
@@ -11,7 +10,9 @@ pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
 
 pub use crate::{
-    checkout::{Checkout, MountSpec, MountSpecMode, OnPrint, ReplConfig, ResumeValue, TurnEvent},
+    checkout::{
+        Checkout, MountSpec, MountSpecMode, OnPrint, PrintFuture, ReplConfig, ResumeValue, TurnEvent, on_print_sync,
+    },
     pool::Pool,
 };
 
@@ -64,8 +65,8 @@ pub struct PoolConfig {
     /// reports its cumulative execution time on every turn-ending event (the
     /// sandbox clock is the single source of truth: it runs only while the
     /// interpreter executes, never during suspensions waiting on the host or
-    /// between feeds), and the parent arms each execution turn's watchdog
-    /// with the remaining budget plus this grace.
+    /// between feeds), and the parent bounds each execution turn by the
+    /// remaining budget plus this grace.
     pub duration_limit_grace: Option<Duration>,
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
@@ -115,14 +116,16 @@ pub enum PoolError {
         /// How the pool learned of the death, and what it can say about it.
         cause: CrashCause,
     },
-    /// The watchdog killed the worker after `request_timeout` elapsed.
+    /// The worker was killed after its turn outlived `request_timeout` (or
+    /// the `max_duration` backstop deadline).
     Timeout {
         /// The configured timeout that expired.
         timeout: Duration,
     },
     /// The worker violated the wire protocol, or the caller violated the
     /// checkout state machine. Worker-originated protocol failures discard the
-    /// worker; caller misuse leaves it intact.
+    /// worker; caller misuse leaves it intact — except a turn cancelled
+    /// mid-flight, where the abandoned worker is discarded too.
     Protocol(Cow<'static, str>),
     /// The sandboxed code raised a Python exception. The worker and its
     /// session remain alive and usable.

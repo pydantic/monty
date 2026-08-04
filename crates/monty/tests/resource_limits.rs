@@ -2731,3 +2731,51 @@ P(1, 2, 3) * 10**9
     );
     assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
 }
+
+#[test]
+fn cycle_buffer_is_bounded_by_the_memory_limit() {
+    // `cycle` saves every item it yields so it can replay them, and that buffer
+    // has no bound of its own — consuming a long source grew it entirely outside
+    // `max_memory` until each slot was charged with the tracker. Regression for
+    // the missing `track_growth` in `cycle::next`: before the fix this consumed
+    // 20M slots (~600MB RSS) against a 10MB limit without raising.
+    let code = r"
+import itertools
+n = 0
+for _ in itertools.cycle(range(10000000)):
+    n += 1
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "an unbounded cycle should exceed the memory limit");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn cycle_buffer_charge_is_released_on_free() {
+    // The charge is per-slot on the way up but returned in one go by `on_free`,
+    // via `py_estimate_size`. If that estimate omitted the buffer, each discarded
+    // `cycle` would leak budget and this loop — which buffers 600k slots in total,
+    // far more than the limit holds at once — would raise instead of completing.
+    let code = r"
+import itertools
+for _ in range(300):
+    c = itertools.cycle(range(1000))
+    n = 0
+    for _ in c:
+        n += 1
+        if n >= 2000:
+            break
+    c = None
+'done'
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(1_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert_eq!(result.unwrap(), MontyObject::String("done".to_owned()));
+}

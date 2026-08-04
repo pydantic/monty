@@ -308,7 +308,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_char(c, vm.heap)?)
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // A heap string equals an interned or heap string with the same content.
         Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
     }
@@ -2129,7 +2129,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, StringIterator> {
         None
     }
 
-    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>, _: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _: &Value, _: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(None)
     }
 

@@ -126,9 +126,14 @@ sha2 = "0.10"
 pretty_assertions = "1.4"
 insta = "1.47"
 clap = { version = "4", features = ["derive"] }
-# Blocking WebSocket client with rustls for `wss://`, used by the pool's
-# remote transport (monty-pool).
+# WebSocket client with rustls for `wss://`, used by the pool's remote
+# transport (monty-pool). The sync `tungstenite` is dev-only (mock servers in
+# monty-pool's tests); the pool itself dials with `tokio-tungstenite`. Both
+# pins must track the same underlying tungstenite version.
 tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
+# Stream/sink combinators (splitting the WebSocket into read/write halves).
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the

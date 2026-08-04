@@ -6,7 +6,7 @@ use std::{
 
 use serde::ser::SerializeStruct;
 
-use super::{Dict, LazyHeapSet, PyTrait};
+use super::{Dict, LazyHeapSet, PyTrait, attribute_name_value};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
@@ -14,8 +14,8 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{
-        BorrowedHeapRead, BorrowedHeapReadMut, HeapId, HeapItem, HeapRead, HeapReadOutput, heap_read_ref_as_field,
-        heap_read_ref_as_field_mut,
+        BorrowedHeapRead, BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        heap_read_ref_as_field, heap_read_ref_as_field_mut,
     },
     intern::Interns,
     types::Type,
@@ -158,7 +158,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dataclass> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let mut value_guard = DropGuard::new(value, vm);
+        let name = attribute_name_value(name, value_guard.ctx())?;
+        let (value, vm) = value_guard.into_parts();
+        let old_value = self.set_attr(name, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
+    }
+
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::Dataclass(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

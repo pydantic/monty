@@ -68,20 +68,24 @@ properties that real CPython does not provide, per the caveat above.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
-- Ctrl-C / asyncio cancellation cannot interrupt a protocol turn already
-  blocked on the worker; use sandbox `limits` and/or the pool's
-  `request_timeout` (which kills the worker).
+- Asyncio cancellation of an in-flight call (`feed_run`, `dump`, ...)
+  **loses the session**: the protocol turn was abandoned mid-flight, so its
+  worker can no longer be trusted — it is killed immediately, or, when the
+  checkout is contended by a concurrent call, discarded by the next call,
+  which raises `RuntimeError`. A call cancelled while still queued behind
+  another call never touched the worker, so the session stays usable. The
+  pool itself stays healthy either way; Ctrl-C in sync code still cannot
+  interrupt a turn blocked on the worker.
 - **Workers never spawn subprocesses, and the pool depends on it.** The
-  interpreter exposes no `fork`/`exec`/subprocess surface. The watchdog
-  enforces `request_timeout` (and the `max_duration` backstop) by killing the
-  single worker PID, which closes the worker's stdout and unblocks the
-  parent's blocked read. A worker that forked a grandchild inheriting that
-  pipe could hold it open past the kill and hang the parent forever, so the
-  no-subprocess property is a hard sandbox invariant, not just a missing
-  feature — and the pool deliberately does **not** add process-group / Job
-  Object teardown to defend against it. A sandbox escape that bypassed the
-  invariant is out of scope here: it is already arbitrary native code running
-  in the worker.
+  interpreter exposes no `fork`/`exec`/subprocess surface. `request_timeout`
+  (and the `max_duration` backstop) is enforced by abandoning the turn at the
+  deadline and killing the single worker PID. A worker that forked a
+  grandchild would leave that grandchild running (and holding the stdout
+  pipe) after the kill, so the no-subprocess property is a hard sandbox
+  invariant, not just a missing feature — and the pool deliberately does
+  **not** add process-group / Job Object teardown to defend against it. A
+  sandbox escape that bypassed the invariant is out of scope here: it is
+  already arbitrary native code running in the worker.
 - **`max_duration` measures cumulative execution time, and the worker's
   clock is the single source of truth.** The in-sandbox clock runs only
   while the interpreter executes — never while suspended waiting on the
@@ -89,17 +93,19 @@ properties that real CPython does not provide, per the caveat above.
   across feeds, and travels inside dumps. The worker reports its total on
   every protocol turn; the host never keeps a second clock.
 - **`max_duration` is backstopped by the host.** From the reported total the
-  host arms each execution turn's watchdog with the remaining budget plus
+  host bounds each execution turn by the remaining budget plus
   `duration_limit_grace` (default 1s) and kills the worker when it expires.
   The in-sandbox limit normally fires first with a clean `TimeoutError`; the
   backstop covers cases where it cannot — a worker that stops answering
   (e.g. compromised or wedged) — and surfaces as `MontyCrashedError`, losing
   the session. Mount I/O runs on the host between protocol turns and does not
   count against the worker's deadline. Because the budget and consumed time are also stamped onto the
-  worker's replies, sessions restored via the Rust `Pool::checkout_load`
+  worker's replies, sessions restored via the Rust `Checkout::restore`
   regain the backstop too. A *compromised* worker could under-report its
   total, stretching each turn to the full budget plus grace — turns stay
-  bounded, and `request_timeout` applies independently.
+  bounded, and `request_timeout` applies independently. Both deadlines fire
+  between the turn's polls, so decoding one maximal reply frame (~1s worst
+  case) can delay enforcement by that long.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure
@@ -170,6 +176,18 @@ properties that real CPython does not provide, per the caveat above.
   protocol turn, not mid-`print`; if that turn had suspended (an external
   function, OS call, or name lookup), the binding resets/discards the
   suspension before surfacing the print error so later feeds can continue.
+- **The sync API adapts to the caller's Tokio context.** `Monty` methods block
+  the calling thread on the binding's Tokio runtime. Called from a worker
+  thread of a multi-thread runtime — e.g. a sync external function or
+  `print_callback` invoked by an `AsyncMonty` drive — the wait is wrapped in
+  `tokio::task::block_in_place`, so opening an independent nested sync
+  pool/session works (each concurrent nested call occupies an extra OS thread
+  while it waits). Called from any *current-thread* Tokio runtime context,
+  blocking would starve the tasks that drive the pool, so every sync method
+  raises `RuntimeError: the synchronous Monty API cannot run inside a
+  current-thread Tokio runtime`. Only independent nested pools/sessions are
+  supported — re-entering the *same* session from its own callback deadlocks
+  on the session's internal lock.
 - **Mounts are host-side.** `MountDir` objects contribute configuration only;
   the pool builds a fresh mount table per feed on the *host* and services the
   worker's filesystem OS calls itself — the worker never sees host paths, so
@@ -190,18 +208,25 @@ properties that real CPython does not provide, per the caveat above.
 - **Special files are rejected.** Reading, writing, or `open()`ing a
   non-regular file in a mounted directory (FIFO, socket, device) raises
   `PermissionError` instead of blocking — CPython would block until a peer
-  appears, but mount I/O runs on the host thread driving the session and must
-  never block on sandbox-reachable input.
+  appears, but mount I/O blocks the feed (and holds a host thread) for its
+  full duration and must never wait on sandbox-reachable input.
 - **Mount I/O is not bounded by any timeout.** Covered filesystem calls run
-  synchronously on the host *between* protocol turns, with no watchdog armed —
-  and its only lever, killing the worker, could not interrupt host I/O anyway.
-  Special files are rejected (above) so sandbox code cannot hang the host, but
-  a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free host I/O is
-  the embedder's responsibility, as for `print_callback` and external
-  functions. Each covered call is answered by its own turn, so a *loop* of
-  mounted reads resets `request_timeout` every iteration, exactly like a loop
-  of external calls. `max_duration` still bounds such a feed's worker
-  execution, but nothing bounds its wall clock.
+  on the host *between* protocol turns, with no turn deadline armed — and the
+  deadline's only lever, killing the worker, could not interrupt host I/O
+  anyway. Special files are rejected (above) so sandbox code cannot hang the
+  host, but a stalled NFS/FUSE volume blocks the feed indefinitely; hang-free
+  host I/O is the embedder's responsibility, as for `print_callback` and
+  external functions. The I/O runs on Tokio's blocking thread pool, so a
+  stalled mount ties up its own feed and one blocking thread — not the
+  runtime workers that drive other sessions' turns and timers. Cancelling the
+  feed does not cancel the filesystem call: the detached operation keeps its
+  blocking thread until it returns, and a `read-write` mount's write, rename,
+  or delete can complete on the host *after* cancellation was observed (and
+  the worker discarded). Each covered
+  call is answered by its own turn, so a *loop* of mounted reads resets
+  `request_timeout` every iteration, exactly like a loop of external calls.
+  `max_duration` still bounds such a feed's worker execution, but nothing
+  bounds its wall clock.
 - **`os=` fallback** receives `(function_name, args, kwargs)`. On the
   automatic path (`feed_run`, `resume_auto`) mounts get first refusal, so
   mount-covered filesystem calls never reach the callback. Under `feed_start`

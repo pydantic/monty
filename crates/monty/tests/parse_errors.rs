@@ -418,6 +418,22 @@ fn deeply_nested_while_loops_exceed_limit() {
     assert_snapshot!(err.message().unwrap(), @"Source is too deeply nested");
 }
 
+/// A loop's `else` suite is outside that loop for `break` and `continue`.
+#[test]
+fn control_flow_in_loop_else_requires_an_enclosing_loop() {
+    for (code, expected) in [
+        ("for x in []:\n    pass\nelse:\n    break", "'break' outside loop"),
+        (
+            "while False:\n    pass\nelse:\n    continue",
+            "'continue' not properly in loop",
+        ),
+    ] {
+        let err = get_parse_err(code);
+        assert_eq!(err.exc_type(), ExcType::SyntaxError);
+        assert_eq!(err.message().unwrap(), expected);
+    }
+}
+
 #[test]
 fn deeply_nested_for_loops_exceed_limit() {
     // Build nested for loops

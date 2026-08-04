@@ -218,6 +218,10 @@ bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips
 	cargo build -p monty-runtime --release
 	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
+.PHONY: bench-decode
+bench-decode: ## Run child-frame protobuf decode benchmarks
+	cargo bench -p monty-bench --bench decode
+
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
 	cargo bench --profile dev -p monty-bench --bench main -- --test

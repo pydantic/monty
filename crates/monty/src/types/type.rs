@@ -183,6 +183,16 @@ pub enum Type {
     /// `iter(deque(...))` — CPython's `_collections._deque_iterator`.
     #[strum(serialize = "_collections._deque_iterator")]
     DequeIterator,
+    #[strum(serialize = "itertools.pairwise")]
+    ItertoolsPairwise,
+    #[strum(serialize = "itertools.compress")]
+    ItertoolsCompress,
+    #[strum(serialize = "itertools.islice")]
+    ItertoolsIslice,
+    #[strum(serialize = "itertools.chain")]
+    ItertoolsChain,
+    #[strum(serialize = "itertools.cycle")]
+    ItertoolsCycle,
 }
 
 /// Writes the canonical static name of every non-[`Instance`](Type::Instance)
@@ -316,6 +326,11 @@ impl Type {
                 | Self::CallableIterator
                 | Self::ItertoolsCount
                 | Self::ItertoolsRepeat
+                | Self::ItertoolsPairwise
+                | Self::ItertoolsCompress
+                | Self::ItertoolsIslice
+                | Self::ItertoolsChain
+                | Self::ItertoolsCycle
         )
     }
 
@@ -406,12 +421,12 @@ impl Type {
         match (self, method_id) {
             // Type-level `dict.fromkeys(...)`, so the result is a plain dict.
             (Self::Dict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::Plain, vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::plain(), vm).map(AttrCallResult::Value)
             }
             // `defaultdict.fromkeys(...)` builds `cls()`, i.e. a defaultdict with no
             // factory — matching CPython's inherited `dict.fromkeys` classmethod.
             (Self::DefaultDict, m) if m == StaticStrings::Fromkeys => {
-                dict_fromkeys(args, DictKind::Default(None), vm).map(AttrCallResult::Value)
+                dict_fromkeys(args, DictKind::defaultdict(None), vm).map(AttrCallResult::Value)
             }
             // Counter deliberately disables the inherited classmethod.
             (Self::Counter, m) if m == StaticStrings::Fromkeys => {

@@ -75,12 +75,12 @@ mod tests {
     fn serialized_components_match_dump_version() {
         assert_eq!(
             opcode_fingerprint(),
-            0xb1a3_02e5_6343_c49f,
+            0x0d57_34dd_be07_19ac,
             "opcodes changed for dump version {VERSION}"
         );
         assert_eq!(
             static_strings_fingerprint(),
-            0x9562_8bad_11bf_ad5d,
+            0x239c_c721_30be_eba3,
             "static strings changed for dump version {VERSION}"
         );
         assert_eq!(

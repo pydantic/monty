@@ -169,3 +169,33 @@ finally:
 assert inner_handled
 assert outer_handled
 assert finally_count == 2
+
+# === external call in return position: handlers still catch on resume ===
+# Regression: `try: return raise_error(...)` used to leave the resume point
+# outside the protected region, bypassing except/finally.
+
+
+def return_ext_except():
+    try:
+        return raise_error('ValueError', 'return boom')
+    except ValueError as e:
+        return f'caught {e}'
+
+
+assert return_ext_except() == 'caught return boom'
+
+return_finally_events = []
+
+
+def return_ext_finally():
+    try:
+        return raise_error('ValueError', 'through finally')
+    finally:
+        return_finally_events.append('finally')
+
+
+try:
+    return_ext_finally()
+except ValueError as e:
+    return_finally_events.append(str(e))
+assert return_finally_events == ['finally', 'through finally']

@@ -16,6 +16,7 @@ from pydantic_monty import (
     AsyncMonty,
     AsyncMontySession,
     MemoryFile,
+    Monty,
     MontyRuntimeError,
     MontySyntaxError,
     OSAccess,
@@ -970,3 +971,120 @@ async def test_llm_syntax_error_then_fix(asession: AsyncMontySession):
     # Snippet 3: state preserved, LLM fixes the code
     result = await asession.feed_run('y = add(x, 5)\ny', external_lookup=ext)
     assert result == snapshot(15)
+
+
+# === Cancellation ===
+
+
+async def test_cancelled_feed_run_discards_the_worker(apool: AsyncMonty):
+    """Cancelling `feed_run` while an external coroutine is pending abandons a
+    suspension nobody can ever answer: the next feed must discard the worker
+    and fail cleanly rather than wedge the session, and the pool must still
+    serve fresh sessions."""
+    started = asyncio.Event()
+
+    async def block() -> int:
+        started.set()
+        await asyncio.sleep(60)
+        return 0
+
+    async with apool.checkout() as session:
+        # ensure_future: feed_run returns a Future, not a coroutine
+        task = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
+        await started.wait()
+        # let the drive loop reach the ResolveFutures suspension before cancelling
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # the Rust-side drive future is dropped asynchronously on the tokio
+        # runtime; give it a beat so the cancelled drive's guard has discarded
+        # the worker before we probe the session
+        await asyncio.sleep(0.1)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await session.feed_run('1 + 1')
+        assert exc_info.value.args[0] == snapshot('this checkout has already been finished')
+
+    # the discarded worker's capacity was released; a fresh session works
+    async with apool.checkout() as session:
+        assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_concurrent_feed_run_is_rejected_without_killing_the_first(apool: AsyncMonty):
+    """A second feed_run started while the first is mid-suspension must get a
+    clean session-preserving error — never be mistaken for a cancelled drive
+    and kill the worker out from under the first."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block() -> int:
+        started.set()
+        await release.wait()
+        return 5
+
+    async with apool.checkout() as session:
+        first = asyncio.ensure_future(session.feed_run('await block()', external_lookup={'block': block}))
+        await started.wait()
+        # let the drive loop reach the ResolveFutures suspension
+        await asyncio.sleep(0.05)
+        with pytest.raises(RuntimeError) as exc_info:
+            await session.feed_run('1 + 1')
+        assert exc_info.value.args[0] == snapshot(
+            'monty worker protocol error: feed called while a suspension is awaiting an answer'
+        )
+        # the first feed_run is unharmed and completes normally
+        release.set()
+        assert await first == snapshot(5)
+        assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+async def test_cancelled_queued_feed_run_leaves_session_healthy(apool: AsyncMonty):
+    """Cancelling a feed_run that is still queued on the session (waiting for
+    another feed_run's turn to finish) must not poison the session: it never
+    started any protocol I/O, so the first feed and later feeds keep working."""
+    async with apool.checkout() as session:
+        first = asyncio.ensure_future(session.feed_run('sum(range(20_000_000))'))
+        await asyncio.sleep(0.05)  # the first turn is in flight, holding the session slot
+        second = asyncio.ensure_future(session.feed_run('1 + 1'))
+        await asyncio.sleep(0.05)  # the second feed is queued behind it
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert await first == snapshot(199999990000000)
+        assert await session.feed_run('1 + 1') == snapshot(2)
+
+
+# === Nested sync Monty inside AsyncMonty callbacks ===
+
+
+def _nested_sync_run(code: str) -> object:
+    """Runs `code` through a fresh sync pool — used from async callbacks."""
+    with Monty() as pool:
+        with pool.checkout() as session:
+            return session.feed_run(code)
+
+
+async def test_sync_monty_inside_async_external_function(asession: AsyncMontySession):
+    """The sync API from a sync external function under `AsyncMonty` must not
+    panic on the nested `block_on` (it runs on a tokio worker thread)."""
+
+    def run_sync_monty() -> object:
+        return _nested_sync_run('1 + 1')
+
+    result = await asession.feed_run('run_sync_monty()', external_lookup={'run_sync_monty': run_sync_monty})
+    assert result == snapshot(2)
+    # the outer session is unharmed
+    assert await asession.feed_run('3 + 4') == snapshot(7)
+
+
+async def test_sync_monty_inside_print_callback(asession: AsyncMontySession):
+    """Same as above via `print_callback`, which follows a different binding
+    path (invoked mid-turn rather than between turns)."""
+    seen: list[tuple[str, object]] = []
+
+    def on_print(stream: str, text: str) -> None:
+        seen.append((text, _nested_sync_run('2 + 2')))
+
+    await asession.feed_run("print('hi')", print_callback=on_print)
+    assert seen == snapshot([('hi\n', 4)])

@@ -332,6 +332,30 @@ fn generate_large_dict_literal(count: usize) -> String {
     code
 }
 
+/// Generates one `try/finally` with many independent return sites.
+fn generate_many_finally_return_sites(count: usize) -> String {
+    let mut code = String::from("def f(x):\n    try:\n");
+    for i in 0..count {
+        writeln!(code, "        if x == {i}:\n            return {i}").unwrap();
+    }
+    code.push_str("    finally:\n        x = 0\n");
+    code
+}
+
+/// Generates nested `try/finally` suites inside a return-path `finally`.
+///
+/// Each outer copy recompiles the nested suite, producing exponential copy
+/// growth from source whose size is only linear in `depth`.
+fn generate_nested_finally_suites(depth: usize) -> String {
+    let mut code = String::from("def f():\n    try:\n        return 1\n    finally:\n");
+    for level in 0..depth {
+        let indent = "    ".repeat(level + 2);
+        writeln!(code, "{indent}try:\n{indent}    pass\n{indent}finally:").unwrap();
+    }
+    writeln!(code, "{}pass\n\nassert f() == 1", "    ".repeat(depth + 2)).unwrap();
+    code
+}
+
 mod stack_effect_limits {
     use super::*;
 
@@ -353,5 +377,53 @@ mod stack_effect_limits {
             .expect("20000-entry dict literal should compile");
         let result = run.run_no_limits(vec![]);
         assert!(result.is_ok(), "20000-entry dict literal should run: {result:?}");
+    }
+}
+
+// `n` return sites emit `n + 2` finally copies: one per return site, plus the
+// exception-path and fall-through copies every `try/finally` emits — hence
+// the 1024-copy boundary sits at 1022/1023 sites.
+mod finally_copy_limits {
+    use super::*;
+
+    /// The failure side of the boundary: 1023 sites are 1025 copies, one past
+    /// `MAX_FINALLY_COPIES` (1024).
+    #[test]
+    fn excessive_inline_finally_copies_return_syntax_error() {
+        let code = generate_many_finally_return_sites(1023);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// The success side of the boundary: 1022 sites are exactly
+    /// `MAX_FINALLY_COPIES` (1024) copies, so an off-by-one in the limit
+    /// guard or the constant cannot slip through the failure-only test above.
+    #[test]
+    fn max_inline_finally_copies_compile_and_run() {
+        let code = generate_many_finally_return_sites(1022);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("1024 inline finally copies should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "1024 inline finally copies should run: {result:?}");
+    }
+
+    /// Ten nested suites exceed the cap through repeated expansion even
+    /// though the generated source contains only eleven `finally` statements.
+    #[test]
+    fn nested_finally_amplification_returns_syntax_error() {
+        let code = generate_nested_finally_suites(10);
+        let result = MontyRun::new(code, "test.py", vec![], CompileOptions::default());
+        assert_syntax_error(result, "too many inline finally copies; maximum is 1024");
+    }
+
+    /// Nine nested suites produce 1,023 copies and exercise the return path,
+    /// guarding the compact-source test against an overly conservative limit.
+    #[test]
+    fn nested_finally_amplification_below_limit_runs() {
+        let code = generate_nested_finally_suites(9);
+        let run = MontyRun::new(code, "test.py", vec![], CompileOptions::default())
+            .expect("nested finally expansion below the copy limit should compile");
+        let result = run.run_no_limits(vec![]);
+        assert!(result.is_ok(), "nested finally expansion should run: {result:?}");
     }
 }

@@ -405,7 +405,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         Ok(!self.get(vm.heap).is_zero())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         Ok(eq_bigint(self.get(vm.heap).inner(), other, vm))
     }
 

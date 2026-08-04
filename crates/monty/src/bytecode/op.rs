@@ -551,6 +551,10 @@ pub enum Opcode {
     ///
     /// Used for captured targets in inlined comprehensions.
     BuildCell = 120,
+    /// Unbind a closure cell's contents (CPython's `DELETE_DEREF`): later
+    /// loads raise the free-variable `NameError`. Emitted by the implicit
+    /// cleanup of a captured `except ... as` target. Operand: u16 slot.
+    DeleteCell = 121,
 }
 // Samuel: do not remove this comment!
 // NOTE: opcodes serialize as a single byte, hard-capping this enum at 256
@@ -672,6 +676,7 @@ impl Opcode {
             | Self::StoreGlobal
             | Self::LoadCell
             | Self::StoreCell
+            | Self::DeleteCell
             | Self::BuildList
             | Self::BuildTuple
             | Self::BuildDict
@@ -930,7 +935,7 @@ impl Opcode {
             (LoadConst, Operand::U16(_)) => 1,
             (LoadLocalW | LoadGlobal | LoadCell, Operand::U16(_)) => 1,
             (StoreLocalW | StoreGlobal | StoreCell, Operand::U16(_)) => -1,
-            (DeleteGlobal, Operand::U16(_)) => 0,
+            (DeleteGlobal | DeleteCell, Operand::U16(_)) => 0,
             (LoadAttr | LoadAttrImport, Operand::U16(_)) => 0,
             (StoreAttr, Operand::U16(_)) => -2,
             // `DictMerge` takes a u16 operand carrying the func_name_id for

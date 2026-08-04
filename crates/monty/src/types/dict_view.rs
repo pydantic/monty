@@ -182,7 +182,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DictKeysView(other)) => {
                 if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
@@ -470,7 +470,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         match other.read_heap(vm) {
             Some(HeapReadOutput::DictItemsView(other)) => {
                 if self.get(vm.heap).dict_id == other.get(vm.heap).dict_id {
@@ -626,7 +626,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         // `dict_values` views use identity equality (handled before the heap read).
         Ok(None)
     }

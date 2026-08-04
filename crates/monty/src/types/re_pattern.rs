@@ -27,6 +27,7 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
+        tuple::TupleVec,
     },
     value::{EitherStr, Value},
 };
@@ -121,6 +122,15 @@ impl RePattern {
         })
     }
 
+    /// True when this was compiled from exactly `(pattern, flags)`.
+    ///
+    /// Lets the `re` module's pattern cache confirm a slot on a hash hit without
+    /// storing its own copy of the key — the compiled pattern already owns both,
+    /// and duplicating the source text is what makes a cached entry expensive.
+    pub(crate) fn is_compiled_from(&self, pattern: &str, flags: u16) -> bool {
+        self.flags == flags && self.pattern == pattern
+    }
+
     /// Shared constructor for [`RePattern::compile`] / [`RePattern::compile_bounded`].
     fn compile_inner(pattern: String, flags: u16, delegate_size_limit: Option<usize>) -> Result<Self, RegexError> {
         let compiled = compile_regex_limited(&pattern, flags, delegate_size_limit)?;
@@ -179,7 +189,7 @@ impl RePattern {
         heap: &Heap,
     ) -> RunResult<Value> {
         let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
-        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
+        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m)))?))
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -254,7 +264,7 @@ impl RePattern {
             _ => {
                 for caps in self.compiled.captures_iter(text) {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
+                    let mut elements: TupleVec = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
                         let val = cap.map_or("", |m| m.as_str());
                         elements.push(allocate_string(val, heap)?);
@@ -364,7 +374,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         None
     }
 
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<bool>> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {
         let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
             return Ok(None);
         };

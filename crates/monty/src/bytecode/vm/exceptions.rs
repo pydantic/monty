@@ -15,13 +15,9 @@ use crate::{
 };
 
 impl VM<'_> {
-    /// Returns the current frame's name for traceback generation: the
-    /// function name for user-defined functions, or `<module>` for
-    /// module-level code. The empty-frames branch is defensive — async
-    /// error paths now charge their tracker growth *before* draining
-    /// `self.frames`, so any caller reaching this with an empty stack
-    /// indicates a bug elsewhere; the `<module>` fallback keeps
-    /// traceback generation total rather than panicking.
+    /// Returns the current function name, or `<module>` outside a function.
+    /// The empty-stack fallback keeps traceback generation total after async
+    /// paths drain their frames.
     fn current_frame_name(&self) -> StringId {
         match self.frames.last() {
             Some(frame) => match frame.function_id {
@@ -76,17 +72,14 @@ impl VM<'_> {
 
     /// Creates a RunError from a Value that should be an exception.
     ///
-    /// Takes ownership of the exception value and drops it properly.
+    /// Borrows the value so callers that already own one can keep it — the
+    /// `raise`/`Reraise` paths reuse it as the raised object itself.
     /// The `is_raise` flag indicates if this is from a `raise` statement (hide caret).
-    pub(super) fn make_exception(&mut self, exc_value: Value, is_raise: bool) -> RunError {
-        let this = self;
-        defer_drop!(exc_value, this);
-
+    pub(super) fn make_exception(&mut self, exc_value: &Value, is_raise: bool) -> RunError {
         let simple_exc = match exc_value {
             // Exception instance on heap
             Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = this.heap.get(*heap_id) {
-                    // Clone the exception (guard handles cleanup at scope exit)
+                if let HeapData::Exception(exc) = self.heap.get(*heap_id) {
                     exc.clone()
                 } else {
                     // Not an exception type
@@ -102,9 +95,9 @@ impl VM<'_> {
 
         // Create frame with appropriate hide_caret setting
         let frame = if is_raise {
-            RawStackFrame::from_raise(this.current_position().unwrap_or_default(), this.current_frame_name())
+            RawStackFrame::from_raise(self.current_position().unwrap_or_default(), self.current_frame_name())
         } else {
-            this.make_stack_frame()
+            self.make_stack_frame()
         };
 
         RunError::Exc(ExceptionRaise {
@@ -243,27 +236,42 @@ impl VM<'_> {
     /// 2. Pushes the exception value onto the stack
     /// 3. Sets `current_exception` for bare `raise`
     /// 4. Jumps to the handler code
-    pub(super) fn handle_exception(&mut self, mut error: RunError) -> Option<RunError> {
+    pub(super) fn handle_exception(&mut self, error: RunError) -> Option<RunError> {
+        self.handle_exception_with_value(error, None)
+    }
+
+    /// [`handle_exception`](Self::handle_exception) reusing an already-built
+    /// exception instead of reallocating an identical one per level; this also
+    /// preserves its identity, as CPython does. Owned: dropped if unused.
+    pub(super) fn handle_exception_with_value(
+        &mut self,
+        mut error: RunError,
+        raised: Option<Value>,
+    ) -> Option<RunError> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
 
         // For terminal resource errors such as memory limits,
         // we still need to unwind the stack to collect all frames for the traceback
         if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
+            if let Some(raised) = raised {
+                raised.drop_with(self);
+            }
             return Some(self.unwind_for_traceback(error));
         }
 
-        // Only catchable exceptions can be handled
-        let exc_info = match &error {
-            RunError::Exc(exc) => exc.clone(),
-            RunError::UncatchableExc(_) | RunError::Internal(_) => unreachable!(),
-        };
-
-        // Create exception value to push on stack
-        let exc_value = self.create_exception_value(&exc_info);
-        let exc_value = match exc_value {
-            Ok(v) => v,
-            Err(e) => return Some(e),
+        let exc_value = if let Some(raised) = raised {
+            raised
+        } else {
+            // Nothing to reuse: build it from `error`, borrowed rather than
+            // cloned since it is a local and so cannot alias `self`.
+            let RunError::Exc(exc) = &error else {
+                unreachable!("terminal errors returned above")
+            };
+            match self.create_exception_value(exc) {
+                Ok(v) => v,
+                Err(e) => return Some(e),
+            }
         };
 
         // Use DropGuard because exc_value is conditionally consumed (pushed onto
@@ -278,36 +286,31 @@ impl VM<'_> {
 
             // Search exception table for a handler covering this IP
             if let Some(entry) = frame.code.find_exception_handler(ip) {
-                // Found a handler! Unwind stack and jump to it.
-                // The operand stack lives directly above the locals region.
-                // `entry.stack_depth()` is the compiler's operand-stack depth
-                // at the try region, so the absolute stack index to unwind to
-                // is `stack_base + locals_count + stack_depth`. Any in-flight
-                // comprehension variables sit on the operand stack inside this
-                // depth window and get cleaned up by the same drain.
+                // Unwind operands to the compiler-recorded region depth,
+                // including any in-flight comprehension values.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
                 let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
+                let pushes_exception = entry.pushes_exception();
 
                 // Unwind stack to target depth (drop excess values)
                 for value in this.stack.drain(target_stack_depth..).rev() {
                     value.drop_with(this.heap);
                 }
 
-                // Drop any `exception_stack` entries left behind by handlers
-                // the propagating exception is bypassing — without this, a
-                // handler whose body terminated via `raise`/`return`/`break`/
-                // `continue` (so its trailer's `ClearException` is dead code)
-                // would leak its exception onto `exception_stack`, where a
-                // later bare `raise` could resurrect it.
+                // Drop exceptions from bypassed handlers so a later bare
+                // `raise` cannot revive them.
                 while this.exception_stack.len() > target_exc_stack_depth {
                     let value = this.exception_stack.pop().unwrap();
                     value.drop_with(this);
                 }
 
-                // Push exception value onto stack (handler expects it)
-                let exc_for_stack = exc_value.clone_with_heap(this);
-                this.push(exc_for_stack);
+                // Push the exception only for handlers that read it; cleanup
+                // handlers re-raise straight from `exception_stack`.
+                if pushes_exception {
+                    let exc_for_stack = exc_value.clone_with_heap(this);
+                    this.push(exc_for_stack);
+                }
 
                 // Reclaim exc_value from guard - it's being pushed onto exception_stack
                 let (exc_value, this) = exc_guard.into_parts();

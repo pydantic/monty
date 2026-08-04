@@ -1,18 +1,22 @@
 //! Drives the pool's WebSocket transport against a mock child server: a thread
 //! that accepts one WebSocket connection and serves a scripted protocol
-//! session. This exercises `Worker::websocket` (the `dial_ws` dial) and the WS
+//! session. This exercises `Worker::websocket` (the async dial) and the WS
 //! send/recv path end-to-end without needing a real remote child.
 
 use std::{
     fs,
+    future::ready,
     net::{TcpListener, TcpStream},
     thread,
     time::Duration,
 };
 
-use monty_pool::{Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, ReplConfig, ResumeValue, TurnEvent};
+use monty_pool::{
+    Checkout, MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
+};
 use monty_proto::{WireFunctionCall, decode_frame, encode_to_capped_vec, pb};
 use monty_types::{AssertMessageAnnotations, MontyObject, PrintStream, ResourceLimits};
+use tokio::task::spawn_blocking;
 use tungstenite::{Message, WebSocket};
 
 /// A mock child: accepts one WebSocket connection and answers each request with
@@ -38,8 +42,23 @@ fn serve_mock_child(listener: &TcpListener) {
     }
 }
 
-#[test]
-fn drives_a_session_over_websocket() {
+/// A discard-everything print callback, coercible to `OnPrint` at each callsite.
+fn no_print(_: PrintStream, _: &str) -> PrintFuture {
+    Box::pin(ready(()))
+}
+
+/// Joins a mock-server thread without blocking the runtime thread.
+///
+/// A plain `server.join()` inside the test future would block the runtime
+/// thread, deadlocking a server that still needs the client side serviced.
+async fn join_server(server: thread::JoinHandle<()>) {
+    spawn_blocking(move || server.join().expect("mock server thread"))
+        .await
+        .expect("join task");
+}
+
+#[tokio::test]
+async fn drives_a_session_over_websocket() {
     // Bind before spawning so the port is listening before the pool connects.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
@@ -48,7 +67,7 @@ fn drives_a_session_over_websocket() {
     let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
-    let pool = Pool::new(config).expect("pool");
+    let pool = Pool::new(config).await.expect("pool");
 
     let mut checkout = pool
         .checkout(&ReplConfig {
@@ -58,21 +77,23 @@ fn drives_a_session_over_websocket() {
             type_check_stubs: None,
             assert_message_annotations: AssertMessageAnnotations::default(),
         })
+        .await
         .expect("checkout");
 
     // The WebSocket worker has no local pid.
     assert_eq!(checkout.pid(), None);
 
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
         "got {event:?}"
     );
 
-    checkout.finish().expect("finish");
-    server.join().expect("mock child thread");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
 }
 
 /// Binds a listener and returns it with a websocket pool config pointing at it.
@@ -114,14 +135,12 @@ fn event_kind(kind: pb::child_event::Kind) -> pb::ChildEvent {
     }
 }
 
-fn no_print(_: PrintStream, _: &str) {}
-
 /// The headline scenario for parent-side mounts: the worker lives on the far
 /// side of a WebSocket, yet a mounted read is serviced from the *parent's*
 /// filesystem — the mock child emits the `OsCall` and `resume_from_mounts`
 /// answers it with the file's contents, no host path ever crossing the wire.
-#[test]
-fn mounted_reads_are_serviced_from_the_parent_filesystem() {
+#[tokio::test]
+async fn mounted_reads_are_serviced_from_the_parent_filesystem() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "parent-side bytes").unwrap();
 
@@ -159,8 +178,8 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
         );
     });
 
-    let pool = Pool::new(config).expect("pool");
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let event = checkout
         .feed(
             "unused",
@@ -175,18 +194,20 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
             false,
             &mut no_print,
         )
+        .await
         .expect("feed");
     assert!(matches!(event, TurnEvent::OsCall { .. }), "got {event:?}");
     let event = checkout
         .resume_from_mounts(&mut no_print)
+        .await
         .expect("mount servicing")
         .expect("the mount covers /mnt/data.txt");
     assert!(
         matches!(&event, TurnEvent::Complete(MontyObject::String(s)) if s == "done"),
         "got {event:?}"
     );
-    checkout.finish().expect("finish");
-    server.join().expect("mock child thread");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
 }
 
 /// A malformed `OsCall` payload from a (possibly compromised) child is a
@@ -194,8 +215,8 @@ fn mounted_reads_are_serviced_from_the_parent_filesystem() {
 /// so a payload it could never legitimately produce (here an invalid open
 /// mode) is never serviced. No parent-side I/O happens and the worker is
 /// discarded.
-#[test]
-fn malformed_os_call_is_a_protocol_error() {
+#[tokio::test]
+async fn malformed_os_call_is_a_protocol_error() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("data.txt"), "never read").unwrap();
 
@@ -223,8 +244,8 @@ fn malformed_os_call_is_a_protocol_error() {
         let _ = socket.read();
     });
 
-    let pool = Pool::new(config).expect("pool");
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let err = checkout
         .feed(
             "unused",
@@ -239,20 +260,21 @@ fn malformed_os_call_is_a_protocol_error() {
             false,
             &mut no_print,
         )
+        .await
         .expect_err("malformed fs call must fail the feed");
     let PoolError::Protocol(msg) = err else {
         panic!("expected Protocol error, got {err:?}");
     };
     assert_eq!(msg, "invalid OS call payload: invalid file mode \"q\"");
-    server.join().expect("mock child thread");
+    join_server(server).await;
 }
 
 /// The parent-side `max_duration` backstop (remaining budget + grace) kills a
 /// worker that never answers a feed — the case where the child's own time
 /// enforcement has failed. No `request_timeout` is configured, so the
 /// backstop is the only armed deadline.
-#[test]
-fn duration_backstop_kills_an_unresponsive_worker() {
+#[tokio::test]
+async fn duration_backstop_kills_an_unresponsive_worker() {
     let (listener, mut config) = ws_pool_config();
     config.duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
@@ -263,39 +285,41 @@ fn duration_backstop_kills_an_unresponsive_worker() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
-        // never reply; wait for the watchdog to kill the connection
+        // never reply; wait for the deadline to kill the connection
         let _ = socket.read();
     });
 
-    let pool = Pool::new(config).expect("pool");
+    let pool = Pool::new(config).await.expect("pool");
     let mut checkout = pool
         .checkout(&ReplConfig {
             limits: Some(ResourceLimits::default().max_duration(Duration::from_millis(100))),
             ..ReplConfig::default()
         })
+        .await
         .expect("checkout");
     let err = checkout
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
         .unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
     };
     // the armed deadline was the remaining budget (≤100ms) plus the grace
     assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
-    server.join().expect("mock child thread");
+    join_server(server).await;
 }
 
 /// A single turn is still bounded by `request_timeout` even when the worker is
 /// making mount-coverable calls: the OS call surfaces rather than being
 /// serviced inside the turn, so a worker that simply runs too long before
-/// announcing it is killed by the watchdog exactly as without mounts.
+/// announcing it is killed by the deadline exactly as without mounts.
 ///
 /// Servicing a covered call is now a separate turn with its own deadline (see
 /// "Mount I/O is not covered by `request_timeout`" in
 /// limitations/pool-architecture.md), so a *loop* of covered calls is bounded
 /// by `max_duration`, not by `request_timeout`.
-#[test]
-fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
+#[tokio::test]
+async fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
     let dir = tempfile::tempdir().unwrap();
 
     let (listener, mut config) = ws_pool_config();
@@ -308,12 +332,12 @@ fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
         ));
         send_event(&mut socket, &event_kind(pb::child_event::Kind::Ok(pb::Ok {})));
         assert!(matches!(read_request(&mut socket), pb::parent_request::Kind::Feed(_)));
-        // never announce anything: the turn must be killed by the watchdog
+        // never announce anything: the turn must be killed by the deadline
         thread::sleep(Duration::from_secs(2));
     });
 
-    let pool = Pool::new(config).expect("pool");
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let err = checkout
         .feed(
             "unused",
@@ -326,20 +350,21 @@ fn a_mounted_feed_turn_is_still_bounded_by_the_request_timeout() {
             false,
             &mut no_print,
         )
+        .await
         .expect_err("the turn must exhaust the request timeout");
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
     };
     assert_eq!(timeout, Duration::from_millis(300));
     drop(checkout);
-    let _ = server.join();
+    join_server(server).await;
 }
 
 /// A restored session re-adopts its `max_duration` budget from the timing
 /// fields the worker stamps on the `Load` reply, re-arming the parent-side
 /// backstop without the parent ever seeing the original `ReplConfig`.
-#[test]
-fn restored_session_rearms_the_duration_backstop() {
+#[tokio::test]
+async fn restored_session_rearms_the_duration_backstop() {
     let (listener, mut config) = ws_pool_config();
     config.duration_limit_grace = Some(Duration::from_millis(300));
     let server = thread::spawn(move || {
@@ -365,19 +390,23 @@ fn restored_session_rearms_the_duration_backstop() {
         let _ = socket.read();
     });
 
-    let pool = Pool::new(config).expect("pool");
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
-    let (event, script_name) = checkout.restore(vec![1, 2, 3], vec![], &mut no_print).expect("restore");
+    let pool = Pool::new(config).await.expect("pool");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
+    let (event, script_name) = checkout
+        .restore(vec![1, 2, 3], vec![], &mut no_print)
+        .await
+        .expect("restore");
     assert!(event.is_none());
     assert_eq!(script_name.as_deref(), Some("restored.py"));
     let err = checkout
         .feed("while True:\n    pass", vec![], vec![], false, &mut no_print)
+        .await
         .unwrap_err();
     let PoolError::Timeout { timeout } = err else {
         panic!("expected Timeout, got {err:?}");
     };
     assert!(timeout <= Duration::from_millis(400), "deadline was {timeout:?}");
-    server.join().expect("mock child thread");
+    join_server(server).await;
 }
 
 // === server shutdown and disconnects ===
@@ -456,22 +485,22 @@ fn expect_load(socket: &mut WebSocket<TcpStream>, state: &[u8]) {
 }
 
 /// A pool + checkout against `ws://127.0.0.1:{port}` with a 10s turn timeout.
-fn websocket_checkout(port: u16) -> (Pool, Checkout) {
-    let pool = websocket_pool(port);
-    let checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+async fn websocket_checkout(port: u16) -> (Pool, Checkout) {
+    let pool = websocket_pool(port).await;
+    let checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     (pool, checkout)
 }
 
 /// A single-worker pool against `ws://127.0.0.1:{port}`.
-fn websocket_pool(port: u16) -> Pool {
+async fn websocket_pool(port: u16) -> Pool {
     let mut config = PoolConfig::websocket(format!("ws://127.0.0.1:{port}"));
     config.max_processes = 1;
     config.request_timeout = Some(Duration::from_secs(10));
-    Pool::new(config).expect("pool")
+    Pool::new(config).await.expect("pool")
 }
 
-#[test]
-fn shutdown_hands_back_a_restorable_dump() {
+#[tokio::test]
+async fn shutdown_hands_back_a_restorable_dump() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -495,10 +524,11 @@ fn shutdown_hands_back_a_restorable_dump() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port);
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let pool = websocket_pool(port).await;
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let err = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
         .expect_err("a draining server must not run the feed");
     let PoolError::Shutdown { dump: Some(dump) } = err else {
         panic!("expected Shutdown with a dump, got {err:?}");
@@ -507,22 +537,23 @@ fn shutdown_hands_back_a_restorable_dump() {
 
     // the checkout's worker is gone; a fresh one restores the dump and the
     // never-executed feed can simply be re-run
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
-    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    let (event, _name) = checkout.restore(dump, vec![], &mut no_print).await.expect("restore");
     assert!(event.is_none(), "an idle dump has no suspension to re-announce");
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
         .expect("feed on the restored session");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
         "got {event:?}"
     );
-    checkout.finish().expect("finish");
-    server.join().expect("mock server thread");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
 }
 
-#[test]
-fn shutdown_during_a_suspension_carries_the_suspended_dump() {
+#[tokio::test]
+async fn shutdown_during_a_suspension_carries_the_suspended_dump() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -544,17 +575,19 @@ fn shutdown_during_a_suspension_carries_the_suspended_dump() {
         while try_read_request(&mut socket).is_some() {}
     });
 
-    let pool = websocket_pool(port);
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("checkout");
+    let pool = websocket_pool(port).await;
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("checkout");
     let event = checkout
-        .feed("ext()", vec![], vec![], false, &mut |_, _| {})
+        .feed("ext()", vec![], vec![], false, &mut no_print)
+        .await
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::FunctionCall { call_id: 7, .. }),
         "got {event:?}"
     );
     let err = checkout
-        .resume(ResumeValue::Return(MontyObject::Int(5)), &mut |_, _| {})
+        .resume(ResumeValue::Return(MontyObject::Int(5)), &mut no_print)
+        .await
         .expect_err("a draining server must not run the resume");
     let PoolError::Shutdown { dump: Some(dump) } = err else {
         panic!("expected Shutdown with a dump, got {err:?}");
@@ -562,19 +595,19 @@ fn shutdown_during_a_suspension_carries_the_suspended_dump() {
     assert_eq!(dump, b"susp-dump");
 
     // restoring re-announces the suspension, so the host can answer it again
-    let mut checkout = pool.checkout(&ReplConfig::default()).expect("second checkout");
-    let (event, _name) = checkout.restore(dump, vec![], &mut |_, _| {}).expect("restore");
+    let mut checkout = pool.checkout(&ReplConfig::default()).await.expect("second checkout");
+    let (event, _name) = checkout.restore(dump, vec![], &mut no_print).await.expect("restore");
     assert!(
         matches!(event, Some(TurnEvent::FunctionCall { call_id: 7, .. })),
         "got {event:?}"
     );
     // closes the socket, which ends the mock's trailing read loop
-    checkout.finish().expect("finish");
-    server.join().expect("mock server thread");
+    checkout.finish().await.expect("finish");
+    join_server(server).await;
 }
 
-#[test]
-fn shutdown_without_a_session_carries_no_dump() {
+#[tokio::test]
+async fn shutdown_without_a_session_carries_no_dump() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();
     let server = thread::spawn(move || {
@@ -585,16 +618,16 @@ fn shutdown_without_a_session_carries_no_dump() {
         send_kind(&mut socket, shutdown(None));
     });
 
-    let pool = websocket_pool(port);
-    let Err(err) = pool.checkout(&ReplConfig::default()) else {
+    let pool = websocket_pool(port).await;
+    let Err(err) = pool.checkout(&ReplConfig::default()).await else {
         panic!("checkout against a draining server must fail");
     };
     assert!(matches!(err, PoolError::Shutdown { dump: None }), "got {err:?}");
-    server.join().expect("mock server thread");
+    join_server(server).await;
 }
 
-#[test]
-fn a_dropped_connection_is_a_disconnect() {
+#[tokio::test]
+async fn a_dropped_connection_is_a_disconnect() {
     // Every server policy action other than shutdown (idle/session/turn
     // timeout, capacity) is just a closed socket. The client cannot tell those
     // from a dead sandbox, and says so: `Disconnected`, never `Crashed` — the
@@ -615,9 +648,10 @@ fn a_dropped_connection_is_a_disconnect() {
         let _ = socket.close(None);
     });
 
-    let (_pool, mut checkout) = websocket_checkout(port);
+    let (_pool, mut checkout) = websocket_checkout(port).await;
     let event = checkout
-        .feed("1 + 1", vec![], vec![], false, &mut |_, _| {})
+        .feed("1 + 1", vec![], vec![], false, &mut no_print)
+        .await
         .expect("feed");
     assert!(
         matches!(event, TurnEvent::Complete(MontyObject::Int(42))),
@@ -625,9 +659,10 @@ fn a_dropped_connection_is_a_disconnect() {
     );
     // joining first guarantees the server side is fully torn down before the
     // next feed — the failure mode this test pins
-    server.join().expect("mock server thread");
+    join_server(server).await;
     let err = checkout
-        .feed("x", vec![], vec![], false, &mut |_, _| {})
+        .feed("x", vec![], vec![], false, &mut no_print)
+        .await
         .expect_err("a closed connection must fail the turn");
     assert!(matches!(err, PoolError::Disconnected { .. }), "got {err:?}");
 }

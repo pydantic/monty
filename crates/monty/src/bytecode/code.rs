@@ -213,6 +213,17 @@ impl LocationEntry {
     }
 }
 
+/// Whether a handler reads the exception value from the operand stack.
+/// Pushing it for a cleanup handler that only re-raises is wasted work on
+/// every level an exception propagates through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HandlerKind {
+    /// `except` dispatch and `with`, which read the value off the stack.
+    Consuming,
+    /// Only re-raises: the VM skips the push, the compiler the matching `Pop`.
+    Cleanup,
+}
+
 /// Entry in the exception table - maps a protected bytecode range to its handler.
 ///
 /// Instead of maintaining a runtime stack of handlers (push/pop during execution),
@@ -252,30 +263,40 @@ pub struct ExceptionEntry {
     /// pushes the exception value.
     stack_depth: u16,
 
-    /// Number of THIS frame's exceptions that should be on `exception_stack`
-    /// when execution is inside this try region — i.e., the
-    /// `except_handler_depth` recorded by the compiler at the try-region
-    /// entry. Used by the VM during exception unwind to pop entries left
-    /// behind by handlers that the new exception is propagating past
-    /// (e.g. `try: raise; except: raise NewError` — the inner except's
-    /// entry needs to be dropped because the inner handler is abandoned
-    /// even though its trailer is dead code). Without this, a later bare
-    /// `raise` could resurrect an exception whose handler had been
-    /// abandoned via `raise`/`return`/`break`/`continue`.
+    /// This frame's `exception_stack` depth at region entry.
+    /// Unwinding trims later entries so bare `raise` cannot revive exceptions
+    /// from abandoned handlers.
     exception_stack_count: u16,
+
+    /// Whether the handler wants the exception on the operand stack.
+    kind: HandlerKind,
 }
 
 impl ExceptionEntry {
     /// Creates a new exception table entry.
     #[must_use]
-    pub fn new(start: u32, end: u32, handler: u32, stack_depth: u16, exception_stack_count: u16) -> Self {
+    pub fn new(
+        start: u32,
+        end: u32,
+        handler: u32,
+        stack_depth: u16,
+        exception_stack_count: u16,
+        kind: HandlerKind,
+    ) -> Self {
         Self {
             start,
             end,
             handler,
             stack_depth,
             exception_stack_count,
+            kind,
         }
+    }
+
+    /// Whether the VM must push the exception value before entering the handler.
+    #[must_use]
+    pub fn pushes_exception(&self) -> bool {
+        matches!(self.kind, HandlerKind::Consuming)
     }
 
     /// Returns the handler bytecode offset.
@@ -290,8 +311,7 @@ impl ExceptionEntry {
         self.stack_depth
     }
 
-    /// Returns the number of this-frame `exception_stack` entries expected
-    /// at the try region — see the field docs.
+    /// Returns this frame's exception-stack depth at region entry.
     #[must_use]
     pub fn exception_stack_count(&self) -> u16 {
         self.exception_stack_count

@@ -29,7 +29,8 @@ pyo3 = { workspace = true, features = ["indexmap", "generate-import-lib", "num-b
 num-bigint = { workspace = true }
 pyo3-async-runtimes = { version = "0.28", features = ["tokio-runtime"] }
 # just enough to host the runtime pyo3-async-runtimes drives
-tokio = { workspace = true, features = ["rt", "sync"] }
+# (rt-multi-thread is needed for `block_in_place` in `block_on_sync`)
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync"] }
 
 [build-dependencies]
 pyo3-build-config = { workspace = true }

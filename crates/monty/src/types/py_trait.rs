@@ -193,7 +193,7 @@ pub(crate) trait PyTrait<'h> {
     /// Heap-backed implementations receive `self_id`; immediate values receive
     /// `None`. Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
-    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>, self_id: Option<HeapId>) -> RunResult<Option<bool>>;
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
     /// Python comparison (`<`, `>`, etc.).
     ///
@@ -616,6 +616,16 @@ pub(crate) trait PyTrait<'h> {
         .into())
     }
 
+    /// Python attribute assignment, consuming `value` on both success and error.
+    ///
+    /// The default rejects assignment. Mutable attribute-bearing types override
+    /// this method and are responsible for releasing any replaced value.
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+    }
+
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
     ///
     /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type
@@ -681,6 +691,14 @@ pub(crate) trait PyTrait<'h> {
             &self.py_type(vm).name(vm.heap, vm.interns),
         ))
     }
+}
+
+/// Converts an attribute name into an owned dict key, preserving interned names.
+pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> RunResult<Value> {
+    Ok(match name {
+        EitherStr::Interned(string_id) => Value::InternString(*string_id),
+        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
+    })
 }
 
 /// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.

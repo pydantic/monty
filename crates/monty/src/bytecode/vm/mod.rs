@@ -338,17 +338,9 @@ pub struct CallFrame<'code> {
     /// For function frames, this equals `func.namespace_size`.
     locals_count: u16,
 
-    /// Base index into the VM-wide `exception_stack` for this frame.
-    ///
-    /// Entries pushed by `except` handlers in this frame live at
-    /// `exception_stack[exception_stack_base..]`, while
-    /// `exception_stack[..exception_stack_base]` belongs to caller frames.
-    /// `ExceptionEntry.exception_stack_count` is relative to this base —
-    /// on exception unwind, the VM drains entries down to
-    /// `exception_stack_base + entry.exception_stack_count()` so that
-    /// handlers abandoned by the propagating exception (whose
-    /// fall-through trailers are dead code) don't leave residue that a
-    /// later bare `raise` would resurrect.
+    /// Base of this frame's entries in the VM-wide `exception_stack`.
+    /// Recorded region depths are relative to this index, keeping caller
+    /// exceptions intact when abandoned handlers are unwound.
     exception_stack_base: usize,
 
     /// Function ID (for tracebacks). None for module-level code.
@@ -1115,6 +1107,10 @@ impl<'h> VM<'h> {
                     let slot = cached_frame.fetch_u16();
                     self.store_cell(&cached_frame, slot);
                 }
+                Opcode::DeleteCell => {
+                    let slot = cached_frame.fetch_u16();
+                    self.delete_cell(&cached_frame, slot);
+                }
                 // Binary Operations - route through exception handling for tracebacks
                 Opcode::BinaryAdd => try_catch_sync!(self, cached_frame, self.binary_add()),
                 Opcode::BinarySub => try_catch_sync!(self, cached_frame, self.binary_sub()),
@@ -1571,8 +1567,22 @@ impl<'h> VM<'h> {
                 // Exception Handling
                 Opcode::Raise => {
                     let exc = self.pop();
-                    let error = self.make_exception(exc, true); // is_raise=true, hide caret
-                    catch_sync!(self, cached_frame, error);
+                    let error = self.make_exception(&exc, true); // is_raise=true, hide caret
+                    // Re-raise an instance as-is so `raise e` preserves `e`'s
+                    // identity, like CPython. A bare type or non-exception has
+                    // nothing to reuse and rebuilds from the error.
+                    let raised = match &exc {
+                        Value::Ref(id) if matches!(self.heap.get(*id), HeapData::Exception(_)) => Some(exc),
+                        _ => {
+                            exc.drop_with(self);
+                            None
+                        }
+                    };
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
                 }
                 Opcode::Assert => {
                     match decode_assert_flags(cached_frame.fetch_u8()).expect("invalid assert flags in bytecode") {
@@ -1587,23 +1597,21 @@ impl<'h> VM<'h> {
                     catch_sync!(self, cached_frame, error);
                 }
                 Opcode::Reraise => {
-                    // Re-raise the currently-being-handled exception (top of
-                    // exception_stack), keeping the original entry in place
-                    // — popping would lose track of the enclosing handler
-                    // when the bare raise is locally caught (the local
-                    // handler's `ClearException` would otherwise pop the
-                    // enclosing entry instead of its own new one). When the
-                    // re-raised exception propagates past handler boundaries,
-                    // the unwind drain via `exception_stack_count` cleans up
-                    // any leftover entries.
-                    let error = if let Some(exc) = self.exception_stack.last() {
-                        let exc = exc.clone_with_heap(self.heap);
-                        self.make_exception(exc, true) // is_raise=true for reraise
-                    } else {
+                    // Clone rather than pop: a locally caught bare raise must
+                    // preserve its enclosing handler's active exception.
+                    let raised = self.exception_stack.last().map(|exc| exc.clone_with_heap(self.heap));
+                    let error = match &raised {
+                        Some(exc) => self.make_exception(exc, true), // is_raise=true for reraise
                         // No active exception - create a RuntimeError
-                        SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        None => {
+                            SimpleException::new_msg(ExcType::RuntimeError, "No active exception to reraise").into()
+                        }
                     };
-                    catch_sync!(self, cached_frame, error);
+                    if let Some(result) = self.handle_exception_with_value(error, raised) {
+                        return Err(result);
+                    }
+                    // Exception was caught - handler may be in different frame, reload cache
+                    reload_cache!(self, cached_frame);
                 }
                 Opcode::ClearException => {
                     // Pop the current exception from the stack
@@ -2279,15 +2287,22 @@ impl<'h> VM<'h> {
             _ => panic!("LoadCell: entry is not a Cell"),
         };
 
-        // Check for undefined value - raise NameError for unbound free variable
+        // An undefined value raises the error CPython picks by cell kind: the
+        // free-variable NameError only for a cell *captured* from an enclosing
+        // function; an unbound cell this frame owns (a local captured by
+        // nested functions) is an ordinary UnboundLocalError, like any local.
         if matches!(value, Value::Undefined) {
             value.drop_with(self);
             let name = cached_frame.code.local_name(slot);
-            return Err(self.free_var_error(name));
+            Err(if self.is_free_var_slot(slot) {
+                self.free_var_error(name)
+            } else {
+                self.unbound_local_error(slot, name)
+            })
+        } else {
+            self.push(value);
+            Ok(())
         }
-
-        self.push(value);
-        Ok(())
     }
 
     /// Extracts the cell `HeapId` from a local variable slot on the stack.
@@ -2298,6 +2313,20 @@ impl<'h> VM<'h> {
             Value::Ref(cell_id) => *cell_id,
             other => panic!("LoadCell/StoreCell: expected cell reference in local slot {slot}, found {other:?}"),
         }
+    }
+
+    /// Whether `slot` holds a cell captured from an enclosing function (a
+    /// free variable), as opposed to a cell this frame owns. Module frames
+    /// (`function_id: None`) own all their cells — the only module-level
+    /// cells are inlined-comprehension captures.
+    fn is_free_var_slot(&self, slot: u16) -> bool {
+        self.current_frame().function_id.is_some_and(|id| {
+            self.interns
+                .get_function(id)
+                .free_var_slots
+                .iter()
+                .any(|s| s.as_u16() == slot)
+        })
     }
 
     /// Creates a NameError for an unbound free variable.
@@ -2321,6 +2350,24 @@ impl<'h> VM<'h> {
         let cell_id = this.cell_id_from_local(cached_frame, slot);
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
+        };
+        mem::swap(&mut cell.get_mut(this.heap).0, value);
+    }
+
+    /// Unbinds a closure cell: replaces its contents with `Undefined`, so a
+    /// later [`Self::load_cell`] raises the free-variable `NameError` —
+    /// CPython's `DELETE_DEREF` cleanup of a captured `except ... as` target.
+    /// The only emitter stores `None` first, so the cell is never already
+    /// unbound here (no error path, unlike [`Self::delete_global`]).
+    fn delete_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
+        let value = Value::Undefined;
+        // the guard drops the cell's previous contents after the swap
+        let this = self;
+        defer_drop_mut!(value, this);
+
+        let cell_id = this.cell_id_from_local(cached_frame, slot);
+        let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
+            panic!("DeleteCell: entry is not a Cell")
         };
         mem::swap(&mut cell.get_mut(this.heap).0, value);
     }
