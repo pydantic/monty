@@ -71,8 +71,16 @@ A name present in both is served by the eager `inputs` binding.
 ### Which values cross the boundary
 
 `None`, `bool`, `int` (arbitrary precision), `float`, `str`, `bytes`, `list`, `tuple`,
-`dict`, `set`, `frozenset`, `datetime.date`, `datetime.datetime`, `datetime.timedelta`,
-`datetime.timezone` and dataclass instances all convert in both directions.
+`dict`, `set`, `frozenset`, `Ellipsis`, `NotImplemented`, `datetime.date`,
+`datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named tuples, dataclass
+instances, exception instances, and the type objects Monty models (`int`, `str`,
+`datetime.date`, ...) all convert in both directions. A callable is not a value: put it in
+`external_lookup`, where it becomes a [host function](../host-functions.md).
+
+POSIX paths convert too — `pathlib.PurePosixPath` and `pathlib.PosixPath`, which is what
+`Path()` builds on Linux and macOS. They come back as `PurePosixPath`, and a
+`PureWindowsPath` / `WindowsPath` is rejected, because paths inside the sandbox are always
+POSIX.
 
 Anything else is rejected with `MontyConversionError` before it reaches the sandbox:
 
@@ -121,8 +129,9 @@ asyncio.run(main())
 ```
 
 There is no event loop inside the sandbox — the host is the loop. Sandboxed `async def`
-and `await` work, and `asyncio.gather` runs host calls concurrently, but
-`asyncio.create_task`, `asyncio.sleep` and the rest of the module do not exist. See
+and `await` work, and `asyncio` exposes exactly `run` and `gather`, the latter running
+host calls concurrently. `asyncio.create_task`, `asyncio.sleep` and everything else in the
+module do not exist. See
 [`limitations/asyncio.md`](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md).
 
 ## Capturing printed output
@@ -175,8 +184,13 @@ Every Monty error subclasses `MontyError`:
 | `MontySyntaxError` | The snippet does not parse | yes |
 | `MontyTypingError` | Type checking rejected the snippet | yes |
 | `MontyRuntimeError` | The code raised at runtime | yes |
-| `MontyConversionError` | A host value cannot cross the boundary | yes |
+| `MontyConversionError` | A host value cannot cross the boundary | from `inputs` yes, from `external_lookup` no |
 | `MontyCrashedError` | The worker died, or hit `request_timeout` | no |
+
+`inputs` are converted before the snippet runs, so a rejected value leaves the session
+untouched. An `external_lookup` value is converted mid-execution, while the worker is
+suspended on the name read, so the checkout is discarded and reusing it raises
+`RuntimeError: this checkout has already been finished`. Check out again to retry.
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 

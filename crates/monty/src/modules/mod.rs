@@ -39,7 +39,7 @@ pub(crate) enum StandardLib {
     Sys,
     /// The `typing` module providing type hints support.
     Typing,
-    /// The `asyncio` module providing async/await support (only `gather()` implemented).
+    /// The `asyncio` module providing async/await support (only `run()` and `gather()` implemented).
     Asyncio,
     /// The `pathlib` module providing object-oriented filesystem paths.
     Pathlib,

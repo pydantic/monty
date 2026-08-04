@@ -30,7 +30,7 @@ repository, and that directory — not this page — is the source of truth.
   `nonlocal`, `return`
 - `with` statements, for files and for classes implementing `__enter__` / `__exit__`
 - f-strings, including `=`, `!r` / `!s` / `!a` and format specs
-- `async` / `await`, and `asyncio.gather`
+- `async` / `await`, and `asyncio.run` / `asyncio.gather`
 - `import x`, `import x.y`, `from x import y, z as w`
 - Starred unpacking everywhere CPython allows it
 
@@ -94,21 +94,28 @@ The authoritative list is
 ## Things that work but not quite like CPython
 
 A few divergences are worth knowing up front because they change how code behaves rather
-than whether it runs:
+than whether it runs. Each links to the `limitations/` file that owns it, which is where
+the full account lives:
 
 - **`assert` failures get pytest-style messages.** `assert 2 == 5` raises
   `AssertionError: assert 2 == 5`, not CPython's empty `AssertionError`. Turn it off with
-  `assert_message_annotations=False` on `checkout()`.
+  `assert_message_annotations=False` on `checkout()`
+  ([assert.md](https://github.com/pydantic/monty/blob/main/limitations/assert.md)).
 - **`enumerate`, `zip`, `map`, `filter` and `reversed` are eager**, not lazy. So
-  `map(f, itertools.count())` runs until a resource limit trips.
+  `map(f, itertools.count())` runs until a resource limit trips
+  ([builtins.md](https://github.com/pydantic/monty/blob/main/limitations/builtins.md)).
 - **`re` is backed by Rust's `fancy-regex`**, not CPython's engine: no `bytes` patterns,
-  no `VERBOSE` flag, and some error messages differ.
-- **There is no event loop inside the sandbox.** `async` / `await` work and
-  `asyncio.gather` runs host calls concurrently, but `create_task`, `sleep` and the rest of
-  `asyncio` do not exist.
-- **`str.format()` and `%`-formatting are not implemented.** Use f-strings.
+  no `VERBOSE` flag, and some error messages differ
+  ([re.md](https://github.com/pydantic/monty/blob/main/limitations/re.md)).
+- **There is no event loop inside the sandbox.** `async` / `await` work, and `asyncio`
+  exposes exactly two functions: `run` and `gather`, the latter running host calls
+  concurrently. `create_task`, `sleep` and everything else do not exist
+  ([asyncio.md](https://github.com/pydantic/monty/blob/main/limitations/asyncio.md)).
+- **`str.format()` and `%`-formatting are not implemented.** Use f-strings
+  ([format.md](https://github.com/pydantic/monty/blob/main/limitations/format.md)).
 - **Only UTF-8, ASCII, UTF-16 and UTF-32 codecs exist.** `latin-1` and friends raise
-  `LookupError`.
+  `LookupError`
+  ([encoding.md](https://github.com/pydantic/monty/blob/main/limitations/encoding.md)).
 
 ## How `limitations/` works
 

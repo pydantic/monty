@@ -64,10 +64,15 @@ Both put host values in front of the sandbox, but they differ in *when*:
 | --- | --- | --- |
 | Bound | eagerly, before the snippet runs | lazily, when the name is read |
 | Converted | every entry, used or not | only what the code touches |
-| Callables | converted like any value | become host functions |
+| Callables | a reference, not a host function | become host functions |
 | Missing name | not applicable | `NameError` in the sandbox |
 
 A name present in both is served by the eager `inputs` binding.
+
+Pass host functions through `external_lookup`. A callable in `inputs` binds only a
+reference carrying the callable's `__name__`, and calling it resolves *that* name through
+`external_lookup` — so `inputs={'f': double}` alone raises
+`NameError: name 'double' is not defined` on `f(2)`.
 
 Prefer `inputs` for the small, always-needed values the code was written around, and
 `external_lookup` for the tool surface — a model that writes code calling ten of your
@@ -92,10 +97,10 @@ with Monty() as pool:
         #> x warn {'code': 7}
 ```
 
-Arguments and return values must be types Monty can represent: `None`, `bool`, `int`,
-`float`, `str`, `bytes`, `list`, `tuple`, `dict`, `set`, `frozenset`, the `datetime`
-family, and dataclass instances. Anything else is rejected with `MontyConversionError`
-before it crosses the boundary.
+Arguments and return values must be types Monty can represent — the same set `inputs` and
+`external_lookup` accept, listed under
+[which values cross the boundary](quickstart/python.md#which-values-cross-the-boundary).
+Anything else is rejected with `MontyConversionError` before it crosses the boundary.
 
 Values are also bounded in shape and size. Nesting is capped (roughly 48 nested lists, 32
 nested dicts, 24 nested dataclasses), and a single value on the wire is capped at 256 MiB.

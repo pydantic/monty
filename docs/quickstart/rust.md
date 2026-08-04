@@ -16,7 +16,7 @@ replaces it, and your process is untouched.
 ## Running untrusted code with `monty-pool`
 
 ```bash
-cargo add monty-pool monty-types tokio
+cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
 ```
 
 Workers are `monty` CLI binaries. Build one with `cargo build -p monty-runtime` from the

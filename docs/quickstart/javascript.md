@@ -102,11 +102,21 @@ import { MontyError, MontyRuntimeError, MontySyntaxError, MontyCrashedError } fr
 | `MontyTypingError` | Type checking rejected the snippet | yes |
 | `MontyRuntimeError` | The code raised at runtime | yes |
 | `MontyCrashedError` | The worker died, or the watchdog killed it | no |
-| `ProtocolError` | The worker violated the wire protocol | no |
+| `ProtocolError` | The worker, or a caller misusing the session, violated the wire protocol | no |
 
-`MontyError` is the base class. `err.exception` carries `{ typeName, message }`, and
-`err.display('traceback' | 'type-msg' | 'msg')` renders the error. `MontyCrashedError`
-adds `timedOut` and `exitStatus`.
+`MontyError` is the base class of everything above except `ProtocolError`, which extends
+`Error`. `err.exception` carries `{ typeName, message }`, and `err.display(format)`
+renders the error. Which formats a class accepts differs, and passing one a class does not
+accept throws:
+
+| Class | `display` formats |
+| --- | --- |
+| `MontyError`, `MontyCrashedError` | `'msg'` (default), `'type-msg'` |
+| `MontySyntaxError` | `'msg'` (default), `'type-msg'`, `'traceback'` |
+| `MontyRuntimeError` | `'traceback'` (default), `'type-msg'`, `'msg'` |
+| `MontyTypingError` | takes no argument; returns the diagnostics |
+
+`MontyCrashedError` adds `timedOut` and `exitStatus`.
 
 ## Limits and type checking
 
@@ -121,7 +131,8 @@ await using session = await pool.checkout({
 ```
 
 `ResourceLimits` fields are `maxDurationSecs`, `maxMemory`, `gcInterval` and
-`maxRecursionDepth`; omitted fields mean unlimited. See
+`maxRecursionDepth`; an omitted field means unlimited, except `maxRecursionDepth`, which
+falls back to its 1000-frame default and cannot be disabled. See
 [resource limits](../resource-limits.md) and [type checking](../type-checking.md).
 
 ## Filesystem mounts
@@ -133,7 +144,7 @@ import { MountDir } from '@pydantic/monty/node'
 
 const mount = new MountDir({ hostPath: '/tmp/data', virtualPath: '/data', mode: 'read-write' })
 const text = await session.feedRun(
-  "from pathlib import Path\nPath('/data/new.txt').read_text()",
+  "from pathlib import Path\np = Path('/data/new.txt')\np.write_text('hello')\np.read_text()",
   { mount },
 )
 ```
@@ -187,6 +198,8 @@ Differences from the native path:
 
 - **Filesystem mounts are unsupported** — a non-empty `mount` list is rejected, because
   there is no host filesystem.
+- **`bytes` arrive as `Uint8Array`** wherever there is no `Buffer` global, which is every
+  browser. Under Node the wasm build still hands back a `Buffer`.
 - **No crash isolation without `Worker`.** Where a real `Worker` exists, it runs
   off-thread and `Worker.terminate()` is the watchdog's hard kill. Where one does not,
   the same API degrades to in-process execution: no crash isolation and no preemption, so

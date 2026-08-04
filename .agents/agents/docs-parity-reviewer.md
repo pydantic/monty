@@ -76,7 +76,11 @@ fix.
    snippet (Python fed to Monty, not host code) presented as a runnable top-level block
    is a finding — CPython would execute it.
 
-   Rust snippets in `crates/*/README.md` are doctested by `cargo test --doc`. JavaScript
+   Rust snippets in `crates/*/README.md` are doctested by `make test-docs`
+   (`cargo test --doc --workspace`), but only where the crate's `lib.rs` pulls the README
+   in with `#![doc = include_str!("../README.md")]`. `monty-fs` and `monty-macros` do not,
+   and `monty-runtime` is a binary crate, so their snippets are never compiled — check
+   those by hand. Rust snippets in `docs/` are not compiled anywhere. JavaScript
    and TypeScript snippets are not executed anywhere: check them by hand against
    `crates/monty-js/ts/` — every imported name must actually be exported from the subpath
    the snippet imports it from (`MountDir` is `@pydantic/monty/node`, not the root entry).

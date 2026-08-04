@@ -1,9 +1,10 @@
 # Filesystem Access
 
 A Monty sandbox has no filesystem. With nothing configured, `open()` and every
-`pathlib.Path` I/O method raise `FileNotFoundError` for every path, because there is
-nothing to find. `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working directory are
-not reachable.
+`pathlib.Path` method that reaches the filesystem raise `PermissionError` for every path,
+because nothing is exposed for them to reach — including the existence checks CPython
+answers without raising. `/tmp`, `/etc`, `/proc`, `/dev`, `~` and the host working
+directory are not reachable.
 
 You give the sandbox a filesystem in one of two ways: **mounts**, which map real host
 directories to virtual paths, or an **`os` callback**, which answers filesystem operations

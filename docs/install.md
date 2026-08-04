@@ -75,7 +75,7 @@ For running untrusted code from Rust, use
 interpreter:
 
 ```bash
-cargo add monty-pool monty-types tokio
+cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-thread
 ```
 
 `monty-pool` runs code only in `monty` worker subprocesses, which is what gives you crash

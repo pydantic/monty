@@ -30,7 +30,9 @@ with Monty() as pool:
 | `max_recursion_depth` | Maximum function call stack depth (default 1000) |
 | `gc_interval` | Run garbage collection every N allocations |
 
-Every key is optional. Omit one — or set it to `None` — to disable that limit.
+Every key is optional. Omit one — or set it to `None` — to disable that limit, with one
+exception: `max_recursion_depth` cannot be disabled. Omitting it, or passing `None`,
+leaves the 1000-frame default in place.
 
 In JavaScript the same fields are `maxMemory`, `maxDurationSecs`, `maxRecursionDepth` and
 `gcInterval`, passed as `limits` to `pool.checkout()`. In Rust they are the fields of

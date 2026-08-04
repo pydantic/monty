@@ -6,6 +6,7 @@ theme:
   palette:
     - scheme: 'default'
       media: '(prefers-color-scheme: light)'
+      primary: 'blue'
       toggle:
         icon: 'material/lightbulb'
         name: 'Switch to dark mode'
