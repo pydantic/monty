@@ -482,6 +482,23 @@ try:
 except StopIteration:
     pass
 
+
+# Returning one from a user `__iter__` works, which needs the adaptor to count
+# as a concrete iterator type and not just as something iterable.
+class Wrapped:
+    def __init__(self, adaptor):
+        self.adaptor = adaptor
+
+    def __iter__(self):
+        return self.adaptor
+
+
+assert list(Wrapped(itertools.takewhile(lambda x: x < 3, [1, 2, 3]))) == [1, 2]
+assert list(Wrapped(itertools.dropwhile(lambda x: x < 3, [1, 2, 3]))) == [3]
+assert list(Wrapped(itertools.filterfalse(None, [0, 1]))) == [0]
+assert list(Wrapped(itertools.starmap(pow, [(2, 3)]))) == [8]
+
+
 # === Signature errors ===
 for name, builder in (
     ('takewhile', itertools.takewhile),

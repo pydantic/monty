@@ -343,6 +343,10 @@ impl Type {
                 | Self::ItertoolsIslice
                 | Self::ItertoolsChain
                 | Self::ItertoolsCycle
+                | Self::ItertoolsTakeWhile
+                | Self::ItertoolsDropWhile
+                | Self::ItertoolsFilterFalse
+                | Self::ItertoolsStarMap
         )
     }
 
