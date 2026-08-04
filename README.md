@@ -45,8 +45,8 @@ What Monty **cannot** do:
 
 - Use the rest of the standard library
 - Use third party libraries (like Pydantic), support for external python library is not a goal
-- use class inheritance or metaclasses (plain classes work, support should come soon)
-- use match statements (again, support should come soon)
+- use class inheritance, metaclasses or `super()` - simple classes without a base class do work
+- use match statements (support should come soon)
 
 ---
 
@@ -64,6 +64,8 @@ For motivation on why you might want to do this, see:
 In very simple terms, the idea of all the above is that LLMs can work faster, cheaper and more reliably if they're asked to write Python (or Javascript) code, instead of relying on traditional tool calling. Monty makes that possible without the complexity of a sandbox or risk of running code directly on the host.
 
 **Note:** Monty will (soon) be used to implement `codemode` in [Pydantic AI](https://github.com/pydantic/pydantic-ai)
+
+**Documentation:** [`docs/`](./docs) covers installation, quickstarts for each language binding, the security model, host functions, resource limits, snapshotting, type checking and the supported Python subset. [`limitations/`](./limitations) is the reference for how Monty diverges from CPython.
 
 ## Usage
 
@@ -380,7 +382,7 @@ Details on each row below:
 
 ### Monty
 
-- **Language completeness**: No classes (yet), limited stdlib, no third-party libraries
+- **Language completeness**: No class inheritance, limited stdlib, no third-party libraries
 - **Security**: Explicitly controlled filesystem, network, and env access, strict limits on execution time and memory usage
 - **Start latency**: Starts in microseconds
 - **Setup complexity**: just `pip install pydantic-monty` or `npm install @pydantic/monty`, ~4.5MB download
