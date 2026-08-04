@@ -1,12 +1,7 @@
-//! Renaming a real host file inside an `OverlayMemory` mount records a
-//! `RealFileRef` rather than copying the bytes, and reads followed that cached
-//! host path with no boundary check — it was validated once, at rename time.
-//! These tests cover the gaps the rename-time guards (`reject_escaping_symlink`,
-//! the symlink skip in `collect_real_descendants`) leave open.
-//!
-//! Every read path that dereferences a `RealFileRef` must re-validate it, so
-//! each is exercised here: `read_text`, `read_bytes`, and the `existing_file_len`
-//! / `existing_file_bytes` pair an append goes through.
+//! An `OverlayMemory` rename records a `RealFileRef` instead of copying the
+//! bytes, and reads followed that cached host path unchecked. Every path that
+//! dereferences one is exercised here: `read_text`, `read_bytes`, and the
+//! `existing_file_len` / `existing_file_bytes` pair an append goes through.
 
 #[cfg(windows)]
 use std::process::Command;
@@ -52,10 +47,9 @@ fn rename_call(src: &str, dst: &str) -> OsFunctionCall {
 }
 
 /// A mount holding one cached `RealFileRef` at `/mnt/moved.txt` that a
-/// host-side actor has since re-pointed at an out-of-mount secret.
-///
-/// Owns its temp dirs so they outlive the dispatch. Sandboxed code cannot
-/// create that symlink itself, so this models a host process sharing the mount.
+/// host-side actor has since re-pointed at an out-of-mount secret. Sandboxed
+/// code cannot create that symlink itself; this models a host process sharing
+/// the mount. Owns its temp dirs so they outlive the dispatch.
 struct StaleRef {
     mounts: MountTable,
     _mount_dir: TempDir,
@@ -95,8 +89,7 @@ impl StaleRef {
         }
     }
 
-    /// Dispatches `call` and asserts it neither succeeded nor leaked. The read
-    /// paths raise `PathEscape`; append additionally refuses before writing.
+    /// Asserts `call` neither succeeded nor leaked the secret.
     fn assert_rejected(&mut self, call: OsFunctionCall) {
         let outcome = dispatch(&mut self.mounts, call);
         let leaked = match &outcome {
@@ -128,10 +121,9 @@ fn stale_ref_is_revalidated_on_read_bytes() {
     StaleRef::new().assert_rejected(OsFunctionCall::ReadBytes("/mnt/moved.txt".into()));
 }
 
-/// Appending to a `RealFileRef` reads the backing file to materialize it into
-/// the overlay (`existing_file_len`, then `existing_file_bytes`), so it must
-/// re-validate on both — otherwise the secret is copied into overlay state and
-/// readable from there afterwards.
+/// Appending materializes the backing file into the overlay via
+/// `existing_file_len` then `existing_file_bytes`, so both must re-validate —
+/// otherwise the secret lands in overlay state and reads back from memory.
 #[test]
 fn stale_ref_is_revalidated_on_append() {
     let mut scenario = StaleRef::new();
@@ -145,10 +137,9 @@ fn stale_ref_is_revalidated_on_append() {
     scenario.assert_rejected(OsFunctionCall::ReadText("/mnt/moved.txt".into()));
 }
 
-/// The mount root itself is swapped for a symlink out of the mount after the
-/// ref was cached. The boundary check must compare against the root
-/// canonicalized at mount time; re-canonicalizing it here would follow the swap
-/// and admit everything beneath the attacker's directory.
+/// Swapping the mount root for an escaping symlink after the ref was cached:
+/// the check must compare against the root canonicalized at mount time, since
+/// re-canonicalizing here would follow the swap.
 #[test]
 fn stale_ref_is_rejected_when_mount_root_is_swapped() {
     let base = TempDir::new().unwrap();
@@ -197,9 +188,8 @@ fn direct_read_through_escaping_symlink_is_rejected() {
     assert!(!leaked, "control failed: the ordinary resolution path also leaks");
 }
 
-/// The premise `collect_real_descendants`' capture-time skip rests on: std must
-/// classify a Windows directory junction as a symlink for its `is_symlink()`
-/// filter to catch one. If this flips, revisit that skip.
+/// `collect_real_descendants`' capture-time skip relies on std classifying a
+/// Windows junction as a symlink. If this flips, revisit that skip.
 #[cfg(windows)]
 #[test]
 fn junction_is_classified_as_symlink() {
@@ -216,9 +206,8 @@ fn junction_is_classified_as_symlink() {
     assert!(fs::symlink_metadata(&junction).unwrap().file_type().is_symlink());
 }
 
-/// Renaming an escaping symlink into the overlay must be refused outright, so
-/// `reject_escaping_symlink` is exercised rather than left to the read-time
-/// check standing behind it.
+/// Renaming an escaping symlink in must be refused outright, so
+/// `reject_escaping_symlink` is exercised rather than the read-time check behind it.
 #[test]
 fn renaming_escaping_symlink_into_overlay_is_rejected() {
     let mount_dir = TempDir::new().unwrap();

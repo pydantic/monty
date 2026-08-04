@@ -434,10 +434,8 @@ pub(super) fn reject_escaping_symlink(
         target
     };
 
-    // Canonicalize the resolved target and check it against the mount root
-    // canonicalized at mount time — re-canonicalizing here would resolve a
-    // mount root a host process had since replaced with an escaping symlink,
-    // and so accept its target as in-bounds.
+    // Check against the root canonicalized at mount time: re-canonicalizing
+    // would follow a mount root since replaced with an escaping symlink.
     let canonical = fs::canonicalize(&resolved).map_err(|_| MountError::PathEscape {
         virtual_path: virtual_path.to_owned(),
     })?;
@@ -453,9 +451,8 @@ pub(super) fn reject_escaping_symlink(
 /// returned path, not the cached one, so the check and the open cannot
 /// disagree about which file they mean.
 ///
-/// `mount_host_path` must be the mount root canonicalized at mount time
-/// (`MountContext::mount_host`); canonicalizing it here instead would follow
-/// a mount root swapped for an escaping symlink and admit its target.
+/// `mount_host_path` must be the root canonicalized at mount time
+/// (`MountContext::mount_host`) — see `reject_escaping_symlink`.
 pub(super) fn revalidate_cached_host_path(
     host_path: &Path,
     mount_host_path: &Path,

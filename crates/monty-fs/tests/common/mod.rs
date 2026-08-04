@@ -1,9 +1,7 @@
 //! Helpers shared across the `monty-fs` integration tests.
 //!
-//! Each `tests/*.rs` file compiles as its own crate, so anything used by more
-//! than one of them lives here rather than being copied. Symlink creation is
-//! the main case: the std API differs by platform, and mount-boundary tests
-//! need symlinks on every platform CI runs.
+//! Each `tests/*.rs` compiles as its own crate, so anything used by more than
+//! one of them lives here rather than being copied.
 
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
@@ -11,11 +9,7 @@ use std::os::unix::fs::symlink;
 use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
 use std::path::Path;
 
-/// Cross-platform symlink to a file.
-///
-/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
-/// `std::os::windows::fs::symlink_file`, which needs Developer Mode or an
-/// elevated shell.
+/// Cross-platform symlink to a file. Windows needs Developer Mode or elevation.
 pub fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
     #[cfg(unix)]
     symlink(original.as_ref(), link.as_ref()).expect("failed to create file symlink");
@@ -24,11 +18,7 @@ pub fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
         .expect("failed to create file symlink (enable Windows Developer Mode or run elevated)");
 }
 
-/// Cross-platform symlink to a directory.
-///
-/// On Unix uses `std::os::unix::fs::symlink`, on Windows uses
-/// `std::os::windows::fs::symlink_dir`, which needs Developer Mode or an
-/// elevated shell.
+/// Cross-platform symlink to a directory. Windows needs Developer Mode or elevation.
 pub fn symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) {
     #[cfg(unix)]
     symlink(original.as_ref(), link.as_ref()).expect("failed to create directory symlink");
