@@ -85,7 +85,7 @@ pub(super) fn call(vm: &mut VM<'_>, func: DataclassesFunctions, args: ArgValues)
         DataclassesFunctions::IsDataclass => is_dataclass(vm, args),
         // The options are already bound; this call supplies the class.
         DataclassesFunctions::Configured(options) => {
-            let cls = args.get_one_arg("dataclass", vm.heap)?;
+            let ConfiguredArgs { cls } = ConfiguredArgs::from_args(args, vm)?;
             apply_dataclass(vm, cls, options)
         }
     }
@@ -207,6 +207,19 @@ struct DataclassArgs {
     slots: Value,
     #[from_args(kw_only, default = Value::Bool(false))]
     weakref_slot: Value,
+}
+
+/// The class a [`DataclassesFunctions::Configured`] decorator is waiting for.
+///
+/// CPython's `dataclass` closes over a plain `def wrap(cls)`, so the class binds
+/// positionally *or* by keyword, and the arity errors name that closure rather
+/// than `dataclass` itself. Raw `Value` for [`DataclassArgs`]' reason: a `def`
+/// type-checks nothing, and `apply_dataclass` makes the class check the body
+/// would.
+#[derive(FromArgs)]
+#[from_args(name = "dataclass.<locals>.wrap", style = def)]
+struct ConfiguredArgs {
+    cls: Value,
 }
 
 /// Writes `__dataclass_params__` and `__dataclass_fields__` into the class

@@ -964,6 +964,9 @@ pub enum StaticStrings {
     /// `dataclasses.FrozenInstanceError` exception.
     #[strum(serialize = "FrozenInstanceError")]
     FrozenInstanceError,
+    /// The class parameter of the decorator `@dataclass(...)` returns, which
+    /// CPython spells `def wrap(cls)` and so accepts by keyword.
+    Cls,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

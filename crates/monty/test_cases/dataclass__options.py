@@ -330,6 +330,35 @@ class Second:
 
 assert First(1).x == 1
 assert Second(2).y == 2
+
+
+# The stored decorator is CPython's `def wrap(cls)`, so the class binds by
+# keyword too, and its arity errors name that closure rather than `dataclass`.
+class ByKeyword:
+    x: int
+
+
+assert frozen(cls=ByKeyword) is ByKeyword
+assert ByKeyword.__dataclass_params__.frozen is True
+
+try:
+    frozen()
+    assert False, 'expected a missing class to raise'
+except TypeError as e:
+    assert str(e) == "dataclass.<locals>.wrap() missing 1 required positional argument: 'cls'"
+
+try:
+    frozen(First, Second)
+    assert False, 'expected a second positional argument to raise'
+except TypeError as e:
+    assert str(e) == 'dataclass.<locals>.wrap() takes 1 positional argument but 2 were given'
+
+try:
+    frozen(cls=First, nope=1)
+    assert False, 'expected an unknown keyword to raise'
+except TypeError as e:
+    assert str(e) == "dataclass.<locals>.wrap() got an unexpected keyword argument 'nope'"
+
 assert First.__dataclass_params__.frozen is True
 assert Second.__dataclass_params__.frozen is True
 try:
