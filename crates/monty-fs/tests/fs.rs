@@ -4,11 +4,7 @@
 //! ReadOnly, OverlayMemory) and all supported filesystem
 //! operations. Uses real temporary directories to verify correct behavior.
 
-#[cfg(unix)]
-use std::os::unix::fs::symlink as unix_symlink;
-#[cfg(windows)]
-use std::os::windows::fs::symlink_file as win_symlink_file;
-use std::{fs, path::Path};
+use std::fs;
 
 use monty_fs::{DEFAULT_MEMORY_USAGE_LIMIT, Mount, MountCallOutcome, MountError, MountMode, MountTable, OverlayState};
 use monty_types::{
@@ -16,6 +12,11 @@ use monty_types::{
     RenameCallArgs, UnicodeErrorData, UnicodeErrorObject,
 };
 use tempfile::TempDir;
+
+// Only `symlink_file` is needed here; `symlink_dir` is dead in this crate.
+#[expect(dead_code, reason = "shared helper module; not every test crate uses all of it")]
+mod common;
+use common::symlink_file;
 
 // =============================================================================
 // Helpers
@@ -118,18 +119,6 @@ fn rename(src: &str, dst: &str) -> OsFunctionCall {
         src: src.into(),
         dst: dst.into(),
     })
-}
-
-/// Creates a file symlink, handling platform differences.
-///
-/// On Unix, uses `std::os::unix::fs::symlink`. On Windows, uses
-/// `std::os::windows::fs::symlink_file`.
-fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
-    #[cfg(unix)]
-    unix_symlink(original.as_ref(), link.as_ref()).unwrap();
-
-    #[cfg(windows)]
-    win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
 }
 
 /// Asserts an exception has the expected type and message.
