@@ -1253,7 +1253,7 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
 /// already knows — comparing raw `Debug` output would therefore report two
 /// identical refusals as different. The `Io` kind is kept, since a `NotFound`
 /// where another path gives `PermissionDenied` would itself be an oracle.
-fn outcome_class(result: &Option<Result<MontyObject, MountError>>) -> String {
+fn outcome_class(result: Option<&Result<MontyObject, MountError>>) -> String {
     match result {
         None => "NotHandled".to_owned(),
         Some(Ok(value)) => format!("Ok({value:?})"),
@@ -1360,7 +1360,7 @@ fn host_absolute_exists_is_not_an_oracle() {
                 // Drive-prefixed on Windows, plain nested on Unix; either way the
                 // two must be indistinguishable from inside the sandbox.
                 let payload = format!("/mnt/{}", p.to_str().expect("temp path is UTF-8"));
-                outcome_class(&call(&mut mt, PathOp::Exists, &payload))
+                outcome_class(call(&mut mt, PathOp::Exists, &payload).as_ref())
             })
             .collect();
         assert_eq!(
