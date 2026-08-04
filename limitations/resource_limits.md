@@ -70,7 +70,9 @@ catch them. `RecursionError` is catchable, as in CPython.
   `replace` and their variants) poll the clock every 64KiB, or every two
   lengths of the searched-for sequence if that is longer. Searching for a
   sequence over 64KiB therefore overshoots `max_duration` in proportion to
-  its length; `max_memory` bounds how long it can get.
+  its length, and `max_memory` does not bound that length: it caps sequences
+  built at runtime, but a `bytes` literal is interned when the source is
+  parsed and never counted against it.
 - The budget covers cumulative **execution time**, not wall-clock time:
   the clock runs only while the interpreter executes bytecode, and is
   paused while execution is suspended waiting on the host (external
