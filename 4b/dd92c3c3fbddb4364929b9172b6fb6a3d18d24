@@ -1,0 +1,66 @@
+limitations/resource_limits.md
+  s_5dfd437de4aec6::t_35c452cf34295e 30,37-39,48-62,66-69
+limitations/pool-architecture.md
+  s_5dfd437de4aec6::t_35c452cf34295e 109-114
+crates/monty-bench/benches/main.rs
+  s_5dfd437de4aec6::t_a929b7daf71c87 4,6,24-29,34-35,37,40-41,47,60,80,93,96,102
+  s_5dfd437de4aec6::t_57cb0fcf6b3e1d 30-33,36,38-39,42-46,48-59,61-79,81-92,94-95,97-101,103-108
+  s_5dfd437de4aec6::t_b97249e8010bd2 5
+  s_5dfd437de4aec6::t_ed2f9ee006e127 7-10
+crates/monty-python/python/pydantic_monty/_monty.pyi
+  s_5dfd437de4aec6::t_e0d78852c6f082 398-403
+crates/monty-js/ts/pool.ts
+  s_5dfd437de4aec6::t_8f386409d3b719 48,52-53
+crates/monty-runtime/src/main.rs
+  s_5dfd437de4aec6::t_d03683dff0896f 178,180
+  s_5dfd437de4aec6::t_5b9eaddc24f6ba 4
+  s_5dfd437de4aec6::t_e0d78852c6f082 99,101-102
+crates/monty-pool/tests/pool_test.rs
+  s_5dfd437de4aec6::t_7cdd9dcb365dad 1148
+  s_5dfd437de4aec6::t_a574a405f9da13 1125-1126,1129
+crates/monty-pool/src/lib.rs
+  s_5dfd437de4aec6::t_e0d78852c6f082 74-80
+crates/monty-runtime/tests/subprocess.rs
+  s_5dfd437de4aec6::t_c4f7920d7cca42 448-451
+crates/monty-pool/README.md
+  s_5dfd437de4aec6::t_e0d78852c6f082 82-87
+scripts/hard_memory_sweep.py
+  s_5dfd437de4aec6::t_33e67ee0b2d23e 4-8,13-14,132-134,140,142-144,146-147,190,202-203,244-245,265-267
+crates/monty-bench/Cargo.toml
+  s_5dfd437de4aec6::t_513cd778f052c1 11,15
+  s_5dfd437de4aec6::t_a929b7daf71c87 12-14
+crates/monty-proto/src/lib.rs
+  s_5dfd437de4aec6::t_1e3d5682ec1386 23-25
+crates/monty-runtime/src/oom_exit.rs
+  s_5dfd437de4aec6::t_efa40ff87acfc8 150-152
+  s_5dfd437de4aec6::t_2c33ad54476074 140,146,149,160
+  s_5dfd437de4aec6::t_3b122fec7e960f 74,84,93,105-109,120-127,131-137
+  s_5dfd437de4aec6::t_b3f4987582c42e 34-35
+  s_5dfd437de4aec6::t_4eb9a8f8b176eb 1-3,5-18,28,38-55,61-65
+  s_5dfd437de4aec6::t_473b6c27cf8208 154-158
+  s_5dfd437de4aec6::t_c8a017fb5498bc 25,56-60,78,97,114,128-129
+crates/monty-js/README.md
+  s_5dfd437de4aec6::t_e0d78852c6f082 320,326-328
+crates/monty-pool/src/worker.rs
+  s_5dfd437de4aec6::t_8f386409d3b719 110-111
+crates/monty-js/src/pool.rs
+  s_5dfd437de4aec6::t_e0d78852c6f082 101-102
+README.md
+  s_5dfd437de4aec6::t_8213ece6edc5ff 242-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4bdd92c3c3fbddb4364929b9172b6fb6a3d18d24",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
