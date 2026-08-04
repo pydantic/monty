@@ -1,0 +1,63 @@
+Cargo.toml
+  s_5dfd437de4aec6::t_341170b67ba7e3 6,63
+crates/monty-js/README.md
+  s_5dfd437de4aec6::t_c31fe7d64dd9ff 330-332
+  s_5dfd437de4aec6::t_7e53cfd5cad8af 325-326
+crates/monty-proto/README.md
+  s_5dfd437de4aec6::t_7e53cfd5cad8af 7-9
+CLAUDE.md
+  s_5dfd437de4aec6::t_1d2e0f2b131213 140-147,852-855
+  s_5dfd437de4aec6::t_71437b916d3eae 334,865-867
+limitations/pool-architecture.md
+  s_5dfd437de4aec6::t_c31fe7d64dd9ff 112-116,128-130
+crates/monty-pool/README.md
+  s_5dfd437de4aec6::t_c06c2de9badc26 83-84
+crates/monty-runtime/src/subprocess.rs
+  s_5dfd437de4aec6::t_bd0c18608e8782 94
+README.md
+  s_5dfd437de4aec6::t_c31fe7d64dd9ff 252-256
+crates/monty-alloc/src/lib.rs
+  s_5dfd437de4aec6::t_9664127a9bd320 1-162
+crates/monty-runtime/src/main.rs
+  s_5dfd437de4aec6::t_bd0c18608e8782 21-24,26
+crates/monty-wasm-runtime/src/lib.rs
+  s_5dfd437de4aec6::t_0f9b541c436e9b 51-57,83-91
+crates/monty-runtime/README.md
+  s_5dfd437de4aec6::t_c06c2de9badc26 36-41
+crates/monty-alloc/Cargo.toml
+  s_5dfd437de4aec6::t_f238e1c2e7cc1a 1-30
+crates/monty-alloc/README.md
+  s_5dfd437de4aec6::t_7dbefd148089d6 1-53
+crates/monty-js/__test__/wasm_ceiling.spec.ts
+  s_5dfd437de4aec6::t_cdff619596cd40 49
+  s_5dfd437de4aec6::t_6fb9681dcaa718 14,31-34,45-48
+  s_5dfd437de4aec6::t_67a8aa6c15de3d 1-13,15-30,35-44,50-54
+crates/monty-bench/Cargo.toml
+  s_5dfd437de4aec6::t_25344a87858457 12-14,19
+crates/monty-wasm-runtime/Cargo.toml
+  s_5dfd437de4aec6::t_341170b67ba7e3 23
+crates/monty-bench/benches/main.rs
+  s_5dfd437de4aec6::t_ad2a1c84e54c79 17-20,23
+limitations/resource_limits.md
+  s_5dfd437de4aec6::t_c31fe7d64dd9ff 95-102
+RELEASING.md
+  s_5dfd437de4aec6::t_40a1e2f355df83 35
+crates/monty-runtime/Cargo.toml
+  s_5dfd437de4aec6::t_341170b67ba7e3 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b5e1460db98871e656cda94d89833e4e3bc64e02",
+  "prompts": {},
+  "sessions": {
+    "s_5dfd437de4aec6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b703fee5-1ace-4c28-8775-6c1e81f43c1a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Samuel Colvin <s@muelcolvin.com>"
+    }
+  }
+}
