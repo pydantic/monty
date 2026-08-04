@@ -1782,8 +1782,18 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
     } else {
-        Ok(bytes.to_vec())
+        replace_nothing(bytes, heap)
     }
+}
+
+/// Copies `bytes` unchanged, for a `replace` that cannot match anything.
+///
+/// Polls before copying: the callers reaching here skip the scan loop, and
+/// with it the `check_time()` it would have run first, so without this a
+/// no-match `replace` over a large input would never touch the clock.
+fn replace_nothing(bytes: &[u8], heap: &Heap) -> Result<Vec<u8>, ResourceError> {
+    heap.check_time()?;
+    Ok(bytes.to_vec())
 }
 
 /// Replaces at most n occurrences of `old` with `new` in bytes.
@@ -1794,7 +1804,7 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
     // `count=0` permits no replacements, so return before `finder_for`
     // preprocesses `old` — that runs ahead of any `check_time()`.
     if n == 0 {
-        return Ok(bytes.to_vec());
+        return replace_nothing(bytes, heap);
     }
     if old.is_empty() {
         // Empty pattern: insert new before each byte (up to n times)
@@ -1830,7 +1840,7 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
     } else {
-        Ok(bytes.to_vec())
+        replace_nothing(bytes, heap)
     }
 }
 
