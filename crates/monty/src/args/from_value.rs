@@ -21,7 +21,7 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithContext, HeapData},
-    types::{PyTrait, instance::instance_index},
+    types::PyTrait,
     value::Value,
 };
 
@@ -186,34 +186,6 @@ impl FromValue for Value {
     }
 }
 
-/// Replaces a user instance with the `int` its `__index__` returns, leaving
-/// every other value untouched.
-///
-/// Runs before the fixed-width int impls match, so they only ever see real ints
-/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. A
-/// class without `__index__` is returned unchanged, so the caller still reports
-/// its own `WrongType`.
-fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValueFail> {
-    let Value::Ref(id) = &value else {
-        return Ok(value);
-    };
-    if !matches!(vm.heap.get(*id), HeapData::Instance(_)) {
-        return Ok(value);
-    }
-    let id = *id;
-    match instance_index(id, vm) {
-        Ok(Some(index)) => {
-            value.drop_with(vm);
-            Ok(index)
-        }
-        Ok(None) => Ok(value),
-        Err(err) => {
-            value.drop_with(vm);
-            Err(FromValueFail::Raise(err))
-        }
-    }
-}
-
 impl FromValue for i32 {
     const EXPECTED_TYPE_NAME: Option<&'static str> = Some("int");
 
@@ -261,6 +233,27 @@ impl FromValue for i64 {
 
     fn type_error(got: &str) -> RunError {
         ExcType::type_error_not_integer(got)
+    }
+}
+
+/// Replaces a user instance with the `int` its `__index__` returns, leaving
+/// every other value untouched.
+///
+/// Runs before the fixed-width int impls match, so they only ever see real ints
+/// — the `PyNumber_Index` step CPython's `i`/`n` argument converters perform. A
+/// class without `__index__` is returned unchanged, so the caller still reports
+/// its own `WrongType`.
+fn resolve_index_dunder(value: Value, vm: &mut VM<'_>) -> Result<Value, FromValueFail> {
+    match value.try_index(vm) {
+        Ok(Some(index)) => {
+            value.drop_with(vm);
+            Ok(index)
+        }
+        Ok(None) => Ok(value),
+        Err(err) => {
+            value.drop_with(vm);
+            Err(FromValueFail::Raise(err))
+        }
     }
 }
 

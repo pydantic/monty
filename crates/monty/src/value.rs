@@ -1783,25 +1783,18 @@ impl Value {
     pub fn as_int(&self, vm: &mut VM<'_>) -> RunResult<i64> {
         match self {
             Self::Int(i) => Ok(*i),
-            Self::Ref(heap_id) => {
-                // Both non-instance outcomes return from inside the `match`, so
-                // the entry's borrow ends before the `__index__` path below,
-                // which needs the heap mutably.
-                match vm.heap.get(*heap_id) {
-                    HeapData::LongInt(li) => return li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t),
-                    HeapData::Instance(_) => {}
-                    _ => {
-                        let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
-                        return Err(SimpleException::new_msg(ExcType::TypeError, msg).into());
-                    }
-                }
-                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
-                let on_missing = SimpleException::new_msg(ExcType::TypeError, msg).into();
-                Self::index_dunder_as_i64(*heap_id, vm, ExcType::overflow_c_ssize_t, on_missing)
+            Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
+                li.to_i64().ok_or_else(ExcType::overflow_c_ssize_t)
             }
+            // Everything else is either `__index__`-able or a type error, and
+            // `try_index` answers which without this arm inspecting the heap.
             _ => {
-                let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
-                Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+                if let Some(index) = self.try_index(vm)? {
+                    Self::narrow_index_to_i64(index, vm, ExcType::overflow_c_ssize_t)
+                } else {
+                    let msg = format!("'{}' object cannot be interpreted as an integer", self.py_type_name(vm));
+                    Err(SimpleException::new_msg(ExcType::TypeError, msg).into())
+                }
             }
         }
     }
@@ -1823,38 +1816,43 @@ impl Value {
         match self {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),
-            Self::Ref(heap_id) => {
-                // Shaped like [`Self::as_int`]'s arm, and for the same borrow reason.
-                match vm.heap.get(*heap_id) {
-                    HeapData::LongInt(li) => return li.to_i64().ok_or_else(ExcType::index_error_int_too_large),
-                    HeapData::Instance(_) => {}
-                    _ => return Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
-                }
-                let on_missing = ExcType::type_error_indices(container_type, &self.py_type_name(vm));
-                Self::index_dunder_as_i64(*heap_id, vm, ExcType::index_error_int_too_large, on_missing)
+            Self::Ref(heap_id) if let HeapData::LongInt(li) = vm.heap.get(*heap_id) => {
+                li.to_i64().ok_or_else(ExcType::index_error_int_too_large)
             }
-            _ => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
+            // Shaped like [`Self::as_int`]'s fallback, differing only in messages.
+            _ => match self.try_index(vm)? {
+                Some(index) => Self::narrow_index_to_i64(index, vm, ExcType::index_error_int_too_large),
+                None => Err(ExcType::type_error_indices(container_type, &self.py_type_name(vm))),
+            },
         }
     }
 
-    /// Runs an instance's `__index__` and narrows the result to `i64`.
+    /// Calls a user `__index__` when this is an instance whose class defines one.
     ///
-    /// Shared by [`Self::as_int`] and [`Self::as_index`], which disagree on both
-    /// failure messages: `on_overflow` covers a result too wide for `i64`, and
-    /// `on_missing` the class not defining `__index__` at all. The result is
-    /// already validated as an int by `instance_index`, so this cannot recurse.
+    /// `Ok(None)` covers both "not an instance" and "no `__index__`", leaving the
+    /// caller to raise its own `TypeError` — the wording differs per consumer
+    /// (`list indices must be integers`, `cannot be interpreted as an integer`,
+    /// `slice indices must be…`), so it is not raised here.
     ///
-    /// `on_missing` is built eagerly rather than passed as a closure because
-    /// naming the type needs `vm`, which is handed over mutably here.
-    fn index_dunder_as_i64(
-        instance_id: HeapId,
-        vm: &mut VM<'_>,
-        on_overflow: impl FnOnce() -> RunError,
-        on_missing: RunError,
-    ) -> RunResult<i64> {
-        let Some(index) = instance_index(instance_id, vm)? else {
-            return Err(on_missing);
-        };
+    /// This is the single entry point to the protocol: consumers call it rather
+    /// than testing for `HeapData::Instance` themselves, so how a user class is
+    /// represented on the heap stays known only to this module and `instance.rs`.
+    /// The result is a validated int, so a caller may convert it — or recurse
+    /// once through its own int arms — without re-entering the dunder.
+    pub(crate) fn try_index(&self, vm: &mut VM<'_>) -> RunResult<Option<Self>> {
+        match self {
+            Self::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => instance_index(*id, vm),
+            _ => Ok(None),
+        }
+    }
+
+    /// Narrows an `__index__` result to `i64`, consuming it.
+    ///
+    /// Shared by [`Self::as_int`] and [`Self::as_index`], which disagree on the
+    /// overflow message (`OverflowError` vs `IndexError`), hence `on_overflow`.
+    /// The value is already validated as an int by [`Self::try_index`], so the
+    /// non-int arms are unreachable.
+    fn narrow_index_to_i64(index: Self, vm: &mut VM<'_>, on_overflow: impl FnOnce() -> RunError) -> RunResult<i64> {
         let converted = match &index {
             Self::Int(i) => Ok(*i),
             Self::Bool(b) => Ok(i64::from(*b)),

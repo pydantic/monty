@@ -19,7 +19,7 @@ use crate::{
     hash::HashValue,
     heap::{HeapData, HeapId, HeapItem, HeapObjectRead, HeapReadOutput},
     intern::StaticStrings,
-    types::{PyTrait, Type, instance::instance_index},
+    types::{PyTrait, Type},
     value::{EitherStr, Value},
 };
 
@@ -145,16 +145,15 @@ pub(crate) fn value_to_option_i64(value: &Value, vm: &mut VM<'_>) -> RunResult<O
         Value::None => Ok(None),
         Value::Int(i) => Ok(Some(*i)),
         Value::Bool(b) => Ok(Some(i64::from(*b))),
-        Value::Ref(id) if matches!(vm.heap.get(*id), HeapData::Instance(_)) => {
-            let Some(index) = instance_index(*id, vm)? else {
-                return Err(ExcType::type_error_slice_indices());
-            };
-            // Recurses exactly once: `instance_index` validates an int result,
-            // so the arms above take it on the way back in.
-            defer_drop!(index, vm);
-            value_to_option_i64(index, vm)
-        }
-        _ => Err(ExcType::type_error_slice_indices()),
+        _ => match value.try_index(vm)? {
+            // Recurses exactly once: `try_index` validates an int result, so the
+            // arms above take it on the way back in.
+            Some(index) => {
+                defer_drop!(index, vm);
+                value_to_option_i64(index, vm)
+            }
+            None => Err(ExcType::type_error_slice_indices()),
+        },
     }
 }
 

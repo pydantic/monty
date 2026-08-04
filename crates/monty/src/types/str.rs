@@ -25,7 +25,6 @@ use crate::{
     string_builder::StringBuilder,
     types::{
         LazyHeapSet, Type,
-        instance::instance_index,
         long_int::repeat_count,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
@@ -1198,17 +1197,18 @@ fn optional_index(value: &Value, default: usize, str_len: usize, vm: &mut VM<'_>
             let i = li.to_i64().ok_or_else(|| ExcType::type_error("integer too large"))?;
             Ok(normalize_sequence_index(i, str_len))
         }
-        Value::Ref(heap_id) if matches!(vm.heap.get(*heap_id), HeapData::Instance(_)) => {
-            let Some(index) = instance_index(*heap_id, vm)? else {
-                return Err(ExcType::type_error_slice_indices());
-            };
-            // Recurses exactly once: `instance_index` validates an int result,
-            // so the arms above take it. Recursing rather than converting here
-            // keeps the too-large message identical for both routes.
-            defer_drop!(index, vm);
-            optional_index(index, default, str_len, vm)
-        }
-        _ => Err(ExcType::type_error_slice_indices()),
+        _ => match value.try_index(vm)? {
+            // Recurses exactly once: `try_index` validates an int result, so the
+            // arms above take it. Recursing rather than narrowing here keeps a
+            // too-large result on the same path as a directly-passed `LongInt` —
+            // which raises `TypeError: integer too large` where CPython clamps,
+            // a pre-existing divergence this arm inherits rather than widens.
+            Some(index) => {
+                defer_drop!(index, vm);
+                optional_index(index, default, str_len, vm)
+            }
+            None => Err(ExcType::type_error_slice_indices()),
+        },
     }
 }
 
