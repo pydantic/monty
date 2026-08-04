@@ -572,10 +572,30 @@ const SCAN_CHUNK: usize = 64 * 1024;
 /// Finds the first occurrence of `needle` in `haystack`.
 ///
 /// Callers must handle the empty needle: it would spin [`count_non_overlapping`].
-/// Repeated scans for the same needle should build one [`Finder`] and call
-/// [`find_with`] instead — see its docstring.
+/// Repeated scans for the same needle should build one [`Finder`] via
+/// [`finder_for`] and call [`find_with`] instead — see their docstrings.
 fn find_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
-    find_with(&Finder::new(needle), haystack, heap)
+    match finder_for(needle, haystack) {
+        Some(finder) => find_with(&finder, haystack, heap),
+        None => Ok(None),
+    }
+}
+
+/// Builds a forward finder, or `None` when `needle` cannot fit in `haystack`.
+///
+/// [`Finder::new`] runs Two-Way preprocessing over the whole needle *before*
+/// [`find_with`] reaches its first `check_time()`, so a host-supplied needle
+/// longer than the haystack would burn unpolled time on a search that provably
+/// cannot match. Every finder must be built through this or [`rfinder_for`].
+fn finder_for<'n>(needle: &'n [u8], haystack: &[u8]) -> Option<Finder<'n>> {
+    (needle.len() <= haystack.len()).then(|| Finder::new(needle))
+}
+
+/// Builds a reverse finder, or `None` when `needle` cannot fit in `haystack`.
+///
+/// The mirror of [`finder_for`], with the same preprocessing rationale.
+fn rfinder_for<'n>(needle: &'n [u8], haystack: &[u8]) -> Option<FinderRev<'n>> {
+    (needle.len() <= haystack.len()).then(|| FinderRev::new(needle))
 }
 
 /// Finds the first occurrence of `finder`'s needle in `haystack`.
@@ -612,7 +632,10 @@ fn find_with(finder: &Finder<'_>, haystack: &[u8], heap: &Heap) -> Result<Option
 ///
 /// The mirror of [`find_subsequence`]; [`rfind_with`] is the reusable form.
 fn rfind_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
-    rfind_with(&FinderRev::new(needle), haystack, heap)
+    match rfinder_for(needle, haystack) {
+        Some(finder) => rfind_with(&finder, haystack, heap),
+        None => Ok(None),
+    }
 }
 
 /// Finds the last occurrence of `finder`'s needle in `haystack`.
@@ -637,7 +660,9 @@ fn rfind_with(finder: &FinderRev<'_>, haystack: &[u8], heap: &Heap) -> Result<Op
 
 /// Counts non-overlapping occurrences of `needle` in `haystack`.
 fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<usize, ResourceError> {
-    let finder = Finder::new(needle);
+    let Some(finder) = finder_for(needle, haystack) else {
+        return Ok(0);
+    };
     let mut count = 0;
     let mut pos = 0;
     while let Some(found) = find_with(&finder, &haystack[pos..], heap)? {
@@ -1386,7 +1411,9 @@ struct BytesRsplitArgs {
 
 /// Splits bytes by a separator sequence.
 fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
-    let finder = Finder::new(sep);
+    let Some(finder) = finder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut start = 0;
 
@@ -1401,7 +1428,9 @@ fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Ve
 
 /// Splits bytes by a separator sequence, returning at most n parts.
 fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize, heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
-    let finder = Finder::new(sep);
+    let Some(finder) = finder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut start = 0;
     let mut count = 0;
@@ -1427,7 +1456,9 @@ fn bytes_rsplitn_by_seq<'a>(
     n: usize,
     heap: &Heap,
 ) -> Result<Vec<&'a [u8]>, ResourceError> {
-    let finder = FinderRev::new(sep);
+    let Some(finder) = rfinder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut end = bytes.len();
     let mut count = 0;
@@ -1729,8 +1760,7 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         }
         result.extend_from_slice(new);
         Ok(result)
-    } else {
-        let finder = Finder::new(old);
+    } else if let Some(finder) = finder_for(old, bytes) {
         let mut result = Vec::new();
         let mut start = 0;
         while let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
@@ -1741,6 +1771,8 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         }
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
+    } else {
+        Ok(bytes.to_vec())
     }
 }
 
@@ -1765,8 +1797,7 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
             result.extend_from_slice(new);
         }
         Ok(result)
-    } else {
-        let finder = Finder::new(old);
+    } else if let Some(finder) = finder_for(old, bytes) {
         let mut result = Vec::new();
         let mut start = 0;
         let mut count = 0;
@@ -1783,6 +1814,8 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
         }
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
+    } else {
+        Ok(bytes.to_vec())
     }
 }
 
