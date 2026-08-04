@@ -5,12 +5,11 @@
 //! the main case: the std API differs by platform, and mount-boundary tests
 //! need symlinks on every platform CI runs.
 
-use std::path::Path;
-
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
+use std::path::Path;
 
 /// Cross-platform symlink to a file.
 ///
