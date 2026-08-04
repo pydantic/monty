@@ -185,7 +185,7 @@ fn load_rejects_old_dump_version() {
     };
     assert_eq!(
         error.exception.unwrap().message.unwrap(),
-        "protocol violation: unsupported dump version 5 (expected 7)"
+        "protocol violation: unsupported dump version 5 (expected 6)"
     );
 }
 

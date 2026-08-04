@@ -22,12 +22,13 @@ fn monty_binary() -> PathBuf {
     if let Ok(path) = env::var("MONTY_TEST_BIN") {
         return PathBuf::from(path);
     }
-    // <workspace>/target/debug/monty, derived from this crate's manifest dir
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("workspace root")
-        .join("target/debug/monty");
+        .to_owned();
+    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
+    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
     BUILD.call_once(|| {
         if !path.exists() {
             let status = Command::new(env!("CARGO"))
