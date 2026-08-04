@@ -425,9 +425,20 @@ try:
 except StopIteration:
     pass
 assert next(stutter) == 3
-# The same source behaviour through the other two, which never latched.
-assert next(itertools.dropwhile(lambda x: False, Stuttering())) == 1
-assert next(itertools.filterfalse(lambda x: False, Stuttering())) == 1
+# The same source behaviour through the other two, which never latched. Each is
+# driven *past* the StopIteration, since stopping at the first item would pass
+# whether or not the adaptor wrongly treated exhaustion as terminal.
+for adaptor in (
+    itertools.dropwhile(lambda x: False, Stuttering()),
+    itertools.filterfalse(lambda x: False, Stuttering()),
+):
+    assert next(adaptor) == 1
+    try:
+        next(adaptor)
+        assert False, 'expected StopIteration'
+    except StopIteration:
+        pass
+    assert next(adaptor) == 3
 
 # === dropwhile ===
 assert list(itertools.dropwhile(lambda x: x < 3, [1, 2, 3, 4, 1])) == [3, 4, 1]
