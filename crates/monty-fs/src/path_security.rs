@@ -434,13 +434,15 @@ pub(super) fn reject_escaping_symlink(
         target
     };
 
-    // Canonicalize the resolved target and check the boundary.
+    // Canonicalize the resolved target and check it against the mount root
+    // canonicalized at mount time — re-canonicalizing here would resolve a
+    // mount root a host process had since replaced with an escaping symlink,
+    // and so accept its target as in-bounds.
     let canonical = fs::canonicalize(&resolved).map_err(|_| MountError::PathEscape {
         virtual_path: virtual_path.to_owned(),
     })?;
-    let canonical_mount = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
 
-    check_boundary(&canonical, &canonical_mount, virtual_path)
+    check_boundary(&canonical, mount_host_path, virtual_path)
 }
 
 /// Re-validates a cached overlay host path against the mount boundary,
@@ -450,15 +452,18 @@ pub(super) fn reject_escaping_symlink(
 /// process sharing the mount can re-point it before the read. Read the
 /// returned path, not the cached one, so the check and the open cannot
 /// disagree about which file they mean.
+///
+/// `mount_host_path` must be the mount root canonicalized at mount time
+/// (`MountContext::mount_host`); canonicalizing it here instead would follow
+/// a mount root swapped for an escaping symlink and admit its target.
 pub(super) fn revalidate_cached_host_path(
     host_path: &Path,
     mount_host_path: &Path,
     virtual_path: &str,
 ) -> Result<PathBuf, MountError> {
     let canonical = fs::canonicalize(host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
-    let canonical_mount = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
 
-    check_boundary(&canonical, &canonical_mount, virtual_path)?;
+    check_boundary(&canonical, mount_host_path, virtual_path)?;
     Ok(canonical)
 }
 
