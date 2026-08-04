@@ -85,20 +85,24 @@ session remain alive and usable.
 
 ## Observability
 
-Setting `PoolConfig::logfire_token` records every session the pool serves to
-[Logfire](https://pydantic.dev/logfire). Recording happens in the host process, which builds
-every request and decodes every event anyway, so both transports are covered and the workers
-stay uninstrumented — they receive no token and run no exporter. Each checkout becomes one
-session span; each feed is a nested span held across suspension round-trips, with a child span
-per suspension whose duration is the host round-trip. Fed code, inputs, call arguments and
-results, exceptions and `print` output are recorded in full — values encoded the way the
-Python logfire SDK encodes attributes, capped at 64KB per value — while `Load`/`Dump` snapshot
-blobs are recorded by size only.
+Supplying a configured [Logfire](https://pydantic.dev/logfire) SDK through
+`PoolConfig::logfire` records every session the pool serves. `monty-pool` is an
+instrumentation library: it never selects an exporter, reads credentials or environment
+variables, or shuts the SDK down. The application that configures Logfire owns those choices
+and its final flush/shutdown.
 
-Logfire is configured in *local* mode: the host application's own `tracing`/OTel setup is
-untouched and several pools can coexist. `Pool::close` flushes the exporter (a pool merely
-dropped may lose its last batch of spans). As in any logfire-instrumented process, a `RUST_LOG`
-directive filters what is recorded — everything here is emitted at INFO.
+Recording happens in the host process, which builds every request and decodes every event
+anyway, so both transports are covered and the workers stay uninstrumented. Each checkout
+becomes one session span; each feed is a nested span held across suspension round-trips, with
+a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
+arguments and results, exceptions and `print` output are recorded in full — values encoded
+the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
+`Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
+explicit opt-in to recording potentially sensitive values.
+
+Applications can pass either their process-level SDK or a `.local()` Logfire instance. The
+latter leaves existing process-global `tracing`/OTel setup untouched and allows independent
+pools to coexist. `RUST_LOG` filters what is recorded; everything here is emitted at INFO.
 
 ## Transports
 

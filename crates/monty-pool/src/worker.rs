@@ -50,8 +50,8 @@ pub(crate) struct Worker {
     kind: WorkerKind,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
-    /// Records this worker's protocol turns to the pool's logfire (a no-op
-    /// when the pool has no `logfire_token`). It lives here because the worker
+    /// Records this worker's protocol turns to the pool's Logfire SDK (a no-op
+    /// when the application supplied none). It lives here because the worker
     /// sees the whole conversation, whichever checkout drives it — boxed to
     /// keep a `Worker` pointer-sized, since checkout and release move it.
     recorder: Box<Recorder>,

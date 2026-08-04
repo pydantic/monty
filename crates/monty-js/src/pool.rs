@@ -40,7 +40,7 @@ use napi::{
     Env, Result,
 };
 use napi_derive::napi;
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::{sync::Mutex as AsyncMutex, task::spawn_blocking};
 
 use crate::{
     convert::{js_to_monty, monty_to_js},
@@ -103,6 +103,22 @@ pub struct NativePoolOptions {
     pub logfire_token: Option<String>,
 }
 
+/// Configures the binding-owned local Logfire SDK when explicitly requested.
+///
+/// Local mode avoids replacing Node's tracing globals. Logfire itself reads
+/// standard OTel exporter variables in addition to the optional write token.
+fn configure_logfire(token: Option<String>) -> Result<Option<logfire::Logfire>> {
+    let Some(token) = token else { return Ok(None) };
+    logfire::configure()
+        .local()
+        .with_token(token)
+        .with_service_name("@pydantic/monty")
+        .with_service_version(env!("CARGO_PKG_VERSION"))
+        .finish()
+        .map(Some)
+        .map_err(|err| invalid(&format!("failed to configure logfire telemetry: {err}")))
+}
+
 /// Session options for `checkout()`.
 #[napi(object, js_name = "NativeCheckoutOptions")]
 pub struct NativeCheckoutOptions {
@@ -158,13 +174,13 @@ impl NativePool {
         config.request_timeout = options.request_timeout_ms.map(duration_from_ms).transpose()?;
         config.duration_limit_grace = options.duration_limit_grace_ms.map(duration_from_ms).transpose()?;
         config.max_checkouts_per_worker = options.max_checkouts_per_worker;
-        config.logfire_token = options.logfire_token;
         if config.max_processes < 1 {
             return Err(invalid("maxProcesses must be at least 1"));
         }
         if config.min_processes > config.max_processes {
             return Err(invalid("minProcesses cannot exceed maxProcesses"));
         }
+        config.logfire = configure_logfire(options.logfire_token)?;
         Ok(Self {
             config,
             pool: Arc::new(Mutex::new(None)),
@@ -208,11 +224,15 @@ impl NativePool {
     #[napi]
     pub fn close<'env>(&self, env: &'env Env) -> Result<PromiseRaw<'env, ()>> {
         let slot = Arc::clone(&self.pool);
+        let logfire = self.config.logfire.clone();
         env.spawn_future(async move {
             let pool = lock(&slot).take();
             if let Some(pool) = pool {
                 pool.close().await;
                 drop(pool);
+            }
+            if let Some(logfire) = logfire {
+                let _ = spawn_blocking(move || logfire.shutdown()).await;
             }
             Ok(())
         })

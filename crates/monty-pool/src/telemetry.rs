@@ -12,50 +12,22 @@
 //! entered — a checkout's turns can run on different threads, so an
 //! entered-span stack would be wrong and make [`crate::Checkout`] `!Send`.
 
-use std::{process, sync::Arc};
+use std::sync::Arc;
 
-use logfire::{ConfigureError, Logfire, config::AdvancedOptions, set_local_logfire};
+use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
 use monty_types::{MontyObject, bytes_repr};
-use opentelemetry::{KeyValue, Value as OtelValue};
-use opentelemetry_sdk::Resource;
-use tracing::{Span, field::Empty, level_filters::LevelFilter};
-use uuid::Uuid;
+use opentelemetry::Value as OtelValue;
+use tracing::{Span, field::Empty};
 
 use crate::telemetry_json::{
     nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped,
 };
 
-/// Configures a pool-scoped logfire with `token`.
-///
-/// Local mode (see the module docs) makes the returned [`Logfire`] the only
-/// handle: the pool must keep it alive and `shutdown` it to flush the exporter.
-/// Everything here is recorded at INFO, so `RUST_LOG` can filter it out.
-pub(crate) fn init(token: String) -> Result<Logfire, ConfigureError> {
-    // `builder_empty` so this adds only these two attributes: logfire fills in
-    // service name/version and the sdk resource itself. UUIDv7 so instance ids
-    // sort by pool start.
-    let resource = Resource::builder_empty()
-        .with_attributes([
-            KeyValue::new("service.instance.id", Uuid::now_v7().to_string()),
-            KeyValue::new("process.pid", i64::from(process::id())),
-        ])
-        .build();
-    let logfire = logfire::configure()
-        .local()
-        .with_token(token)
-        .with_service_name("monty")
-        .with_service_version(env!("CARGO_PKG_VERSION"))
-        .with_default_level_filter(LevelFilter::INFO)
-        .with_advanced_options(AdvancedOptions::default().with_resource(resource))
-        .finish()?;
-    Ok(logfire)
-}
-
 /// Records one worker's protocol turns to the pool's logfire.
 ///
 /// Lives on the [`crate::worker::Worker`], which sees every request and event.
-/// A disabled recorder (no `logfire_token`) is a no-op that skips rendering
+/// A disabled recorder (no configured Logfire SDK) is a no-op that skips rendering
 /// values at all, so the worker is written the same way either way. Spans close
 /// by being dropped, so a worker that dies mid-turn still closes its own.
 pub(crate) struct Recorder {

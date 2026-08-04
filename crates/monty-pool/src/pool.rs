@@ -12,14 +12,12 @@ use logfire::Logfire;
 use monty_proto::pb;
 use tokio::{
     sync::Notify,
-    task::spawn_blocking,
     time::{Instant, timeout_at},
 };
 
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig, request},
-    telemetry,
     worker::Worker,
 };
 
@@ -47,8 +45,7 @@ pub(crate) struct PoolInner {
     /// Signalled whenever a worker returns to the idle queue or capacity is
     /// released, waking blocked `checkout` calls.
     available: Notify,
-    /// The pool's logfire (`PoolConfig::logfire_token`), shared with every
-    /// worker's recorder; `None` when telemetry is off.
+    /// The application's Logfire SDK, shared with every worker recorder.
     logfire: Option<Arc<Logfire>>,
 }
 
@@ -69,13 +66,7 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
-        let logfire = config
-            .logfire_token
-            .clone()
-            .map(telemetry::init)
-            .transpose()
-            .map_err(|err| PoolError::Telemetry(err.to_string()))?
-            .map(Arc::new);
+        let logfire = config.logfire.clone().map(Arc::new);
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
@@ -111,9 +102,8 @@ impl Pool {
     /// Optional: dropping the pool kills idle workers instead, which is just
     /// as safe — this only trades a SIGKILL for a clean protocol goodbye.
     ///
-    /// This also shuts the telemetry exporter down, so it must be the last
-    /// thing asked of a pool: whatever a still-checked-out session records
-    /// afterwards is dropped rather than exported.
+    /// Telemetry exporter shutdown remains the configuring application's
+    /// responsibility and should happen after checked-out sessions finish.
     pub async fn close(&self) {
         // Pair each removed worker with a capacity guard immediately: if this
         // future is dropped mid-close, every unreaped worker is killed by its
@@ -138,13 +128,6 @@ impl Pool {
             worker.reap_or_kill(SHUTDOWN_EXIT_GRACE).await;
         }))
         .await;
-        // Flush and stop the exporter off the async runtime — `shutdown`
-        // blocks until the exporter confirms. Errors are swallowed: they are
-        // export failures (e.g. a bad token) teardown cannot fix, and a second
-        // `close` reports "already shut down".
-        if let Some(logfire) = self.inner.logfire.clone() {
-            let _ = spawn_blocking(move || logfire.shutdown()).await;
-        }
     }
 
     /// Number of idle workers right now (diagnostics/tests only — the value

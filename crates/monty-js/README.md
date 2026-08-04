@@ -331,9 +331,11 @@ With `logfireToken` set, the pool reports every session it serves to
 span per protocol turn carrying the code fed, its inputs, external call
 arguments and results, exceptions and `print` output. Session dumps and
 restores are recorded by size only. Recording happens in the host process,
-which sees the whole conversation with each worker; the workers get no token.
-The `/wasm` worker pool has no equivalent — it is pure TypeScript with no
-exporter.
+which sees the whole conversation with each worker. The native binding owns a
+separate local Rust Logfire SDK, so workers get no token and the application's
+JS OTel provider is untouched; standard OTel exporter environment variables are
+honored by the Rust SDK. The `/wasm` worker pool has no equivalent — it is pure
+TypeScript with no exporter.
 
 ## Value Conversion
 

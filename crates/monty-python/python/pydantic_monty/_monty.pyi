@@ -395,9 +395,9 @@ class Monty:
                 exceeds it is killed and the call raises `MontyCrashedError`
                 with `timed_out=True`. Backstops the sandbox `limits`.
             max_checkouts_per_worker: Recycle a worker after this many sessions.
-            logfire_token: Logfire write token. When set, the pool records
-                every session from the host process; the workers get no token
-                and your application's own logfire/OTel setup is untouched.
+            logfire_token: Logfire write token. When set, the binding records
+                every session through a separate local Rust SDK; workers get no
+                token and the application's Python logfire/OTel setup is untouched.
         """
 
     def __enter__(self) -> Self: ...

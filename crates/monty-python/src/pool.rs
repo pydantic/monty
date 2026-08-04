@@ -54,7 +54,7 @@ use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
-    task::{JoinSet, block_in_place},
+    task::{JoinSet, block_in_place, spawn_blocking},
 };
 
 use crate::{
@@ -159,7 +159,8 @@ impl PyMonty {
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) -> PyResult<()> {
         let pool = lock(&self.pool).take();
-        py.detach(|| block_on_sync(close_pool(pool)))
+        let logfire = self.config.logfire.clone();
+        py.detach(|| block_on_sync(close_pool(pool, logfire)))
     }
 
     /// Prepares a REPL session; the worker is checked out by `with`.
@@ -524,8 +525,9 @@ impl PyAsyncMonty {
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
+        let logfire = self.config.logfire.clone();
         future_into_py(py, async move {
-            close_pool(pool).await;
+            close_pool(pool, logfire).await;
             Ok(())
         })
     }
@@ -638,7 +640,7 @@ impl PyAsyncMontyWebsocket {
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
-            close_pool(pool).await;
+            close_pool(pool, None).await;
             Ok(())
         })
     }
@@ -947,8 +949,24 @@ fn parse_pool_config(
     config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
     config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
     config.max_checkouts_per_worker = max_checkouts_per_worker;
-    config.logfire_token = logfire_token;
+    config.logfire = configure_logfire(logfire_token)?;
     Ok(config)
+}
+
+/// Configures the binding-owned local Logfire SDK when explicitly requested.
+///
+/// Local mode avoids replacing Python's tracing globals. Logfire itself reads
+/// standard OTel exporter variables in addition to the optional write token.
+fn configure_logfire(token: Option<String>) -> PyResult<Option<logfire::Logfire>> {
+    let Some(token) = token else { return Ok(None) };
+    logfire::configure()
+        .local()
+        .with_token(token)
+        .with_service_name("pydantic-monty")
+        .with_service_version(env!("CARGO_PKG_VERSION"))
+        .finish()
+        .map(Some)
+        .map_err(|err| PyRuntimeError::new_err(format!("failed to configure logfire telemetry: {err}")))
 }
 
 /// Rejects a non-callable `os=` handler with the same `TypeError` for every
@@ -1026,10 +1044,13 @@ pub(crate) fn discard_checkout_sync(py: Python<'_>, checkout: &SharedCheckout) {
 /// Gracefully closes a pool taken out of its shared slot (a no-op when the
 /// context manager was never entered). Shared by the sync `__exit__` and the
 /// async `__aexit__`s.
-async fn close_pool(pool: Option<Arc<Pool>>) {
+async fn close_pool(pool: Option<Arc<Pool>>, logfire: Option<logfire::Logfire>) {
     if let Some(pool) = pool {
         pool.close().await;
         drop(pool);
+    }
+    if let Some(logfire) = logfire {
+        let _ = spawn_blocking(move || logfire.shutdown()).await;
     }
 }
 
@@ -1729,9 +1750,7 @@ pub(crate) fn pool_err_to_py(py: Python<'_>, err: PoolError) -> PyErr {
         PoolError::Disconnected { .. } => MontyDisconnectError::new_err(py, message),
         PoolError::Shutdown { dump } => MontyShutdown::new_err(py, message, dump),
         PoolError::Exhausted => PyTimeoutError::new_err(message),
-        PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Telemetry(_) | PoolError::Finished => {
-            PyRuntimeError::new_err(message)
-        }
+        PoolError::Protocol(_) | PoolError::Spawn(_) | PoolError::Finished => PyRuntimeError::new_err(message),
     }
 }
 

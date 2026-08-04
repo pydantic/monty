@@ -239,8 +239,10 @@ exceptions and `print` output. Session dumps and restores are recorded by size
 only. Without a token nothing is recorded and no exporter runs.
 
 Recording happens in the host process, which sees the whole conversation with
-each worker; the workers get no token, and your application's own logfire/OTel
-setup is untouched.
+each worker. The Python binding configures and shuts down a separate local Rust
+Logfire SDK, so workers get no token and your application's Python logfire/OTel
+setup is untouched. The Rust SDK also honors standard OTel exporter environment
+variables.
 
 ```python test="skip"
 from pydantic_monty import Monty

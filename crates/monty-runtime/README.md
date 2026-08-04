@@ -22,6 +22,17 @@ hello world
 - `--max-memory 10MB`, `--max-duration 0.5`, `--max-recursion-depth`,
   `--gc-interval` — sandbox resource limits
 
+## Observability
+
+Standalone CLI runs configure the Rust Logfire SDK when `LOGFIRE_TOKEN` is
+set. The SDK also honors standard OpenTelemetry exporter and resource
+environment variables. The CLI owns the SDK lifecycle and flushes it before
+exiting.
+
+`monty subprocess` deliberately ignores telemetry environment configuration:
+worker processes are instrumented by their parent pool, avoiding duplicate
+exporters and keeping credentials out of sandbox workers.
+
 ## Worker mode
 
 `monty subprocess` runs the binary as a wire-protocol child: framed protobuf

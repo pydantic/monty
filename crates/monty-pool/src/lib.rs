@@ -8,6 +8,7 @@ mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
+use logfire::Logfire;
 pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
 
@@ -44,8 +45,8 @@ impl MontyTransport {
 
 /// Configuration for a [`Pool`].
 ///
-/// `Debug` is hand-written to redact [`Self::logfire_token`] — a write
-/// credential must not end up in a host's diagnostic log.
+/// Telemetry is disabled unless the application supplies a configured
+/// [`Logfire`] SDK. The application retains ownership of exporter shutdown.
 #[derive(Clone)]
 pub struct PoolConfig {
     /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
@@ -76,12 +77,11 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
-    /// Logfire write token. When set, the pool records every session it serves
-    /// to [Logfire](https://pydantic.dev/logfire) from the host process —
-    /// workers receive no token. Logfire is configured in local mode, so the
-    /// host's own tracing/OTel setup is untouched, and [`Pool::close`] flushes
-    /// the exporter (a pool merely dropped may lose its last batch of spans).
-    pub logfire_token: Option<String>,
+    /// Configured Logfire SDK used to record sessions from the host process.
+    ///
+    /// The pool never configures or shuts down this SDK. Applications may use
+    /// a local instance to avoid changing process-global tracing/OTel state.
+    pub logfire: Option<Logfire>,
 }
 
 impl fmt::Debug for PoolConfig {
@@ -94,7 +94,7 @@ impl fmt::Debug for PoolConfig {
             .field("request_timeout", &self.request_timeout)
             .field("duration_limit_grace", &self.duration_limit_grace)
             .field("max_checkouts_per_worker", &self.max_checkouts_per_worker)
-            .field("logfire_token", &self.logfire_token.as_ref().map(|_| "<redacted>"))
+            .field("logfire", &self.logfire.as_ref().map(|_| "<configured>"))
             .finish()
     }
 }
@@ -125,7 +125,7 @@ impl PoolConfig {
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),
             max_checkouts_per_worker: None,
-            logfire_token: None,
+            logfire: None,
         }
     }
 }
@@ -165,9 +165,6 @@ pub enum PoolError {
     Exhausted,
     /// A worker process could not be spawned.
     Spawn(String),
-    /// The pool's logfire telemetry could not be configured
-    /// ([`PoolConfig::logfire_token`]); the pool was not created.
-    Telemetry(String),
     /// The checkout was already finished or its worker already discarded.
     Finished,
     /// The remote worker's connection dropped without a turn-ending event
@@ -237,7 +234,6 @@ impl fmt::Display for PoolError {
             Self::Typing(diagnostics) => write!(f, "type checking failed:\n{diagnostics}"),
             Self::Exhausted => f.write_str("no monty worker became available within the checkout timeout"),
             Self::Spawn(msg) => write!(f, "failed to spawn monty worker: {msg}"),
-            Self::Telemetry(msg) => write!(f, "failed to configure logfire telemetry: {msg}"),
             Self::Finished => f.write_str("this checkout has already been finished"),
             Self::Disconnected { context } => write!(f, "monty worker connection closed while {context}"),
             Self::Shutdown { dump } => match dump {

@@ -1263,11 +1263,15 @@ async fn workers_are_recycled_after_max_checkouts() {
 }
 
 #[tokio::test]
-async fn logfire_token_pool_round_trips() {
+async fn configured_logfire_pool_round_trips() {
     let mut config = config();
-    // a syntactically valid but fake token: the pool records every turn, while
-    // the background exporter's failures never affect execution
-    config.logfire_token = Some("pylf_v1_us_0000000000000000000000".to_owned());
+    let logfire = logfire::configure()
+        .local()
+        .send_to_logfire(false)
+        .with_console(None)
+        .finish()
+        .unwrap();
+    config.logfire = Some(logfire.clone());
     // recycle after every checkout, so a replacement worker's recorder runs too
     config.max_checkouts_per_worker = Some(1);
     let pool = Pool::new(config).await.unwrap();
@@ -1288,8 +1292,9 @@ async fn logfire_token_pool_round_trips() {
     assert_eq!(expect_complete(event), MontyObject::Int(4));
     session.finish().await.unwrap();
 
-    // flushes the exporter (its failures against the fake token are swallowed)
     pool.close().await;
+    // The application which configured the SDK also owns its shutdown.
+    let _ = logfire.shutdown();
 }
 
 #[tokio::test]
