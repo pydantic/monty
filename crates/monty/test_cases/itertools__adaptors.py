@@ -373,3 +373,191 @@ assert total == 8
 # Membership consumes the adaptor until it matches.
 assert 3 in itertools.chain([1, 2], [3])
 assert 'z' not in itertools.compress('abc', [1, 1, 1])
+
+
+# === takewhile ===
+assert list(itertools.takewhile(lambda x: x < 3, [1, 2, 3, 4, 1])) == [1, 2]
+assert list(itertools.takewhile(lambda x: x < 3, [])) == []
+assert list(itertools.takewhile(lambda x: False, [1, 2])) == []
+assert list(itertools.takewhile(lambda x: True, 'ab')) == ['a', 'b']
+# A None predicate is only reached when there is an item to test.
+assert list(itertools.takewhile(None, [])) == []
+
+# The predicate stops being called at the first rejection, and the adaptor
+# stays spent afterwards.
+seen = []
+
+
+def under_two(x):
+    seen.append(x)
+    return x < 2
+
+
+spent = itertools.takewhile(under_two, [1, 2, 3])
+assert list(spent) == [1]
+assert seen == [1, 2]
+assert list(spent) == []
+assert seen == [1, 2]
+
+
+# Only a rejected item latches the adaptor. A source that raises StopIteration
+# and then yields again is re-driven, as CPython's takewhile does — it is
+# `pairwise`/`islice` that release their source when it runs out, not this one.
+class Stuttering:
+    def __init__(self):
+        self.calls = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.calls += 1
+        if self.calls == 2:
+            raise StopIteration
+        return self.calls
+
+
+stutter = itertools.takewhile(lambda x: x < 4, Stuttering())
+assert next(stutter) == 1
+try:
+    next(stutter)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+assert next(stutter) == 3
+# The same source behaviour through the other two, which never latched.
+assert next(itertools.dropwhile(lambda x: False, Stuttering())) == 1
+assert next(itertools.filterfalse(lambda x: False, Stuttering())) == 1
+
+# === dropwhile ===
+assert list(itertools.dropwhile(lambda x: x < 3, [1, 2, 3, 4, 1])) == [3, 4, 1]
+assert list(itertools.dropwhile(lambda x: x < 3, [])) == []
+assert list(itertools.dropwhile(lambda x: True, [1, 2])) == []
+assert list(itertools.dropwhile(lambda x: False, [1, 2])) == [1, 2]
+
+# Once the predicate has failed it is never consulted again, so later items
+# are yielded even when they would have satisfied it.
+dropped = []
+
+
+def small(x):
+    dropped.append(x)
+    return x < 2
+
+
+assert list(itertools.dropwhile(small, [1, 2, 3, 0])) == [2, 3, 0]
+assert dropped == [1, 2]
+
+# === filterfalse ===
+assert list(itertools.filterfalse(lambda x: x % 2, range(6))) == [0, 2, 4]
+assert list(itertools.filterfalse(lambda x: True, [1, 2])) == []
+assert list(itertools.filterfalse(lambda x: False, [1, 2])) == [1, 2]
+assert list(itertools.filterfalse(lambda x: x % 2, [])) == []
+# A None predicate selects the truth test, keeping the falsy items.
+assert list(itertools.filterfalse(None, [0, 1, '', 'a', [], None])) == [0, '', [], None]
+assert list(itertools.filterfalse(None, [1, 'a', [2]])) == []
+
+# === starmap ===
+assert list(itertools.starmap(pow, [(2, 5), (3, 2)])) == [32, 9]
+assert list(itertools.starmap(lambda a, b: a + b, ['ab', 'cd'])) == ['ab', 'cd']
+assert list(itertools.starmap(max, [[1, 5, 3]])) == [5]
+assert list(itertools.starmap(pow, [])) == []
+# Items are spread, so a single-element item calls a single-argument function.
+assert list(itertools.starmap(abs, [(-2,), (3,)])) == [2, 3]
+
+# === Iterator protocol ===
+for adaptor in (
+    itertools.takewhile(bool, [1]),
+    itertools.dropwhile(bool, [1]),
+    itertools.filterfalse(bool, [0]),
+    itertools.starmap(pow, [(2, 2)]),
+):
+    assert iter(adaptor) is adaptor
+
+exhausted = itertools.takewhile(lambda x: True, [1])
+assert next(exhausted) == 1
+try:
+    next(exhausted)
+    assert False, 'expected StopIteration'
+except StopIteration:
+    pass
+
+# === Signature errors ===
+for name, builder in (
+    ('takewhile', itertools.takewhile),
+    ('dropwhile', itertools.dropwhile),
+    ('filterfalse', itertools.filterfalse),
+    ('starmap', itertools.starmap),
+):
+    try:
+        builder()
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == name + ' expected 2 arguments, got 0'
+    try:
+        builder(bool)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == name + ' expected 2 arguments, got 1'
+    try:
+        builder(bool, [], [])
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == name + ' expected 2 arguments, got 3'
+    try:
+        builder(bool, iterable=[])
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == name + '() takes no keyword arguments'
+    # The iterable is resolved eagerly, so a non-iterable raises up front.
+    try:
+        builder(bool, 5)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'int' object is not iterable"
+
+# A None predicate is a call-time failure, not a construction-time one.
+for adaptor in (itertools.takewhile(None, [1]), itertools.dropwhile(None, [1])):
+    try:
+        next(adaptor)
+        assert False, 'expected TypeError'
+    except TypeError as exc:
+        assert str(exc) == "'NoneType' object is not callable"
+
+# starmap needs each item to be iterable, discovered as it reaches them.
+bad_items = itertools.starmap(pow, [5])
+try:
+    next(bad_items)
+    assert False, 'expected TypeError'
+except TypeError as exc:
+    assert str(exc) == "'int' object is not iterable"
+
+
+# === Exceptions propagate out of the callable ===
+def explode(x):
+    raise ValueError('bang')
+
+
+for adaptor in (
+    itertools.takewhile(explode, [1]),
+    itertools.dropwhile(explode, [1]),
+    itertools.filterfalse(explode, [1]),
+    itertools.starmap(explode, [(1,)]),
+):
+    try:
+        next(adaptor)
+        assert False, 'expected ValueError'
+    except ValueError as exc:
+        assert str(exc) == 'bang'
+
+# === Composition with the source-wrapping adaptors ===
+assert list(itertools.takewhile(lambda x: x < 4, itertools.count())) == [0, 1, 2, 3]
+assert list(itertools.islice(itertools.dropwhile(lambda x: x < 3, itertools.count()), 3)) == [3, 4, 5]
+assert list(itertools.filterfalse(None, itertools.islice(itertools.cycle([0, 1]), 4))) == [0, 0]
+assert list(itertools.starmap(pow, itertools.pairwise([2, 3, 4]))) == [8, 81]
+assert sorted(itertools.filterfalse(lambda x: x > 1, itertools.chain([0, 1], [2]))) == [0, 1]
+
+# Every argument-count shape, since each is packed differently internally.
+assert list(itertools.starmap(lambda: 7, [()])) == [7]
+assert list(itertools.starmap(lambda a, b, c: a + b + c, [(1, 2, 3)])) == [6]
+assert list(itertools.starmap(lambda *a: len(a), [(1, 2, 3, 4)])) == [4]

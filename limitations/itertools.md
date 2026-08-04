@@ -8,13 +8,15 @@ notes below.
 
 `count(start=0, step=1)`, `repeat(object, times=?)`, `pairwise(iterable)`,
 `compress(data, selectors)`, `islice(iterable, [start,] stop[, step])`,
-`chain(*iterables)`, `cycle(iterable)`.
+`chain(*iterables)`, `cycle(iterable)`, `takewhile(predicate, iterable)`,
+`dropwhile(predicate, iterable)`, `filterfalse(predicate, iterable)`,
+`starmap(function, iterable)`.
 
 ## Not implemented
 
 Everything else: `accumulate`, `batched`, `combinations`,
-`combinations_with_replacement`, `dropwhile`, `filterfalse`, `groupby`,
-`permutations`, `product`, `starmap`, `takewhile`, `tee`, `zip_longest`.
+`combinations_with_replacement`, `groupby`, `permutations`, `product`, `tee`,
+`zip_longest`.
 
 `chain.from_iterable` is also absent, even though `chain` itself is
 implemented: it is a classmethod reached through an attribute on the `chain`
@@ -53,6 +55,16 @@ raise `AttributeError` at runtime.
   is `<itertools.pairwise object>`, where CPython appends ` at 0x...`. This is
   Monty's general iterator treatment (see ./iter.md), not specific
   to `itertools`.
+- **A callable that suspends is rejected, not paused.** `takewhile`,
+  `dropwhile`, `filterfalse` and `starmap` apply their callable through the
+  synchronous `evaluate_function` path, which runs a frame to completion and
+  cannot yield to the host. A callable that reaches an external function, an
+  `os` operation, or a host method call therefore raises
+  `NotImplementedError: takewhile(): external function 'f' is not yet supported
+  in this context` where CPython would simply call it. This is the same
+  restriction that applies to `__init__`, `__next__` and `__repr__` (see
+  `limitations/classes.md`); ordinary sandbox-defined functions and lambdas are
+  unaffected.
 - **Crossing the host boundary loses the repr.** A `count` / `repeat` object
   returned to the host arrives as `<itertools.count object>` /
   `<itertools.repeat object>` rather than its in-sandbox `repr()`
