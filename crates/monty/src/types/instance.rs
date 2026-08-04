@@ -9,7 +9,7 @@ use crate::{
     exception_private::{ExcType, ExcTypeExt, RunError, RunResult},
     hash::{HashValue, identity_hash},
     heap::{
-        BorrowedHeapReadMut, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        BorrowedHeapReadMut, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput,
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
@@ -93,7 +93,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Instance> {
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
-        let old_value = self.set_attr(attribute_name_value(name, vm)?, value, vm)?;
+        let mut value_guard = DropGuard::new(value, vm);
+        let name = attribute_name_value(name, value_guard.ctx())?;
+        let (value, vm) = value_guard.into_parts();
+        let old_value = self.set_attr(name, value, vm)?;
         old_value.drop_with(vm);
         Ok(())
     }
