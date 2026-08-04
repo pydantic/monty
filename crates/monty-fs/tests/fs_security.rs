@@ -1190,18 +1190,12 @@ fn rename_symlink_escape_overlay_read_bytes() {
 // =============================================================================
 //
 // On Windows `PathBuf::join` discards the base when the joined segment carries
-// a drive/UNC/root prefix, so `/mnt/C:\Windows\x` would resolve outside the
-// mount before any boundary check ran. The rejection is deliberately not
-// `cfg(windows)`: a virtual path is POSIX on every host, so a backslash is
-// never a literal filename character and `C:` is never a drive there — which
-// makes these tests meaningful on every host, not just the one that was
-// exploitable.
+// a drive/UNC/root prefix. The rejection is deliberately not `cfg(windows)` —
+// virtual paths are POSIX everywhere — so these tests run on every host.
 
-/// Payloads whose leading segment a host parser may treat as absolute.
-///
-/// The UNC entry uses an RFC-2606 `.invalid` host so that even a build which
-/// resolved it would reach no real host — a vulnerable build must not get as
-/// far as the SMB/NTLM handshake that leaks credentials.
+/// Payloads whose leading segment a host parser may treat as absolute. The UNC
+/// entry uses an RFC-2606 `.invalid` host, so even a vulnerable build reaches
+/// no real host during the SMB/NTLM handshake it must not start.
 const HOST_ABSOLUTE_PAYLOADS: &[&str] = &[
     r"/mnt/C:\Windows\System32\drivers\etc\hosts",
     r"/mnt/C:",
@@ -1212,13 +1206,9 @@ const HOST_ABSOLUTE_PAYLOADS: &[&str] = &[
     r"/mnt/sub/nested\..\..\escape",
 ];
 
-/// Asserts the request is refused before any host access.
-///
-/// `PathEscape` is the expected refusal. `ReadOnly` is also accepted because
-/// on a read-only mount the mode check runs ahead of path parsing, which still
-/// refuses before touching the host. `Io` is deliberately *not* accepted: it
-/// would mean the layer performed the escaping I/O and only then failed — for
-/// the UNC payload, that is the outbound handshake itself.
+/// Asserts the request is refused before any host access. `ReadOnly` counts
+/// too — on a read-only mount that check precedes path parsing. `Io` does not:
+/// it would mean the escaping I/O already happened.
 #[track_caller]
 fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_name: &str) {
     let result = match op {
@@ -1247,12 +1237,9 @@ fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_na
     }
 }
 
-/// Classifies an outcome for comparisons that must ignore the echoed path.
-///
-/// Error messages quote the virtual path the caller supplied, which the caller
-/// already knows — comparing raw `Debug` output would therefore report two
-/// identical refusals as different. The `Io` kind is kept, since a `NotFound`
-/// where another path gives `PermissionDenied` would itself be an oracle.
+/// Classifies an outcome, dropping the caller's own path that errors echo back
+/// (raw `Debug` would report two identical refusals as different). Keeps the
+/// `Io` kind, since NotFound-vs-PermissionDenied would itself be an oracle.
 fn outcome_class(result: Option<&Result<MontyObject, MountError>>) -> String {
     match result {
         None => "NotHandled".to_owned(),
@@ -1312,9 +1299,8 @@ fn host_absolute_mkdir_parents_is_rejected() {
     }
 }
 
-/// A POSIX-absolute-looking segment is *not* rejected — it has no host meaning
-/// on either platform, so it is confined as an ordinary nested path inside the
-/// mount. Verifies the confinement rather than assuming it.
+/// A POSIX-absolute-looking segment is not rejected — it has no host meaning,
+/// so it is confined as an ordinary nested path. Verifies that, not assumes it.
 #[test]
 fn posix_absolute_segment_is_confined_inside_the_mount() {
     let outside = TempDir::new().unwrap();
@@ -1342,8 +1328,8 @@ fn posix_absolute_segment_is_confined_inside_the_mount() {
     }
 }
 
-/// The existence-oracle vector: a missing out-of-mount path and an existing one
-/// must be indistinguishable, or `exists` leaks host filesystem layout.
+/// A missing and an existing out-of-mount path must be indistinguishable, or
+/// `exists` leaks host filesystem layout.
 #[test]
 fn host_absolute_exists_is_not_an_oracle() {
     let outside = TempDir::new().unwrap();
@@ -1370,9 +1356,8 @@ fn host_absolute_exists_is_not_an_oracle() {
     }
 }
 
-/// `OverlayMemory` serves reads from memory without ever building a host path,
-/// so it bypassed the check until it was applied to the overlay key too. A
-/// rejected segment must not become a writable in-memory key.
+/// `OverlayMemory` never builds a host path, so it bypassed the check until it
+/// was applied to the overlay key too.
 #[test]
 fn host_absolute_segment_is_not_an_overlay_key() {
     for payload in HOST_ABSOLUTE_PAYLOADS {
@@ -1384,13 +1369,10 @@ fn host_absolute_segment_is_not_an_overlay_key() {
     }
 }
 
-/// A colon that is not a drive prefix must not trip the boundary check, so the
-/// rejection does not reach beyond the documented divergence.
-///
-/// Whether the *host* then accepts the name is its own business and differs by
-/// platform: Windows refuses `::double.txt` outright and stores `note:2026.txt`
-/// as an alternate data stream. Only `PathEscape` is a failure here; where the
-/// host did accept the name, it must round-trip.
+/// A colon that is not a drive prefix must not trip the boundary check. Whether
+/// the host then accepts the name is its own business — Windows refuses
+/// `::double.txt` and stores `note:2026.txt` as an alternate data stream — so
+/// only `PathEscape` is a failure, and the round-trip is checked only if it did.
 #[test]
 fn colon_names_that_are_not_drive_prefixes_are_not_rejected_by_the_check() {
     for name in ["note:2026.txt", "::double.txt", "ab:cd.txt", "log:12:30.txt"] {
@@ -1418,9 +1400,8 @@ fn colon_names_that_are_not_drive_prefixes_are_not_rejected_by_the_check() {
     }
 }
 
-/// Single-letter-plus-colon names are refused on every host, including Unix
-/// where they are legal filenames CPython would accept. Windows parses `a:b`
-/// as drive-relative, so the rejection has to be uniform; this pins the
+/// Refused on every host, including Unix where CPython accepts them: Windows
+/// parses `a:b` as drive-relative, so the rule has to be uniform. Pins the
 /// divergence so it cannot change silently.
 #[test]
 fn single_letter_colon_names_are_refused_on_all_hosts() {

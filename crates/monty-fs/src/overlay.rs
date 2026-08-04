@@ -35,10 +35,8 @@ const REAL_DESCENDANT_MEMORY_USAGE: u64 = 512;
 
 /// Resolves a virtual path to the mount-relative overlay key.
 ///
-/// Overlay entries are pure in-memory keys and never reach a host path, but
-/// they are rejected on the same grounds a host path would be: a name this
-/// mode accepted and every other mode refused would be a divergence in its
-/// own right.
+/// Keys never reach a host path, but are rejected on the same grounds one
+/// would be — a name only this mode accepts is a divergence in itself.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
     let normalized = normalize_virtual_path(path);
     reject_overlong_path(&normalized, path)?;

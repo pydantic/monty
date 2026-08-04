@@ -307,10 +307,9 @@ pub(super) fn reject_overlong_path(normalized: &str, original: &str) -> Result<(
 /// `\\host\share`, escaping before any boundary check. Runs on all hosts for
 /// consistent behavior, and must precede the `candidate_host` join.
 ///
-/// Callers that never build a host path still need this: `OverlayMemory`
-/// serves requests from memory via `overlay::relative_path`, and without the
-/// same rejection those segments become valid overlay keys, so one mode
-/// accepts a name every other mode refuses.
+/// `OverlayMemory` needs it too: it serves requests from memory via
+/// `overlay::relative_path`, where these segments would otherwise become valid
+/// keys that every other mode refuses.
 pub(super) fn reject_drive_or_unc_segments(relative: &str, normalized_virtual_path: &str) -> Result<(), MountError> {
     // A backslash can only smuggle a Windows separator/UNC/root prefix; `X:` a drive.
     let has_escape_prefix = relative.contains('\\') || relative.split('/').any(is_windows_drive_prefix);
