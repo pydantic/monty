@@ -65,7 +65,12 @@ catch them. `RecursionError` is catchable, as in CPython.
 - Enforcement is polled, not preemptive: a single bytecode instruction may
   run a long native operation (a `bytes` substring scan, a sort, an iterator
   drain), and those poll the clock at a coarse granularity. A run can
-  therefore overshoot `max_duration` slightly before stopping.
+  therefore overshoot `max_duration` before stopping.
+- `bytes` substring operations (`in`, `find`, `count`, `split`, `partition`,
+  `replace` and their variants) poll the clock every 64KiB, or every two
+  lengths of the searched-for sequence if that is longer. Searching for a
+  sequence over 64KiB therefore overshoots `max_duration` in proportion to
+  its length; `max_memory` bounds how long it can get.
 - The budget covers cumulative **execution time**, not wall-clock time:
   the clock runs only while the interpreter executes bytecode, and is
   paused while execution is suspended waiting on the host (external

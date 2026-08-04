@@ -571,19 +571,34 @@ const SCAN_CHUNK: usize = 64 * 1024;
 
 /// Finds the first occurrence of `needle` in `haystack`.
 ///
+/// Callers must handle the empty needle: it would spin [`count_non_overlapping`].
+/// Repeated scans for the same needle should build one [`Finder`] and call
+/// [`find_with`] instead — see its docstring.
+fn find_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    find_with(&Finder::new(needle), haystack, heap)
+}
+
+/// Finds the first occurrence of `finder`'s needle in `haystack`.
+///
 /// Chunks overlap by `needle.len() - 1` so boundary-straddling matches are
 /// found; the stride never drops below the needle length so that overlap cannot
-/// dominate. Callers must handle the empty needle: it would spin
-/// [`count_non_overlapping`].
-fn find_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
-    debug_assert!(!needle.is_empty(), "callers must handle the empty needle");
-    let finder = Finder::new(needle);
-    let stride = SCAN_CHUNK.max(needle.len());
+/// dominate. Above that floor a chunk spans up to `2 * needle.len()`, so a long
+/// needle widens the `max_duration` overshoot — unavoidable, since a window
+/// shorter than the needle cannot hold a match. See
+/// `limitations/resource_limits.md`.
+///
+/// Takes the [`Finder`] by reference because constructing one runs Two-Way
+/// preprocessing over the needle; callers scanning in a loop (counting,
+/// splitting, replacing) build it once rather than per match.
+fn find_with(finder: &Finder<'_>, haystack: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    let needle_len = finder.needle().len();
+    debug_assert!(needle_len > 0, "callers must handle the empty needle");
+    let stride = SCAN_CHUNK.max(needle_len);
     let mut start = 0;
     while start < haystack.len() {
         heap.check_time()?;
         let end = start
-            .saturating_add(stride + needle.len().saturating_sub(1))
+            .saturating_add(stride + needle_len.saturating_sub(1))
             .min(haystack.len());
         if let Some(pos) = finder.find(&haystack[start..end]) {
             return Ok(Some(start + pos));
@@ -595,15 +610,23 @@ fn find_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Optio
 
 /// Finds the last occurrence of `needle` in `haystack`.
 ///
-/// The mirror of [`find_subsequence`], walking chunks from the end.
+/// The mirror of [`find_subsequence`]; [`rfind_with`] is the reusable form.
 fn rfind_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
-    debug_assert!(!needle.is_empty(), "callers must handle the empty needle");
-    let finder = FinderRev::new(needle);
-    let stride = SCAN_CHUNK.max(needle.len());
+    rfind_with(&FinderRev::new(needle), haystack, heap)
+}
+
+/// Finds the last occurrence of `finder`'s needle in `haystack`.
+///
+/// The mirror of [`find_with`], walking chunks from the end; the same
+/// preprocessing-reuse rationale applies.
+fn rfind_with(finder: &FinderRev<'_>, haystack: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    let needle_len = finder.needle().len();
+    debug_assert!(needle_len > 0, "callers must handle the empty needle");
+    let stride = SCAN_CHUNK.max(needle_len);
     let mut end = haystack.len();
     while end > 0 {
         heap.check_time()?;
-        let start = end.saturating_sub(stride + needle.len().saturating_sub(1));
+        let start = end.saturating_sub(stride + needle_len.saturating_sub(1));
         if let Some(pos) = finder.rfind(&haystack[start..end]) {
             return Ok(Some(start + pos));
         }
@@ -614,9 +637,10 @@ fn rfind_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Opti
 
 /// Counts non-overlapping occurrences of `needle` in `haystack`.
 fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<usize, ResourceError> {
+    let finder = Finder::new(needle);
     let mut count = 0;
     let mut pos = 0;
-    while let Some(found) = find_subsequence(&haystack[pos..], needle, heap)? {
+    while let Some(found) = find_with(&finder, &haystack[pos..], heap)? {
         count += 1;
         pos += found + needle.len();
     }
@@ -1362,10 +1386,11 @@ struct BytesRsplitArgs {
 
 /// Splits bytes by a separator sequence.
 fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
+    let finder = Finder::new(sep);
     let mut parts = Vec::new();
     let mut start = 0;
 
-    while let Some(pos) = find_subsequence(&bytes[start..], sep, heap)? {
+    while let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
         parts.push(&bytes[start..start + pos]);
         start = start + pos + sep.len();
     }
@@ -1376,12 +1401,13 @@ fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Ve
 
 /// Splits bytes by a separator sequence, returning at most n parts.
 fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize, heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
+    let finder = Finder::new(sep);
     let mut parts = Vec::new();
     let mut start = 0;
     let mut count = 0;
 
     while count + 1 < n {
-        if let Some(pos) = find_subsequence(&bytes[start..], sep, heap)? {
+        if let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
             parts.push(&bytes[start..start + pos]);
             start = start + pos + sep.len();
             count += 1;
@@ -1401,12 +1427,13 @@ fn bytes_rsplitn_by_seq<'a>(
     n: usize,
     heap: &Heap,
 ) -> Result<Vec<&'a [u8]>, ResourceError> {
+    let finder = FinderRev::new(sep);
     let mut parts = Vec::new();
     let mut end = bytes.len();
     let mut count = 0;
 
     while count + 1 < n {
-        if let Some(pos) = rfind_subsequence(&bytes[..end], sep, heap)? {
+        if let Some(pos) = rfind_with(&finder, &bytes[..end], heap)? {
             parts.push(&bytes[pos + sep.len()..end]);
             end = pos;
             count += 1;
@@ -1703,9 +1730,10 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         result.extend_from_slice(new);
         Ok(result)
     } else {
+        let finder = Finder::new(old);
         let mut result = Vec::new();
         let mut start = 0;
-        while let Some(pos) = find_subsequence(&bytes[start..], old, heap)? {
+        while let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
             heap.check_time()?;
             result.extend_from_slice(&bytes[start..start + pos]);
             result.extend_from_slice(new);
@@ -1738,12 +1766,13 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
         }
         Ok(result)
     } else {
+        let finder = Finder::new(old);
         let mut result = Vec::new();
         let mut start = 0;
         let mut count = 0;
         while count < n {
             heap.check_time()?;
-            if let Some(pos) = find_subsequence(&bytes[start..], old, heap)? {
+            if let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
                 result.extend_from_slice(&bytes[start..start + pos]);
                 result.extend_from_slice(new);
                 start = start + pos + old.len();
