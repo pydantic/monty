@@ -86,6 +86,11 @@ properties that real CPython does not provide, per the caveat above.
   **not** add process-group / Job Object teardown to defend against it. A
   sandbox escape that bypassed the invariant is out of scope here: it is
   already arbitrary native code running in the worker.
+- **Synchronous Python telemetry can delay `request_timeout`.** The optional
+  Logfire adapter runs trusted Python SDK callbacks inside the protocol turn.
+  A callback that does not return prevents Tokio from polling the otherwise
+  hard parent-side deadline, just like other non-yielding host work. The Node
+  adapter uses non-blocking queued delivery and does not have this limitation.
 - **`max_duration` measures cumulative execution time, and the worker's
   clock is the single source of truth.** The in-sandbox clock runs only
   while the interpreter executes — never while suspended waiting on the

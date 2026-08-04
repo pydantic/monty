@@ -22,8 +22,10 @@ crate-type = ["cdylib"]
 [dependencies]
 ahash = { workspace = true }
 # The binding owns its local exporter; monty-pool only emits telemetry.
-logfire = { version = "0.11", default-features = false, features = ["export-http-protobuf"] }
-monty-pool = { workspace = true }
+logfire = { version = "0.11", default-features = false }
+monty-pool = { workspace = true, features = ["telemetry-adapter"] }
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
 monty-proto = { workspace = true, features = ["python"] }
 monty-types = { workspace = true }
 monty-fs = { workspace = true }

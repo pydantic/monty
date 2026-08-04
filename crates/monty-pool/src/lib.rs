@@ -3,6 +3,8 @@
 mod checkout;
 mod pool;
 mod telemetry;
+#[cfg(feature = "telemetry-adapter")]
+pub mod telemetry_adapter;
 mod telemetry_json;
 mod worker;
 
@@ -63,7 +65,8 @@ pub struct PoolConfig {
     /// Parent-side hard deadline per protocol turn: when it expires the
     /// worker is killed and the call fails with [`PoolError::Timeout`]. This
     /// backstops the child-side `ResourceLimits` — it also catches a child
-    /// that hangs in ways the sandbox limits cannot see.
+    /// that hangs in ways the sandbox limits cannot see. Synchronous host
+    /// telemetry callbacks prevent the timer from being polled while they run.
     pub request_timeout: Option<Duration>,
     /// Grace period for the automatic `max_duration` backstop.
     ///

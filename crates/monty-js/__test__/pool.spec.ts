@@ -61,14 +61,6 @@ test('maxCheckoutsPerWorker recycles the worker', async (ctx) => {
   await second.close()
 })
 
-test('logfireToken pool round-trips', async (ctx) => {
-  skipIfBrowser(ctx)
-  // a well-formed but fake token: recording runs, and the failing background export never affects execution
-  await using pool = await Monty.create({ logfireToken: 'pylf_v1_us_0000000000000000000000' })
-  await using session = await pool.checkout()
-  t.is(await session.feedRun('1 + 2'), 3)
-})
-
 test('concurrent sessions run in distinct workers', async (ctx) => {
   skipIfBrowser(ctx)
   await using pool = await Monty.create()

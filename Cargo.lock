@@ -2398,8 +2398,11 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "num-bigint",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "postcard",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -2432,6 +2435,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "tracing-opentelemetry",
  "tungstenite",
 ]
 
@@ -3165,6 +3169,8 @@ dependencies = [
  "monty-proto",
  "monty-types",
  "num-bigint",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "pyo3",
  "pyo3-async-runtimes",
  "pyo3-build-config",

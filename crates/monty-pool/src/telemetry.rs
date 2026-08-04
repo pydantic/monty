@@ -19,19 +19,28 @@ use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
 use monty_types::{MontyObject, bytes_repr};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+#[cfg(feature = "telemetry-adapter")]
+use crate::telemetry_adapter::TelemetryContext;
 use crate::telemetry_json::{
     nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped,
 };
 
+/// Starts the OTel span eagerly without entering it or fixing its end time.
+fn start_span(span: Span) -> Span {
+    let _ = span.context();
+    span
+}
+
 /// Records one worker's protocol turns to the pool's logfire.
 ///
 /// Lives on the [`crate::worker::Worker`], which sees every request and event.
-/// A disabled recorder (no configured Logfire SDK) is a no-op that skips rendering
-/// values at all, so the worker is written the same way either way. Spans close
+/// A recorder with neither a pool SDK nor checkout adapter is a no-op that skips
+/// rendering values, so the worker is written the same way either way. Spans close
 /// by being dropped, so a worker that dies mid-turn still closes its own.
 pub(crate) struct Recorder {
-    /// `None` disables the recorder entirely. Behind an [`Arc`] because
+    /// Pool-level SDK used when no checkout adapter overrides it. Behind an [`Arc`] because
     /// [`Logfire`] is ~2 KiB and this lives on every [`crate::worker::Worker`],
     /// which is moved on each checkout and release.
     logfire: Option<Arc<Logfire>>,
@@ -53,10 +62,16 @@ pub(crate) struct Recorder {
     /// Whether the current turn is a `Dump`: an `Error` reply to one leaves
     /// the feed suspended and resumable, so it closes only the dump span.
     dump_turn: bool,
+    /// One-shot host context consumed when `Configure` starts the root span.
+    #[cfg(feature = "telemetry-adapter")]
+    adapter_context: Option<TelemetryContext>,
+    /// Whether this checkout records through the one-shot global adapter.
+    #[cfg(feature = "telemetry-adapter")]
+    adapter_active: bool,
 }
 
 impl Recorder {
-    /// A recorder for one worker; `logfire = None` records nothing.
+    /// A recorder for one worker; `logfire = None` records only adapter checkouts.
     pub(crate) const fn new(logfire: Option<Arc<Logfire>>, worker_pid: Option<u32>) -> Self {
         Self {
             logfire,
@@ -66,14 +81,49 @@ impl Recorder {
             feed: None,
             session: None,
             dump_turn: false,
+            #[cfg(feature = "telemetry-adapter")]
+            adapter_context: None,
+            #[cfg(feature = "telemetry-adapter")]
+            adapter_active: false,
+        }
+    }
+
+    /// Assigns the one-shot host context before checkout sends `Configure`.
+    #[cfg(feature = "telemetry-adapter")]
+    pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
+        self.adapter_context = Some(context);
+    }
+
+    /// Whether this checkout uses the process-global adapter pipeline.
+    fn uses_global_adapter(&self) -> bool {
+        #[cfg(feature = "telemetry-adapter")]
+        {
+            self.adapter_active
+        }
+        #[cfg(not(feature = "telemetry-adapter"))]
+        {
+            false
         }
     }
 
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
-        let Some(logfire) = &self.logfire else { return };
-        let _guard = set_local_logfire(logfire.as_ref().clone());
+        #[cfg(feature = "telemetry-adapter")]
+        let adapter_parent = if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))) {
+            self.adapter_context.take().and_then(|context| {
+                self.adapter_active = true;
+                context.into_parent()
+            })
+        } else {
+            None
+        };
+        let _guard = if self.uses_global_adapter() {
+            None
+        } else {
+            let Some(logfire) = &self.logfire else { return };
+            Some(set_local_logfire(logfire.as_ref().clone()))
+        };
         // a turn span whose ending event never arrived (worker died mid-turn,
         // undecodable reply) closes here rather than leaking open
         self.turn = None;
@@ -85,7 +135,7 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 let limits = c.limits.as_ref();
-                self.session = Some(logfire::span!(
+                let span = logfire::span!(
                     "session {script_name}",
                     script_name = &c.script_name,
                     monty_version = &c.monty_version,
@@ -99,17 +149,27 @@ impl Recorder {
                     // i64: `tracing` has no typed u32 value, so a u32 would be
                     // recorded as its debug string
                     worker_pid = self.worker_pid.map(i64::from),
-                ));
+                );
+                #[cfg(feature = "telemetry-adapter")]
+                let span = {
+                    if let Some(parent) = adapter_parent {
+                        let _ = span.set_parent(parent);
+                    }
+                    start_span(span)
+                };
+                #[cfg(not(feature = "telemetry-adapter"))]
+                let span = start_span(span);
+                self.session = Some(span);
             }
             Some(pb::parent_request::Kind::Load(l)) => {
-                self.turn = Some(logfire::span!(
+                self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "load",
                     state_bytes = l.state.len(),
                     // filled in by the reply, which announces the name the
                     // restored session runs under
                     script_name = Empty,
-                ));
+                )));
             }
             // ends the session: closing the spans is the whole record, since
             // the bare `Ok` it is answered with would say nothing. A reset can
@@ -118,13 +178,17 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 self.session = None;
+                #[cfg(feature = "telemetry-adapter")]
+                {
+                    self.adapter_active = false;
+                }
             }
             Some(pb::parent_request::Kind::InstallDependencies(d)) => {
-                self.turn = Some(logfire::span!(
+                self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "install dependencies",
                     requirements = render_str_list(&d.requirements),
-                ));
+                )));
             }
             Some(pb::parent_request::Kind::Feed(f)) => {
                 let (code, code_cut) = truncate_str(&f.code);
@@ -134,7 +198,7 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 let cut = code_cut | inputs_cut;
-                let span = logfire::span!(
+                let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "run code",
                     code = &code,
@@ -147,7 +211,7 @@ impl Recorder {
                     output = Empty,
                     total_execution_micros = Empty,
                     max_duration_micros = Empty,
-                );
+                ));
                 self.feed = Some(OpenSpan::new(span, cut));
             }
             // the resume family opens no span: the host's answer is an
@@ -173,14 +237,14 @@ impl Recorder {
             }
             Some(pb::parent_request::Kind::Dump(_)) => {
                 self.dump_turn = true;
-                self.turn = Some(logfire::span!(
+                self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "dump",
                     // filled in by the `DumpResult` reply
                     state_bytes = Empty,
                     total_execution_micros = Empty,
                     max_duration_micros = Empty,
-                ));
+                )));
             }
             // no span of its own: the session is normally already reset, and
             // a lone "shutdown" span would start a whole trace for a worker
@@ -189,6 +253,10 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 self.session = None;
+                #[cfg(feature = "telemetry-adapter")]
+                {
+                    self.adapter_active = false;
+                }
             }
             // `checkout::request` always sets a kind
             None => {}
@@ -198,8 +266,12 @@ impl Recorder {
     /// Records one event from the worker: suspension events open the pending
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
-        let Some(logfire) = &self.logfire else { return };
-        let _guard = set_local_logfire(logfire.as_ref().clone());
+        let _guard = if self.uses_global_adapter() {
+            None
+        } else {
+            let Some(logfire) = &self.logfire else { return };
+            Some(set_local_logfire(logfire.as_ref().clone()))
+        };
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
@@ -222,7 +294,7 @@ impl Recorder {
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
                 let (args, kwargs, cut) = render_call_arguments(c);
-                let span = logfire::span!(
+                let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "call {function_name}",
                     function_name = &c.function_name,
@@ -235,14 +307,14 @@ impl Recorder {
                     max_duration_micros = max_duration,
                     // filled in by the answering `ResumeCall`
                     return_value = Empty,
-                );
+                ));
                 self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::OsCall(c)) => {
                 self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
-                let span = logfire::span!(
+                let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "name lookup {name}",
                     name = &n.name,
@@ -251,17 +323,17 @@ impl Recorder {
                     // filled in by the answering `ResumeNameLookup`
                     value = Empty,
                     length_limit_exceeded = Empty,
-                );
+                ));
                 self.pending = Some(OpenSpan::new(span, false));
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
-                let span = logfire::span!(
+                let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "resolve futures",
                     pending_call_ids = render_call_ids(&r.pending_call_ids),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
-                );
+                ));
                 self.pending = Some(OpenSpan::new(span, false));
             }
             Some(pb::child_event::Kind::Complete(c)) => {
@@ -548,7 +620,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
             )
         };
     }
-    let span = match os_call.call.as_ref() {
+    let span = start_span(match os_call.call.as_ref() {
         Some(Call::Exists(p)) => os_call!("exists", args.path = p),
         Some(Call::IsFile(p)) => os_call!("is_file", args.path = p),
         Some(Call::IsDir(p)) => os_call!("is_dir", args.path = p),
@@ -613,7 +685,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
             }
         }
         None => os_call!(MISSING),
-    };
+    });
     if args_cut {
         span.record("length_limit_exceeded", true);
     }

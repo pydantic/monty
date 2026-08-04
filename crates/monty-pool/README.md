@@ -72,7 +72,8 @@ and restored later — including on a different worker or machine — with `Chec
   worker, and spawns a replacement; the parent process and every other session stay healthy.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), backstopping the sandbox's own resource limits
-  and catching hangs those limits cannot see. When a session has a `max_duration` budget,
+  and catching hangs those limits cannot see. Synchronous host telemetry processors delay
+  enforcement while they run because the timer cannot be polled. When a session has a `max_duration` budget,
   the deadline also enforces it (plus `duration_limit_grace`) from outside the child.
 - **Untrusted children** — the parent treats every frame from a (possibly compromised)
   worker as untrusted: wire decoding validates everything and never panics, and a worker
@@ -99,6 +100,12 @@ arguments and results, exceptions and `print` output are recorded in full — va
 the way the Python logfire SDK encodes attributes, capped at 64KB per value — while
 `Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
+
+The optional `telemetry-adapter` feature provides host-neutral processors for language
+bindings. It configures an exporter-free SDK and returns a handle that couples each checkout's
+serialized parent context to that exact pipeline. Records are emitted through
+`TelemetryAdapter`; Python, Node, and third-party bindings retain ownership of their native
+SDK and exporter.
 
 Applications can pass either their process-level SDK or a `.local()` Logfire instance. The
 latter leaves existing process-global `tracing`/OTel setup untouched and allows independent

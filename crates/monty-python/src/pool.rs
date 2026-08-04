@@ -54,7 +54,7 @@ use pyo3_async_runtimes::tokio::{future_into_py, get_runtime};
 use tokio::{
     runtime::{Handle, RuntimeFlavor},
     sync::Mutex as AsyncMutex,
-    task::{JoinSet, block_in_place, spawn_blocking},
+    task::{JoinSet, block_in_place},
 };
 
 use crate::{
@@ -67,6 +67,7 @@ use crate::{
     mount::PyMountDir,
     print_target::PrintTarget,
     snapshot::{DriveContext, build_snapshot, feed_start_async, feed_start_sync},
+    telemetry::capture_telemetry_context,
 };
 
 /// The pool handle shared between a pool object and its sessions. `None`
@@ -115,9 +116,7 @@ impl PyMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        logfire_token = None,
     ))]
-    #[expect(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -126,7 +125,6 @@ impl PyMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        logfire_token: Option<String>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -137,7 +135,6 @@ impl PyMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
-                logfire_token,
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -159,8 +156,7 @@ impl PyMonty {
     #[pyo3(signature = (*_args))]
     fn __exit__(&self, py: Python<'_>, _args: &Bound<'_, PyTuple>) -> PyResult<()> {
         let pool = lock(&self.pool).take();
-        let logfire = self.config.logfire.clone();
-        py.detach(|| block_on_sync(close_pool(pool, logfire)))
+        py.detach(|| block_on_sync(close_pool(pool)))
     }
 
     /// Prepares a REPL session; the worker is checked out by `with`.
@@ -228,9 +224,14 @@ impl PyMontySession {
         let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
-        py.detach(|| {
-            block_on_sync(async {
-                let checkout = pool.checkout(&repl_config).await?;
+        let telemetry = capture_telemetry_context(py);
+        py.detach(move || {
+            block_on_sync(async move {
+                let checkout = if let Some(telemetry) = telemetry {
+                    pool.checkout_with_telemetry(&repl_config, telemetry).await?
+                } else {
+                    pool.checkout(&repl_config).await?
+                };
                 *slot.lock().await = Some(checkout);
                 Ok(())
             })
@@ -479,9 +480,7 @@ impl PyAsyncMonty {
         checkout_timeout = None,
         request_timeout = None,
         max_checkouts_per_worker = None,
-        logfire_token = None,
     ))]
-    #[expect(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
         binary_path: Option<PathBuf>,
@@ -490,7 +489,6 @@ impl PyAsyncMonty {
         checkout_timeout: Option<f64>,
         request_timeout: Option<f64>,
         max_checkouts_per_worker: Option<u32>,
-        logfire_token: Option<String>,
     ) -> PyResult<Self> {
         Ok(Self {
             config: parse_pool_config(
@@ -501,7 +499,6 @@ impl PyAsyncMonty {
                 checkout_timeout,
                 request_timeout,
                 max_checkouts_per_worker,
-                logfire_token,
             )?,
             pool: Arc::new(Mutex::new(None)),
         })
@@ -525,9 +522,8 @@ impl PyAsyncMonty {
     #[pyo3(signature = (*_args))]
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
-        let logfire = self.config.logfire.clone();
         future_into_py(py, async move {
-            close_pool(pool, logfire).await;
+            close_pool(pool).await;
             Ok(())
         })
     }
@@ -640,7 +636,7 @@ impl PyAsyncMontyWebsocket {
     fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
         let pool = lock(&self.pool).take();
         future_into_py(py, async move {
-            close_pool(pool, None).await;
+            close_pool(pool).await;
             Ok(())
         })
     }
@@ -707,15 +703,17 @@ impl PyAsyncMontySession {
     /// the REPL session in it.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         let this = slf.get();
-        let pool = Arc::clone(&this.pool);
+        let pool = active_pool(&this.pool)?;
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
+        let telemetry = capture_telemetry_context(py);
         future_into_py(py, async move {
-            let pool = active_pool(&pool)?;
-            let checkout = pool
-                .checkout(&repl_config)
-                .await
-                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            let checkout = if let Some(telemetry) = telemetry {
+                pool.checkout_with_telemetry(&repl_config, telemetry).await
+            } else {
+                pool.checkout(&repl_config).await
+            }
+            .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
             *slot.lock().await = Some(checkout);
             Ok(slf)
         })
@@ -922,7 +920,6 @@ impl PyAsyncMontySession {
 /// Builds the subprocess-transport `monty-pool` config from the (shared)
 /// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
 /// `pydantic_monty._binary` when not given explicitly.
-#[expect(clippy::too_many_arguments)]
 fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
@@ -931,7 +928,6 @@ fn parse_pool_config(
     checkout_timeout: Option<f64>,
     request_timeout: Option<f64>,
     max_checkouts_per_worker: Option<u32>,
-    logfire_token: Option<String>,
 ) -> PyResult<PoolConfig> {
     let binary_path = match binary_path {
         Some(path) => path,
@@ -949,24 +945,7 @@ fn parse_pool_config(
     config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
     config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
     config.max_checkouts_per_worker = max_checkouts_per_worker;
-    config.logfire = configure_logfire(logfire_token)?;
     Ok(config)
-}
-
-/// Configures the binding-owned local Logfire SDK when explicitly requested.
-///
-/// Local mode avoids replacing Python's tracing globals. Logfire itself reads
-/// standard OTel exporter variables in addition to the optional write token.
-fn configure_logfire(token: Option<String>) -> PyResult<Option<logfire::Logfire>> {
-    let Some(token) = token else { return Ok(None) };
-    logfire::configure()
-        .local()
-        .with_token(token)
-        .with_service_name("pydantic-monty")
-        .with_service_version(env!("CARGO_PKG_VERSION"))
-        .finish()
-        .map(Some)
-        .map_err(|err| PyRuntimeError::new_err(format!("failed to configure logfire telemetry: {err}")))
 }
 
 /// Rejects a non-callable `os=` handler with the same `TypeError` for every
@@ -1044,13 +1023,10 @@ pub(crate) fn discard_checkout_sync(py: Python<'_>, checkout: &SharedCheckout) {
 /// Gracefully closes a pool taken out of its shared slot (a no-op when the
 /// context manager was never entered). Shared by the sync `__exit__` and the
 /// async `__aexit__`s.
-async fn close_pool(pool: Option<Arc<Pool>>, logfire: Option<logfire::Logfire>) {
+async fn close_pool(pool: Option<Arc<Pool>>) {
     if let Some(pool) = pool {
         pool.close().await;
         drop(pool);
-    }
-    if let Some(logfire) = logfire {
-        let _ = spawn_blocking(move || logfire.shutdown()).await;
     }
 }
 

@@ -176,7 +176,9 @@ expose the same `feed_start` / `load_session` / `load_snapshot`, with awaitable
 ### Resource limits
 
 Limits are enforced inside the worker; the pool's `request_timeout` is a
-host-side backstop that kills a hung worker outright. `max_duration_secs`
+host-side backstop that kills a hung worker outright. An installed telemetry
+adapter invokes trusted Python SDK callbacks synchronously; enforcement is
+delayed while such a callback runs. `max_duration_secs`
 limits cumulative *execution* time — the clock runs only while the
 interpreter executes, never while suspended waiting on the host, and
 accumulates across feeds. The worker reports its execution time on every
@@ -232,25 +234,16 @@ with Monty() as pool:
 
 ### Observability
 
-Passing a [Logfire](https://pydantic.dev/logfire) write token instruments the
-pool: each checkout becomes one session span, with a nested span per turn
-recording the code fed, its inputs, external call arguments and results,
-exceptions and `print` output. Session dumps and restores are recorded by size
-only. Without a token nothing is recorded and no exporter runs.
+The Python Logfire integration instruments the pool through a private adapter
+hook. It propagates the active Python OTel context into each checkout, which
+becomes one session span with nested feed and suspension
+spans recording code, inputs, external calls, exceptions, and `print` output.
+Session dumps and restores are recorded by size only.
 
-Recording happens in the host process, which sees the whole conversation with
-each worker. The Python binding configures and shuts down a separate local Rust
-Logfire SDK, so workers get no token and your application's Python logfire/OTel
-setup is untouched. The Rust SDK also honors standard OTel exporter environment
-variables.
-
-```python test="skip"
-from pydantic_monty import Monty
-
-with Monty(logfire_token='pylf_v1_...') as pool:
-    with pool.checkout() as session:
-        session.feed_run('1 + 1')
-```
+Logfire's Python SDK owns sampling, export credentials, resources, flushing,
+and shutdown. The Rust binding runs only an exporter-free processor pipeline;
+workers receive no credentials. Instrumentation is disabled unless an adapter
+is explicitly installed, and enabled instrumentation captures full content.
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
 details of subprocess execution (host-side mounts, buffered print

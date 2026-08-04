@@ -15,6 +15,8 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
+#[cfg(feature = "telemetry-adapter")]
+use crate::telemetry_adapter::TelemetryContext;
 use crate::{
     PoolConfig, PoolError,
     checkout::{Checkout, ReplConfig, request},
@@ -93,6 +95,18 @@ impl Pool {
     /// (forever when `None`) before failing with [`PoolError::Exhausted`].
     pub async fn checkout(&self, repl: &ReplConfig) -> Result<Checkout, PoolError> {
         let worker = self.inner.acquire_worker().await?;
+        Checkout::create(worker, Arc::clone(&self.inner), repl).await
+    }
+
+    /// Checks out a session with distributed context captured by a host adapter.
+    #[cfg(feature = "telemetry-adapter")]
+    pub async fn checkout_with_telemetry(
+        &self,
+        repl: &ReplConfig,
+        context: TelemetryContext,
+    ) -> Result<Checkout, PoolError> {
+        let mut worker = self.inner.acquire_worker().await?;
+        worker.set_adapter_context(context);
         Checkout::create(worker, Arc::clone(&self.inner), repl).await
     }
 

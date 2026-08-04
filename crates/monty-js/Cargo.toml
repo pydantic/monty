@@ -20,9 +20,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # The binding owns its local exporter; monty-pool only emits telemetry.
-logfire = { version = "0.11", default-features = false, features = ["export-http-protobuf"] }
+logfire = { version = "0.11", default-features = false }
 monty-types = { workspace = true }
-monty-pool = { workspace = true }
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+monty-pool = { workspace = true, features = ["telemetry-adapter"] }
 monty-type-checking = { workspace = true }
 napi = { version = "3.8", default-features = false, features = ["napi8", "compat-mode", "tokio_rt"] }
 # The pool is async; the binding shares napi's tokio runtime and only needs
@@ -31,6 +33,7 @@ tokio = { workspace = true, features = ["sync"] }
 napi-derive = "3.0.0"
 num-bigint = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 postcard = { workspace = true }
 
 [build-dependencies]

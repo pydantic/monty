@@ -15,6 +15,9 @@ repository = { workspace = true }
 [lib]
 name = "monty_pool"
 
+[features]
+telemetry-adapter = ["dep:opentelemetry_sdk"]
+
 [dependencies]
 monty-types = { workspace = true }
 monty-fs = { workspace = true }
@@ -40,9 +43,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # Typed values used when recording attributes; version must match logfire's.
 opentelemetry = "0.32"
-# Only for the span/level types logfire's API exposes; recording goes through
-# the `logfire::` macros.
+# Span construction and eager OTel context creation; versions must match Logfire.
 tracing = "0.1"
+tracing-opentelemetry = "0.33"
+# Host-neutral processors used by Python, Node, and third-party adapters.
+opentelemetry_sdk = { version = "0.32", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

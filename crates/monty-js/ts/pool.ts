@@ -9,6 +9,7 @@ import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from './options.js'
 import { MontySession } from './session.js'
+import { captureTelemetryContext } from './telemetry.js'
 
 /** Options for [`Monty`]. */
 export interface MontyOptions {
@@ -44,12 +45,6 @@ export interface MontyOptions {
   durationLimitGrace?: number | null
   /** Recycle a worker (kill and replace) after serving this many sessions. */
   maxCheckoutsPerWorker?: number
-  /**
-   * Logfire write token. When set, the native binding records every session
-   * through a separate local Rust SDK; workers get no token and your app's JS
-   * OTel setup is untouched.
-   */
-  logfireToken?: string
 }
 
 /** Options for [`Monty.checkout`], mirroring `pydantic_monty`. */
@@ -112,7 +107,6 @@ export class Monty {
         ? { durationLimitGraceMs: (options.durationLimitGrace ?? 1) * 1000 }
         : {}),
       ...(options.maxCheckoutsPerWorker !== undefined ? { maxCheckoutsPerWorker: options.maxCheckoutsPerWorker } : {}),
-      ...(options.logfireToken !== undefined ? { logfireToken: options.logfireToken } : {}),
     })
     await native.start()
     return new Monty(native)
@@ -135,7 +129,8 @@ export class Monty {
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
       ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
     })
-    await native.enter()
+    const telemetryContext = captureTelemetryContext()
+    await native.enter(telemetryContext)
     return new MontySession(native)
   }
 

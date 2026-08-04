@@ -13,7 +13,9 @@ mod convert;
 mod exceptions;
 mod limits;
 mod pool;
+mod telemetry;
 
 pub use exceptions::{ExceptionInfo, Frame, JsMontyException, MontyTypingError};
 pub use limits::JsResourceLimits;
 pub use pool::{NativeCheckoutOptions, NativeMount, NativePool, NativePoolOptions, NativeSession, MAX_VALUE_DEPTH};
+pub use telemetry::install_telemetry_adapter;

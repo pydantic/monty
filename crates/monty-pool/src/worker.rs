@@ -38,6 +38,8 @@ use tokio_tungstenite::{
     tungstenite::{Error as WsError, Message, protocol::WebSocketConfig},
 };
 
+#[cfg(feature = "telemetry-adapter")]
+use crate::telemetry_adapter::TelemetryContext;
 use crate::{MontyTransport, PoolConfig, PoolError, telemetry::Recorder};
 
 /// The async WebSocket stream type for a remote worker.
@@ -202,6 +204,12 @@ impl Worker {
             self.recorder.begin_turn(request);
         }
         result
+    }
+
+    /// Assigns propagated host context before this worker starts a checkout.
+    #[cfg(feature = "telemetry-adapter")]
+    pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
+        self.recorder.set_adapter_context(context);
     }
 
     /// Receives one event. EOF/close is an error here because within a
