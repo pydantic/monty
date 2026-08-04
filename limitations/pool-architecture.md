@@ -163,6 +163,13 @@ properties that real CPython does not provide, per the caveat above.
   Deeper values fail the protocol turn rather than crossing the boundary.
 - `Cycle` markers (self-referential containers) can be *received* from a
   worker but are rejected as inputs.
+- A sandbox value with no `MontyObject` equivalent — a class, a class
+  instance, a function, a compiled `re` pattern — is **silently degraded to
+  its repr string** on the way out, rather than failing. A host function
+  receiving one gets a `str`: `"<class 'C'>"`, `"<C object at 0x5>"`,
+  `"<function '<lambda>' at 0x2c>"`, `"re.compile('a')"`. This applies to
+  external-function arguments and to a snippet's final result, so a host
+  cannot distinguish such a value from a sandbox string of the same text.
 - A single value whose encoded form would exceed the wire frame limit
   (256 MiB) — a feed input, external-function argument or return value, or a
   snippet's final result — cannot cross the boundary. This is a
@@ -199,6 +206,14 @@ properties that real CPython does not provide, per the caveat above.
 
 ## Host-API behaviour notes
 
+- **A host-function return value the wire cannot carry fails *inside* the
+  sandbox, not host-side.** An unrepresentable type becomes a catchable
+  `TypeError: Cannot convert X to Monty value`; one nested past the wire depth
+  bound becomes a catchable `RuntimeError: Max input depth exceeded`. Either
+  reaches the host as `MontyRuntimeError` only when the sandbox does not catch
+  it. The same holds for an `os=` callback's return value, and for the JS
+  client. `MontyConversionError` covers only values the host supplies up
+  front, in `inputs` or `external_lookup`.
 - **Typing errors** (`checkout(type_check=True)`) raise `MontyTypingError`
   whose diagnostics were rendered *in the worker*, so the format is a
   checkout argument (`type_check_format=`, `type_check_color=`; JS
@@ -318,8 +333,17 @@ properties that real CPython does not provide, per the caveat above.
   and replacing it with a non-callable makes calls raise the `TypeError`
   CPython would for calling that value (`'int' object is not callable`).
   Because only *undefined* names fire lookups, an entry shadowing a builtin
+<<<<<<< HEAD
   (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
   `external_lookup`; they surface name lookups as snapshots, which resolve only
+=======
+  (e.g. `{'len': ...}`) is silently ignored. A callable passed through `inputs`
+  instead is accepted, but binds only the same name-dispatched proxy — keyed on
+  the callable's `__name__`, not the `inputs` key — so calling it still resolves
+  that name through `external_lookup` and raises `NameError` when it is absent.
+  Host functions belong in `external_lookup`. `feed_start` / `feedStart` take no
+  `external_lookup` — they surface name lookups as snapshots, which resolve only
+>>>>>>> f9595bc2 (docs: correct the pool's timeout and session-survival claims)
   to a function (see below).
 - **Dependency installation is only available on an embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
@@ -405,12 +429,6 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
   sandbox using `error.name` when it matches one of monty's exception types
   (`TypeError`, `ValueError`, `KeyError`, ...); anything else becomes
   `RuntimeError`. Tracebacks of host errors are not preserved.
-- **Deep external-function return values** (beyond the wire depth bound)
-  raise a *catchable* `RuntimeError: Max input depth exceeded` inside the
-  sandbox, where `pydantic_monty` raises host-side and abandons the feed.
-  Return values that cannot be converted at all (e.g. a `Symbol`, or a
-  malformed `__monty_type__` marker object) likewise raise a catchable
-  in-sandbox `TypeError` instead of failing host-side.
 - **Snapshots mirror `pydantic_monty`.** `session.feedStart(code, opts)`
   returns a `FunctionSnapshot` / `NameLookupSnapshot` / `FutureSnapshot` (or a
   `MontyComplete`); `session.dump()` / `snapshot.dump()` serialize the worker,

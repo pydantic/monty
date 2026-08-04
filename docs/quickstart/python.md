@@ -74,8 +74,9 @@ A name present in both is served by the eager `inputs` binding.
 `dict`, `set`, `frozenset`, `Ellipsis`, `NotImplemented`, `datetime.date`,
 `datetime.datetime`, `datetime.timedelta`, `datetime.timezone`, named tuples, dataclass
 instances, exception instances, and the type objects Monty models (`int`, `str`,
-`datetime.date`, ...) all convert in both directions. A callable is not a value: put it in
-`external_lookup`, where it becomes a [host function](../host-functions.md).
+`datetime.date`, ...) all convert in both directions. Put callables in `external_lookup`,
+where they become [host functions](../host-functions.md); a callable in `inputs` binds only
+a reference the sandbox still resolves through `external_lookup` when it is called.
 
 POSIX paths convert too — `pathlib.PurePosixPath` and `pathlib.PosixPath`, which is what
 `Path()` builds on Linux and macOS. They come back as `PurePosixPath`, and a
@@ -151,9 +152,13 @@ with Monty() as pool:
 ```
 
 `CollectStreams` collects `(stream, text)` tuples instead, so you can tell stdout from
-stderr. Both cap collected output at 10 MiB by default and raise `MemoryError` past it;
-pass `max_bytes=None` to disable the cap. That cap is separate from
-[`max_memory`](../resource-limits.md).
+stderr. Both cap collected output at 10 MiB by default; pass `max_bytes=None` to disable
+the cap. That cap is separate from [`max_memory`](../resource-limits.md), and it is
+enforced in your process as the output arrives, not by the worker.
+
+Exceeding it fails the feed with `MontyRuntimeError` wrapping a `MemoryError`; call
+`exc.exception()` for the `MemoryError` itself. Sandboxed code cannot catch it, so a
+`print()` loop cannot swallow the cap.
 
 A plain callable works too, receiving `(stream, text)`:
 
@@ -183,7 +188,7 @@ Every Monty error subclasses `MontyError`:
 | --- | --- | --- |
 | `MontySyntaxError` | The snippet does not parse | yes |
 | `MontyTypingError` | Type checking rejected the snippet | yes |
-| `MontyRuntimeError` | The code raised at runtime | yes |
+| `MontyRuntimeError` | The code raised at runtime | yes — but discard it after a resource limit |
 | `MontyConversionError` | A host value cannot cross the boundary | from `inputs` yes, from `external_lookup` no |
 | `MontyCrashedError` | The worker died, or hit `request_timeout` | no |
 
@@ -191,6 +196,11 @@ Every Monty error subclasses `MontyError`:
 untouched. An `external_lookup` value is converted mid-execution, while the worker is
 suspended on the name read, so the checkout is discarded and reusing it raises
 `RuntimeError: this checkout has already been finished`. Check out again to retry.
+
+A `MontyRuntimeError` carrying `MemoryError` or `TimeoutError` is a
+[resource limit](../resource-limits.md#after-a-limit-fires), not ordinary sandbox code
+raising. The pool leaves the checkout open, but the heap behind it is no longer
+trustworthy, so discard it rather than feeding it again.
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 

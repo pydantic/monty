@@ -205,6 +205,10 @@ Differences from the native path:
   the same API degrades to in-process execution: no crash isolation and no preemption, so
   a runaway turn cannot be interrupted.
 - **`maxProcesses` defaults to 4**, not the CPU count.
+- **`checkoutTimeout`, `durationLimitGrace` and `binaryPath` are accepted and ignored.**
+  A checkout on an exhausted pool waits forever rather than failing, nothing backs up
+  `maxDurationSecs` from outside the worker, and the bundled wasm asset is always used.
+  `requestTimeout` does apply, wherever a real `Worker` exists.
 - **Prints are buffered per turn** rather than streamed live, and rendered traceback
   strings are not produced yet (frames still decode).
 

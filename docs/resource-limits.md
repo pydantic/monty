@@ -116,9 +116,12 @@ fires **no guarantees are made about heap state or reference counts** — the he
 orphaned objects with wrong refcounts. Discard the session rather than continuing to run
 code in it.
 
-The pool does this for you: a resource error ends the session, though the worker process
-itself is reused for the next checkout. A caught `RecursionError` is the exception; it
-does not invalidate anything and execution may continue.
+The pool does **not** do this for you. The checkout stays open and accepts further
+`feed_run` calls. Because `max_duration_secs` is a cumulative budget, once it is spent
+every later feed raises `TimeoutError` immediately; after a `max_memory` trip a later feed
+may quietly succeed against a heap you can no longer trust. Ending the session is your
+job. A caught `RecursionError` is the exception; it does not invalidate anything and
+execution may continue.
 
 Full details, including the exact pre-check thresholds, live in
 [`limitations/resource_limits.md`](https://github.com/pydantic/monty/blob/main/limitations/resource_limits.md).

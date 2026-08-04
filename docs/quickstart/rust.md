@@ -24,11 +24,16 @@ Workers are `monty` CLI binaries. Build one with `cargo build -p monty-runtime` 
 [`pydantic-monty-runtime`](https://pypi.org/project/pydantic-monty-runtime/).
 
 ```rust,no_run
+use std::time::Duration;
+
 use monty_pool::{Pool, PoolConfig, PoolError, ReplConfig, TurnEvent, on_print_sync};
 
 #[tokio::main]
 async fn main() -> Result<(), PoolError> {
-    let pool = Pool::new(PoolConfig::subprocess("path/to/monty")).await?;
+    let mut config = PoolConfig::subprocess("path/to/monty");
+    // no timeouts by default; set one before running untrusted code
+    config.request_timeout = Some(Duration::from_secs(30));
+    let pool = Pool::new(config).await?;
 
     let mut session = pool.checkout(&ReplConfig::default()).await?;
     let mut on_print = on_print_sync(|_stream, text| print!("{text}"));
@@ -77,13 +82,19 @@ different worker or machine.
 - **Hard timeouts** — a parent-side deadline kills any worker whose turn exceeds
   `request_timeout` (`PoolError::Timeout`), catching hangs the in-sandbox limits cannot
   see. With a `max_duration` budget the deadline also enforces that from outside the
-  child, plus `duration_limit_grace`.
+  child, plus `duration_limit_grace`. `PoolConfig::subprocess` sets neither
+  `request_timeout` nor `checkout_timeout` by default; set `request_timeout` yourself for
+  untrusted code.
 - **Untrusted children** — every frame from a possibly compromised worker is validated;
   wire decoding never panics, and a protocol violation discards the worker.
 - **Worker recycling** — `max_checkouts_per_worker` bounds the impact of a slow leak.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and
-its session stay alive and usable.
+its session stay alive and usable. Resource-limit failures are the exception. They arrive
+as `PoolError::Runtime` too, carrying a `MemoryError` or `TimeoutError`, but
+[no guarantees hold about heap state afterwards](../resource-limits.md#after-a-limit-fires)
+— and because `max_duration` is a cumulative budget, once it is spent every later `feed`
+fails immediately. Finish the checkout and take a fresh one.
 
 ### Transports
 

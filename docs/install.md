@@ -79,9 +79,11 @@ cargo add monty-pool monty-types tokio --features tokio/macros,tokio/rt-multi-th
 ```
 
 `monty-pool` runs code only in `monty` worker subprocesses, which is what gives you crash
-isolation and a hard per-turn timeout. It is the same engine the Python and JavaScript
-packages are built on. Workers are `monty` CLI binaries: build one with
-`cargo build -p monty-runtime`, or install it from PyPI as `pydantic-monty-runtime`.
+isolation and, once you ask for it, a hard per-turn timeout. `PoolConfig::subprocess`
+defaults to no timeouts, so set `request_timeout` before running untrusted code. It is
+the same engine the Python and JavaScript packages are built on. Workers are `monty` CLI
+binaries: build one with `cargo build -p monty-runtime`, or install it from PyPI as
+`pydantic-monty-runtime`.
 
 The in-process interpreter is the [`monty`](https://crates.io/crates/monty) crate:
 

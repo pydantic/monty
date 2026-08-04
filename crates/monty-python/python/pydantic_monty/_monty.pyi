@@ -57,7 +57,8 @@ class CollectStreams:
     """Collect printed output as `(stream, text)` tuples.
 
     Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
-    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    Exceeding the cap fails the feed with `MontyRuntimeError` wrapping a
+    `MemoryError`. Not covered by `ResourceLimits.max_memory`.
     The cap includes a fixed per-entry overhead (many tiny fragments).
     """
 
@@ -71,7 +72,8 @@ class CollectString:
     """Collect printed output as one concatenated string.
 
     Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
-    Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    Exceeding the cap fails the feed with `MontyRuntimeError` wrapping a
+    `MemoryError`. Not covered by `ResourceLimits.max_memory`.
     """
 
     def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectString: ...

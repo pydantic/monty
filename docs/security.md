@@ -105,10 +105,13 @@ Untrusted code will try to allocate forever or loop forever. See
   consume the budget. It accumulates across feeds for the life of the session.
 - Because the in-sandbox time check only runs at interpreter checkpoints, both the pool's
   `request_timeout` and the automatic `duration_limit_grace` backstop kill the worker from
-  outside. Keep at least one of them on when running untrusted code.
+  outside. Keep at least one of them on when running untrusted code — `request_timeout`
+  defaults to no deadline in every binding, and `duration_limit_grace` only does anything
+  for a session that set `max_duration_secs`, so a default pool has neither.
 - **After a memory or time limit fires, no guarantees are made about heap state or
   reference counts.** Discard the session rather than continuing to run code in it. The
-  pool does this for you: a resource error is terminal for the session.
+  pool does not do this for you — the checkout stays usable, and a later feed may quietly
+  succeed against a corrupted heap.
 - Compilation is not charged against the memory or duration budget. It has its own
   structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally`
   expansion), but a host accepting untrusted source should still isolate compilation — as

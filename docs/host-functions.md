@@ -97,10 +97,19 @@ with Monty() as pool:
         #> x warn {'code': 7}
 ```
 
-Arguments and return values must be types Monty can represent — the same set `inputs` and
+Return values must be types Monty can represent — the same set `inputs` and
 `external_lookup` accept, listed under
 [which values cross the boundary](quickstart/python.md#which-values-cross-the-boundary).
-Anything else is rejected with `MontyConversionError` before it crosses the boundary.
+Arguments come the other way, out of the sandbox. A sandbox value with no host equivalent
+(a class, an instance, a function, a compiled `re` pattern) arrives silently as its repr
+*string* rather than raising, so a host function cannot tell it from a sandbox `str` of
+the same text.
+
+A return value Monty cannot represent does not raise `MontyConversionError`. It is
+delivered into the sandbox as `TypeError: Cannot convert X to Monty value`, which
+sandboxed code can catch; uncaught, it reaches you as `MontyRuntimeError`. The same is
+true of an `os=` callback's return value. `MontyConversionError` is for host values you
+hand over up front, in `inputs` or `external_lookup`.
 
 Values are also bounded in shape and size. Nesting is capped (roughly 48 nested lists, 32
 nested dicts, 24 nested dataclasses), and a single value on the wire is capped at 256 MiB.
@@ -140,8 +149,9 @@ cross; the type name is what carries over, not your exception class.
 ## Async host functions
 
 With `AsyncMonty`, callables in `external_lookup` may be coroutine functions. They are
-awaited off the event loop, and `asyncio.gather` inside the sandbox lets several run
-concurrently:
+awaited on your event loop, so blocking work inside one blocks it exactly as it would
+anywhere else in your async code — what `AsyncMonty` moves off the loop is worker I/O, not
+your callbacks. `asyncio.gather` inside the sandbox lets several run concurrently:
 
 ```python
 import asyncio
