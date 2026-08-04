@@ -302,11 +302,16 @@ pub(super) fn reject_overlong_path(normalized: &str, original: &str) -> Result<(
     Ok(())
 }
 
-/// Rejects segments a host parser treats as drive/UNC/root-absolute (VERIA-3):
-/// on Windows `PathBuf::join` discards the mount base for `C:\x`, `C:`, or
+/// Rejects segments a host parser treats as drive/UNC/root-absolute: on
+/// Windows `PathBuf::join` discards the mount base for `C:\x`, `C:`, or
 /// `\\host\share`, escaping before any boundary check. Runs on all hosts for
 /// consistent behavior, and must precede the `candidate_host` join.
-fn reject_drive_or_unc_segments(relative: &str, normalized_virtual_path: &str) -> Result<(), MountError> {
+///
+/// Callers that never build a host path still need this: `OverlayMemory`
+/// serves requests from memory via `overlay::relative_path`, and without the
+/// same rejection those segments become valid overlay keys, so one mode
+/// accepts a name every other mode refuses.
+pub(super) fn reject_drive_or_unc_segments(relative: &str, normalized_virtual_path: &str) -> Result<(), MountError> {
     // A backslash can only smuggle a Windows separator/UNC/root prefix; `X:` a drive.
     let has_escape_prefix = relative.contains('\\') || relative.split('/').any(is_windows_drive_prefix);
     if has_escape_prefix {

@@ -23,8 +23,8 @@ use super::{
     error::MountError,
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
-        ResolveMode, normalize_virtual_path, reject_escaping_symlink, reject_overlong_path, resolve_path,
-        strip_mount_prefix,
+        ResolveMode, normalize_virtual_path, reject_drive_or_unc_segments, reject_escaping_symlink,
+        reject_overlong_path, resolve_path, strip_mount_prefix,
     },
 };
 
@@ -34,12 +34,19 @@ use super::{
 const REAL_DESCENDANT_MEMORY_USAGE: u64 = 512;
 
 /// Resolves a virtual path to the mount-relative overlay key.
+///
+/// Overlay entries are pure in-memory keys and never reach a host path, but
+/// they are rejected on the same grounds a host path would be: a name this
+/// mode accepted and every other mode refused would be a divergence in its
+/// own right.
 fn relative_path(path: &str, ctx: &MountContext<'_>) -> Result<String, MountError> {
     let normalized = normalize_virtual_path(path);
     reject_overlong_path(&normalized, path)?;
-    strip_mount_prefix(&normalized, ctx.mount_virtual)
+    let relative = strip_mount_prefix(&normalized, ctx.mount_virtual)
         .map(str::to_owned)
-        .ok_or_else(|| MountError::NoMountPoint(path.to_owned()))
+        .ok_or_else(|| MountError::NoMountPoint(path.to_owned()))?;
+    reject_drive_or_unc_segments(&relative, &normalized)?;
+    Ok(relative)
 }
 
 /// Returns budget available for a transient result alongside retained state.

@@ -1184,3 +1184,225 @@ fn rename_symlink_escape_overlay_read_bytes() {
         }
     }
 }
+
+// =============================================================================
+// Host-absolute path segments (drive letters, UNC, backslashes)
+// =============================================================================
+//
+// On Windows `PathBuf::join` discards the base when the joined segment carries
+// a drive/UNC/root prefix, so `/mnt/C:\Windows\x` would resolve outside the
+// mount before any boundary check ran. The rejection is deliberately not
+// `cfg(windows)`: a virtual path is POSIX on every host, so a backslash is
+// never a literal filename character and `C:` is never a drive there — which
+// makes these tests meaningful on every host, not just the one that was
+// exploitable.
+
+/// Payloads whose leading segment a host parser may treat as absolute.
+///
+/// The UNC entry uses an RFC-2606 `.invalid` host so that even a build which
+/// resolved it would reach no real host — a vulnerable build must not get as
+/// far as the SMB/NTLM handshake that leaks credentials.
+const HOST_ABSOLUTE_PAYLOADS: &[&str] = &[
+    r"/mnt/C:\Windows\System32\drivers\etc\hosts",
+    r"/mnt/C:",
+    r"/mnt/C:/Windows",
+    r"/mnt/\\monty-test.invalid\share\probe",
+    r"/mnt/back\slash",
+    r"/mnt/sub/../C:\escape",
+    r"/mnt/sub/nested\..\..\escape",
+];
+
+/// Asserts the request is refused before any host access.
+///
+/// `PathEscape` is the expected refusal. `ReadOnly` is also accepted because
+/// on a read-only mount the mode check runs ahead of path parsing, which still
+/// refuses before touching the host. `Io` is deliberately *not* accepted: it
+/// would mean the layer performed the escaping I/O and only then failed — for
+/// the UNC payload, that is the outbound handshake itself.
+#[track_caller]
+fn assert_refused_before_io(mt: &mut MountTable, op: PathOp, path: &str, mode_name: &str) {
+    let result = match op {
+        PathOp::Mkdir => call_mkdir(mt, path, true, false),
+        PathOp::WriteText | PathOp::WriteBytes => {
+            let p = MontyPath::new(path.to_owned());
+            dispatch(
+                mt,
+                match op {
+                    PathOp::WriteText => OsFunctionCall::WriteText(PathStringDataArgs {
+                        path: p,
+                        data: "attack".to_owned(),
+                    }),
+                    _ => OsFunctionCall::WriteBytes(PathBytesDataArgs {
+                        path: p,
+                        data: b"attack".to_vec(),
+                    }),
+                },
+            )
+        }
+        _ => call(mt, op, path),
+    };
+    match result {
+        Some(Err(MountError::PathEscape { .. } | MountError::ReadOnly(_))) => {}
+        other => panic!("[{mode_name}] expected refusal for {op:?} on {path}, got {other:?}"),
+    }
+}
+
+#[test]
+fn host_absolute_segment_rejected_in_all_modes() {
+    for payload in HOST_ABSOLUTE_PAYLOADS {
+        for (mode_name, mode) in all_modes() {
+            let dir = create_test_dir();
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_refused_before_io(&mut mt, PathOp::Exists, payload, mode_name);
+        }
+    }
+}
+
+/// Every operation must refuse, not just the one the reporter happened to try.
+#[test]
+fn host_absolute_segment_rejected_for_every_operation() {
+    let ops = [
+        PathOp::Exists,
+        PathOp::IsFile,
+        PathOp::IsDir,
+        PathOp::IsSymlink,
+        PathOp::ReadText,
+        PathOp::ReadBytes,
+        PathOp::Stat,
+        PathOp::Iterdir,
+        PathOp::Unlink,
+        PathOp::Mkdir,
+        PathOp::WriteText,
+        PathOp::WriteBytes,
+    ];
+    for op in ops {
+        for (mode_name, mode) in all_modes() {
+            let dir = create_test_dir();
+            let mut mt = mount_at_mnt(&dir, mode);
+            assert_refused_before_io(&mut mt, op, r"/mnt/C:\Windows\x", mode_name);
+        }
+    }
+}
+
+/// The write vector from the original report: `mkdir(parents=True)` with a
+/// drive-prefixed segment must be refused outright in every mode.
+#[test]
+fn host_absolute_mkdir_parents_is_rejected() {
+    for (mode_name, mode) in all_modes() {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+        assert_refused_before_io(&mut mt, PathOp::Mkdir, r"/mnt/C:\Temp\pwned", mode_name);
+    }
+}
+
+/// A POSIX-absolute-looking segment is *not* rejected — it has no host meaning
+/// on either platform, so it is confined as an ordinary nested path inside the
+/// mount. Verifies the confinement rather than assuming it.
+#[test]
+fn posix_absolute_segment_is_confined_inside_the_mount() {
+    let outside = TempDir::new().unwrap();
+    let target = outside.path().join("pwned");
+    assert!(!target.exists(), "precondition: target must not pre-exist");
+    let payload = format!("/mnt/{}", target.to_str().expect("temp path is UTF-8"));
+
+    let dir = create_test_dir();
+    let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+    let result = call_mkdir(&mut mt, &payload, true, false);
+
+    assert!(
+        !target.exists(),
+        "SANDBOX ESCAPE: mkdir created {} outside the mount",
+        target.display()
+    );
+    // Whatever it did, it stayed under the mount root.
+    if matches!(result, Some(Ok(_))) {
+        let nested = dir.path().join(target.strip_prefix("/").unwrap_or(&target));
+        assert!(
+            nested.exists(),
+            "expected the path to be created inside the mount, at {}",
+            nested.display()
+        );
+    }
+}
+
+/// The existence-oracle vector: a missing out-of-mount path and an existing one
+/// must be indistinguishable, or `exists` leaks host filesystem layout.
+#[test]
+fn host_absolute_exists_is_not_an_oracle() {
+    let outside = TempDir::new().unwrap();
+    let present = outside.path().join("present.txt");
+    fs::write(&present, "x").unwrap();
+    let absent = outside.path().join("absent.txt");
+
+    for (mode_name, mode) in all_modes() {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, mode);
+        let outcomes: Vec<String> = [&present, &absent]
+            .iter()
+            .map(|p| {
+                // Drive-prefixed on Windows, plain nested on Unix; either way the
+                // two must be indistinguishable from inside the sandbox.
+                let payload = format!("/mnt/{}", p.to_str().expect("temp path is UTF-8"));
+                format!("{:?}", call(&mut mt, PathOp::Exists, &payload))
+            })
+            .collect();
+        assert_eq!(
+            outcomes[0], outcomes[1],
+            "[{mode_name}] existence oracle: present and absent out-of-mount paths differ"
+        );
+    }
+}
+
+/// `OverlayMemory` serves reads from memory without ever building a host path,
+/// so it bypassed the check until it was applied to the overlay key too. A
+/// rejected segment must not become a writable in-memory key.
+#[test]
+fn host_absolute_segment_is_not_an_overlay_key() {
+    for payload in HOST_ABSOLUTE_PAYLOADS {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, MountMode::OverlayMemory(OverlayState::new()));
+        assert_refused_before_io(&mut mt, PathOp::WriteText, payload, "OverlayMemory");
+        assert_refused_before_io(&mut mt, PathOp::Exists, payload, "OverlayMemory");
+        assert_refused_before_io(&mut mt, PathOp::ReadText, payload, "OverlayMemory");
+    }
+}
+
+/// Names containing a colon that is not a drive prefix must still work, so the
+/// check does not over-reject beyond the documented divergence.
+#[test]
+fn colon_names_that_are_not_drive_prefixes_still_work() {
+    for name in ["note:2026.txt", "::double.txt", "ab:cd.txt", "log:12:30.txt"] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        let path = format!("/mnt/{name}");
+        let wrote = dispatch(
+            &mut mt,
+            OsFunctionCall::WriteText(PathStringDataArgs {
+                path: MontyPath::new(path.clone()),
+                data: "ok".to_owned(),
+            }),
+        );
+        assert!(
+            matches!(wrote, Some(Ok(_))),
+            "writing {name} should succeed, got {wrote:?}"
+        );
+        let read = call(&mut mt, PathOp::ReadText, &path);
+        assert!(
+            matches!(read, Some(Ok(MontyObject::String(ref s))) if s == "ok"),
+            "reading {name} should round-trip, got {read:?}"
+        );
+    }
+}
+
+/// Single-letter-plus-colon names are refused on every host, including Unix
+/// where they are legal filenames CPython would accept. Windows parses `a:b`
+/// as drive-relative, so the rejection has to be uniform; this pins the
+/// divergence so it cannot change silently.
+#[test]
+fn single_letter_colon_names_are_refused_on_all_hosts() {
+    for name in ["a:b.txt", "C:.txt", "z:"] {
+        let dir = create_test_dir();
+        let mut mt = mount_at_mnt(&dir, MountMode::ReadWrite);
+        assert_refused_before_io(&mut mt, PathOp::WriteText, &format!("/mnt/{name}"), "ReadWrite");
+    }
+}
