@@ -1428,6 +1428,11 @@ fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Ve
 
 /// Splits bytes by a separator sequence, returning at most n parts.
 fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize, heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
+    // `maxsplit=0` (`n == 1`) permits no splits, so return before `finder_for`
+    // preprocesses the separator — that runs ahead of any `check_time()`.
+    if n <= 1 {
+        return Ok(vec![bytes]);
+    }
     let Some(finder) = finder_for(sep, bytes) else {
         return Ok(vec![bytes]);
     };
@@ -1456,6 +1461,11 @@ fn bytes_rsplitn_by_seq<'a>(
     n: usize,
     heap: &Heap,
 ) -> Result<Vec<&'a [u8]>, ResourceError> {
+    // `maxsplit=0` (`n == 1`) permits no splits, so return before `rfinder_for`
+    // preprocesses the separator — that runs ahead of any `check_time()`.
+    if n <= 1 {
+        return Ok(vec![bytes]);
+    }
     let Some(finder) = rfinder_for(sep, bytes) else {
         return Ok(vec![bytes]);
     };
@@ -1781,6 +1791,11 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
 /// Checks the time limit periodically to enforce `max_duration` during
 /// potentially long replacement operations on large byte sequences.
 fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) -> Result<Vec<u8>, ResourceError> {
+    // `count=0` permits no replacements, so return before `finder_for`
+    // preprocesses `old` — that runs ahead of any `check_time()`.
+    if n == 0 {
+        return Ok(bytes.to_vec());
+    }
     if old.is_empty() {
         // Empty pattern: insert new before each byte (up to n times)
         let mut result = Vec::new();
