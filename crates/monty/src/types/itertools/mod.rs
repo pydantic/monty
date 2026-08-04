@@ -38,11 +38,14 @@ use serde::{Deserialize, Serialize};
 pub(crate) use starmap::StarMap;
 pub(crate) use takewhile::TakeWhile;
 
+// Only the 64-bit size budget below needs it.
+#[cfg(target_pointer_width = "64")]
+use crate::types::Dict;
 use crate::{
     bytecode::VM,
     exception_private::RunResult,
     heap::{HeapId, HeapItem, HeapRead},
-    types::{Dict, LazyHeapSet, PyTrait, Type},
+    types::{LazyHeapSet, PyTrait, Type},
     value::Value,
 };
 
@@ -67,10 +70,13 @@ pub(crate) enum ItertoolsIter {
     StarMap(StarMap),
 }
 
-// `Dict` is the widest `HeapData` payload, so it — not a literal — is the
-// budget: staying under it keeps this family from setting `HeapData`'s size.
+// `Dict` is the widest `HeapData` payload on 64-bit hosts, so it — not a
+// literal — is the budget: staying under it keeps this family from setting
+// `HeapData`'s size. Only there: on 32-bit (the wasm worker) `Dict` halves
+// while the adaptors' `i64` fields do not, and other variants set the size.
 // TODO: when this fails, box the offending variant (`GroupBy(Box<GroupBy>)`),
 // not the enum and not at the `HeapData` boundary.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(mem::size_of::<ItertoolsIter>() <= mem::size_of::<Dict>());
 
 /// Which adaptor an [`ItertoolsIter`] is, without borrowing it.
