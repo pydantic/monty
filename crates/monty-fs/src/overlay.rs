@@ -24,7 +24,7 @@ use super::{
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
         ResolveMode, normalize_virtual_path, reject_drive_or_unc_segments, reject_escaping_symlink,
-        reject_overlong_path, resolve_path, strip_mount_prefix,
+        reject_overlong_path, resolve_path, revalidate_cached_host_path, strip_mount_prefix,
     },
 };
 
@@ -279,7 +279,8 @@ fn read_text(
             Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_text_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+            let host_path = revalidate_cached_host_path(&file_ref.host_path, ctx.mount_host, vpath)?;
+            read_text_fs(&host_path, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -305,7 +306,8 @@ fn read_bytes(
             Ok(MontyObject::Bytes(file.content.clone()))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_bytes_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+            let host_path = revalidate_cached_host_path(&file_ref.host_path, ctx.mount_host, vpath)?;
+            read_bytes_fs(&host_path, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -450,7 +452,10 @@ fn existing_file_len(
     match state.get(relative) {
         Some(OverlayEntry::File(file)) => Ok(file.content.len()),
         Some(OverlayEntry::Deleted) => Ok(0),
-        Some(OverlayEntry::RealFileRef(file_ref)) => file_len(&file_ref.host_path, vpath),
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            let host_path = revalidate_cached_host_path(&file_ref.host_path, ctx.mount_host, vpath)?;
+            file_len(&host_path, vpath)
+        }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
@@ -486,10 +491,13 @@ fn existing_file_bytes(
             Ok(file.content.clone())
         }
         Some(OverlayEntry::Deleted) => Ok(Vec::new()),
-        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, vpath, budget)? {
-            MontyObject::Bytes(bytes) => Ok(bytes),
-            _ => unreachable!("read_bytes_fs should return bytes"),
-        },
+        Some(OverlayEntry::RealFileRef(file_ref)) => {
+            let host_path = revalidate_cached_host_path(&file_ref.host_path, ctx.mount_host, vpath)?;
+            match read_bytes_fs(&host_path, vpath, budget)? {
+                MontyObject::Bytes(bytes) => Ok(bytes),
+                _ => unreachable!("read_bytes_fs should return bytes"),
+            }
+        }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }

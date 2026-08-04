@@ -443,6 +443,25 @@ pub(super) fn reject_escaping_symlink(
     check_boundary(&canonical, &canonical_mount, virtual_path)
 }
 
+/// Re-validates a cached overlay host path against the mount boundary,
+/// returning the canonical path to read from.
+///
+/// `RealFileRef` caches a path validated once at rename time, so a host-side
+/// process sharing the mount can re-point it before the read. Read the
+/// returned path, not the cached one, so the check and the open cannot
+/// disagree about which file they mean.
+pub(super) fn revalidate_cached_host_path(
+    host_path: &Path,
+    mount_host_path: &Path,
+    virtual_path: &str,
+) -> Result<PathBuf, MountError> {
+    let canonical = fs::canonicalize(host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+    let canonical_mount = fs::canonicalize(mount_host_path).map_err(|e| MountError::Io(e, virtual_path.to_owned()))?;
+
+    check_boundary(&canonical, &canonical_mount, virtual_path)?;
+    Ok(canonical)
+}
+
 /// Ensures a host path stays within the mount boundary, component-wise.
 ///
 /// Applied to canonicalized paths as the authoritative check, and to lexically

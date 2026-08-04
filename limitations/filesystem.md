@@ -78,6 +78,11 @@ The host enforces these invariants on every path operation:
   Unix — `a\b.txt`, `a:b.txt` — are refused there too, since Windows would
   read them as drive-relative. Colons elsewhere are fine (`note:2026.txt`).
 - Symlinks pointing outside the mount are rejected on resolution.
+- `OverlayMemory` renames of real files keep a reference to the backing host
+  path rather than copying it. That path is re-checked against the mount on
+  every read, so if a host-side process replaces it with a symlink out of the
+  mount after the rename, the read raises `PermissionError` — where CPython
+  would follow the new symlink and return its contents.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
   virtual paths, never host paths.
