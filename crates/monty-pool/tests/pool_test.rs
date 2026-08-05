@@ -1263,41 +1263,6 @@ async fn workers_are_recycled_after_max_checkouts() {
 }
 
 #[tokio::test]
-async fn configured_logfire_pool_round_trips() {
-    let mut config = config();
-    let logfire = logfire::configure()
-        .local()
-        .send_to_logfire(false)
-        .with_console(None)
-        .finish()
-        .unwrap();
-    config.logfire = Some(logfire.clone());
-    // recycle after every checkout, so a replacement worker's recorder runs too
-    config.max_checkouts_per_worker = Some(1);
-    let pool = Pool::new(config).await.unwrap();
-
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let event = session
-        .feed("1 + 2", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::Int(3));
-    session.finish().await.unwrap();
-
-    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
-    let event = session
-        .feed("2 + 2", vec![], vec![], false, &mut no_print)
-        .await
-        .unwrap();
-    assert_eq!(expect_complete(event), MontyObject::Int(4));
-    session.finish().await.unwrap();
-
-    pool.close().await;
-    // The application which configured the SDK also owns its shutdown.
-    let _ = logfire.shutdown();
-}
-
-#[tokio::test]
 async fn concurrent_checkouts_run_in_parallel() {
     let mut config = config();
     config.min_processes = 2;

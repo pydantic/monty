@@ -16,7 +16,16 @@ repository = { workspace = true }
 name = "monty_pool"
 
 [features]
-telemetry-adapter = ["dep:opentelemetry_sdk"]
+telemetry-adapter = [
+    "dep:logfire",
+    "dep:num-traits",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tracing",
+    "dep:tracing-opentelemetry",
+]
 
 [dependencies]
 monty-types = { workspace = true }
@@ -36,16 +45,16 @@ futures-util = { workspace = true }
 # before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
 rustls = { workspace = true }
 # Span construction only; applications choose and configure exporter features.
-logfire = { version = "0.11", default-features = false }
+logfire = { version = "0.11", default-features = false, optional = true }
 # telemetry_json's logfire-style value encoding
-num-traits = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+num-traits = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 # Typed values used when recording attributes; version must match logfire's.
-opentelemetry = "0.32"
+opentelemetry = { version = "0.32", optional = true }
 # Span construction and eager OTel context creation; versions must match Logfire.
-tracing = "0.1"
-tracing-opentelemetry = "0.33"
+tracing = { version = "0.1", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
 # Host-neutral processors used by Python, Node, and third-party adapters.
 opentelemetry_sdk = { version = "0.32", optional = true }
 

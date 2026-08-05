@@ -6,25 +6,22 @@
 //! span held across suspensions, and each suspension is a child span the
 //! answering `Resume*` closes — its duration is the host round-trip.
 //!
-//! Logfire runs in *local* mode, leaving the host's own tracing/OTel setup
-//! alone, so every recording call must scope the pool's logfire in via
-//! [`set_local_logfire`] and spans are parented explicitly rather than
-//! entered — a checkout's turns can run on different threads, so an
-//! entered-span stack would be wrong and make [`crate::Checkout`] `!Send`.
+//! The adapter installs the pipeline used by the Logfire macros. Spans are
+//! parented explicitly rather than entered: a checkout's turns can run on
+//! different threads, so an entered-span stack would be wrong and make
+//! [`crate::Checkout`] `!Send`.
 
-use std::sync::Arc;
-
-use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
 use monty_types::{MontyObject, bytes_repr};
 use opentelemetry::Value as OtelValue;
 use tracing::{Span, field::Empty};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-#[cfg(feature = "telemetry-adapter")]
-use crate::telemetry_adapter::TelemetryContext;
-use crate::telemetry_json::{
-    nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped,
+use crate::{
+    telemetry_adapter::TelemetryContext,
+    telemetry_json::{
+        nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped,
+    },
 };
 
 /// Starts the OTel span eagerly without entering it or fixing its end time.
@@ -36,14 +33,9 @@ fn start_span(span: Span) -> Span {
 /// Records one worker's protocol turns to the pool's logfire.
 ///
 /// Lives on the [`crate::worker::Worker`], which sees every request and event.
-/// A recorder with neither a pool SDK nor checkout adapter is a no-op that skips
-/// rendering values, so the worker is written the same way either way. Spans close
-/// by being dropped, so a worker that dies mid-turn still closes its own.
+/// A recorder exists only while a worker serves an adapter checkout. Spans
+/// close by being dropped, so a worker that dies mid-turn still closes its own.
 pub(crate) struct Recorder {
-    /// Pool-level SDK used when no checkout adapter overrides it. Behind an [`Arc`] because
-    /// [`Logfire`] is ~2 KiB and this lives on every [`crate::worker::Worker`],
-    /// which is moved on each checkout and release.
-    logfire: Option<Arc<Logfire>>,
     /// OS pid of the worker, recorded on its session spans (`None` for a
     /// remote WebSocket worker).
     worker_pid: Option<u32>,
@@ -63,66 +55,35 @@ pub(crate) struct Recorder {
     /// the feed suspended and resumable, so it closes only the dump span.
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
-    #[cfg(feature = "telemetry-adapter")]
     adapter_context: Option<TelemetryContext>,
-    /// Whether this checkout records through the one-shot global adapter.
-    #[cfg(feature = "telemetry-adapter")]
-    adapter_active: bool,
 }
 
 impl Recorder {
-    /// A recorder for one worker; `logfire = None` records only adapter checkouts.
-    pub(crate) const fn new(logfire: Option<Arc<Logfire>>, worker_pid: Option<u32>) -> Self {
+    /// Creates a recorder for one worker's adapter checkout.
+    pub(crate) const fn new(worker_pid: Option<u32>) -> Self {
         Self {
-            logfire,
             worker_pid,
             turn: None,
             pending: None,
             feed: None,
             session: None,
             dump_turn: false,
-            #[cfg(feature = "telemetry-adapter")]
             adapter_context: None,
-            #[cfg(feature = "telemetry-adapter")]
-            adapter_active: false,
         }
     }
 
     /// Assigns the one-shot host context before checkout sends `Configure`.
-    #[cfg(feature = "telemetry-adapter")]
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
         self.adapter_context = Some(context);
-    }
-
-    /// Whether this checkout uses the process-global adapter pipeline.
-    fn uses_global_adapter(&self) -> bool {
-        #[cfg(feature = "telemetry-adapter")]
-        {
-            self.adapter_active
-        }
-        #[cfg(not(feature = "telemetry-adapter"))]
-        {
-            false
-        }
     }
 
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
-        #[cfg(feature = "telemetry-adapter")]
         let adapter_parent = if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))) {
-            self.adapter_context.take().and_then(|context| {
-                self.adapter_active = true;
-                context.into_parent()
-            })
+            self.adapter_context.take().and_then(TelemetryContext::into_parent)
         } else {
             None
-        };
-        let _guard = if self.uses_global_adapter() {
-            None
-        } else {
-            let Some(logfire) = &self.logfire else { return };
-            Some(set_local_logfire(logfire.as_ref().clone()))
         };
         // a turn span whose ending event never arrived (worker died mid-turn,
         // undecodable reply) closes here rather than leaking open
@@ -150,15 +111,12 @@ impl Recorder {
                     // recorded as its debug string
                     worker_pid = self.worker_pid.map(i64::from),
                 );
-                #[cfg(feature = "telemetry-adapter")]
                 let span = {
                     if let Some(parent) = adapter_parent {
                         let _ = span.set_parent(parent);
                     }
                     start_span(span)
                 };
-                #[cfg(not(feature = "telemetry-adapter"))]
-                let span = start_span(span);
                 self.session = Some(span);
             }
             Some(pb::parent_request::Kind::Load(l)) => {
@@ -178,10 +136,6 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 self.session = None;
-                #[cfg(feature = "telemetry-adapter")]
-                {
-                    self.adapter_active = false;
-                }
             }
             Some(pb::parent_request::Kind::InstallDependencies(d)) => {
                 self.turn = Some(start_span(logfire::span!(
@@ -253,10 +207,6 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 self.session = None;
-                #[cfg(feature = "telemetry-adapter")]
-                {
-                    self.adapter_active = false;
-                }
             }
             // `checkout::request` always sets a kind
             None => {}
@@ -266,12 +216,6 @@ impl Recorder {
     /// Records one event from the worker: suspension events open the pending
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
-        let _guard = if self.uses_global_adapter() {
-            None
-        } else {
-            let Some(logfire) = &self.logfire else { return };
-            Some(set_local_logfire(logfire.as_ref().clone()))
-        };
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;
@@ -887,9 +831,7 @@ fn print_stream(stream: i32) -> &'static str {
 // recording is a side effect of the worker, not part of the pool's public API
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use logfire::{Logfire, config::AdvancedOptions};
+    use logfire::{Logfire, config::AdvancedOptions, set_local_logfire};
     use monty_proto::{WireFunctionCall, pb, pb::os_call::Call};
     use monty_types::MontyObject;
     use opentelemetry::{logs::AnyValue, trace::SpanId};
@@ -936,7 +878,8 @@ mod tests {
     #[test]
     fn one_feed_produces_a_nested_span_tree() {
         let (logfire, spans, logs) = test_logfire();
-        let mut recorder = Recorder::new(Some(Arc::new(logfire)), Some(4321));
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(Some(4321));
 
         recorder.begin_turn(&request(pb::parent_request::Kind::Configure(pb::Configure {
             script_name: "main.py".to_owned(),
@@ -1003,7 +946,8 @@ mod tests {
     #[test]
     fn suspension_answers_land_on_their_span() {
         let (logfire, spans, _logs) = test_logfire();
-        let mut recorder = Recorder::new(Some(Arc::new(logfire)), None);
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
         let long = "x".repeat(ATTR_SIZE_LIMIT * 2);
 
         recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
@@ -1053,7 +997,8 @@ mod tests {
     #[test]
     fn housekeeping_turns_report_on_their_span() {
         let (logfire, spans, logs) = test_logfire();
-        let mut recorder = Recorder::new(Some(Arc::new(logfire)), None);
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
 
         recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![0; 8] })));
         recorder.event(&pb::ChildEvent {
@@ -1089,7 +1034,8 @@ mod tests {
     #[test]
     fn completion_without_a_feed_span_is_recorded() {
         let (logfire, _spans, logs) = test_logfire();
-        let mut recorder = Recorder::new(Some(Arc::new(logfire)), None);
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
         recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
             value: Some(MontyObject::Int(7).into()),
         })));
@@ -1140,7 +1086,8 @@ mod tests {
     #[test]
     fn oversize_error_payload_is_capped() {
         let (logfire, _spans, logs) = test_logfire();
-        let mut recorder = Recorder::new(Some(Arc::new(logfire)), None);
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
         recorder.event(&event(pb::child_event::Kind::Error(pb::Error {
             exception: Some(pb::RaisedException {
                 exc_type: "UnicodeDecodeError".to_owned(),
@@ -1171,19 +1118,5 @@ mod tests {
         };
         assert_eq!(encoding.as_str().len(), ATTR_SIZE_LIMIT);
         assert_eq!(attr("length_limit_exceeded"), Some(AnyValue::Boolean(true)));
-    }
-
-    /// A disabled recorder (pool without a token) records nothing and holds
-    /// no spans, whatever passes through it.
-    #[test]
-    fn disabled_recorder_is_inert() {
-        let mut recorder = Recorder::new(None, None);
-        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
-            code: "1".to_owned(),
-            inputs: vec![],
-            skip_type_check: false,
-        })));
-        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete { value: None })));
-        assert!(recorder.session.is_none() && recorder.feed.is_none() && recorder.pending.is_none());
     }
 }

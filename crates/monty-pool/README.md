@@ -86,14 +86,13 @@ session remain alive and usable.
 
 ## Observability
 
-Supplying a configured [Logfire](https://pydantic.dev/logfire) SDK through
-`PoolConfig::logfire` records every session the pool serves. `monty-pool` is an
-instrumentation library: it never selects an exporter, reads credentials or environment
-variables, or shuts the SDK down. The application that configures Logfire owns those choices
-and its final flush/shutdown.
+The optional `telemetry-adapter` feature records semantic execution for language bindings
+and other hosts. `monty-pool` never selects an exporter, reads credentials or environment
+variables, or shuts an exporter down; the host SDK owns those choices and its final
+flush/shutdown.
 
 Recording happens in the host process, which builds every request and decodes every event
-anyway, so both transports are covered and the workers stay uninstrumented. Each checkout
+anyway, so both transports are covered and the workers stay uninstrumented. Each instrumented checkout
 becomes one session span; each feed is a nested span held across suspension round-trips, with
 a child span per suspension whose duration is the host round-trip. Fed code, inputs, call
 arguments and results, exceptions and `print` output are recorded in full — values encoded
@@ -101,15 +100,11 @@ the way the Python logfire SDK encodes attributes, capped at 64KB per value — 
 `Load`/`Dump` snapshot blobs are recorded by size only. Supplying an SDK is therefore an
 explicit opt-in to recording potentially sensitive values.
 
-The optional `telemetry-adapter` feature provides host-neutral processors for language
-bindings. It configures an exporter-free SDK and returns a handle that couples each checkout's
-serialized parent context to that exact pipeline. Records are emitted through
+The adapter configures an exporter-free process-global Rust pipeline and returns a handle
+that creates each checkout's serialized parent context. Records are emitted through
 `TelemetryAdapter`; Python, Node, and third-party bindings retain ownership of their native
-SDK and exporter.
-
-Applications can pass either their process-level SDK or a `.local()` Logfire instance. The
-latter leaves existing process-global `tracing`/OTel setup untouched and allows independent
-pools to coexist. `RUST_LOG` filters what is recorded; everything here is emitted at INFO.
+SDK and exporter. Without the feature, workers contain no telemetry recorder or telemetry
+hot path.
 
 ## Transports
 

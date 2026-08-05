@@ -8,7 +8,6 @@ use std::{
 };
 
 use futures_util::future::join_all;
-use logfire::Logfire;
 use monty_proto::pb;
 use tokio::{
     sync::Notify,
@@ -47,8 +46,6 @@ pub(crate) struct PoolInner {
     /// Signalled whenever a worker returns to the idle queue or capacity is
     /// released, waking blocked `checkout` calls.
     available: Notify,
-    /// The application's Logfire SDK, shared with every worker recorder.
-    logfire: Option<Arc<Logfire>>,
 }
 
 struct PoolState {
@@ -68,13 +65,12 @@ impl Pool {
                 config.min_processes, config.max_processes
             )));
         }
-        let logfire = config.logfire.clone().map(Arc::new);
         // Only the subprocess transport pre-warms workers; WebSocket connections
         // are made per-checkout (its `min_processes` is 0).
         let mut idle = Vec::with_capacity(config.min_processes);
         if !config.transport.is_websocket() {
             for _ in 0..config.min_processes {
-                idle.push(Worker::new(&config, logfire.as_ref()).await?);
+                idle.push(Worker::new(&config).await?);
             }
         }
         let total = idle.len();
@@ -83,7 +79,6 @@ impl Pool {
                 config,
                 state: Mutex::new(PoolState { idle, total }),
                 available: Notify::new(),
-                logfire,
             }),
         })
     }
@@ -207,7 +202,7 @@ impl PoolInner {
                 // guard the reserved slot: a failed — or cancelled, for the
                 // WebSocket dial — spawn must release it or the pool shrinks
                 let capacity = CapacityGuard::new(self);
-                let worker = Worker::new(&self.config, self.logfire.as_ref()).await?;
+                let worker = Worker::new(&self.config).await?;
                 capacity.disarm();
                 return Ok(worker);
             }

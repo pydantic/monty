@@ -2,15 +2,16 @@
 
 mod checkout;
 mod pool;
+#[cfg(feature = "telemetry-adapter")]
 mod telemetry;
 #[cfg(feature = "telemetry-adapter")]
 pub mod telemetry_adapter;
+#[cfg(feature = "telemetry-adapter")]
 mod telemetry_json;
 mod worker;
 
 use std::{borrow::Cow, error, fmt, io, num::NonZero, path::PathBuf, process::ExitStatus, thread, time::Duration};
 
-use logfire::Logfire;
 pub use monty_proto::{MAX_VALUE_DEPTH, exceeds_max_value_depth};
 use monty_types::MontyException;
 
@@ -46,10 +47,7 @@ impl MontyTransport {
 }
 
 /// Configuration for a [`Pool`].
-///
-/// Telemetry is disabled unless the application supplies a configured
-/// [`Logfire`] SDK. The application retains ownership of exporter shutdown.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// Workers spawned eagerly at pool creation and kept warm. Forced to 0 for
     /// the [`MontyTransport::Websocket`] transport (connections are made
@@ -80,26 +78,6 @@ pub struct PoolConfig {
     /// Recycle (kill and respawn) a worker after this many checkouts, to
     /// bound the impact of any slow leak in a long-lived child.
     pub max_checkouts_per_worker: Option<u32>,
-    /// Configured Logfire SDK used to record sessions from the host process.
-    ///
-    /// The pool never configures or shuts down this SDK. Applications may use
-    /// a local instance to avoid changing process-global tracing/OTel state.
-    pub logfire: Option<Logfire>,
-}
-
-impl fmt::Debug for PoolConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PoolConfig")
-            .field("min_processes", &self.min_processes)
-            .field("max_processes", &self.max_processes)
-            .field("transport", &self.transport)
-            .field("checkout_timeout", &self.checkout_timeout)
-            .field("request_timeout", &self.request_timeout)
-            .field("duration_limit_grace", &self.duration_limit_grace)
-            .field("max_checkouts_per_worker", &self.max_checkouts_per_worker)
-            .field("logfire", &self.logfire.as_ref().map(|_| "<configured>"))
-            .finish()
-    }
 }
 
 impl PoolConfig {
@@ -128,7 +106,6 @@ impl PoolConfig {
             request_timeout: None,
             duration_limit_grace: Some(Duration::from_secs(1)),
             max_checkouts_per_worker: None,
-            logfire: None,
         }
     }
 }

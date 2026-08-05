@@ -17,12 +17,11 @@ use std::{
     env,
     path::PathBuf,
     process::{ExitStatus, Stdio},
-    sync::{Arc, Once},
+    sync::Once,
     time::Duration,
 };
 
 use futures_util::{SinkExt, StreamExt};
-use logfire::Logfire;
 use monty_proto::{FrameError, MAX_FRAME_LEN, decode_frame, encode_framed_into, encode_to_capped_vec, pb};
 use rustls::crypto::aws_lc_rs::default_provider;
 use tokio::{
@@ -38,9 +37,9 @@ use tokio_tungstenite::{
     tungstenite::{Error as WsError, Message, protocol::WebSocketConfig},
 };
 
+use crate::{MontyTransport, PoolConfig, PoolError};
 #[cfg(feature = "telemetry-adapter")]
-use crate::telemetry_adapter::TelemetryContext;
-use crate::{MontyTransport, PoolConfig, PoolError, telemetry::Recorder};
+use crate::{telemetry::Recorder, telemetry_adapter::TelemetryContext};
 
 /// The async WebSocket stream type for a remote worker.
 type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -52,11 +51,9 @@ pub(crate) struct Worker {
     kind: WorkerKind,
     /// Checkouts this worker has served, for `max_checkouts_per_worker`.
     pub(crate) checkouts_served: u32,
-    /// Records this worker's protocol turns to the pool's Logfire SDK (a no-op
-    /// when the application supplied none). It lives here because the worker
-    /// sees the whole conversation, whichever checkout drives it — boxed to
-    /// keep a `Worker` pointer-sized, since checkout and release move it.
-    recorder: Box<Recorder>,
+    /// Records an adapter checkout's protocol turns, created only while needed.
+    #[cfg(feature = "telemetry-adapter")]
+    recorder: Option<Box<Recorder>>,
 }
 
 /// The two transports a worker can speak the protocol over. Both variants are
@@ -87,15 +84,14 @@ struct WebSocketWorker {
 }
 
 impl Worker {
-    /// Creates a worker for `config`'s transport, recording its turns to the
-    /// pool's `logfire` when telemetry is on.
-    pub(crate) async fn new(config: &PoolConfig, logfire: Option<&Arc<Logfire>>) -> Result<Self, PoolError> {
+    /// Creates a worker for `config`'s transport.
+    pub(crate) async fn new(config: &PoolConfig) -> Result<Self, PoolError> {
         match &config.transport {
-            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path, logfire),
+            MontyTransport::Subprocess(binary_path) => Self::subprocess(binary_path),
             // Bound the dial by `request_timeout` (see `websocket`); a missing
             // one falls back to a generous fixed budget.
             MontyTransport::Websocket(url) => {
-                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT), logfire).await
+                Self::websocket(url, config.request_timeout.unwrap_or(DEFAULT_DIAL_TIMEOUT)).await
             }
         }
     }
@@ -105,7 +101,7 @@ impl Worker {
     /// There is no spawn-time handshake: a wrong or broken binary surfaces as
     /// an error on the first request the worker serves (typically the
     /// `Configure` of its first checkout).
-    fn subprocess(binary_path: &PathBuf, logfire: Option<&Arc<Logfire>>) -> Result<Self, PoolError> {
+    fn subprocess(binary_path: &PathBuf) -> Result<Self, PoolError> {
         let mut command = Command::new(binary_path);
         command
             .arg("subprocess")
@@ -130,7 +126,6 @@ impl Worker {
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        let recorder = Box::new(Recorder::new(logfire.cloned(), child.id()));
         Ok(Self {
             kind: WorkerKind::Subprocess(Box::new(SubprocessWorker {
                 child,
@@ -139,7 +134,8 @@ impl Worker {
                 send_buf: Vec::with_capacity(SEND_BUF_CAPACITY),
             })),
             checkouts_served: 0,
-            recorder,
+            #[cfg(feature = "telemetry-adapter")]
+            recorder: None,
         })
     }
 
@@ -151,7 +147,7 @@ impl Worker {
     /// hung dial would otherwise stall the checkout forever. Frame/message
     /// limits are raised to monty's [`MAX_FRAME_LEN`] so the transport never
     /// rejects a frame the protocol itself would accept.
-    async fn websocket(url: &str, dial_timeout: Duration, logfire: Option<&Arc<Logfire>>) -> Result<Self, PoolError> {
+    async fn websocket(url: &str, dial_timeout: Duration) -> Result<Self, PoolError> {
         install_crypto_provider();
         let ws_config = WebSocketConfig::default()
             .max_frame_size(Some(MAX_FRAME_LEN as usize))
@@ -164,8 +160,8 @@ impl Worker {
         Ok(Self {
             kind: WorkerKind::WebSocket(Box::new(WebSocketWorker { stream: Some(stream) })),
             checkouts_served: 0,
-            // remote worker: there is no local pid to record
-            recorder: Box::new(Recorder::new(logfire.cloned(), None)),
+            #[cfg(feature = "telemetry-adapter")]
+            recorder: None,
         })
     }
 
@@ -200,8 +196,17 @@ impl Worker {
         };
         // record only requests that hit the wire: a rejected oversize frame
         // leaves the turn (and any pending suspension) exactly where it was
+        #[cfg(feature = "telemetry-adapter")]
         if result.is_ok() {
-            self.recorder.begin_turn(request);
+            if let Some(recorder) = &mut self.recorder {
+                recorder.begin_turn(request);
+            }
+            if matches!(
+                request.kind,
+                Some(pb::parent_request::Kind::Reset(_) | pb::parent_request::Kind::Shutdown(_))
+            ) {
+                self.recorder = None;
+            }
         }
         result
     }
@@ -209,7 +214,10 @@ impl Worker {
     /// Assigns propagated host context before this worker starts a checkout.
     #[cfg(feature = "telemetry-adapter")]
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
-        self.recorder.set_adapter_context(context);
+        let worker_pid = self.pid();
+        self.recorder
+            .get_or_insert_with(|| Box::new(Recorder::new(worker_pid)))
+            .set_adapter_context(context);
     }
 
     /// Receives one event. EOF/close is an error here because within a
@@ -250,7 +258,10 @@ impl Worker {
         }?;
         // only after a complete decode, so a `recv` future dropped mid-frame
         // (deadline race) records nothing — cancel-safety intact
-        self.recorder.event(&event);
+        #[cfg(feature = "telemetry-adapter")]
+        if let Some(recorder) = &mut self.recorder {
+            recorder.event(&event);
+        }
         Ok(event)
     }
 
