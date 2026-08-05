@@ -139,6 +139,10 @@ tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # Unique, exclusively-created temp dirs (pool tests).
 tempfile = "3"
+# Windows-only: `GetFileInformationByHandle` without hand-written `unsafe`, for
+# the file-identity check in monty-fs. Unix gets `st_dev`/`st_ino` from std, but
+# std's Windows equivalent is still unstable (`windows_by_handle`, rust#63010).
+winapi-util = "0.1.11"
 # Pulled in only to install a process-level rustls `CryptoProvider` before the
 # first `wss://` dial: rustls 0.23 panics on first TLS use when it can't pick a
 # provider automatically (both `aws-lc-rs` and `ring`, or neither, in the dep

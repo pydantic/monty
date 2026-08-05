@@ -15,7 +15,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::error::MountError;
+use super::{error::MountError, file_identity::FileIdentity};
 
 /// Maximum total path length in bytes (Linux `PATH_MAX`).
 const PATH_MAX: usize = 4096;
@@ -28,6 +28,10 @@ const NAME_MAX: usize = 255;
 pub(super) struct ResolvedPath {
     /// Validated host filesystem path suitable for the requested operation.
     pub host_path: PathBuf,
+    /// Identity of the file the boundary check inspected, the only link back to
+    /// what was validated once `host_path` is resolved again. `None` for
+    /// creation targets that do not exist yet.
+    pub identity: Option<FileIdentity>,
 }
 
 /// Resolution strategy for a filesystem operation.
@@ -57,13 +61,13 @@ pub(super) fn resolve_path(
     mode: ResolveMode,
 ) -> Result<ResolvedPath, MountError> {
     let request = ResolutionRequest::new(virtual_path, mount_virtual_path, mount_host_path)?;
-    let host_path = match mode {
+    let (host_path, identity) = match mode {
         ResolveMode::Existing => resolve_existing(&request, mount_host_path)?,
-        ResolveMode::Lstat => resolve_lstat(&request, mount_host_path)?,
+        ResolveMode::Lstat => (resolve_lstat(&request, mount_host_path)?, None),
         ResolveMode::Creation => resolve_creation(&request, mount_host_path)?,
-        ResolveMode::MkdirParents => resolve_mkdir_parents(&request, mount_host_path)?,
+        ResolveMode::MkdirParents => (resolve_mkdir_parents(&request, mount_host_path)?, None),
     };
-    Ok(ResolvedPath { host_path })
+    Ok(ResolvedPath { host_path, identity })
 }
 
 /// Normalizes a virtual sandbox path by removing `.` and resolving `..`.
@@ -168,12 +172,20 @@ impl ResolutionRequest {
     }
 }
 
-/// Resolves an existing path by canonicalizing the full target.
-fn resolve_existing(request: &ResolutionRequest, mount_host_path: &Path) -> Result<PathBuf, MountError> {
+/// Resolves an existing path by canonicalizing the full target, capturing the
+/// identity of the file the boundary check cleared.
+///
+/// The capture sits immediately after `check_boundary` to keep the gap between
+/// the two down to adjacent syscalls; it does not close it.
+fn resolve_existing(
+    request: &ResolutionRequest,
+    mount_host_path: &Path,
+) -> Result<(PathBuf, Option<FileIdentity>), MountError> {
     let canonical = fs::canonicalize(&request.candidate_host)
         .map_err(|err| MountError::Io(err, request.normalized_virtual.clone()))?;
     check_boundary(&canonical, mount_host_path, &request.normalized_virtual)?;
-    Ok(canonical)
+    let identity = FileIdentity::from_path(&canonical);
+    Ok((canonical, identity))
 }
 
 /// Resolves a path for `lstat`-style calls without following the final component.
@@ -202,7 +214,13 @@ fn resolve_lstat(request: &ResolutionRequest, mount_host_path: &Path) -> Result<
 }
 
 /// Resolves a path for creation by validating the parent directory first.
-fn resolve_creation(request: &ResolutionRequest, mount_host_path: &Path) -> Result<PathBuf, MountError> {
+///
+/// A target that does not exist yet has no identity to capture: what was
+/// validated is the parent directory, which a file handle cannot express.
+fn resolve_creation(
+    request: &ResolutionRequest,
+    mount_host_path: &Path,
+) -> Result<(PathBuf, Option<FileIdentity>), MountError> {
     if request.candidate_host.exists() {
         return resolve_existing(request, mount_host_path);
     }
@@ -223,7 +241,7 @@ fn resolve_creation(request: &ResolutionRequest, mount_host_path: &Path) -> Resu
         mount_host_path,
         &request.normalized_virtual,
     )?;
-    Ok(resolved_path)
+    Ok((resolved_path, None))
 }
 
 /// Resolves a path for `mkdir(parents=True)` while checking every existing ancestor.

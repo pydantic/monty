@@ -73,12 +73,22 @@ The host enforces these invariants on every path operation:
 - The canonical path must remain inside the mount; `..` traversal cannot
   escape (raises `PermissionError`).
 - Symlinks pointing outside the mount are rejected on resolution.
+- Reads, writes and appends verify the file they opened is the one the boundary
+  check cleared, raising `PermissionError` on a mismatch where CPython would act
+  on whatever the name now refers to.
 - Null bytes in any path component are rejected (`ValueError`).
 - Resolved paths returned to the sandbox (e.g. via `Path.resolve()`) are
   virtual paths, never host paths.
 
 `/tmp`, `/etc`, `/proc`, `/dev`, `~`, and the host current working
 directory are **not** available unless the host explicitly mounts them.
+
+That verification does not extend to operations acting on a directory entry by
+name, where there is no handle to bind to: `os.rename`, `Path.unlink`,
+`Path.rmdir`, `Path.mkdir`, creating a file that does not exist yet, and the
+`stat()`/`exists()`/`is_*()` family. A concurrent rename can still substitute a
+different entry, though only where an outbound symlink already exists inside
+the mount — sandboxed code cannot create one.
 
 ## No live host descriptors
 

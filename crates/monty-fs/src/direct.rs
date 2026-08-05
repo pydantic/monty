@@ -38,11 +38,21 @@ pub(super) fn execute(request: FsRequest, ctx: &mut MountContext<'_>) -> Result<
         FsRequest::IsSymlink { path } => is_symlink(&path, ctx),
         FsRequest::ReadText { path } => {
             let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
+            read_text_fs(
+                &resolved.host_path,
+                resolved.identity,
+                &path,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::ReadBytes { path } => {
             let resolved = resolve_path(&path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, &path, MemoryBudget::full(ctx.memory_usage_limit))
+            read_bytes_fs(
+                &resolved.host_path,
+                resolved.identity,
+                &path,
+                MemoryBudget::full(ctx.memory_usage_limit),
+            )
         }
         FsRequest::WriteText { path, data } => write_text(&path, &data, ctx),
         FsRequest::WriteBytes { path, data } => write_bytes(&path, &data, ctx),
@@ -95,12 +105,12 @@ fn open(path: &str, mode: FileMode, ctx: &mut MountContext<'_>) -> Result<MontyO
         FileMode::Write(_) | FileMode::WriteUpdate(_) => {
             check_write_limit(0, ctx)?;
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-            write_text_fs(&resolved.host_path, "", path)?;
+            write_text_fs(&resolved.host_path, resolved.identity, "", path)?;
             commit_write_bytes(0, ctx);
         }
         FileMode::Append(_) | FileMode::AppendUpdate(_) => {
             let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-            append_bytes_fs(&resolved.host_path, &[], path)?;
+            append_bytes_fs(&resolved.host_path, resolved.identity, &[], path)?;
         }
     }
     Ok(file_handle_result(path, mode))
@@ -143,7 +153,7 @@ fn is_symlink(path: &str, ctx: &MountContext<'_>) -> Result<MontyObject, MountEr
 fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = write_text_fs(&resolved.host_path, data, path)?;
+    let result = write_text_fs(&resolved.host_path, resolved.identity, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -152,7 +162,7 @@ fn write_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mont
 fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = write_bytes_fs(&resolved.host_path, data, path)?;
+    let result = write_bytes_fs(&resolved.host_path, resolved.identity, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -161,7 +171,7 @@ fn write_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<Mo
 fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = append_text_fs(&resolved.host_path, data, path)?;
+    let result = append_text_fs(&resolved.host_path, resolved.identity, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }
@@ -170,7 +180,7 @@ fn append_text(path: &str, data: &str, ctx: &mut MountContext<'_>) -> Result<Mon
 fn append_bytes(path: &str, data: &[u8], ctx: &mut MountContext<'_>) -> Result<MontyObject, MountError> {
     check_write_limit(data.len(), ctx)?;
     let resolved = resolve_path(path, ctx.mount_virtual, ctx.mount_host, ResolveMode::Creation)?;
-    let result = append_bytes_fs(&resolved.host_path, data, path)?;
+    let result = append_bytes_fs(&resolved.host_path, resolved.identity, data, path)?;
     commit_write_bytes(data.len(), ctx);
     Ok(result)
 }

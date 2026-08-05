@@ -19,6 +19,9 @@ name = "monty_fs"
 monty-types = { workspace = true }
 ahash = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+winapi-util = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 

@@ -2082,6 +2082,7 @@ dependencies = [
  "ahash",
  "monty-types",
  "tempfile",
+ "winapi-util",
 ]
 
 [[package]]

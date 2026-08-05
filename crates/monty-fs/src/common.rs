@@ -13,7 +13,7 @@ use std::{
 
 use monty_types::{MontyObject, UnicodeErrorData, dir_stat, file_stat, utf8_error_reason};
 
-use super::error::MountError;
+use super::{error::MountError, file_identity::FileIdentity};
 
 /// Conservative per-item charge for transient listing bookkeeping: string
 /// headers, container slots, and dedup-set entries. Variable-size name and
@@ -97,8 +97,13 @@ pub(super) struct MountContext<'a> {
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_text_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    let bytes = read_file_limited(path, vpath, budget)?;
+pub(super) fn read_text_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
+    let bytes = read_file_limited(path, identity, vpath, budget)?;
     let content = bytes_to_utf8(bytes)?;
     Ok(MontyObject::String(content))
 }
@@ -107,8 +112,13 @@ pub(super) fn read_text_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Re
 ///
 /// Directory-read errors differ across platforms, so the target is checked
 /// explicitly before reading.
-pub(super) fn read_bytes_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<MontyObject, MountError> {
-    Ok(MontyObject::Bytes(read_file_limited(path, vpath, budget)?))
+pub(super) fn read_bytes_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<MontyObject, MountError> {
+    Ok(MontyObject::Bytes(read_file_limited(path, identity, vpath, budget)?))
 }
 
 /// Reads at most `budget + 1` bytes so an oversized file is rejected before it
@@ -119,9 +129,18 @@ pub(super) fn read_bytes_fs(path: &Path, vpath: &str, budget: MemoryBudget) -> R
 /// with one `stat`, and pre-sizing the buffer (capped by the budget) to avoid
 /// `read_to_end`'s doubling reallocations. Enforcement is always the byte
 /// count actually read, so lying or racing metadata cannot evade the limit.
-fn read_file_limited(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<Vec<u8>, MountError> {
+///
+/// `identity` binds the read to the file the boundary check cleared, since
+/// `open` resolves `path` afresh.
+fn read_file_limited(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    vpath: &str,
+    budget: MemoryBudget,
+) -> Result<Vec<u8>, MountError> {
     reject_non_regular(path, vpath)?;
     let file = File::open(path).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    FileIdentity::verify(identity, &file, vpath)?;
     let meta_len = file
         .metadata()
         .map_err(|err| MountError::Io(err, vpath.to_owned()))?
@@ -141,9 +160,13 @@ fn read_file_limited(path: &Path, vpath: &str, budget: MemoryBudget) -> Result<V
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
-    reject_non_regular(path, vpath)?;
-    fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn write_text_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &str,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    write_bytes_to_file(path, identity, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
@@ -153,18 +176,50 @@ pub(super) fn write_text_fs(path: &Path, content: &str, vpath: &str) -> Result<M
 ///
 /// On Windows, `fs::write()` on a directory returns `PermissionDenied` instead of
 /// `IsADirectory`, so we check explicitly before writing.
-pub(super) fn write_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
-    reject_non_regular(path, vpath)?;
-    fs::write(path, content).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+pub(super) fn write_bytes_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &[u8],
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    write_bytes_to_file(path, identity, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
+}
+
+/// Truncates `path` and writes `content`, verifying identity first.
+///
+/// Deliberately not `fs::write`: that truncates as part of opening, emptying a
+/// substituted file before the check could reject it.
+fn write_bytes_to_file(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &[u8],
+    vpath: &str,
+) -> Result<(), MountError> {
+    reject_non_regular(path, vpath)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    FileIdentity::verify(identity, &file, vpath)?;
+    file.set_len(0).map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    file.write_all(content)
+        .map_err(|err| MountError::Io(err, vpath.to_owned()))
 }
 
 /// Appends text to a file and returns the number of characters written.
 ///
 /// The host file is opened only for the duration of this call, preserving the
 /// sandbox invariant that Monty never keeps native file handles alive.
-pub(super) fn append_text_fs(path: &Path, content: &str, vpath: &str) -> Result<MontyObject, MountError> {
-    append_bytes_to_file(path, content.as_bytes(), vpath)?;
+pub(super) fn append_text_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &str,
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(path, identity, content.as_bytes(), vpath)?;
     Ok(MontyObject::Int(
         i64::try_from(content.chars().count()).unwrap_or(i64::MAX),
     ))
@@ -173,19 +228,30 @@ pub(super) fn append_text_fs(path: &Path, content: &str, vpath: &str) -> Result<
 /// Appends bytes to a file and returns the number of bytes written.
 ///
 /// This is the binary counterpart of [`append_text_fs`].
-pub(super) fn append_bytes_fs(path: &Path, content: &[u8], vpath: &str) -> Result<MontyObject, MountError> {
-    append_bytes_to_file(path, content, vpath)?;
+pub(super) fn append_bytes_fs(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &[u8],
+    vpath: &str,
+) -> Result<MontyObject, MountError> {
+    append_bytes_to_file(path, identity, content, vpath)?;
     Ok(MontyObject::Int(i64::try_from(content.len()).unwrap_or(i64::MAX)))
 }
 
-/// Opens `path` in append mode, writes all bytes, and closes it before returning.
-fn append_bytes_to_file(path: &Path, content: &[u8], vpath: &str) -> Result<(), MountError> {
+/// Opens `path` in append mode, verifies identity, and writes all bytes.
+fn append_bytes_to_file(
+    path: &Path,
+    identity: Option<FileIdentity>,
+    content: &[u8],
+    vpath: &str,
+) -> Result<(), MountError> {
     reject_non_regular(path, vpath)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|err| MountError::Io(err, vpath.to_owned()))?;
+    FileIdentity::verify(identity, &file, vpath)?;
     file.write_all(content)
         .map_err(|err| MountError::Io(err, vpath.to_owned()))
 }

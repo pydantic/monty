@@ -21,6 +21,7 @@ use super::{
     },
     dispatch::{FsRequest, file_handle_result},
     error::MountError,
+    file_identity::FileIdentity,
     overlay_state::{ENTRY_MEMORY_USAGE, OverlayEntry, OverlayFile, OverlayFileRef, OverlayState},
     path_security::{
         ResolveMode, normalize_virtual_path, reject_escaping_symlink, reject_overlong_path, resolve_path,
@@ -113,10 +114,10 @@ fn open(
                 }
                 Some(OverlayEntry::Deleted) => return Err(MountError::not_found(path)),
                 None => match resolve_real_path_state(path, ctx, ResolveMode::Existing)? {
-                    RealPathState::Present(host_path) if host_path.is_dir() => {
+                    RealPathState::Present(host_path, _) if host_path.is_dir() => {
                         return Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", path));
                     }
-                    RealPathState::Present(_) => {}
+                    RealPathState::Present(..) => {}
                     RealPathState::Missing => return Err(MountError::not_found(path)),
                 },
             }
@@ -170,10 +171,10 @@ fn ensure_append_target_exists(
             Ok(())
         }
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) if host_path.is_dir() => {
+            RealPathState::Present(host_path, _) if host_path.is_dir() => {
                 Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
             }
-            RealPathState::Present(_) => Ok(()),
+            RealPathState::Present(..) => Ok(()),
             RealPathState::Missing => {
                 ensure_parent_exists(state, &relative, ctx, vpath)?;
                 state.insert(
@@ -201,7 +202,7 @@ fn exists(
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(_) => true,
+            RealPathState::Present(..) => true,
             RealPathState::Missing => false,
         },
     };
@@ -219,7 +220,7 @@ fn is_file(
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_)) => true,
         Some(OverlayEntry::Directory { .. } | OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) => host_path.is_file(),
+            RealPathState::Present(host_path, _) => host_path.is_file(),
             RealPathState::Missing => false,
         },
     };
@@ -237,7 +238,7 @@ fn is_dir(
         Some(OverlayEntry::Directory { .. }) => true,
         Some(OverlayEntry::File(_) | OverlayEntry::RealFileRef(_) | OverlayEntry::Deleted) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) => host_path.is_dir(),
+            RealPathState::Present(host_path, _) => host_path.is_dir(),
             RealPathState::Missing => false,
         },
     };
@@ -254,7 +255,7 @@ fn is_symlink(
     let is_symlink = match state.get(relative) {
         Some(_) => false,
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Lstat)? {
-            RealPathState::Present(host_path) => host_path.is_symlink(),
+            RealPathState::Present(host_path, _) => host_path.is_symlink(),
             RealPathState::Missing => false,
         },
     };
@@ -274,7 +275,7 @@ fn read_text(
             Ok(MontyObject::String(bytes_to_utf8(file.content.clone())?))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_text_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+            read_text_fs(&file_ref.host_path, None, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -282,7 +283,12 @@ fn read_text(
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_text_fs(&resolved.host_path, vpath, available_memory(state, ctx)?)
+            read_text_fs(
+                &resolved.host_path,
+                resolved.identity,
+                vpath,
+                available_memory(state, ctx)?,
+            )
         }
     }
 }
@@ -300,7 +306,7 @@ fn read_bytes(
             Ok(MontyObject::Bytes(file.content.clone()))
         }
         Some(OverlayEntry::RealFileRef(file_ref)) => {
-            read_bytes_fs(&file_ref.host_path, vpath, available_memory(state, ctx)?)
+            read_bytes_fs(&file_ref.host_path, None, vpath, available_memory(state, ctx)?)
         }
         Some(OverlayEntry::Directory { .. }) => {
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
@@ -308,7 +314,12 @@ fn read_bytes(
         Some(OverlayEntry::Deleted) => Err(MountError::not_found(vpath)),
         None => {
             let resolved = resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, ResolveMode::Existing)?;
-            read_bytes_fs(&resolved.host_path, vpath, available_memory(state, ctx)?)
+            read_bytes_fs(
+                &resolved.host_path,
+                resolved.identity,
+                vpath,
+                available_memory(state, ctx)?,
+            )
         }
     }
 }
@@ -450,7 +461,7 @@ fn existing_file_len(
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) => file_len(&host_path, vpath),
+            RealPathState::Present(host_path, _) => file_len(&host_path, vpath),
             RealPathState::Missing => Ok(0),
         },
     }
@@ -481,7 +492,7 @@ fn existing_file_bytes(
             Ok(file.content.clone())
         }
         Some(OverlayEntry::Deleted) => Ok(Vec::new()),
-        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, vpath, budget)? {
+        Some(OverlayEntry::RealFileRef(file_ref)) => match read_bytes_fs(&file_ref.host_path, None, vpath, budget)? {
             MontyObject::Bytes(bytes) => Ok(bytes),
             _ => unreachable!("read_bytes_fs should return bytes"),
         },
@@ -489,7 +500,7 @@ fn existing_file_bytes(
             Err(MountError::io_err(ErrorKind::IsADirectory, "Is a directory", vpath))
         }
         None => match resolve_real_path_state(vpath, ctx, ResolveMode::Existing)? {
-            RealPathState::Present(host_path) => match read_bytes_fs(&host_path, vpath, budget)? {
+            RealPathState::Present(host_path, identity) => match read_bytes_fs(&host_path, identity, vpath, budget)? {
                 MontyObject::Bytes(bytes) => Ok(bytes),
                 _ => unreachable!("read_bytes_fs should return bytes"),
             },
@@ -1197,7 +1208,7 @@ fn resolve_real_path_state(
     mode: ResolveMode,
 ) -> Result<RealPathState, MountError> {
     match resolve_path(vpath, ctx.mount_virtual, ctx.mount_host, mode) {
-        Ok(resolved) => Ok(RealPathState::Present(resolved.host_path)),
+        Ok(resolved) => Ok(RealPathState::Present(resolved.host_path, resolved.identity)),
         Err(MountError::Io(_, _)) => Ok(RealPathState::Missing),
         Err(err) => Err(err),
     }
@@ -1205,8 +1216,9 @@ fn resolve_real_path_state(
 
 /// Result of resolving a real fallthrough path for overlay queries.
 enum RealPathState {
-    /// The path exists and can be queried on the host.
-    Present(PathBuf),
+    /// The path exists and can be queried on the host, with the identity the
+    /// boundary check cleared.
+    Present(PathBuf, Option<FileIdentity>),
     /// The path should behave as nonexistent.
     Missing,
 }

@@ -37,6 +37,7 @@ mod common;
 mod direct;
 mod dispatch;
 mod error;
+mod file_identity;
 mod mount_mode;
 mod mount_table;
 mod overlay;
