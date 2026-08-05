@@ -100,8 +100,8 @@ unsafe impl GlobalAlloc for LimitedAllocator {
     // Overridden for the same reason: the default reallocates and copies, while
     // `System` can often grow a block in place.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if new_size >= layout.size() {
-            charge(new_size - layout.size());
+        if let Some(size_change) = new_size.checked_sub(layout.size()) {
+            charge(size_change);
         } else {
             refund(layout.size() - new_size);
         }
