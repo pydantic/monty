@@ -11,11 +11,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Pinned rather than `astral.sh/uv/install.sh`, which serves whatever is current:
-# CI pins its actions by digest for the same reason. Bump deliberately.
-UV_INSTALL_VERSION=0.11.16
 if ! command -v uv >/dev/null; then
-    curl -LsSf "https://astral.sh/uv/$UV_INSTALL_VERSION/install.sh" | sh
+    curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
