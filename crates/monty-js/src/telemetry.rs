@@ -1,7 +1,8 @@
 //! Exporter-free shared telemetry pipeline forwarding records to Node's event loop.
 
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{mpsc, Arc, OnceLock},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -22,14 +23,19 @@ use opentelemetry::{
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use serde_json::{json, Map, Value as JsonValue};
 
+type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
+
 struct JsBridge {
-    send: Box<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>,
+    send: SendEvent,
+    cleanup: mpsc::Sender<String>,
 }
 
 static HANDLE: OnceLock<TelemetryAdapterHandle> = OnceLock::new();
 
 /// Maximum JSON budget for one attribute crossing the Node callback queue.
 const VALUE_SIZE_LIMIT: usize = 64 * 1024;
+/// Maximum nesting accepted from recursive OTel log values.
+const VALUE_DEPTH_LIMIT: usize = 64;
 
 /// Installs the versioned Node callback and shared exporter-free pipeline.
 #[napi(js_name = "_installTelemetryAdapter")]
@@ -47,9 +53,18 @@ pub fn install_telemetry_adapter(
         .weak::<true>()
         .max_queue_size::<1024>()
         .build()?;
-    let bridge = Arc::new(JsBridge {
-        send: Box::new(move |event, mode| callback.call(FnArgs::from((event,)), mode)),
-    });
+    let send: SendEvent = Arc::new(move |event, mode| callback.call(FnArgs::from((event,)), mode));
+    let (cleanup, cleanup_events) = mpsc::channel();
+    let cleanup_send = Arc::clone(&send);
+    thread::Builder::new()
+        .name("monty-telemetry-cleanup".to_owned())
+        .spawn(move || {
+            while let Ok(event) = cleanup_events.recv() {
+                let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
+            }
+        })
+        .map_err(|err| napi::Error::from_reason(format!("failed to start Monty telemetry cleanup: {err}")))?;
+    let bridge = Arc::new(JsBridge { send, cleanup });
     let handle = configure_telemetry_adapter(bridge as Arc<dyn TelemetryAdapter>)
         .map_err(|err| napi::Error::from_reason(format!("failed to configure Monty telemetry: {err}")))?;
     HANDLE
@@ -136,7 +151,9 @@ impl TelemetryAdapter for JsBridge {
             "spanId": root_span_id.to_string(),
         })
         .to_string();
-        let _ = (self.send)(event, ThreadsafeFunctionCallMode::NonBlocking);
+        // Cleanup uses one dedicated thread so it cannot block a pool task,
+        // while still surviving backpressure on the bounded event queue.
+        let _ = self.cleanup.send(event);
     }
 }
 
@@ -175,29 +192,29 @@ fn value_to_json(value: &Value) -> (JsonValue, bool) {
 fn value_to_json_budget(value: &Value, budget: &mut JsonBudget) -> JsonValue {
     match value {
         Value::Bool(value) => {
-            budget.consume(1);
+            budget.consume(5);
             JsonValue::Bool(*value)
         }
         Value::I64(value) => {
-            budget.consume(8);
+            budget.consume(20);
             (*value).into()
         }
         Value::F64(value) => {
-            budget.consume(8);
+            budget.consume(24);
             json!(value)
         }
         Value::String(value) => JsonValue::String(budget.string(value.as_str())),
         Value::Array(value) => match value {
             Array::Bool(values) => budget.array(values, |value, budget| {
-                budget.consume(1);
+                budget.consume(5);
                 JsonValue::Bool(*value)
             }),
             Array::I64(values) => budget.array(values, |value, budget| {
-                budget.consume(8);
+                budget.consume(20);
                 (*value).into()
             }),
             Array::F64(values) => budget.array(values, |value, budget| {
-                budget.consume(8);
+                budget.consume(24);
                 json!(value)
             }),
             Array::String(values) => {
@@ -212,31 +229,37 @@ fn value_to_json_budget(value: &Value, budget: &mut JsonBudget) -> JsonValue {
 /// Converts one recursive OTel log value into bounded JSON.
 fn any_value(value: &AnyValue) -> (JsonValue, bool) {
     let mut budget = JsonBudget::new();
-    let value = any_value_budget(value, &mut budget);
+    let value = any_value_budget(value, &mut budget, 0);
     (value, budget.cut)
 }
 
 /// Converts a recursive log value while sharing one allocation budget.
-fn any_value_budget(value: &AnyValue, budget: &mut JsonBudget) -> JsonValue {
+fn any_value_budget(value: &AnyValue, budget: &mut JsonBudget, depth: usize) -> JsonValue {
+    if depth >= VALUE_DEPTH_LIMIT {
+        return budget.unsupported("<depth limit reached>");
+    }
     match value {
         AnyValue::Int(value) => {
-            budget.consume(8);
+            budget.consume(20);
             (*value).into()
         }
         AnyValue::Double(value) => {
-            budget.consume(8);
+            budget.consume(24);
             json!(value)
         }
         AnyValue::String(value) => JsonValue::String(budget.string(value.as_str())),
         AnyValue::Boolean(value) => {
-            budget.consume(1);
+            budget.consume(5);
             (*value).into()
         }
         AnyValue::Bytes(value) => {
-            let keep = budget.consume(value.len());
+            // Each byte becomes up to three decimal digits plus a comma.
+            let keep = value.len().min(budget.remaining / 4);
+            budget.consume(keep * 4);
+            budget.cut |= keep < value.len();
             json!(&value[..keep])
         }
-        AnyValue::ListAny(values) => budget.array(values, any_value_budget),
+        AnyValue::ListAny(values) => budget.array(values, |value, budget| any_value_budget(value, budget, depth + 1)),
         AnyValue::Map(values) => {
             let mut output = Map::new();
             for (key, value) in values.iter() {
@@ -246,7 +269,7 @@ fn any_value_budget(value: &AnyValue, budget: &mut JsonBudget) -> JsonValue {
                 }
                 budget.consume(1);
                 let key = budget.string(key.as_str());
-                output.insert(key, any_value_budget(value, budget));
+                output.insert(key, any_value_budget(value, budget, depth + 1));
             }
             JsonValue::Object(output)
         }
@@ -277,13 +300,26 @@ impl JsonBudget {
         consumed
     }
 
-    /// Copies a UTF-8 prefix fitting the remaining budget.
+    /// Copies a prefix whose escaped JSON string fits the remaining budget.
     fn string(&mut self, value: &str) -> String {
-        let mut end = value.len().min(self.remaining);
-        while !value.is_char_boundary(end) {
-            end -= 1;
+        if self.consume(2) < 2 {
+            return String::new();
         }
-        self.consume(value.len());
+        let mut end = 0;
+        for (index, character) in value.char_indices() {
+            let escaped_len = match character {
+                '"' | '\\' | '\u{0008}' | '\t' | '\n' | '\u{000c}' | '\r' => 2,
+                '\u{0000}'..='\u{001f}' => 6,
+                _ => character.len_utf8(),
+            };
+            if escaped_len > self.remaining {
+                self.cut = true;
+                break;
+            }
+            self.consume(escaped_len);
+            end = index + character.len_utf8();
+        }
+        self.cut |= end < value.len();
         value[..end].to_owned()
     }
 

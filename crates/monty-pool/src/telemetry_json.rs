@@ -13,11 +13,12 @@ use std::{
     collections::HashMap,
     fmt::Write as _,
     io::{self, Write},
+    mem::size_of,
 };
 
 use monty_types::{MontyDateTime, MontyObject, bytes_repr};
 use num_traits::ToPrimitive;
-use serde::ser::{Serialize, SerializeMap, Serializer};
+use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 
 /// Serializes `value` to logfire-style JSON (see the module docs), capped at
 /// `limit` bytes. The bool is true when the cap cut serialization short — the
@@ -147,10 +148,12 @@ impl Serialize for JsonEncoded<'_> {
             }
             // like logfire dataclasses: an object of the declared fields only
             MontyObject::Dataclass { field_names, attrs, .. } => {
-                // indexed once: scanning `attrs` per field is quadratic, and
-                // both sides are as long as the sandbox's source made them
-                let mut by_name: HashMap<&str, &MontyObject> = HashMap::with_capacity(attrs.len());
-                for (key, value) in attrs {
+                // Keep lookup linear without allocating an auxiliary index in
+                // proportion to an attacker-controlled attribute mapping.
+                let index_limit = (self.limit / size_of::<(&str, &MontyObject)>()).max(1);
+                let indexed = attrs.len().min(index_limit);
+                let mut by_name: HashMap<&str, &MontyObject> = HashMap::with_capacity(indexed);
+                for (key, value) in attrs.into_iter().take(indexed) {
                     if let MontyObject::String(k) = key {
                         by_name.entry(k.as_str()).or_insert(value);
                     }
@@ -161,7 +164,12 @@ impl Serialize for JsonEncoded<'_> {
                         map.serialize_entry(name, &self.nested(value))?;
                     }
                 }
-                map.end()
+                let output = map.end()?;
+                if indexed < attrs.len() {
+                    Err(S::Error::custom("dataclass attribute index limit reached"))
+                } else {
+                    Ok(output)
+                }
             }
             MontyObject::Date(d) => s.collect_str(&format_args!("{:04}-{:02}-{:02}", d.year, d.month, d.day)),
             MontyObject::DateTime(dt) => s.serialize_str(&datetime_isoformat(dt)),
@@ -463,6 +471,25 @@ mod tests {
             frozen: false,
         };
         assert_eq!(json(&dc), r#"{"x":1,"y":2}"#);
+    }
+
+    /// Dataclass lookup indexing is bounded by the serialization budget rather
+    /// than by every attribute supplied by sandbox code.
+    #[test]
+    fn oversize_dataclass_attribute_index_is_capped() {
+        let attrs = (0..100)
+            .map(|index| (MontyObject::String(format!("field_{index}")), MontyObject::Int(index)))
+            .collect::<Vec<_>>();
+        let value = MontyObject::Dataclass {
+            name: "Large".to_owned(),
+            type_id: 1,
+            field_names: vec!["field_0".to_owned()],
+            attrs: DictPairs::from(attrs),
+            frozen: false,
+        };
+        let (json, cut) = serialize_capped(&value, 64);
+        assert!(cut);
+        assert!(json.len() <= 64);
     }
 
     #[test]

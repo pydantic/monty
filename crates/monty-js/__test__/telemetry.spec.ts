@@ -27,7 +27,7 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
 
   await using pool = await Monty.create()
   await using session = await pool.checkout()
-  const result = await session.feedRun("'x' * 70000")
+  const result = await session.feedRun("'\\x00' * 70000")
   t.is((result as string).length, 70_000)
   await session.close()
   const deadline = Date.now() + 2_000
@@ -48,7 +48,8 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
   const runEnd = events.find((event) => event.kind === 'end' && event.spanId === starts[1]?.spanId)
   const output = runEnd?.attributes?.output
   t.is(typeof output, 'string')
-  t.is((output as string).length, 64 * 1024)
+  // Each NUL becomes a six-byte `\\u0000` escape in the queued JSON string.
+  t.is((output as string).length, Math.floor((64 * 1024 - 2) / 6))
   t.is(runEnd?.attributes?.length_limit_exceeded, true)
   t.deepEqual(
     events.map((event) => event.kind),
