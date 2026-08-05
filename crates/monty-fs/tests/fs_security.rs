@@ -1354,11 +1354,18 @@ fn mkdir_parents_creates_nothing_at_the_host_location() {
 
 /// A missing and an existing out-of-mount path must be indistinguishable, or
 /// `exists` leaks host filesystem layout.
+///
+/// The pair only discriminates on Windows, where the drive prefix makes the
+/// first payload resolve to a real host file: on Unix a backslash is an
+/// ordinary filename character, so both are one literal segment naming nothing
+/// inside the mount and report the same miss either way. The Unix leg of this
+/// regression is covered by the refusal tests above, which fail there on the
+/// `Ok(Bool(false))` a lost check would produce.
 #[test]
 fn host_absolute_exists_is_not_an_oracle() {
     // A literal drive-prefixed pair rather than a temp path, whose shape would
     // differ per platform. One names a file that exists on a Windows host, the
-    // other one that cannot; both must look identical from inside the sandbox.
+    // other one that cannot.
     let payloads = [
         r"/mnt/C:\Windows\System32\ntdll.dll",
         r"/mnt/C:\Windows\no_such_file_xyz",
@@ -1380,7 +1387,7 @@ fn host_absolute_exists_is_not_an_oracle() {
 
 /// The oracle test above only bites if `exists` still answers truthfully for
 /// paths inside the mount — a build that refused everything would satisfy it
-/// while being useless. This is what makes that pair meaningful on every host.
+/// while being useless.
 #[test]
 fn exists_still_discriminates_inside_the_mount() {
     for (mode_name, mode) in all_modes() {
