@@ -24,13 +24,14 @@ pub const TELEMETRY_ADAPTER_VERSION: u8 = 1;
 
 /// Configured exporter-free pipeline shared by all checkouts using one adapter.
 pub struct TelemetryAdapterHandle {
-    /// Retains the global provider and its processors for the handle's lifetime.
-    _logfire: Logfire,
+    /// Retains the isolated provider and its processors for the handle's lifetime.
+    logfire: Logfire,
 }
 
-/// Distributed parent context for one checkout root.
+/// Distributed parent context and isolated recorder for one checkout root.
 pub struct TelemetryContext {
     parent: Option<SpanContext>,
+    logfire: Logfire,
 }
 
 impl TelemetryAdapterHandle {
@@ -56,17 +57,26 @@ impl TelemetryAdapterHandle {
                 true,
                 trace_state,
             )),
+            logfire: self.logfire.clone(),
         })
     }
 
     /// Creates adapter context when no host span is active.
     #[must_use]
     pub fn unparented_context(&self) -> TelemetryContext {
-        TelemetryContext { parent: None }
+        TelemetryContext {
+            parent: None,
+            logfire: self.logfire.clone(),
+        }
     }
 }
 
 impl TelemetryContext {
+    /// Returns the isolated recorder installed while processing this checkout.
+    pub(crate) fn logfire(&self) -> Logfire {
+        self.logfire.clone()
+    }
+
     /// Converts the propagated span into the remote OTel parent context.
     pub(crate) fn into_parent(self) -> Option<Context> {
         self.parent
@@ -93,13 +103,14 @@ pub fn configure_telemetry_adapter(
 ) -> Result<TelemetryAdapterHandle, ConfigureError> {
     let processor = AdapterProcessor::new(adapter);
     let logfire = logfire::configure()
+        .local()
         .send_to_logfire(false)
         .with_console(None)
         .with_install_panic_handler(false)
         .with_additional_span_processor(processor.clone())
         .with_advanced_options(AdvancedOptions::default().with_log_processor(processor))
         .finish()?;
-    Ok(TelemetryAdapterHandle { _logfire: logfire })
+    Ok(TelemetryAdapterHandle { logfire })
 }
 
 /// Shared processor state for span ancestry and root-level disablement.

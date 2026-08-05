@@ -3,7 +3,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, OnceLock,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
     },
     thread,
     time::{SystemTime, UNIX_EPOCH},
@@ -30,9 +30,12 @@ type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send
 
 struct JsBridge {
     send: SendEvent,
-    cleanup: mpsc::SyncSender<String>,
     disabled: AtomicBool,
-    cleanup_requested: AtomicBool,
+    delivery: Mutex<DeliveryState>,
+}
+
+struct DeliveryState {
+    cleanup_requested: bool,
 }
 
 struct InstalledBridge {
@@ -64,23 +67,12 @@ pub fn install_telemetry_adapter(
         .max_queue_size::<1024>()
         .build()?;
     let send: SendEvent = Arc::new(move |event, mode| callback.call(FnArgs::from((event,)), mode));
-    // Cleanup is a single global-disable notification: repeated roots coalesce
-    // instead of growing native memory while the JS callback is backpressured.
-    let (cleanup, cleanup_events) = mpsc::sync_channel(1);
-    let cleanup_send = Arc::clone(&send);
-    thread::Builder::new()
-        .name("monty-telemetry-cleanup".to_owned())
-        .spawn(move || {
-            while let Ok(event) = cleanup_events.recv() {
-                let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
-            }
-        })
-        .map_err(|err| napi::Error::from_reason(format!("failed to start Monty telemetry cleanup: {err}")))?;
     let bridge = Arc::new(JsBridge {
         send,
-        cleanup,
         disabled: AtomicBool::new(false),
-        cleanup_requested: AtomicBool::new(false),
+        delivery: Mutex::new(DeliveryState {
+            cleanup_requested: false,
+        }),
     });
     let handle = configure_telemetry_adapter(Arc::clone(&bridge) as Arc<dyn TelemetryAdapter>)
         .map_err(|err| napi::Error::from_reason(format!("failed to configure Monty telemetry: {err}")))?;
@@ -164,7 +156,9 @@ impl TelemetryAdapter for JsBridge {
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
         self.disabled.store(true, Ordering::Relaxed);
-        if !self.cleanup_requested.swap(true, Ordering::Relaxed) {
+        let mut delivery = lock(&self.delivery);
+        if !delivery.cleanup_requested {
+            delivery.cleanup_requested = true;
             let event = json!({
                 "kind": "close",
                 "traceId": trace_id.to_string(),
@@ -172,9 +166,14 @@ impl TelemetryAdapter for JsBridge {
                 "all": true,
             })
             .to_string();
-            // The one cleanup notification uses a dedicated thread so it
-            // cannot block a pool task while the JS queue drains.
-            let _ = self.cleanup.try_send(event);
+            let cleanup_send = Arc::clone(&self.send);
+            // Cleanup is globally coalesced and gets a short-lived thread, so
+            // it neither blocks a pool task nor retains an idle worker.
+            let _ = thread::Builder::new()
+                .name("monty-telemetry-cleanup".to_owned())
+                .spawn(move || {
+                    let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
+                });
         }
     }
 }
@@ -182,6 +181,7 @@ impl TelemetryAdapter for JsBridge {
 impl JsBridge {
     /// Queues one ordered record without blocking a Tokio worker thread.
     fn emit(&self, event: JsonValue) -> bool {
+        let _delivery = lock(&self.delivery);
         if self.disabled.load(Ordering::Relaxed) {
             false
         } else {
@@ -192,6 +192,11 @@ impl JsBridge {
             sent
         }
     }
+}
+
+/// Locks delivery state while recovering from an unrelated panic.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Converts OTel span attributes into their JSON bridge representation.
@@ -291,13 +296,14 @@ fn any_value_budget(value: &AnyValue, budget: &mut JsonBudget, depth: usize) -> 
         }
         AnyValue::ListAny(values) => budget.array(values, |value, budget| any_value_budget(value, budget, depth + 1)),
         AnyValue::Map(values) => {
+            budget.consume(2); // `{}`
             let mut output = Map::new();
             for (key, value) in values.iter() {
                 if budget.exhausted() {
                     budget.cut = true;
                     break;
                 }
-                budget.consume(1);
+                budget.consume(2); // `:` and a possible comma
                 let key = budget.string(key.as_str());
                 output.insert(key, any_value_budget(value, budget, depth + 1));
             }
@@ -355,6 +361,7 @@ impl JsonBudget {
 
     /// Converts array elements until their shared budget is exhausted.
     fn array<T>(&mut self, values: &[T], convert: impl Fn(&T, &mut Self) -> JsonValue) -> JsonValue {
+        self.consume(2); // `[]`
         let mut output = Vec::new();
         for value in values {
             if self.exhausted() {

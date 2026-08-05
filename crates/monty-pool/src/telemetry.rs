@@ -13,6 +13,7 @@
 
 use std::fmt::{self, Write};
 
+use logfire::{Logfire, set_local_logfire};
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
 use monty_types::{MontyObject, bytes_repr};
 use opentelemetry::Value as OtelValue;
@@ -59,6 +60,8 @@ pub(crate) struct Recorder {
     dump_turn: bool,
     /// One-shot host context consumed when `Configure` starts the root span.
     adapter_context: Option<TelemetryContext>,
+    /// Isolated dispatcher installed only while this recorder emits telemetry.
+    logfire: Option<Logfire>,
 }
 
 impl Recorder {
@@ -72,17 +75,20 @@ impl Recorder {
             session: None,
             dump_turn: false,
             adapter_context: None,
+            logfire: None,
         }
     }
 
     /// Assigns the one-shot host context before checkout sends `Configure`.
     pub(crate) fn set_adapter_context(&mut self, context: TelemetryContext) {
+        self.logfire = Some(context.logfire());
         self.adapter_context = Some(context);
     }
 
     /// Starts recording one turn; called once the frame is on the wire, so a
     /// rejected oversize frame records nothing.
     pub(crate) fn begin_turn(&mut self, request: &pb::ParentRequest) {
+        let _logfire = self.logfire.clone().map(set_local_logfire);
         let adapter_parent = if matches!(request.kind, Some(pb::parent_request::Kind::Configure(_))) {
             self.adapter_context.take().and_then(TelemetryContext::into_parent)
         } else {
@@ -239,6 +245,7 @@ impl Recorder {
     /// Records one event from the worker: suspension events open the pending
     /// span, turn-ending events close the feed and turn spans.
     pub(crate) fn event(&mut self, event: &pb::ChildEvent) {
+        let _logfire = self.logfire.clone().map(set_local_logfire);
         // the budget travels with the elapsed time so `Load`-restored sessions,
         // whose limits come from the dump, show what it is measured against
         let micros = event.total_execution_micros;

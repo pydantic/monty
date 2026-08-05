@@ -10,7 +10,7 @@
 //! digit string rather than a raw JSON number.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     io::{self, Write},
     mem::size_of,
@@ -148,16 +148,31 @@ impl Serialize for JsonEncoded<'_> {
             }
             // like logfire dataclasses: an object of the declared fields only
             MontyObject::Dataclass { field_names, attrs, .. } => {
-                // Keep lookup linear without allocating an auxiliary index in
-                // proportion to an attacker-controlled attribute mapping.
+                // Index the smaller attacker-controlled side. Normal
+                // dataclasses track declared names and can scan arbitrarily
+                // many extra attrs without allocating for those extras.
                 let index_limit = (self.limit / size_of::<(&str, &MontyObject)>()).max(1);
-                let indexed = attrs.len().min(index_limit);
-                let mut by_name: HashMap<&str, &MontyObject> = HashMap::with_capacity(indexed);
-                for (key, value) in attrs.into_iter().take(indexed) {
-                    if let MontyObject::String(k) = key {
-                        by_name.entry(k.as_str()).or_insert(value);
+                let (by_name, index_cut) = if field_names.len() <= index_limit {
+                    let declared: HashSet<&str> = field_names.iter().map(String::as_str).collect();
+                    let mut by_name = HashMap::with_capacity(declared.len());
+                    for (key, value) in attrs {
+                        if let MontyObject::String(key) = key
+                            && declared.contains(key.as_str())
+                        {
+                            by_name.entry(key.as_str()).or_insert(value);
+                        }
                     }
-                }
+                    (by_name, false)
+                } else {
+                    let indexed = attrs.len().min(index_limit);
+                    let mut by_name = HashMap::with_capacity(indexed);
+                    for (key, value) in attrs.into_iter().take(indexed) {
+                        if let MontyObject::String(key) = key {
+                            by_name.entry(key.as_str()).or_insert(value);
+                        }
+                    }
+                    (by_name, indexed < attrs.len())
+                };
                 let mut map = s.serialize_map(Some(field_names.len()))?;
                 for name in field_names {
                     if let Some(value) = by_name.get(name.as_str()) {
@@ -165,7 +180,7 @@ impl Serialize for JsonEncoded<'_> {
                     }
                 }
                 let output = map.end()?;
-                if indexed < attrs.len() {
+                if index_cut {
                     Err(S::Error::custom("dataclass attribute index limit reached"))
                 } else {
                     Ok(output)
@@ -473,12 +488,13 @@ mod tests {
         assert_eq!(json(&dc), r#"{"x":1,"y":2}"#);
     }
 
-    /// Dataclass lookup indexing is bounded by the serialization budget rather
-    /// than by every attribute supplied by sandbox code.
+    /// Extra dataclass attrs do not consume index capacity or hide a declared
+    /// field that appears late in the attacker-controlled mapping.
     #[test]
-    fn oversize_dataclass_attribute_index_is_capped() {
-        let attrs = (0..100)
+    fn extra_dataclass_attributes_are_not_indexed() {
+        let attrs = (1..100)
             .map(|index| (MontyObject::String(format!("field_{index}")), MontyObject::Int(index)))
+            .chain([(MontyObject::String("field_0".to_owned()), MontyObject::Int(0))])
             .collect::<Vec<_>>();
         let value = MontyObject::Dataclass {
             name: "Large".to_owned(),
@@ -488,8 +504,8 @@ mod tests {
             frozen: false,
         };
         let (json, cut) = serialize_capped(&value, 64);
-        assert!(cut);
-        assert!(json.len() <= 64);
+        assert!(!cut);
+        assert_eq!(json, r#"{"field_0":0}"#);
     }
 
     #[test]
