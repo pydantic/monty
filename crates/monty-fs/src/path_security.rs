@@ -140,7 +140,7 @@ impl ResolutionRequest {
         reject_parent_components(&candidate_host, &normalized_virtual)?;
         // A join that stayed inside the mount makes this a no-op; one whose
         // segment clobbered the base is caught before any host I/O runs. It
-        // cannot pre-empt a symlink escape — only canonicalization sees those.
+        // cannot catch a symlink escape — only canonicalization sees those.
         check_boundary(&candidate_host, mount_host_path, &normalized_virtual)?;
 
         Ok(Self {
