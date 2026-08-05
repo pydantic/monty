@@ -81,6 +81,7 @@ test('a refused allocation raises MemoryError and the pool recovers', async (ctx
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, 'MemoryError: the worker exceeded its memory limit and was terminated')
+  t.is(error.exception.typeName, 'MemoryError')
   const next = await pool.checkout()
   t.is(await next.feedRun('1 + 1'), 2)
   await next.close()
@@ -97,6 +98,7 @@ test('exceeding maxMemory in the allocator raises MemoryError and the pool recov
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, 'MemoryError: the worker exceeded its memory limit and was terminated')
+  t.is(error.exception.typeName, 'MemoryError')
   const next = await pool.checkout()
   t.is(await next.feedRun('1 + 1'), 2)
   await next.close()

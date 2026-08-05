@@ -181,9 +181,10 @@ pub enum CrashCause {
         context: String,
     },
     /// It announced a `FatalError` and exited, so its own account replaces
-    /// the pool's — as does a death the pool can name from the exit code
-    /// alone. A serving relay also uses this to report that it could not
-    /// start a worker at all.
+    /// the pool's. A serving relay also uses this to report that it could not
+    /// start a worker at all. A worker that exceeded its memory limit is not
+    /// here at all: that exit code classifies into
+    /// [`PoolError::Runtime`] carrying a `MemoryError`.
     Announced {
         /// What the worker said before dying.
         reason: String,

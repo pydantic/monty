@@ -35,9 +35,10 @@ process, not by hand.
 
 The binary runs under the
 [`monty-alloc`](https://crates.io/crates/monty-alloc) global allocator, which
-enforces the sandbox session's `max_memory` and turns an allocation failure into
-a dedicated exit code the parent can classify, rather than the `SIGABRT` a stack
-overflow also produces.
+enforces the sandbox session's `max_memory`. It enables that crate's
+`exit-code` feature, so a refused allocation ends the process with a status the
+parent can classify — see the crate's docs for what the alternative is and why
+a wasm worker takes it.
 
 ## PyPI packaging (`pydantic-monty-runtime`)
 

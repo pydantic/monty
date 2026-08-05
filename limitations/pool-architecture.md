@@ -110,8 +110,9 @@ properties that real CPython does not provide, per the caveat above.
   bytes the worker's allocator will hand out (plus headroom — see
   `limitations/resource_limits.md`, which covers how exceeding it surfaces); a
   session without a limit is uncapped. The worker derives it from the session it
-  holds, so nothing travels outside the protocol, and the wasm worker applies it
-  to its linear memory. Ignored by the WebSocket transport (whose exit codes do
+  holds, so nothing travels outside the protocol, and the wasm worker counts the
+  same way (not the linear memory it has grown to, which never shrinks).
+  Ignored by the WebSocket transport (whose exit codes do
   not travel, so a remote failure degrades to `Disconnected`). The exit code
   borrows [`sysexits.h`](https://man.freebsd.org/sysexits) so a bare status is
   legible in a log.

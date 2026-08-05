@@ -7,11 +7,16 @@ use std::{
     io::{Read, Write},
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
 use monty_types::MontyObject;
+
+/// How long a death-expecting helper waits for the child to exit. Generous:
+/// the regression it guards is "the child never dies", so the only cost of a
+/// long wait is how late that failure is reported on a slow CI machine.
+const DEATH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
@@ -139,20 +144,35 @@ impl ChildProc {
             inputs: vec![],
             skip_type_check: false,
         }));
-        match self.reader.read::<pb::ChildEvent>() {
-            Ok(None) | Err(_) => {}
-            Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),
-        }
+        self.expect_death();
     }
 
     /// Writes a bare 200 MiB frame-length prefix — no body — and expects the
     /// child to die buying the buffer: under the wire cap, over any limit a
     /// test applies, and four bytes of writing, so the parent cannot block on a
     /// pipe whose reader has already gone.
+    #[track_caller]
     fn oversized_prefix_expecting_death(&mut self) {
         self.writer
             .write_all(&(200u32 * 1024 * 1024).to_le_bytes())
             .expect("failed to write length prefix");
+        self.expect_death();
+    }
+
+    /// Asserts the child dies without a turn-ending event: EOF (the usual
+    /// case) or a truncated frame. Waits for the exit *first* — a surviving
+    /// child writes nothing, so reading it would block forever and hang the
+    /// suite instead of failing it; once it is dead the read cannot block.
+    #[track_caller]
+    fn expect_death(&mut self) {
+        let deadline = Instant::now() + DEATH_TIMEOUT;
+        while self.child.try_wait().expect("failed to poll child").is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "expected the child to die, still alive after {DEATH_TIMEOUT:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         match self.reader.read::<pb::ChildEvent>() {
             Ok(None) | Err(_) => {}
             Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),

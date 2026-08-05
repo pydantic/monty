@@ -34,6 +34,7 @@ test('an overrun the interpreter catches leaves the instance alive', async (ctx)
     instanceOf: MontyRuntimeError,
   })
   t.is(error.message, 'MemoryError: memory limit exceeded: 1048600 bytes > 1048576 bytes')
+  t.is(error.exception.typeName, 'MemoryError')
   await session.close()
   await pool.close()
 })

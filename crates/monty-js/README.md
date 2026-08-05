@@ -322,8 +322,9 @@ const pool = await Monty.create({
 ```
 
 A session's `maxMemory` is enforced in the worker's own allocator too (the
-[`monty-alloc`](https://crates.io/crates/monty-alloc) crate), so it covers every
-byte the worker asks for instead of letting it grow the host without bound. A
+[`monty-alloc`](https://crates.io/crates/monty-alloc) crate), which bounds the
+bytes the worker holds at once — allocated minus freed, plus headroom — instead
+of letting it grow the host without bound. A
 worker that cannot honour the limit raises `MontyRuntimeError` wrapping
 `MemoryError` — but unlike other runtime errors it takes the worker with it, so
 the session is finished (the pool recovers). The wasm worker applies the same

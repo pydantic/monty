@@ -101,9 +101,10 @@ below collapse into the allocator's, and only its outcome remains. -->
 
 Independently of any limit, **any** allocation a worker's allocator refuses —
 plain host OOM, or a request beyond the usable address space such as
-`' ' * (1 << 60)` — takes this same path on every platform: the worker exits and
-the host sees that `MemoryError` with its session gone. CPython raises a
-catchable `MemoryError` in-process and carries on. Monty cannot: the failure
+`' ' * (1 << 60)` — takes this same path: on a worker with an exit status the
+host sees that `MemoryError` with its session gone, and on wasm the same
+refusal traps, reported as `MontyCrashedError` per the bullet above. CPython
+raises a catchable `MemoryError` in-process and carries on. Monty cannot: the failure
 happens below the interpreter, where no Python-level exception can be raised, so
 the worker classifies the failure into a dedicated exit code and dies. (Without
 that, the process would abort with `SIGABRT` — indistinguishable from a stack
