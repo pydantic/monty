@@ -1355,12 +1355,11 @@ fn mkdir_parents_creates_nothing_at_the_host_location() {
 /// A missing and an existing out-of-mount path must be indistinguishable, or
 /// `exists` leaks host filesystem layout.
 ///
-/// The pair only discriminates on Windows, where the drive prefix makes the
-/// first payload resolve to a real host file: on Unix a backslash is an
-/// ordinary filename character, so both are one literal segment naming nothing
-/// inside the mount and report the same miss either way. The Unix leg of this
-/// regression is covered by the refusal tests above, which fail there on the
-/// `Ok(Bool(false))` a lost check would produce.
+/// Both payloads are refused on every host; the pair only has bite on Windows,
+/// where a lost check would let the drive prefix clobber the mount base and
+/// make the first resolve to a real host file. On Unix a backslash is an
+/// ordinary filename character, so a lost check leaves both as in-mount misses
+/// — indistinguishable anyway, and caught instead by the refusal tests above.
 #[test]
 fn host_absolute_exists_is_not_an_oracle() {
     // A literal drive-prefixed pair rather than a temp path, whose shape would
