@@ -138,6 +138,10 @@ impl ResolutionRequest {
             mount_host_path.join(&relative)
         };
         reject_parent_components(&candidate_host, &normalized_virtual)?;
+        // A join that stayed inside the mount makes this a no-op; one whose
+        // segment clobbered the base is caught before any host I/O runs. It
+        // cannot pre-empt a symlink escape — only canonicalization sees those.
+        check_boundary(&candidate_host, mount_host_path, &normalized_virtual)?;
 
         Ok(Self {
             normalized_virtual,
@@ -436,9 +440,13 @@ pub(super) fn reject_escaping_symlink(
     check_boundary(&canonical, &canonical_mount, virtual_path)
 }
 
-/// Ensures a canonical host path stays within the canonical mount boundary.
-fn check_boundary(canonical_path: &Path, mount_host_path: &Path, virtual_path: &str) -> Result<(), MountError> {
-    if canonical_path.starts_with(mount_host_path) {
+/// Ensures a host path stays within the mount boundary, component-wise.
+///
+/// Applied to canonicalized paths as the authoritative check, and to lexically
+/// joined candidates as a backstop that traps a base-clobbering segment before
+/// any host I/O. `mount_host_path` is canonical: `Mount::new` resolves it.
+fn check_boundary(candidate_path: &Path, mount_host_path: &Path, virtual_path: &str) -> Result<(), MountError> {
+    if candidate_path.starts_with(mount_host_path) {
         Ok(())
     } else {
         Err(MountError::PathEscape {
