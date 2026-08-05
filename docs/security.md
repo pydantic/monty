@@ -73,8 +73,13 @@ unless you mount them.
 
 A Monty process can never be made fully crash-proof against memory errors — a
 stack-overflow abort or an allocator abort takes down the process it happens in. Rather
-than pretend otherwise, the Python and JavaScript packages never run the interpreter in
-your process at all: every session runs in a `monty` worker subprocess.
+than pretend otherwise, the Python package and the native `@pydantic/monty` binding never
+run the interpreter in your process at all: every session runs in a `monty` worker
+subprocess.
+
+The WebAssembly build has no subprocess to use. In a browser it runs off-thread in a
+`Worker`; under Node, which has no global `Worker`, `@pydantic/monty/wasm` runs in-process
+outright. See [in-process execution](#in-process-execution).
 
 When a worker dies, the pool observes the death, discards the worker, spawns a
 replacement, and the call raises `MontyCrashedError` (`PoolError::Crashed` in Rust). The
@@ -105,13 +110,17 @@ Untrusted code will try to allocate forever or loop forever. See
   consume the budget. It accumulates across feeds for the life of the session.
 - Because the in-sandbox time check only runs at interpreter checkpoints, both the pool's
   `request_timeout` and the automatic `duration_limit_grace` backstop kill the worker from
-  outside. Keep at least one of them on when running untrusted code — `request_timeout`
-  defaults to no deadline in every binding, and `duration_limit_grace` only does anything
-  for a session that set `max_duration_secs`, so a default pool has neither.
+  outside. Keep at least one of them on when running untrusted code. Every local pool
+  (`Monty`, `AsyncMonty`, JavaScript `Monty.create()`, `PoolConfig::subprocess`) defaults
+  `request_timeout` to no deadline; only `AsyncMontyWebsocket` sets one, at 10 seconds.
+  And `duration_limit_grace` only does anything for a session that set
+  `max_duration_secs`, so a default local pool has neither backstop.
 - **After a memory or time limit fires, no guarantees are made about heap state or
   reference counts.** Discard the session rather than continuing to run code in it. The
-  pool does not do this for you — the checkout stays usable, and a later feed may quietly
-  succeed against a corrupted heap.
+  pool does not do this for you, and the two limits do not even fail alike: a spent
+  `max_duration_secs` budget is cumulative, so every later feed re-raises `TimeoutError`,
+  while after a `max_memory` trip a later feed may quietly succeed against a corrupted
+  heap.
 - Compilation is not charged against the memory or duration budget. It has its own
   structural caps (AST nesting, bytecode operand sizes, comprehension nesting, `finally`
   expansion), but a host accepting untrusted source should still isolate compilation — as

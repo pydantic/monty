@@ -183,7 +183,8 @@ See [snapshots](../snapshots.md) for the model, which is identical to Python's.
 ## Browsers and WebAssembly
 
 Anywhere subprocesses are impossible, the same public API is available under
-`@pydantic/monty/wasm`, backed by a Web Worker running a WebAssembly build:
+`@pydantic/monty/wasm`, backed by a WebAssembly build. In a browser it runs in a Web
+Worker; under Node, which has no global `Worker`, it runs in-process:
 
 ```ts
 import { Monty } from '@pydantic/monty/wasm'

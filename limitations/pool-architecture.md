@@ -333,17 +333,8 @@ properties that real CPython does not provide, per the caveat above.
   and replacing it with a non-callable makes calls raise the `TypeError`
   CPython would for calling that value (`'int' object is not callable`).
   Because only *undefined* names fire lookups, an entry shadowing a builtin
-<<<<<<< HEAD
   (e.g. `{'len': ...}`) is silently ignored. `feed_start` / `feedStart` take no
   `external_lookup`; they surface name lookups as snapshots, which resolve only
-=======
-  (e.g. `{'len': ...}`) is silently ignored. A callable passed through `inputs`
-  instead is accepted, but binds only the same name-dispatched proxy — keyed on
-  the callable's `__name__`, not the `inputs` key — so calling it still resolves
-  that name through `external_lookup` and raises `NameError` when it is absent.
-  Host functions belong in `external_lookup`. `feed_start` / `feedStart` take no
-  `external_lookup` — they surface name lookups as snapshots, which resolve only
->>>>>>> f9595bc2 (docs: correct the pool's timeout and session-survival claims)
   to a function (see below).
 - **Dependency installation is only available on an embedded-CPython worker.**
   `session.install_dependencies([...])` (sync and async in `pydantic_monty`;

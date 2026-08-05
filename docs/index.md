@@ -52,9 +52,10 @@ a container or a sandboxing service in the loop.
   [snapshots](snapshots.md).
 - **Bound resource use** — limits on heap memory, cumulative execution time, recursion
   depth and GC interval. See [resource limits](resource-limits.md).
-- **Contain crashes** — the Python and JavaScript packages run every session in a
-  worker subprocess, so even a stack-overflow abort triggered by adversarial code kills
-  only the worker.
+- **Contain crashes** — the Python package and the native `@pydantic/monty` binding run
+  every session in a worker subprocess, so even a stack-overflow abort triggered by
+  adversarial code kills only the worker. The WebAssembly build has no subprocess to use;
+  see [the security model](security.md#in-process-execution).
 - **Be called from Rust, Python or JavaScript** — and in the browser, via a
   WebAssembly build.
 

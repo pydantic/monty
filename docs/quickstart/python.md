@@ -197,10 +197,19 @@ untouched. An `external_lookup` value is converted mid-execution, while the work
 suspended on the name read, so the checkout is discarded and reusing it raises
 `RuntimeError: this checkout has already been finished`. Check out again to retry.
 
-A `MontyRuntimeError` carrying `MemoryError` or `TimeoutError` is a
-[resource limit](../resource-limits.md#after-a-limit-fires), not ordinary sandbox code
-raising. The pool leaves the checkout open, but the heap behind it is no longer
-trustworthy, so discard it rather than feeding it again.
+A `MontyRuntimeError` carrying `TimeoutError`, or a `MemoryError` from the sandbox heap,
+is a [resource limit](../resource-limits.md#after-a-limit-fires) rather than ordinary
+sandbox code raising. The pool leaves the checkout open, but the heap behind it is no
+longer trustworthy, so discard it rather than feeding it again. A spent
+`max_duration_secs` budget is cumulative, so later feeds re-raise `TimeoutError` anyway;
+after a `max_memory` trip they may quietly succeed.
+
+The print-collector cap is not one of these, though it looks identical from the outside:
+same `MontyRuntimeError`, same `MemoryError`, same `memory limit exceeded: ...` message.
+If you collect printed output at all — and the collectors are capped by default — you
+cannot tell the two apart from the exception alone, and in the collector case nothing is
+wrong with the session. See
+[`limitations/print.md`](https://github.com/pydantic/monty/blob/main/limitations/print.md).
 
 `MontySyntaxError` and `MontyRuntimeError` carry a Monty traceback:
 
