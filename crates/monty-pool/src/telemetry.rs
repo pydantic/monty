@@ -1135,6 +1135,46 @@ mod tests {
         assert!(logs.get_emitted_logs().unwrap().is_empty());
     }
 
+    /// An idle restore keeps the configured session span after its `Load`
+    /// housekeeping span closes, so later feeds remain grouped in the session.
+    #[test]
+    fn idle_restore_keeps_its_session_parent() {
+        let (logfire, spans, _logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
+
+        recorder.begin_turn(&request(pb::parent_request::Kind::Configure(pb::Configure {
+            script_name: "new.py".to_owned(),
+            limits: None,
+            type_check: false,
+            type_check_stubs: None,
+            monty_version: "0.0.1".to_owned(),
+            assert_message_annotations: None,
+        })));
+        recorder.event(&event(pb::child_event::Kind::Ok(pb::Ok {})));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.event(&pb::ChildEvent {
+            kind: Some(pb::child_event::Kind::Ok(pb::Ok {})),
+            total_execution_micros: 42,
+            max_duration_micros: None,
+            restored_script_name: Some("restored.py".to_owned()),
+        });
+        recorder.begin_turn(&request(pb::parent_request::Kind::Feed(pb::Feed {
+            code: "1".to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        })));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
+            value: Some(MontyObject::Int(1).into()),
+        })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::Reset(pb::Reset {})));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let session = spans.iter().find(|span| span.name == "session {script_name}").unwrap();
+        let feed = spans.iter().find(|span| span.name == "run code").unwrap();
+        assert_eq!(feed.parent_span_id, session.span_context.span_id());
+    }
+
     /// A `Load` span stands in for a restored suspended feed and remains the
     /// parent across its resume until the restored feed completes.
     #[test]

@@ -3,7 +3,7 @@
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock, PoisonError,
+        Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
     thread,
     time::{SystemTime, UNIX_EPOCH},
@@ -30,8 +30,10 @@ type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send
 
 struct JsBridge {
     send: SendEvent,
+    /// Queue overflow disables the shared bridge rather than risking
+    /// cross-root gaps or an unbounded cleanup backlog.
     disabled: AtomicBool,
-    delivery: Mutex<DeliveryState>,
+    delivery: RwLock<DeliveryState>,
 }
 
 struct DeliveryState {
@@ -70,7 +72,7 @@ pub fn install_telemetry_adapter(
     let bridge = Arc::new(JsBridge {
         send,
         disabled: AtomicBool::new(false),
-        delivery: Mutex::new(DeliveryState {
+        delivery: RwLock::new(DeliveryState {
             cleanup_requested: false,
         }),
     });
@@ -156,7 +158,7 @@ impl TelemetryAdapter for JsBridge {
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
         self.disabled.store(true, Ordering::Relaxed);
-        let mut delivery = lock(&self.delivery);
+        let mut delivery = write_lock(&self.delivery);
         if !delivery.cleanup_requested {
             delivery.cleanup_requested = true;
             let event = json!({
@@ -169,11 +171,21 @@ impl TelemetryAdapter for JsBridge {
             let cleanup_send = Arc::clone(&self.send);
             // Cleanup is globally coalesced and gets a short-lived thread, so
             // it neither blocks a pool task nor retains an idle worker.
-            let _ = thread::Builder::new()
+            if thread::Builder::new()
                 .name("monty-telemetry-cleanup".to_owned())
-                .spawn(move || {
-                    let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
-                });
+                .spawn({
+                    let event = event.clone();
+                    move || {
+                        let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
+                    }
+                })
+                .is_err()
+            {
+                // Thread creation can fail under process resource pressure;
+                // retain a retry path if the immediate best effort also fails.
+                let sent = (self.send)(event, ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok;
+                delivery.cleanup_requested = sent;
+            }
         }
     }
 }
@@ -181,7 +193,7 @@ impl TelemetryAdapter for JsBridge {
 impl JsBridge {
     /// Queues one ordered record without blocking a Tokio worker thread.
     fn emit(&self, event: JsonValue) -> bool {
-        let _delivery = lock(&self.delivery);
+        let _delivery = read_lock(&self.delivery);
         if self.disabled.load(Ordering::Relaxed) {
             false
         } else {
@@ -194,9 +206,14 @@ impl JsBridge {
     }
 }
 
-/// Locks delivery state while recovering from an unrelated panic.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+/// Reads delivery state while recovering from an unrelated panic.
+fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Writes delivery state while recovering from an unrelated panic.
+fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Converts OTel span attributes into their JSON bridge representation.

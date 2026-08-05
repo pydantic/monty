@@ -338,7 +338,10 @@ The Node-only Logfire integration installs a version-1 adapter through
 `_installTelemetryAdapter(1, adapter)`. At checkout it propagates the active
 host trace context into Monty's exporter-free Rust spans, then reconstructs
 those records through the host SDK, which owns credentials, export, and
-shutdown. Browser/WASM does not yet implement this adapter path.
+shutdown. Delivery uses a bounded non-blocking queue; overflow permanently
+disables the adapter and sends one global cleanup notification rather than
+risking unbounded host memory. Browser/WASM does not yet implement this adapter
+path.
 
 ## Value Conversion
 

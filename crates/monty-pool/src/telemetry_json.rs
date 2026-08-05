@@ -20,6 +20,9 @@ use monty_types::{MontyDateTime, MontyObject, bytes_repr};
 use num_traits::ToPrimitive;
 use serde::ser::{Error as _, Serialize, SerializeMap, Serializer};
 
+/// Maximum attrs inspected while matching declared dataclass fields.
+const DATACLASS_ATTR_SCAN_LIMIT: usize = 64 * 1024;
+
 /// Serializes `value` to logfire-style JSON (see the module docs), capped at
 /// `limit` bytes. The bool is true when the cap cut serialization short — the
 /// partial output is then no longer valid JSON, so the caller should mark it
@@ -149,20 +152,27 @@ impl Serialize for JsonEncoded<'_> {
             // like logfire dataclasses: an object of the declared fields only
             MontyObject::Dataclass { field_names, attrs, .. } => {
                 // Index the smaller attacker-controlled side. Normal
-                // dataclasses track declared names and can scan arbitrarily
-                // many extra attrs without allocating for those extras.
+                // dataclasses track declared names while scanning only a
+                // budget-sized prefix of unrelated extra attrs.
                 let index_limit = (self.limit / size_of::<(&str, &MontyObject)>()).max(1);
+                let scan_limit = self.limit.saturating_mul(16).clamp(1, DATACLASS_ATTR_SCAN_LIMIT);
                 let (by_name, index_cut) = if field_names.len() <= index_limit {
                     let declared: HashSet<&str> = field_names.iter().map(String::as_str).collect();
                     let mut by_name = HashMap::with_capacity(declared.len());
-                    for (key, value) in attrs {
+                    let mut scanned = 0;
+                    for (key, value) in attrs.into_iter().take(scan_limit) {
+                        scanned += 1;
                         if let MontyObject::String(key) = key
                             && declared.contains(key.as_str())
                         {
                             by_name.entry(key.as_str()).or_insert(value);
+                            if by_name.len() == declared.len() {
+                                break;
+                            }
                         }
                     }
-                    (by_name, false)
+                    let cut = scanned < attrs.len() && by_name.len() < declared.len();
+                    (by_name, cut)
                 } else {
                     let indexed = attrs.len().min(index_limit);
                     let mut by_name = HashMap::with_capacity(indexed);
@@ -506,6 +516,18 @@ mod tests {
         let (json, cut) = serialize_capped(&value, 64);
         assert!(!cut);
         assert_eq!(json, r#"{"field_0":0}"#);
+
+        let attrs = (0..2_000)
+            .map(|index| (MontyObject::String(format!("extra_{index}")), MontyObject::None))
+            .collect::<Vec<_>>();
+        let value = MontyObject::Dataclass {
+            name: "Large".to_owned(),
+            type_id: 1,
+            field_names: vec!["missing".to_owned()],
+            attrs: DictPairs::from(attrs),
+            frozen: false,
+        };
+        assert!(serialize_capped(&value, 64).1);
     }
 
     #[test]
