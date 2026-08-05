@@ -5,15 +5,14 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
-    thread,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use monty_pool::telemetry_adapter::{
     configure_telemetry_adapter, TelemetryAdapter, TelemetryAdapterHandle, TELEMETRY_ADAPTER_VERSION,
 };
 use napi::{
-    bindgen_prelude::{FnArgs, Function},
+    bindgen_prelude::{spawn, FnArgs, Function},
     threadsafe_function::{ThreadsafeFunctionCallMode, UnknownReturnValue},
     Status,
 };
@@ -25,6 +24,7 @@ use opentelemetry::{
 };
 use opentelemetry_sdk::{logs::SdkLogRecord, trace::SpanData};
 use serde_json::{json, Map, Value as JsonValue};
+use tokio::time::sleep;
 
 type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send + Sync>;
 
@@ -169,23 +169,13 @@ impl TelemetryAdapter for JsBridge {
             })
             .to_string();
             let cleanup_send = Arc::clone(&self.send);
-            // Cleanup is globally coalesced and gets a short-lived thread, so
-            // it neither blocks a pool task nor retains an idle worker.
-            if thread::Builder::new()
-                .name("monty-telemetry-cleanup".to_owned())
-                .spawn({
-                    let event = event.clone();
-                    move || {
-                        let _ = cleanup_send(event, ThreadsafeFunctionCallMode::Blocking);
-                    }
-                })
-                .is_err()
-            {
-                // Thread creation can fail under process resource pressure;
-                // retain a retry path if the immediate best effort also fails.
-                let sent = (self.send)(event, ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok;
-                delivery.cleanup_requested = sent;
-            }
+            // A single async retry task neither blocks a pool worker nor grows
+            // native cleanup state while the JS event queue drains.
+            drop(spawn(async move {
+                while cleanup_send(event.clone(), ThreadsafeFunctionCallMode::NonBlocking) == Status::QueueFull {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            }));
         }
     }
 }
