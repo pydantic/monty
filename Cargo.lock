@@ -2390,7 +2390,6 @@ dependencies = [
 name = "monty-js"
 version = "0.0.19"
 dependencies = [
- "logfire",
  "monty-pool",
  "monty-type-checking",
  "monty-types",
@@ -2466,6 +2465,7 @@ dependencies = [
  "monty-types",
  "rustyline",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -3163,7 +3163,6 @@ name = "pydantic-monty"
 version = "0.0.19"
 dependencies = [
  "ahash",
- "logfire",
  "monty-fs",
  "monty-pool",
  "monty-proto",

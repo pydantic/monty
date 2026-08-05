@@ -18,7 +18,7 @@ use crate::{
     builtins::BuiltinsFunctions,
     exceptions::ExcType,
     file_mode::FileMode,
-    format::{FormatFloat, StringRepr, bytes_repr, format_offset_timedelta_repr, string_repr_fmt},
+    format::{FormatFloat, StringRepr, bytes_repr_fmt, format_offset_timedelta_repr, string_repr_fmt},
     resource::ResourceError,
 };
 
@@ -251,7 +251,7 @@ impl MontyObject {
             Self::BigInt(v) => write!(f, "{v}"),
             Self::Float(v) => write!(f, "{}", FormatFloat(*v)),
             Self::String(s) => string_repr_fmt(s, f),
-            Self::Bytes(b) => f.write_str(&bytes_repr(b)),
+            Self::Bytes(b) => bytes_repr_fmt(b, f),
             Self::List(l) => {
                 f.write_char('[')?;
                 let mut iter = l.iter();

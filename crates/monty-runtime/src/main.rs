@@ -14,6 +14,7 @@ use monty_types::{
     ResourceTracker,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
+use tracing::field::Empty;
 // disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
 // TODO re-enabled soon!
 #[rustfmt::skip]
@@ -174,8 +175,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let _run_span = logfire.as_ref().map(|_| logfire::span!("run monty"));
+    let run_span = logfire.as_ref().map(|_| logfire::span!("run monty", success = Empty,));
+    let exit_code = run_cli(cli);
+    if let Some(run_span) = run_span {
+        run_span.record("success", exit_code == ExitCode::SUCCESS);
+    }
+    exit_code
+}
 
+/// Dispatches a parsed standalone CLI invocation.
+fn run_cli(cli: Cli) -> ExitCode {
     let type_check_enabled = cli.type_check;
 
     let limits = match cli.resource_limits() {

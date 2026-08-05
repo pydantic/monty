@@ -19,8 +19,6 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
-# The binding owns its local exporter; monty-pool only emits telemetry.
-logfire = { version = "0.11", default-features = false }
 monty-types = { workspace = true }
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"

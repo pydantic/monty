@@ -703,11 +703,12 @@ impl PyAsyncMontySession {
     /// the REPL session in it.
     fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
         let this = slf.get();
-        let pool = active_pool(&this.pool)?;
+        let pool_slot = Arc::clone(&this.pool);
         let repl_config = this.repl_config.clone();
         let slot = Arc::clone(&this.checkout);
         let telemetry = capture_telemetry_context(py);
         future_into_py(py, async move {
+            let pool = active_pool(&pool_slot)?;
             let checkout = if let Some(telemetry) = telemetry {
                 pool.checkout_with_telemetry(&repl_config, telemetry).await
             } else {

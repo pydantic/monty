@@ -28,6 +28,9 @@ struct JsBridge {
 
 static HANDLE: OnceLock<TelemetryAdapterHandle> = OnceLock::new();
 
+/// Maximum JSON budget for one attribute crossing the Node callback queue.
+const VALUE_SIZE_LIMIT: usize = 64 * 1024;
+
 /// Installs the versioned Node callback and shared exporter-free pipeline.
 #[napi(js_name = "_installTelemetryAdapter")]
 pub fn install_telemetry_adapter(
@@ -96,10 +99,23 @@ impl TelemetryAdapter for JsBridge {
         let trace_id = record
             .trace_context()
             .map_or(TraceId::INVALID, |context| context.trace_id);
-        let attributes = record
+        let mut any_cut = false;
+        let mut attributes = record
             .attributes_iter()
-            .map(|(key, value)| (key.as_str().to_owned(), any_value(value)))
+            .map(|(key, value)| {
+                let (value, cut) = any_value(value);
+                any_cut |= cut;
+                (key.as_str().to_owned(), value)
+            })
             .collect::<Map<_, _>>();
+        let body = record.body().map(|body| {
+            let (body, cut) = any_value(body);
+            any_cut |= cut;
+            body
+        });
+        if any_cut {
+            attributes.insert("length_limit_exceeded".to_owned(), JsonValue::Bool(true));
+        }
         self.emit(
             json!({
                 "kind": "log",
@@ -107,7 +123,7 @@ impl TelemetryAdapter for JsBridge {
                 "parentId": parent_span_id.to_string(),
                 "level": record.severity_text().unwrap_or("INFO"),
                 "timestamp": timestamp(record.timestamp().or_else(|| record.observed_timestamp()).unwrap_or_else(SystemTime::now)),
-                "body": record.body().map(any_value),
+                "body": body,
                 "attributes": attributes,
             }),
         )
@@ -120,7 +136,7 @@ impl TelemetryAdapter for JsBridge {
             "spanId": root_span_id.to_string(),
         })
         .to_string();
-        let _ = (self.send)(event, ThreadsafeFunctionCallMode::Blocking);
+        let _ = (self.send)(event, ThreadsafeFunctionCallMode::NonBlocking);
     }
 }
 
@@ -133,48 +149,167 @@ impl JsBridge {
 
 /// Converts OTel span attributes into their JSON bridge representation.
 fn attributes(values: &[KeyValue]) -> JsonValue {
-    JsonValue::Object(
-        values
-            .iter()
-            .map(|attribute| (attribute.key.as_str().to_owned(), value_to_json(&attribute.value)))
-            .collect(),
-    )
+    let mut cut = false;
+    let mut attributes = values
+        .iter()
+        .map(|attribute| {
+            let (value, value_cut) = value_to_json(&attribute.value);
+            cut |= value_cut;
+            (attribute.key.as_str().to_owned(), value)
+        })
+        .collect::<Map<_, _>>();
+    if cut {
+        attributes.insert("length_limit_exceeded".to_owned(), JsonValue::Bool(true));
+    }
+    JsonValue::Object(attributes)
 }
 
 /// Converts one OTel span value without stringifying supported arrays.
-fn value_to_json(value: &Value) -> JsonValue {
+fn value_to_json(value: &Value) -> (JsonValue, bool) {
+    let mut budget = JsonBudget::new();
+    let value = value_to_json_budget(value, &mut budget);
+    (value, budget.cut)
+}
+
+/// Converts a span value while sharing one allocation budget across children.
+fn value_to_json_budget(value: &Value, budget: &mut JsonBudget) -> JsonValue {
     match value {
-        Value::Bool(value) => JsonValue::Bool(*value),
-        Value::I64(value) => (*value).into(),
-        Value::F64(value) => json!(value),
-        Value::String(value) => value.as_str().into(),
+        Value::Bool(value) => {
+            budget.consume(1);
+            JsonValue::Bool(*value)
+        }
+        Value::I64(value) => {
+            budget.consume(8);
+            (*value).into()
+        }
+        Value::F64(value) => {
+            budget.consume(8);
+            json!(value)
+        }
+        Value::String(value) => JsonValue::String(budget.string(value.as_str())),
         Value::Array(value) => match value {
-            Array::Bool(values) => json!(values),
-            Array::I64(values) => json!(values),
-            Array::F64(values) => json!(values),
-            Array::String(values) => JsonValue::Array(values.iter().map(|value| value.as_str().into()).collect()),
-            _ => json!(value.to_string()),
+            Array::Bool(values) => budget.array(values, |value, budget| {
+                budget.consume(1);
+                JsonValue::Bool(*value)
+            }),
+            Array::I64(values) => budget.array(values, |value, budget| {
+                budget.consume(8);
+                (*value).into()
+            }),
+            Array::F64(values) => budget.array(values, |value, budget| {
+                budget.consume(8);
+                json!(value)
+            }),
+            Array::String(values) => {
+                budget.array(values, |value, budget| JsonValue::String(budget.string(value.as_str())))
+            }
+            _ => budget.unsupported("<unsupported array>"),
         },
-        _ => json!(value.to_string()),
+        _ => budget.unsupported("<unsupported value>"),
     }
 }
 
-/// Converts one recursive OTel log value into JSON.
-fn any_value(value: &AnyValue) -> JsonValue {
+/// Converts one recursive OTel log value into bounded JSON.
+fn any_value(value: &AnyValue) -> (JsonValue, bool) {
+    let mut budget = JsonBudget::new();
+    let value = any_value_budget(value, &mut budget);
+    (value, budget.cut)
+}
+
+/// Converts a recursive log value while sharing one allocation budget.
+fn any_value_budget(value: &AnyValue, budget: &mut JsonBudget) -> JsonValue {
     match value {
-        AnyValue::Int(value) => (*value).into(),
-        AnyValue::Double(value) => json!(value),
-        AnyValue::String(value) => value.as_str().into(),
-        AnyValue::Boolean(value) => (*value).into(),
-        AnyValue::Bytes(value) => json!(value),
-        AnyValue::ListAny(values) => JsonValue::Array(values.iter().map(any_value).collect()),
-        AnyValue::Map(values) => JsonValue::Object(
-            values
-                .iter()
-                .map(|(key, value)| (key.as_str().to_owned(), any_value(value)))
-                .collect(),
-        ),
-        _ => json!(format!("{value:?}")),
+        AnyValue::Int(value) => {
+            budget.consume(8);
+            (*value).into()
+        }
+        AnyValue::Double(value) => {
+            budget.consume(8);
+            json!(value)
+        }
+        AnyValue::String(value) => JsonValue::String(budget.string(value.as_str())),
+        AnyValue::Boolean(value) => {
+            budget.consume(1);
+            (*value).into()
+        }
+        AnyValue::Bytes(value) => {
+            let keep = budget.consume(value.len());
+            json!(&value[..keep])
+        }
+        AnyValue::ListAny(values) => budget.array(values, any_value_budget),
+        AnyValue::Map(values) => {
+            let mut output = Map::new();
+            for (key, value) in values.iter() {
+                if budget.exhausted() {
+                    budget.cut = true;
+                    break;
+                }
+                budget.consume(1);
+                let key = budget.string(key.as_str());
+                output.insert(key, any_value_budget(value, budget));
+            }
+            JsonValue::Object(output)
+        }
+        _ => budget.unsupported("<unsupported value>"),
+    }
+}
+
+/// Remaining host-allocation budget while constructing one JSON value.
+struct JsonBudget {
+    remaining: usize,
+    cut: bool,
+}
+
+impl JsonBudget {
+    /// Starts one per-value bridge budget.
+    const fn new() -> Self {
+        Self {
+            remaining: VALUE_SIZE_LIMIT,
+            cut: false,
+        }
+    }
+
+    /// Charges bytes and returns how many fit.
+    fn consume(&mut self, requested: usize) -> usize {
+        let consumed = requested.min(self.remaining);
+        self.remaining -= consumed;
+        self.cut |= consumed < requested;
+        consumed
+    }
+
+    /// Copies a UTF-8 prefix fitting the remaining budget.
+    fn string(&mut self, value: &str) -> String {
+        let mut end = value.len().min(self.remaining);
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.consume(value.len());
+        value[..end].to_owned()
+    }
+
+    /// Converts array elements until their shared budget is exhausted.
+    fn array<T>(&mut self, values: &[T], convert: impl Fn(&T, &mut Self) -> JsonValue) -> JsonValue {
+        let mut output = Vec::new();
+        for value in values {
+            if self.exhausted() {
+                self.cut = true;
+                break;
+            }
+            self.consume(1);
+            output.push(convert(value, self));
+        }
+        JsonValue::Array(output)
+    }
+
+    /// Marks an unsupported value and returns a bounded placeholder.
+    fn unsupported(&mut self, placeholder: &str) -> JsonValue {
+        self.cut = true;
+        JsonValue::String(self.string(placeholder))
+    }
+
+    /// Whether another child cannot fit in this value.
+    const fn exhausted(&self) -> bool {
+        self.remaining == 0
     }
 }
 
@@ -187,10 +322,13 @@ fn timestamp(time: SystemTime) -> JsonValue {
         ),
         Err(err) => {
             let duration = err.duration();
-            (
-                -i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-                duration.subsec_nanos(),
-            )
+            let seconds = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+            let nanoseconds = duration.subsec_nanos();
+            if nanoseconds == 0 {
+                (-seconds, 0)
+            } else {
+                (seconds.saturating_neg().saturating_sub(1), 1_000_000_000 - nanoseconds)
+            }
         }
     };
     json!({ "seconds": seconds.to_string(), "nanoseconds": nanoseconds })

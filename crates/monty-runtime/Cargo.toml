@@ -26,6 +26,7 @@ monty-proto = { workspace = true, features = ["worker"] }
 monty-type-checking = { workspace = true }
 monty-types = { workspace = true }
 rustyline = "15"
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

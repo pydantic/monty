@@ -269,10 +269,13 @@ fn timestamp(time: SystemTime) -> (i64, u32) {
         ),
         Err(err) => {
             let duration = err.duration();
-            (
-                -i64::try_from(duration.as_secs()).unwrap_or(i64::MAX),
-                duration.subsec_nanos(),
-            )
+            let seconds = i64::try_from(duration.as_secs()).unwrap_or(i64::MAX);
+            let nanoseconds = duration.subsec_nanos();
+            if nanoseconds == 0 {
+                (-seconds, 0)
+            } else {
+                (seconds.saturating_neg().saturating_sub(1), 1_000_000_000 - nanoseconds)
+            }
         }
     }
 }

@@ -11,6 +11,8 @@
 //! different threads, so an entered-span stack would be wrong and make
 //! [`crate::Checkout`] `!Send`.
 
+use std::fmt::{self, Write};
+
 use monty_proto::{WireFunctionCall, WireObject, pb, pb::os_call::Call};
 use monty_types::{MontyObject, bytes_repr};
 use opentelemetry::Value as OtelValue;
@@ -20,7 +22,8 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::{
     telemetry_adapter::TelemetryContext,
     telemetry_json::{
-        nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_capped, serialize_seq_capped,
+        nonfinite_str, serialize_capped, serialize_dict_capped, serialize_named_iter_capped, serialize_seq_capped,
+        serialize_value_capped,
     },
 };
 
@@ -85,9 +88,21 @@ impl Recorder {
         } else {
             None
         };
-        // a turn span whose ending event never arrived (worker died mid-turn,
-        // undecodable reply) closes here rather than leaking open
-        self.turn = None;
+        // A restored suspended feed uses its `Load` turn as the feed span, so
+        // resumes must preserve it until the eventual turn-ending event.
+        let is_resume = matches!(
+            request.kind,
+            Some(
+                pb::parent_request::Kind::ResumeCall(_)
+                    | pb::parent_request::Kind::ResumeNameLookup(_)
+                    | pb::parent_request::Kind::ResumeFutures(_)
+            )
+        );
+        if !is_resume {
+            // A turn whose ending event never arrived closes when a genuinely
+            // new turn starts rather than leaking open.
+            self.turn = None;
+        }
         self.dump_turn = false;
         match &request.kind {
             // a stale session (impossible via the checkout state machine, but
@@ -96,12 +111,17 @@ impl Recorder {
                 self.pending = None;
                 self.feed = None;
                 let limits = c.limits.as_ref();
+                let (script_name, script_name_cut) = truncate_str(&c.script_name);
+                let (monty_version, monty_version_cut) = truncate_str(&c.monty_version);
+                let (type_check_stubs, type_check_stubs_cut) = unzip(c.type_check_stubs.as_deref().map(truncate_str));
                 let span = logfire::span!(
                     "session {script_name}",
-                    script_name = &c.script_name,
-                    monty_version = &c.monty_version,
+                    script_name = script_name,
+                    monty_version = monty_version,
                     type_check = c.type_check,
-                    type_check_stubs = c.type_check_stubs.as_ref(),
+                    type_check_stubs = type_check_stubs,
+                    length_limit_exceeded =
+                        (script_name_cut | monty_version_cut | type_check_stubs_cut).then_some(true),
                     assert_message_annotations = c.assert_message_annotations,
                     max_duration_micros = limits.and_then(|l| l.max_duration_micros),
                     max_memory_bytes = limits.and_then(|l| l.max_memory_bytes),
@@ -127,6 +147,7 @@ impl Recorder {
                     // filled in by the reply, which announces the name the
                     // restored session runs under
                     script_name = Empty,
+                    length_limit_exceeded = Empty,
                 )));
             }
             // ends the session: closing the spans is the whole record, since
@@ -138,10 +159,12 @@ impl Recorder {
                 self.session = None;
             }
             Some(pb::parent_request::Kind::InstallDependencies(d)) => {
+                let (requirements, cut) = render_str_list(&d.requirements);
                 self.turn = Some(start_span(logfire::span!(
                     parent: self.context_span(),
                     "install dependencies",
-                    requirements = render_str_list(&d.requirements),
+                    requirements = requirements,
+                    length_limit_exceeded = cut.then_some(true),
                 )));
             }
             Some(pb::parent_request::Kind::Feed(f)) => {
@@ -223,7 +246,11 @@ impl Recorder {
         // only a `Load` reply carries this: the session span already exists with
         // the `Configure` name, so the dump's name goes on the load span
         if let (Some(script_name), Some(load)) = (&event.restored_script_name, &self.turn) {
+            let (script_name, cut) = truncate_str(script_name);
             load.record("script_name", script_name.as_str());
+            if cut {
+                load.record("length_limit_exceeded", true);
+            }
         }
         match &event.kind {
             Some(pb::child_event::Kind::Print(p)) => {
@@ -237,11 +264,13 @@ impl Recorder {
                 );
             }
             Some(pb::child_event::Kind::FunctionCall(c)) => {
-                let (args, kwargs, cut) = render_call_arguments(c);
+                let (args, kwargs, args_cut) = render_call_arguments(c);
+                let (function_name, name_cut) = truncate_str(&c.function_name);
+                let cut = args_cut | name_cut;
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "call {function_name}",
-                    function_name = &c.function_name,
+                    function_name = function_name,
                     args = args,
                     kwargs = kwargs,
                     call_id = c.call_id,
@@ -258,27 +287,30 @@ impl Recorder {
                 self.pending = Some(os_call_span(c, micros, max_duration, &self.context_span()));
             }
             Some(pb::child_event::Kind::NameLookup(n)) => {
+                let (name, cut) = truncate_str(&n.name);
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "name lookup {name}",
-                    name = &n.name,
+                    name = name,
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
                     // filled in by the answering `ResumeNameLookup`
                     value = Empty,
-                    length_limit_exceeded = Empty,
+                    length_limit_exceeded = cut.then_some(true),
                 ));
-                self.pending = Some(OpenSpan::new(span, false));
+                self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::ResolveFutures(r)) => {
+                let (pending_call_ids, cut) = render_call_ids(&r.pending_call_ids);
                 let span = start_span(logfire::span!(
                     parent: self.context_span(),
                     "resolve futures",
-                    pending_call_ids = render_call_ids(&r.pending_call_ids),
+                    pending_call_ids = pending_call_ids,
+                    length_limit_exceeded = cut.then_some(true),
                     total_execution_micros = micros,
                     max_duration_micros = max_duration,
                 ));
-                self.pending = Some(OpenSpan::new(span, false));
+                self.pending = Some(OpenSpan::new(span, cut));
             }
             Some(pb::child_event::Kind::Complete(c)) => {
                 let (value, cut) = optional_attr(c.value.as_ref());
@@ -335,7 +367,13 @@ impl Recorder {
             // span itself is the record
             Some(pb::child_event::Kind::Ok(_)) => self.turn = None,
             Some(pb::child_event::Kind::FatalError(f)) => {
-                logfire::error!(parent: self.context_span(), "fatal error", message = &f.message);
+                let (message, cut) = truncate_str(&f.message);
+                logfire::error!(
+                    parent: self.context_span(),
+                    "fatal error",
+                    message = message,
+                    length_limit_exceeded = cut.then_some(true),
+                );
             }
             None => logfire::error!(parent: self.context_span(), "event with no kind"),
         }
@@ -449,16 +487,18 @@ fn render_inputs(inputs: &[pb::NamedValue]) -> (Option<String>, bool) {
     if inputs.is_empty() {
         return (None, false);
     }
-    // one placeholder, borrowed by every value the frame left out
+    // One placeholder is borrowed by every value the frame left out. The
+    // cloneable iterator avoids allocating in proportion to all inputs.
     let missing = MontyObject::Repr(MISSING.to_owned());
-    let pairs: Vec<(&str, &MontyObject)> = inputs
-        .iter()
-        .map(|i| {
-            let value = i.value.as_ref().and_then(|v| v.0.as_ref()).unwrap_or(&missing);
-            (i.name.as_str(), value)
-        })
-        .collect();
-    let (json, cut) = serialize_named_capped(&pairs, ATTR_SIZE_LIMIT);
+    let pairs = inputs.iter().map(|input| {
+        let value = input
+            .value
+            .as_ref()
+            .and_then(|value| value.0.as_ref())
+            .unwrap_or(&missing);
+        (input.name.as_str(), value)
+    });
+    let (json, cut) = serialize_named_iter_capped(pairs, inputs.len(), ATTR_SIZE_LIMIT);
     (Some(json), cut)
 }
 
@@ -486,14 +526,19 @@ fn render_call_arguments(call: &WireFunctionCall) -> (Option<String>, Option<Str
 fn render_ext_result(result: Option<&pb::ExtFunctionResult>) -> (OtelValue, bool) {
     match result.and_then(|r| r.kind.as_ref()) {
         Some(pb::ext_function_result::Kind::ReturnValue(v)) => attr_value(v),
-        // the host writes both of these, so both need the cap
         Some(pb::ext_function_result::Kind::Error(e)) => {
-            let (text, cut) = truncate_str(&format!("raise {}", render_exception(e)));
+            let (text, cut) = capped_text(|writer| {
+                write!(writer, "raise {}", e.exc_type)?;
+                if let Some(message) = &e.message {
+                    write!(writer, ": {message}")?;
+                }
+                Ok(())
+            });
             (text.into(), cut)
         }
         Some(pb::ext_function_result::Kind::Future(id)) => (format!("future {id}").into(), false),
         Some(pb::ext_function_result::Kind::NotFound(name)) => {
-            let (text, cut) = truncate_str(&format!("not found: {name}"));
+            let (text, cut) = capped_text(|writer| write!(writer, "not found: {name}"));
             (text.into(), cut)
         }
         Some(pb::ext_function_result::Kind::NotHandled(_)) => ("not handled".into(), false),
@@ -517,22 +562,29 @@ fn render_future_results(results: &[pb::FutureResult]) -> (Option<String>, bool)
     if results.is_empty() {
         return (None, false);
     }
-    let mut any_cut = false;
-    let entries: Vec<String> = results
-        .iter()
-        .map(|r| {
-            let (result, cut) = render_ext_result(r.result.as_ref());
-            any_cut |= cut;
-            format!("{}: {result}", r.call_id)
-        })
-        .collect();
-    let (joined, cut) = truncate_str(&entries.join(", "));
-    (Some(joined), any_cut | cut)
+    let mut result_cut = false;
+    let (text, text_cut) = capped_text(|writer| {
+        for (index, result) in results.iter().enumerate() {
+            if index != 0 {
+                writer.write_str(", ")?;
+            }
+            let (value, cut) = render_ext_result(result.result.as_ref());
+            result_cut |= cut;
+            write!(writer, "{}: {value}", result.call_id)?;
+        }
+        Ok(())
+    });
+    (Some(text), result_cut | text_cut)
 }
 
 /// Renders the ids a `ResolveFutures` suspension is blocked on as a JSON list.
-fn render_call_ids(ids: &[u32]) -> Option<String> {
-    (!ids.is_empty()).then(|| serde_json::to_string(ids).unwrap_or_default())
+fn render_call_ids(ids: &[u32]) -> (Option<String>, bool) {
+    if ids.is_empty() {
+        (None, false)
+    } else {
+        let (json, cut) = serialize_value_capped(&ids, ATTR_SIZE_LIMIT);
+        (Some(json), cut)
+    }
 }
 
 /// Opens the span for one os call suspension: the function name plus each
@@ -564,55 +616,66 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
             )
         };
     }
+    macro_rules! string_arg {
+        ($value:expr) => {{
+            let (value, cut) = truncate_str($value);
+            args_cut |= cut;
+            value
+        }};
+    }
     let span = start_span(match os_call.call.as_ref() {
-        Some(Call::Exists(p)) => os_call!("exists", args.path = p),
-        Some(Call::IsFile(p)) => os_call!("is_file", args.path = p),
-        Some(Call::IsDir(p)) => os_call!("is_dir", args.path = p),
-        Some(Call::IsSymlink(p)) => os_call!("is_symlink", args.path = p),
-        Some(Call::ReadText(p)) => os_call!("read_text", args.path = p),
-        Some(Call::ReadBytes(p)) => os_call!("read_bytes", args.path = p),
-        Some(Call::Stat(p)) => os_call!("stat", args.path = p),
-        Some(Call::Iterdir(p)) => os_call!("iterdir", args.path = p),
-        Some(Call::Resolve(p)) => os_call!("resolve", args.path = p),
-        Some(Call::Absolute(p)) => os_call!("absolute", args.path = p),
-        Some(Call::Unlink(p)) => os_call!("unlink", args.path = p),
-        Some(Call::Rmdir(p)) => os_call!("rmdir", args.path = p),
-        Some(Call::WriteText(w)) => {
-            let (data, cut) = truncate_str(&w.data);
-            args_cut = cut;
-            os_call!("write_text", args.path = &w.path, args.data = data)
-        }
-        Some(Call::AppendText(w)) => {
-            let (data, cut) = truncate_str(&w.data);
-            args_cut = cut;
-            os_call!("append_text", args.path = &w.path, args.data = data)
-        }
+        Some(Call::Exists(p)) => os_call!("exists", args.path = string_arg!(p)),
+        Some(Call::IsFile(p)) => os_call!("is_file", args.path = string_arg!(p)),
+        Some(Call::IsDir(p)) => os_call!("is_dir", args.path = string_arg!(p)),
+        Some(Call::IsSymlink(p)) => os_call!("is_symlink", args.path = string_arg!(p)),
+        Some(Call::ReadText(p)) => os_call!("read_text", args.path = string_arg!(p)),
+        Some(Call::ReadBytes(p)) => os_call!("read_bytes", args.path = string_arg!(p)),
+        Some(Call::Stat(p)) => os_call!("stat", args.path = string_arg!(p)),
+        Some(Call::Iterdir(p)) => os_call!("iterdir", args.path = string_arg!(p)),
+        Some(Call::Resolve(p)) => os_call!("resolve", args.path = string_arg!(p)),
+        Some(Call::Absolute(p)) => os_call!("absolute", args.path = string_arg!(p)),
+        Some(Call::Unlink(p)) => os_call!("unlink", args.path = string_arg!(p)),
+        Some(Call::Rmdir(p)) => os_call!("rmdir", args.path = string_arg!(p)),
+        Some(Call::WriteText(w)) => os_call!(
+            "write_text",
+            args.path = string_arg!(&w.path),
+            args.data = string_arg!(&w.data),
+        ),
+        Some(Call::AppendText(w)) => os_call!(
+            "append_text",
+            args.path = string_arg!(&w.path),
+            args.data = string_arg!(&w.data),
+        ),
         Some(Call::WriteBytes(w)) => {
             let (data, cut) = bytes_attr(&w.data);
-            args_cut = cut;
-            os_call!("write_bytes", args.path = &w.path, args.data = data)
+            args_cut |= cut;
+            os_call!("write_bytes", args.path = string_arg!(&w.path), args.data = data)
         }
         Some(Call::AppendBytes(w)) => {
             let (data, cut) = bytes_attr(&w.data);
-            args_cut = cut;
-            os_call!("append_bytes", args.path = &w.path, args.data = data)
+            args_cut |= cut;
+            os_call!("append_bytes", args.path = string_arg!(&w.path), args.data = data)
         }
-        Some(Call::Open(o)) => os_call!("open", args.path = &o.path, args.mode = &o.mode),
+        Some(Call::Open(o)) => os_call!(
+            "open",
+            args.path = string_arg!(&o.path),
+            args.mode = string_arg!(&o.mode),
+        ),
         Some(Call::Mkdir(m)) => os_call!(
             "mkdir",
-            args.path = &m.path,
+            args.path = string_arg!(&m.path),
             args.parents = m.parents,
             args.exist_ok = m.exist_ok
         ),
-        Some(Call::Rename(r)) => os_call!("rename", args.src = &r.src, args.dst = &r.dst),
+        Some(Call::Rename(r)) => os_call!("rename", args.src = string_arg!(&r.src), args.dst = string_arg!(&r.dst),),
         // no default is recorded as `args.default = null`, matching Python's
         // `os.getenv`; a span attribute cannot carry a dynamically typed
         // value, so the default is stringified
         Some(Call::Getenv(g)) => {
             let (default, cut) = optional_attr(g.default.as_ref());
             let default = default.map(|v| v.as_str().into_owned());
-            args_cut = cut;
-            os_call!("getenv", args.key = &g.key, args.default = default)
+            args_cut |= cut;
+            os_call!("getenv", args.key = string_arg!(&g.key), args.default = default)
         }
         Some(Call::GetEnviron(_)) => os_call!("get_environ"),
         Some(Call::DateToday(_)) => os_call!("date_today"),
@@ -622,7 +685,7 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
                 os_call!(
                     "date_time_now",
                     args.tz_offset_seconds = tz.offset_seconds,
-                    args.tz_name = tz.name.as_ref()
+                    args.tz_name = tz.name.as_deref().map(|name| string_arg!(name))
                 )
             } else {
                 os_call!("date_time_now")
@@ -636,14 +699,6 @@ fn os_call_span(os_call: &pb::OsCall, micros: u64, max_duration: Option<u64>, pa
     OpenSpan::new(span, args_cut)
 }
 
-/// Renders an exception as `Type: message`.
-fn render_exception(exc: &pb::RaisedException) -> String {
-    match &exc.message {
-        Some(message) => format!("{}: {message}", exc.exc_type),
-        None => exc.exc_type.clone(),
-    }
-}
-
 /// Renders a traceback as one newline-separated string of `file:line in
 /// frame` entries, outermost first; the bool reports a cut at
 /// [`ATTR_SIZE_LIMIT`].
@@ -651,15 +706,17 @@ fn render_traceback(frames: &[pb::StackFrame]) -> (Option<String>, bool) {
     if frames.is_empty() {
         return (None, false);
     }
-    let entries: Vec<String> = frames
-        .iter()
-        .map(|f| {
-            let line = f.start.as_ref().map_or(0, |loc| loc.line);
-            let name = f.frame_name.as_deref().unwrap_or("<module>");
-            format!("{}:{line} in {name}", f.filename)
-        })
-        .collect();
-    let (traceback, cut) = truncate_str(&entries.join("\n"));
+    let (traceback, cut) = capped_text(|writer| {
+        for (index, frame) in frames.iter().enumerate() {
+            if index != 0 {
+                writer.write_char('\n')?;
+            }
+            let line = frame.start.as_ref().map_or(0, |location| location.line);
+            let name = frame.frame_name.as_deref().unwrap_or("<module>");
+            write!(writer, "{}:{line} in {name}", frame.filename)?;
+        }
+        Ok(())
+    });
     (Some(traceback), cut)
 }
 
@@ -669,10 +726,13 @@ fn render_traceback(frames: &[pb::StackFrame]) -> (Option<String>, bool) {
 /// shape, for the reason given in [`os_call_span`].
 fn record_error(error: &pb::Error, micros: u64, max_duration: Option<u64>, parent: &Span) {
     let exc = error.exception.as_ref();
-    let exc_type = exc.map_or_else(|| MISSING.to_owned(), |e| e.exc_type.clone());
+    let (exc_type, exc_type_cut) = exc.map_or_else(
+        || (MISSING.to_owned(), false),
+        |exception| truncate_str(&exception.exc_type),
+    );
     let (message, message_cut) = unzip(exc.and_then(|e| e.message.as_deref()).map(truncate_str));
     let (traceback, traceback_cut) = render_traceback(exc.map_or(&[], |e| &e.traceback));
-    let base_cut = message_cut | traceback_cut;
+    let base_cut = exc_type_cut | message_cut | traceback_cut;
     /// One error record with the given cut flag and `exc_data.*` attributes
     /// plus the shared fields.
     macro_rules! error_event {
@@ -799,9 +859,48 @@ fn bytes_attr(b: &[u8]) -> (String, bool) {
     (text, cut | (head.len() < b.len()))
 }
 
-/// Renders strings as a JSON list, absent when empty.
-fn render_str_list(items: &[String]) -> Option<String> {
-    (!items.is_empty()).then(|| serde_json::to_string(items).unwrap_or_default())
+/// Renders strings as a capped JSON list, absent when empty.
+fn render_str_list(items: &[String]) -> (Option<String>, bool) {
+    if items.is_empty() {
+        (None, false)
+    } else {
+        let (json, cut) = serialize_value_capped(&items, ATTR_SIZE_LIMIT);
+        (Some(json), cut)
+    }
+}
+
+/// A formatting sink that retains at most [`ATTR_SIZE_LIMIT`] bytes.
+struct CappedText {
+    value: String,
+    cut: bool,
+}
+
+impl Write for CappedText {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let remaining = ATTR_SIZE_LIMIT - self.value.len();
+        if text.len() <= remaining {
+            self.value.push_str(text);
+            Ok(())
+        } else {
+            let mut end = remaining;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.value.push_str(&text[..end]);
+            self.cut = true;
+            Err(fmt::Error)
+        }
+    }
+}
+
+/// Builds formatted telemetry text without materializing content past the cap.
+fn capped_text(write: impl FnOnce(&mut CappedText) -> fmt::Result) -> (String, bool) {
+    let mut writer = CappedText {
+        value: String::new(),
+        cut: false,
+    };
+    let cut = write(&mut writer).is_err() | writer.cut;
+    (writer.value, cut)
 }
 
 /// Truncates a raw string attribute to [`ATTR_SIZE_LIMIT`] bytes on a char
@@ -1027,6 +1126,42 @@ mod tests {
         assert_eq!(attr("dump", "state_bytes"), Some(16.into()));
         assert_eq!(attr("dump", "total_execution_micros"), Some(42.into()));
         assert!(logs.get_emitted_logs().unwrap().is_empty());
+    }
+
+    /// A `Load` span stands in for a restored suspended feed and remains the
+    /// parent across its resume until the restored feed completes.
+    #[test]
+    fn restored_feed_keeps_its_load_span_across_resume() {
+        let (logfire, spans, logs) = test_logfire();
+        let _guard = set_local_logfire(logfire);
+        let mut recorder = Recorder::new(None);
+
+        recorder.begin_turn(&request(pb::parent_request::Kind::Load(pb::Load { state: vec![] })));
+        recorder.event(&event(pb::child_event::Kind::NameLookup(pb::NameLookup {
+            name: "value".to_owned(),
+        })));
+        recorder.begin_turn(&request(pb::parent_request::Kind::ResumeNameLookup(
+            pb::ResumeNameLookup {
+                kind: Some(pb::resume_name_lookup::Kind::Value(MontyObject::Int(1).into())),
+            },
+        )));
+        recorder.event(&event(pb::child_event::Kind::Complete(pb::Complete {
+            value: Some(MontyObject::Int(1).into()),
+        })));
+
+        let spans = spans.get_finished_spans().unwrap();
+        let load = spans.iter().find(|span| span.name == "load").unwrap();
+        let lookup = spans.iter().find(|span| span.name == "name lookup {name}").unwrap();
+        assert_eq!(lookup.parent_span_id, load.span_context.span_id());
+        let records = logs.get_emitted_logs().unwrap();
+        let complete = records
+            .iter()
+            .find(|record| record.record.event_name() == Some("complete"))
+            .unwrap();
+        assert_eq!(
+            complete.record.trace_context().unwrap().span_id,
+            load.span_context.span_id()
+        );
     }
 
     /// A feed restored mid-suspension has no feed span of its own, so its

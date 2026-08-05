@@ -27,9 +27,13 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
 
   await using pool = await Monty.create()
   await using session = await pool.checkout()
-  t.is(await session.feedRun('1 + 2'), 3)
+  const result = await session.feedRun("'x' * 70000")
+  t.is((result as string).length, 70_000)
   await session.close()
-  await new Promise((resolve) => setTimeout(resolve, 20))
+  const deadline = Date.now() + 2_000
+  while (events.length < 4 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 
   const starts = events.filter((event) => event.kind === 'start')
   t.deepEqual(
@@ -41,6 +45,11 @@ test('installed telemetry adapter receives the session tree', async (ctx) => {
   )
   t.is(starts[0]?.parentId, '0000000000000002')
   t.is(starts[1]?.parentId, starts[0]?.spanId)
+  const runEnd = events.find((event) => event.kind === 'end' && event.spanId === starts[1]?.spanId)
+  const output = runEnd?.attributes?.output
+  t.is(typeof output, 'string')
+  t.is((output as string).length, 64 * 1024)
+  t.is(runEnd?.attributes?.length_limit_exceeded, true)
   t.deepEqual(
     events.map((event) => event.kind),
     ['start', 'start', 'end', 'end'],

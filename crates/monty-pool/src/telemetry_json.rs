@@ -40,8 +40,23 @@ pub(crate) fn serialize_dict_capped(pairs: &[(MontyObject, MontyObject)], limit:
 }
 
 /// [`serialize_capped`] for borrowed name → value pairs, as a JSON object.
+#[cfg(test)]
 pub(crate) fn serialize_named_capped(pairs: &[(&str, &MontyObject)], limit: usize) -> (String, bool) {
-    capped(&JsonNamed { pairs, limit }, limit)
+    serialize_named_iter_capped(pairs.iter().copied(), pairs.len(), limit)
+}
+
+/// [`serialize_capped`] for an iterator of borrowed name → value pairs.
+pub(crate) fn serialize_named_iter_capped<'a>(
+    pairs: impl Clone + Iterator<Item = (&'a str, &'a MontyObject)>,
+    len: usize,
+    limit: usize,
+) -> (String, bool) {
+    capped(&JsonNamed { pairs, len, limit }, limit)
+}
+
+/// Serializes any serde value while bounding the generated JSON.
+pub(crate) fn serialize_value_capped(value: &impl Serialize, limit: usize) -> (String, bool) {
+    capped(value, limit)
 }
 
 /// Serializes into a [`CappedWriter`]; the bool reports the cap cutting
@@ -160,8 +175,9 @@ impl Serialize for JsonEncoded<'_> {
             MontyObject::Path(p) => s.serialize_str(p),
             MontyObject::Cycle(..) => s.serialize_str("<circular reference>"),
             MontyObject::Repr(r) => s.serialize_str(r),
-            // everything left is opaque: fall back to its repr, like logfire
-            other => s.serialize_str(&other.py_repr()),
+            // `collect_str` streams the repr into the capped JSON writer rather
+            // than first materializing an attacker-sized intermediate string.
+            other => s.collect_str(other),
         }
     }
 }
@@ -195,15 +211,19 @@ impl Serialize for JsonDict<'_> {
 }
 
 /// [`JsonSeq`] for named values: a JSON object of `name` → encoded value.
-struct JsonNamed<'a> {
-    pairs: &'a [(&'a str, &'a MontyObject)],
+struct JsonNamed<I> {
+    pairs: I,
+    len: usize,
     limit: usize,
 }
 
-impl Serialize for JsonNamed<'_> {
+impl<'a, I> Serialize for JsonNamed<I>
+where
+    I: Clone + Iterator<Item = (&'a str, &'a MontyObject)>,
+{
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut map = s.serialize_map(Some(self.pairs.len()))?;
-        for (name, value) in self.pairs {
+        let mut map = s.serialize_map(Some(self.len))?;
+        for (name, value) in self.pairs.clone() {
             map.serialize_entry(
                 name,
                 &JsonEncoded {
@@ -229,10 +249,19 @@ fn serialize_pairs<'a, S: Serializer>(
         let value = JsonEncoded { value, limit };
         match key {
             MontyObject::String(k) => map.serialize_entry(k, &value)?,
-            other => map.serialize_entry(&other.py_repr(), &value)?,
+            other => map.serialize_entry(&ReprKey(other), &value)?,
         }
     }
     map.end()
+}
+
+/// Streams a non-string dictionary key's repr through serde's capped writer.
+struct ReprKey<'a>(&'a MontyObject);
+
+impl Serialize for ReprKey<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self.0)
+    }
 }
 
 /// Python's `str()` of the float values JSON has no representation for.
@@ -322,6 +351,19 @@ mod tests {
             (MontyObject::Int(2), MontyObject::String("b".to_owned())),
         ]);
         assert_eq!(json(&dict), r#"{"a":1,"2":"b"}"#);
+    }
+
+    /// Repr-based dictionary keys stream through the cap, including bytes
+    /// nested in a container key whose ordinary repr would be much larger.
+    #[test]
+    fn oversize_dict_key_repr_is_capped() {
+        let pairs = vec![(
+            MontyObject::Tuple(vec![MontyObject::Bytes(vec![0xff; 10_000])]),
+            MontyObject::None,
+        )];
+        let (json, cut) = serialize_dict_capped(&pairs, 64);
+        assert!(cut);
+        assert!(json.len() <= 64);
     }
 
     #[test]

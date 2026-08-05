@@ -243,7 +243,8 @@ Session dumps and restores are recorded by size only.
 Logfire's Python SDK owns sampling, export credentials, resources, flushing,
 and shutdown. The Rust binding runs only an exporter-free processor pipeline;
 workers receive no credentials. Instrumentation is disabled unless an adapter
-is explicitly installed, and enabled instrumentation captures full content.
+is explicitly installed. Enabled instrumentation captures content, truncating
+large values at the telemetry attribute size limit.
 
 See `limitations/pool-architecture.md` in the repository for the behavioural
 details of subprocess execution (host-side mounts, buffered print
