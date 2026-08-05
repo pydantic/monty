@@ -264,6 +264,9 @@ fn resolve_mkdir_parents(request: &ResolutionRequest, mount_host_path: &Path) ->
             for remaining in &components[index..] {
                 current = current.join(remaining);
             }
+            // The missing tail is appended lexically, so nothing else has
+            // checked it — no mode may return an unvalidated path.
+            check_boundary(&current, mount_host_path, &request.normalized_virtual)?;
             return Ok(current);
         }
     }
