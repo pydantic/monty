@@ -31,6 +31,8 @@ export interface TelemetryEvent {
   statusDescription?: string
   body?: unknown
   attributes?: Record<string, unknown>
+  /** A `close` event that discards every span after global bridge disablement. */
+  all?: boolean
 }
 
 /** Adapter installed by the JavaScript Logfire SDK. */

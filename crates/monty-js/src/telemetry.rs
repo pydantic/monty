@@ -1,7 +1,10 @@
 //! Exporter-free shared telemetry pipeline forwarding records to Node's event loop.
 
 use std::{
-    sync::{mpsc, Arc, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, OnceLock,
+    },
     thread,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -27,10 +30,17 @@ type SendEvent = Arc<dyn Fn(String, ThreadsafeFunctionCallMode) -> Status + Send
 
 struct JsBridge {
     send: SendEvent,
-    cleanup: mpsc::Sender<String>,
+    cleanup: mpsc::SyncSender<String>,
+    disabled: AtomicBool,
+    cleanup_requested: AtomicBool,
 }
 
-static HANDLE: OnceLock<TelemetryAdapterHandle> = OnceLock::new();
+struct InstalledBridge {
+    bridge: Arc<JsBridge>,
+    handle: TelemetryAdapterHandle,
+}
+
+static BRIDGE: OnceLock<InstalledBridge> = OnceLock::new();
 
 /// Maximum JSON budget for one attribute crossing the Node callback queue.
 const VALUE_SIZE_LIMIT: usize = 64 * 1024;
@@ -54,7 +64,9 @@ pub fn install_telemetry_adapter(
         .max_queue_size::<1024>()
         .build()?;
     let send: SendEvent = Arc::new(move |event, mode| callback.call(FnArgs::from((event,)), mode));
-    let (cleanup, cleanup_events) = mpsc::channel();
+    // Cleanup is a single global-disable notification: repeated roots coalesce
+    // instead of growing native memory while the JS callback is backpressured.
+    let (cleanup, cleanup_events) = mpsc::sync_channel(1);
     let cleanup_send = Arc::clone(&send);
     thread::Builder::new()
         .name("monty-telemetry-cleanup".to_owned())
@@ -64,17 +76,23 @@ pub fn install_telemetry_adapter(
             }
         })
         .map_err(|err| napi::Error::from_reason(format!("failed to start Monty telemetry cleanup: {err}")))?;
-    let bridge = Arc::new(JsBridge { send, cleanup });
-    let handle = configure_telemetry_adapter(bridge as Arc<dyn TelemetryAdapter>)
+    let bridge = Arc::new(JsBridge {
+        send,
+        cleanup,
+        disabled: AtomicBool::new(false),
+        cleanup_requested: AtomicBool::new(false),
+    });
+    let handle = configure_telemetry_adapter(Arc::clone(&bridge) as Arc<dyn TelemetryAdapter>)
         .map_err(|err| napi::Error::from_reason(format!("failed to configure Monty telemetry: {err}")))?;
-    HANDLE
-        .set(handle)
+    BRIDGE
+        .set(InstalledBridge { bridge, handle })
         .map_err(|_| napi::Error::from_reason("Monty telemetry is already configured"))
 }
 
 /// Returns the installed handle used to construct coupled checkout context.
 pub(crate) fn configured_adapter() -> Option<&'static TelemetryAdapterHandle> {
-    HANDLE.get()
+    let installed = BRIDGE.get()?;
+    (!installed.bridge.disabled.load(Ordering::Relaxed)).then_some(&installed.handle)
 }
 
 impl TelemetryAdapter for JsBridge {
@@ -145,22 +163,34 @@ impl TelemetryAdapter for JsBridge {
     }
 
     fn disable_root(&self, trace_id: TraceId, root_span_id: SpanId) {
-        let event = json!({
-            "kind": "close",
-            "traceId": trace_id.to_string(),
-            "spanId": root_span_id.to_string(),
-        })
-        .to_string();
-        // Cleanup uses one dedicated thread so it cannot block a pool task,
-        // while still surviving backpressure on the bounded event queue.
-        let _ = self.cleanup.send(event);
+        self.disabled.store(true, Ordering::Relaxed);
+        if !self.cleanup_requested.swap(true, Ordering::Relaxed) {
+            let event = json!({
+                "kind": "close",
+                "traceId": trace_id.to_string(),
+                "spanId": root_span_id.to_string(),
+                "all": true,
+            })
+            .to_string();
+            // The one cleanup notification uses a dedicated thread so it
+            // cannot block a pool task while the JS queue drains.
+            let _ = self.cleanup.try_send(event);
+        }
     }
 }
 
 impl JsBridge {
     /// Queues one ordered record without blocking a Tokio worker thread.
     fn emit(&self, event: JsonValue) -> bool {
-        (self.send)(event.to_string(), ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok
+        if self.disabled.load(Ordering::Relaxed) {
+            false
+        } else {
+            let sent = (self.send)(event.to_string(), ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok;
+            if !sent {
+                self.disabled.store(true, Ordering::Relaxed);
+            }
+            sent
+        }
     }
 }
 
