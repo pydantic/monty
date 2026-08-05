@@ -909,6 +909,29 @@ pub(crate) trait ExcTypeExt: Sized {
         SimpleException::new_msg(ExcType::TypeError, format!("'{type_}' object is not iterable")).into()
     }
 
+    /// Creates the ValueError `itertools.islice(it, stop)` raises for a `stop`
+    /// that is neither `None` nor an index — the two-argument wording, which
+    /// names the stop argument specifically.
+    #[must_use]
+    fn islice_bad_stop() -> RunError {
+        Self::value_error("Stop argument for islice() must be None or an integer: 0 <= x <= sys.maxsize.")
+    }
+
+    /// Creates the ValueError `itertools.islice` raises for a bad `start` or
+    /// `stop` in the three-or-more argument form, where CPython stops naming
+    /// which of them was at fault.
+    #[must_use]
+    fn islice_bad_indices() -> RunError {
+        Self::value_error("Indices for islice() must be None or an integer: 0 <= x <= sys.maxsize.")
+    }
+
+    /// Creates the ValueError `itertools.islice` raises for a non-positive or
+    /// non-integer `step`.
+    #[must_use]
+    fn islice_bad_step() -> RunError {
+        Self::value_error("Step for islice() must be a positive integer or None.")
+    }
+
     /// Creates a TypeError for the right operand of `in` / `not in` supporting
     /// neither `__contains__` nor iteration.
     ///

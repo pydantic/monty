@@ -14,6 +14,14 @@ use pprof::criterion::{Output, PProfProfiler};
 #[cfg(not(codspeed))]
 use pyo3::prelude::*;
 
+// The real worker allocator, so the interpreter benchmarks can price it:
+// `cargo bench -p monty-bench --bench main --features worker-alloc` against a
+// plain run measures what the ceiling costs on real workloads. No ceiling is
+// armed — the cost is in the counting, not the comparison.
+#[cfg(feature = "worker-alloc")]
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
+
 /// Runs a benchmark using the Monty interpreter.
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {

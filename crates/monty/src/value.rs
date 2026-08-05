@@ -55,6 +55,7 @@ pub(crate) enum Value {
     // Immediate values (stored inline, no heap allocation)
     Undefined,
     Ellipsis,
+    NotImplemented,
     None,
     Bool(bool),
     Int(i64),
@@ -232,6 +233,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             Self::Undefined => panic!("Cannot get type of undefined value"),
             Self::Ellipsis => Type::Ellipsis,
+            Self::NotImplemented => Type::NotImplementedType,
             Self::None => Type::NoneType,
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
@@ -266,6 +268,7 @@ impl<'h> PyTrait<'h> for Value {
 
             Self::None => Ok(matches!(other, Self::None).then_some(true)),
             Self::Ellipsis => Ok(matches!(other, Self::Ellipsis).then_some(true)),
+            Self::NotImplemented => Ok(matches!(other, Self::NotImplemented).then_some(true)),
             Self::Bool(b) => Ok(eq_i64(i64::from(*b), other, vm)),
             Self::Int(a) => Ok(eq_i64(*a, other, vm)),
             Self::Float(f) => Ok(eq_f64(*f, other, vm)),
@@ -304,24 +307,7 @@ impl<'h> PyTrait<'h> for Value {
                 Self::Property(o) => Some(p == o),
                 _ => None,
             }),
-            Self::Ref(id) => {
-                // Both instance dispatches happen here, not in
-                // `HeapRead<Instance>`, because they need the `HeapId` for `self`.
-                // A user `__eq__` precedes the identity check (CPython lets it
-                // decide `x == x` too); the dataclass one follows it, as
-                // CPython's synthesized `__eq__` opens with `if self is other`.
-                if let Some(result) = instance_user_eq(*id, other, vm)? {
-                    Ok(Some(result))
-                } else if let Self::Ref(other_id) = other
-                    && id == other_id
-                {
-                    Ok(Some(true))
-                } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
-                    Ok(Some(result))
-                } else {
-                    vm.heap.read(*id).py_eq_impl(other, vm)
-                }
-            }
+            Self::Ref(id) => vm.heap.read(*id).py_eq_impl(other, vm),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -438,23 +424,26 @@ impl<'h> PyTrait<'h> for Value {
         }
     }
 
-    fn py_bool(&self, vm: &mut VM<'_>) -> bool {
+    fn py_bool(&self, vm: &mut VM<'_>) -> RunResult<bool> {
         match self {
-            Self::Undefined => false,
-            Self::Ellipsis => true,
-            Self::None => false,
-            Self::Bool(b) => *b,
-            Self::Int(v) => *v != 0,
-            Self::Float(f) => *f != 0.0,
-            // InternLongInt is always truthy (if it were zero, it would fit in i64)
-            Self::InternLongInt(_) => true,
-            Self::Builtin(_) | Self::ModuleFunction(_) => true, // Builtins are always truthy
-            Self::DefFunction(_) => true,                       // Functions are always truthy
-            Self::Marker(_) => true,                            // Markers are always truthy
-            Self::Property(_) => true,                          // Properties are always truthy
-            Self::InternString(string_id) => !vm.interns.get_str(*string_id).is_empty(),
-            Self::InternBytes(bytes_id) => !vm.interns.get_bytes(*bytes_id).is_empty(),
+            Self::NotImplemented => Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                "NotImplemented should not be used in a boolean context",
+            )
+            .into()),
             Self::Ref(id) => vm.heap.read(*id).py_bool(vm),
+            Self::Undefined | Self::None => Ok(false),
+            Self::Ellipsis => Ok(true),
+            Self::Bool(b) => Ok(*b),
+            Self::Int(v) => Ok(*v != 0),
+            Self::Float(f) => Ok(*f != 0.0),
+            // InternLongInt is always truthy (if it were zero, it would fit in i64).
+            Self::InternLongInt(_) => Ok(true),
+            Self::Builtin(_) | Self::ModuleFunction(_) => Ok(true),
+            Self::DefFunction(_) => Ok(true),
+            Self::Marker(_) | Self::Property(_) => Ok(true),
+            Self::InternString(string_id) => Ok(!vm.interns.get_str(*string_id).is_empty()),
+            Self::InternBytes(bytes_id) => Ok(!vm.interns.get_bytes(*bytes_id).is_empty()),
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
@@ -465,6 +454,7 @@ impl<'h> PyTrait<'h> for Value {
         match self {
             Self::Undefined => Ok(f.write_str("Undefined")?),
             Self::Ellipsis => Ok(f.write_str("Ellipsis")?),
+            Self::NotImplemented => Ok(f.write_str("NotImplemented")?),
             Self::None => Ok(f.write_str("None")?),
             Self::Bool(true) => Ok(f.write_str("True")?),
             Self::Bool(false) => Ok(f.write_str("False")?),
@@ -542,6 +532,7 @@ impl<'h> PyTrait<'h> for Value {
             Self::Bool(true) => Ok(Self::InternString(StaticStrings::TrueRepr.into())),
             Self::Bool(false) => Ok(Self::InternString(StaticStrings::FalseRepr.into())),
             Self::Ellipsis => Ok(Self::InternString(StaticStrings::EllipsisRepr.into())),
+            Self::NotImplemented => Ok(Self::InternString(StaticStrings::NotImplementedRepr.into())),
             Self::Int(i) => Ok(allocate_string(itoa::Buffer::new().format(*i), vm.heap)?),
             _ => {
                 let mut s = String::new();
@@ -1440,6 +1431,7 @@ impl Value {
         match self {
             Self::Undefined | Self::None => Type::NoneType,
             Self::Ellipsis => Type::Ellipsis,
+            Self::NotImplemented => Type::NotImplementedType,
             Self::Bool(_) => Type::Bool,
             Self::Int(_) | Self::InternLongInt(_) => Type::Int,
             Self::Float(_) => Type::Float,
@@ -1508,37 +1500,64 @@ impl Value {
         self.id() == other.id()
     }
 
-    /// Equality **as containers perform it** — CPython's `PyObject_RichCompareBool`.
-    ///
-    /// Identical objects are equal without consulting `__eq__`, which is why
-    /// `c in [c]` holds even when `c.__eq__` always returns `False`. Every
-    /// container membership/comparison/lookup uses this; the bare `==` operator
-    /// uses [`py_eq_operator`](Self::py_eq_operator), which has no shortcut.
+    /// Whether this value is Python's `NotImplemented` singleton.
+    #[must_use]
+    pub(crate) fn is_not_implemented(&self) -> bool {
+        matches!(self, Self::NotImplemented)
+    }
+
+    /// Equality as containers perform it: identity before user equality.
     pub fn py_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let (Self::Ref(id), Self::Ref(other_id)) = (self, other)
-            && id == other_id
-        {
+        if self.is(other) {
             Ok(true)
         } else {
             self.py_eq_operator(other, vm)
         }
     }
 
-    /// Python's `==` operator, resolved to a definite boolean.
-    ///
-    /// Implements CPython's reflected comparison protocol on top of the
-    /// one-sided [`PyTrait::py_eq_impl`]: tries `self == other`, and if that is
-    /// `NotImplemented` (`None`) tries the reflected `other == self`. If neither
-    /// operand's type recognises the other, the values are unequal; per-type
-    /// `py_eq_impl` impls never drive reflection themselves. Unlike
-    /// [`py_eq`](Self::py_eq) there is no identity shortcut.
+    /// Python's `==` operator normalized to a boolean.
     pub fn py_eq_operator(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<bool> {
-        if let Some(result) = self.py_eq_impl(other, vm)? {
-            Ok(result)
-        } else if let Some(result) = other.py_eq_impl(self, vm)? {
-            Ok(result)
+        let result = self.py_rich_eq(other, vm)?;
+        defer_drop!(result, vm);
+        result.py_bool(vm)
+    }
+
+    /// Direct Python `==`, preserving any arbitrary value returned by `__eq__`.
+    ///
+    /// Tries the left operand, then reflected equality when it returns
+    /// `NotImplemented`; identity is only the final fallback after both decline.
+    pub(crate) fn py_rich_eq(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        let lhs_result = self.py_rich_eq_impl(other, vm)?;
+        if !lhs_result.is_not_implemented() {
+            return Ok(lhs_result);
+        }
+
+        let rhs_result = other.py_rich_eq_impl(self, vm)?;
+        if !rhs_result.is_not_implemented() {
+            return Ok(rhs_result);
+        }
+
+        Ok(Self::Bool(self.is(other)))
+    }
+
+    /// Runs one side of rich equality, using `NotImplemented` to request reflected dispatch.
+    fn py_rich_eq_impl(&self, other: &Self, vm: &mut VM<'_>) -> RunResult<Self> {
+        if let Self::Ref(id) = self
+            && matches!(vm.heap.get(*id), HeapData::Instance(_))
+        {
+            if let Some(result) = instance_user_eq(*id, other, vm)? {
+                Ok(result)
+            } else if self.is(other) {
+                Ok(Self::Bool(true))
+            } else if let Some(result) = instance_dataclass_eq(*id, other, vm)? {
+                Ok(Self::Bool(result))
+            } else {
+                Ok(Self::NotImplemented)
+            }
+        } else if let Some(result) = self.py_eq_impl(other, vm)? {
+            Ok(Self::Bool(result))
         } else {
-            Ok(false)
+            Ok(Self::NotImplemented)
         }
     }
 
@@ -1633,7 +1652,9 @@ impl Value {
             // cheap-to-hash types recompute each call.
             Self::Ref(id) => vm.heap.read(*id).py_hash(*id, vm),
             // Singleton values hash by discriminant
-            Self::Undefined | Self::Ellipsis | Self::None => Ok(Some(hash_one(discriminant(self)))),
+            Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => {
+                Ok(Some(hash_one(discriminant(self))))
+            }
             Self::Builtin(b) => Ok(Some(hash_one(b))),
             Self::ModuleFunction(mf) => Ok(Some(hash_one(mf))),
             // Hash functions based on function ID
@@ -1735,55 +1756,15 @@ impl Value {
         Err(ExcType::attribute_error(type_name, attr.as_str(vm.interns)))
     }
 
-    /// Sets an attribute on this value.
-    ///
-    /// Only Dataclass objects, user-defined class instances, and class objects
-    /// support attribute setting. Returns AttributeError for other types.
-    ///
-    /// Takes ownership of `value` and drops it on error.
-    /// On success, drops the old attribute value if one existed.
+    /// Sets an attribute, consuming `value` on both success and error.
     pub fn py_set_attr(&self, name: &EitherStr, value: Self, vm: &mut VM<'_>) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
-            let old_value = match vm.heap.read(*heap_id) {
-                HeapReadOutput::Dataclass(mut dc) => dc.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
-                HeapReadOutput::Instance(mut instance) => {
-                    instance.set_attr(Self::attr_name_value(name, vm)?, value, vm)?
-                }
-                HeapReadOutput::Class(mut class) => class.set_attr(Self::attr_name_value(name, vm)?, value, vm)?,
-                // `defaultdict.default_factory = ...`; every other dict attribute
-                // raises the generic no-setattr error inside this method.
-                HeapReadOutput::Dict(mut dict) => dict.set_default_factory_attr(name, value, vm)?,
-                other => {
-                    let type_ = other.py_type(vm);
-                    let type_name = type_.name(vm.heap, vm.interns);
-                    value.drop_with(vm);
-                    // `deque.maxlen` exists but is read-only, which CPython reports
-                    // differently from an attribute that isn't there at all.
-                    return if type_ == Type::Deque && name.static_string() == Some(StaticStrings::Maxlen) {
-                        Err(ExcType::attribute_error_not_writable("maxlen", &type_name))
-                    } else {
-                        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
-                    };
-                }
-            };
-            old_value.drop_with(vm);
-            Ok(())
+            vm.heap.read(*heap_id).py_set_attr(name, value, vm)
         } else {
-            let type_name = self.py_type_name(vm);
             value.drop_with(vm);
+            let type_name = self.py_type_name(vm);
             Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
         }
-    }
-
-    /// Converts an attribute `name` into a dict-key `Value` for `set_attr` calls,
-    /// reusing the interned id when available.
-    fn attr_name_value(name: &EitherStr, vm: &VM<'_>) -> RunResult<Self> {
-        Ok(match name {
-            EitherStr::Interned(string_id) => Self::InternString(*string_id),
-            // TODO: should avoid needing to clone String via `EitherStr` - maybe
-            // `EitherStr` should store a `HeapRead<Str>`?
-            EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
-        })
     }
 
     /// Extracts an integer value from the Value.
@@ -2052,6 +2033,7 @@ impl Value {
         match self {
             Self::Undefined => Self::Undefined,
             Self::Ellipsis => Self::Ellipsis,
+            Self::NotImplemented => Self::NotImplemented,
             Self::None => Self::None,
             Self::Bool(b) => Self::Bool(*b),
             Self::Int(v) => Self::Int(*v),

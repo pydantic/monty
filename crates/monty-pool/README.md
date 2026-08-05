@@ -80,9 +80,17 @@ and restored later — including on a different worker or machine — with `Chec
   that violates the protocol is discarded.
 - **Worker recycling** — `max_checkouts_per_worker` recycles long-lived children to bound
   the impact of any slow leak.
+- **Memory limits** — a session's `max_memory` also caps the worker's live allocations,
+  enforced in the worker's own global allocator
+  ([`monty-alloc`](https://crates.io/crates/monty-alloc)) with generous headroom, rather
+  than letting a worker grow the host until the OOM killer intervenes. Exceeding it, or a
+  refused allocation, exits the worker with a dedicated code so it surfaces as
+  `PoolError::Runtime`/`MemoryError` instead of an unclassifiable abort — the one
+  `Runtime` error whose worker does not survive.
 
 Runtime errors inside the sandbox (`PoolError::Runtime`) are not crashes: the worker and its
-session remain alive and usable.
+session remain alive and usable — the one exception being the `MemoryError` above, raised for
+a worker that has already exited.
 
 ## Observability
 

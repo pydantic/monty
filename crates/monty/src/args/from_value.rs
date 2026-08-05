@@ -362,7 +362,7 @@ impl FromValue for LaxBool {
     fn from_value(value: Value, vm: &mut VM<'_>) -> Result<Self, FromValueFail> {
         let result = value.py_bool(vm);
         value.drop_with(vm);
-        Ok(Self(result))
+        result.map(Self).map_err(FromValueFail::Raise)
     }
 }
 

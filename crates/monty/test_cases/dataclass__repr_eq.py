@@ -51,6 +51,24 @@ assert Point(1, 2) != Point(1, 3)
 assert not (Point(1, 2) == Point(2, 1)), 'field order matters'
 
 
+# Python 3.14 generates direct field comparisons rather than tuple comparison.
+# Tuple comparison accepts identical elements before calling `__eq__`, while two
+# distinct dataclass instances still invoke their shared field's `__eq__`.
+class NeverEqual:
+    def __eq__(self, other: object) -> bool:
+        return False
+
+
+@dataclass
+class IdentityField:
+    value: object
+
+
+shared_never_equal = NeverEqual()
+assert (shared_never_equal,) == (shared_never_equal,)
+assert (IdentityField(shared_never_equal) == IdentityField(shared_never_equal)) is False
+
+
 # === Equality across types / non-dataclasses is False ===
 assert Point(1, 2) != Other(1, 2)
 assert Point(1, 2) != (1, 2)

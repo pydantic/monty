@@ -245,8 +245,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

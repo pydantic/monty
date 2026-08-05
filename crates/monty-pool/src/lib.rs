@@ -135,7 +135,10 @@ pub enum PoolError {
     /// mid-flight, where the abandoned worker is discarded too.
     Protocol(Cow<'static, str>),
     /// The sandboxed code raised a Python exception. The worker and its
-    /// session remain alive and usable.
+    /// session remain alive and usable — except for the one `MemoryError` a
+    /// worker exceeding its memory limit produces, where the worker is already
+    /// dead and the checkout finished (its distinct message distinguishes it
+    /// from the interpreter's own `MemoryError`).
     Runtime(MontyException),
     /// Type checking rejected the fed snippet (sessions created with
     /// `type_check`). The worker and session remain alive; the snippet did
@@ -185,7 +188,8 @@ pub enum CrashCause {
         context: String,
     },
     /// It announced a `FatalError` and exited, so its own account replaces
-    /// the pool's. A serving relay also uses this to report that it could not
+    /// the pool's — as does a death the pool can name from the exit code
+    /// alone. A serving relay also uses this to report that it could not
     /// start a worker at all.
     Announced {
         /// What the worker said before dying.

@@ -43,6 +43,7 @@ const Tag = {
   Function: 25,
   Repr: 26,
   Cycle: 27,
+  NotImplemented: 29,
 } as const
 
 const I64_MIN = -(2n ** 63n)
@@ -111,6 +112,9 @@ function writeMarked(w: Writer, obj: Record<string, unknown>): void {
   switch (type) {
     case 'Ellipsis':
       w.lengthDelimited(Tag.Ellipsis, EMPTY)
+      break
+    case 'NotImplemented':
+      w.lengthDelimited(Tag.NotImplemented, EMPTY)
       break
     case 'Date':
       w.lengthDelimited(Tag.Date, encodeDate(obj))
@@ -272,6 +276,8 @@ export function decodeMontyObject(bytes: Uint8Array): unknown {
   switch (f.field) {
     case Tag.Ellipsis:
       return { [TYPE_MARKER]: 'Ellipsis' }
+    case Tag.NotImplemented:
+      return { [TYPE_MARKER]: 'NotImplemented' }
     case Tag.None:
       return null
     case Tag.Bool:

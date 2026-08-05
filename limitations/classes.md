@@ -1,8 +1,8 @@
 # Classes
 
 Sandboxed Python code in Monty can define simple classes. A `class`
-statement with instance methods, `__init__`, `__repr__`/`__str__`, and
-class variables works. The class body has a real scope (like CPython's
+statement with instance methods, `__init__`, `__eq__`, `__repr__`/`__str__`,
+and class variables works. The class body has a real scope (like CPython's
 class-body code object), so class variables may be arbitrary expressions
 and may reference earlier class variables:
 
@@ -99,12 +99,10 @@ order and error wording, but with these divergences:
   runs to completion synchronously, so it cannot yield to the host, and an
   external-function `__init__` raises `NotImplementedError` rather than
   suspending.
-- **A user `__eq__` cannot decline a comparison.** Monty has no
-  `NotImplemented` value, so whatever `__eq__` returns is taken as a truth
-  value and the reflected `other.__eq__(self)` is never tried.
 - **`__eq__`/`__hash__` cannot suspend**: like `__repr__`/`__str__` they run to
   completion synchronously, so one that calls an external/OS function raises
-  rather than yielding to the host.
+  rather than yielding to the host. An exception raised by `__eq__` terminates
+  the run instead of being catchable by a `try` around the comparison.
 - **Ordering dunders are still not dispatched** — see the entry above.
   Instances are always truthy (no `__bool__`/`__len__` dispatch).
 - **Bound methods compare and hash by identity**: each `obj.method` access

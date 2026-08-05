@@ -20,6 +20,7 @@ repository = { workspace = true }
 crate-type = ["cdylib"]
 
 [dependencies]
+monty-alloc = { workspace = true }
 monty-proto = { workspace = true, features = ["worker"] }
 prost = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

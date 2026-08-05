@@ -183,9 +183,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         Ok(Some(HashValue::new(hasher.finish())))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Slice always truthy
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

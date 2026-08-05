@@ -1012,8 +1012,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Set> {
         }
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        !self.get(vm.heap).is_empty()
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).is_empty())
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {
@@ -1352,8 +1352,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, FrozenSet> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        !self.get(vm.heap).is_empty()
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).is_empty())
     }
 
     fn py_sub_impl(&self, other: &Value, vm: &mut VM<'h>, _self_id: Option<HeapId>) -> RunResult<Option<Value>> {

@@ -4,7 +4,9 @@ The wire protocol connecting [Monty](https://github.com/pydantic/monty) worker
 processes to the parents that drive them.
 
 Monty executes untrusted Python, and a Monty process can never be made fully
-crash-proof against memory errors (stack overflow aborts, allocator aborts).
+crash-proof against memory errors (stack overflow aborts, allocator aborts —
+the [`monty-alloc`](https://crates.io/crates/monty-alloc) allocator turns the
+latter into this crate's `OOM_EXIT_CODE` so a parent can classify them).
 The subprocess architecture isolates those crashes: a parent — the
 [`monty-pool`](https://crates.io/crates/monty-pool) crate, and through it the
 Python and JavaScript packages — drives `monty subprocess` children over

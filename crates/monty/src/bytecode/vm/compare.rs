@@ -10,15 +10,20 @@ use crate::{
 };
 
 impl VM<'_> {
-    /// Evaluates a comparison without consuming its operands.
-    /// Shared by `Compare*` opcodes and fused asserts to keep their semantics aligned.
+    /// Evaluates a comparison as a boolean without consuming its operands.
+    ///
+    /// Shared by fused asserts and comparison helpers that need truth rather
+    /// than the arbitrary value a direct `==` expression may produce.
     #[inline]
     pub(super) fn cmp_values(&mut self, op: CmpOperator, lhs: &Value, rhs: &Value) -> RunResult<bool> {
         match op {
-            // The bare operator, so `py_eq_operator`: unlike container
-            // comparison it must not shortcut `x == x` past a user `__eq__`.
-            CmpOperator::Eq => lhs.py_eq_operator(rhs, self),
-            CmpOperator::NotEq => Ok(!lhs.py_eq_operator(rhs, self)?),
+            CmpOperator::Eq | CmpOperator::NotEq => {
+                let result = lhs.py_rich_eq(rhs, self)?;
+                let is_equal = result.py_bool(self);
+                result.drop_with(self);
+                let is_equal = is_equal?;
+                Ok(if op == CmpOperator::NotEq { !is_equal } else { is_equal })
+            }
             CmpOperator::Is => Ok(lhs.is(rhs)),
             CmpOperator::IsNot => Ok(!lhs.is(rhs)),
             // `in` tests membership of the *left* operand in the right one.
@@ -26,6 +31,34 @@ impl VM<'_> {
             CmpOperator::NotIn => Ok(!rhs.py_contains(lhs, self)?),
             CmpOperator::Lt | CmpOperator::LtE | CmpOperator::Gt | CmpOperator::GtE => self.cmp_ordering(op, lhs, rhs),
         }
+    }
+
+    /// Executes direct `==`, preserving an arbitrary value returned by `__eq__`.
+    pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        let result = lhs.py_rich_eq(rhs, this)?;
+        this.push(result);
+        Ok(())
+    }
+
+    /// Executes direct `!=`; user `__ne__` dispatch is not yet supported.
+    pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
+        let this = self;
+        let rhs = this.pop();
+        defer_drop!(rhs, this);
+        let lhs = this.pop();
+        defer_drop!(lhs, this);
+
+        let result = lhs.py_rich_eq(rhs, this)?;
+        defer_drop!(result, this);
+        let is_not_equal = !result.py_bool(this)?;
+        this.push(Value::Bool(is_not_equal));
+        Ok(())
     }
 
     /// Evaluates an ordering comparison, preserving CPython's behavior for
@@ -57,7 +90,7 @@ impl VM<'_> {
         }
     }
 
-    /// Pops both operands and pushes the comparison result.
+    /// Pops both operands and pushes a boolean comparison result.
     /// The const operator lets dispatch specialize the implementation per opcode.
     fn compare_op<const OP: u8>(&mut self) -> Result<(), RunError> {
         // Rejects a bad `OP` at compile time, which makes the `else` dead.
@@ -76,7 +109,7 @@ impl VM<'_> {
     }
 }
 
-/// Defines a specialized entry point for each comparison opcode.
+/// Defines a specialized entry point for each boolean comparison opcode.
 macro_rules! compare_opcodes {
     ($($name:ident => $op:ident,)*) => {
         impl VM<'_> {
@@ -90,8 +123,6 @@ macro_rules! compare_opcodes {
 }
 
 compare_opcodes! {
-    compare_eq => Eq,
-    compare_ne => NotEq,
     compare_lt => Lt,
     compare_le => LtE,
     compare_gt => Gt,

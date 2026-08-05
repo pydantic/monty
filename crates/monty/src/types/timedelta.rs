@@ -331,8 +331,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         ))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        total_microseconds(self.get(vm.heap)) != 0
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(total_microseconds(self.get(vm.heap)) != 0)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

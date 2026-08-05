@@ -1053,6 +1053,11 @@ jobs:
           name: wasm-bindings
           path: crates/monty-js/dist/worker
 
+      # the wasm specs are node-only, and this is the job that has the module
+      - name: Test wasm module in node
+        run: npm run test:wasm
+        working-directory: crates/monty-js
+
       - name: Test browser bindings
         run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js

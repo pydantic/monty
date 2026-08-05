@@ -36,6 +36,7 @@ fn corpus() -> Vec<MontyObject> {
     let bigint: BigInt = "123456789012345678901234567890123456789".parse().unwrap();
     vec![
         MontyObject::Ellipsis,
+        MontyObject::NotImplemented,
         MontyObject::None,
         MontyObject::Bool(false), // oneof arms encode even at default payloads
         MontyObject::Bool(true),
@@ -186,6 +187,7 @@ fn corpus() -> Vec<MontyObject> {
 fn to_oracle(obj: &MontyObject) -> oracle::MontyObject {
     let kind = match obj {
         MontyObject::Ellipsis => Kind::Ellipsis(oracle::Unit {}),
+        MontyObject::NotImplemented => Kind::NotImplemented(oracle::Unit {}),
         MontyObject::None => Kind::None(oracle::Unit {}),
         MontyObject::Bool(b) => Kind::Boolean(*b),
         MontyObject::Int(i) => Kind::Int(*i),

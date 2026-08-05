@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/monty",
     "crates/monty-types",
+    "crates/monty-alloc",
     "crates/monty-fs",
     "crates/monty-runtime",
     "crates/monty-proto",
@@ -59,6 +60,7 @@ strip = false
 # RELEASING.md.
 monty = { path = "crates/monty", version = "0.0.19" }
 monty-types = { path = "crates/monty-types", version = "0.0.19" }
+monty-alloc = { path = "crates/monty-alloc", version = "0.0.19" }
 monty-fs = { path = "crates/monty-fs", version = "0.0.19" }
 monty-macros = { path = "crates/monty-macros", version = "0.0.19" }
 monty-proto = { path = "crates/monty-proto", version = "0.0.19" }
@@ -99,6 +101,9 @@ unicode-general-category = "1"
 # or lead CPython's, affecting only recently (re)assigned code points.
 unicode_names2 = "1"
 unicode-normalization = "0.1"
+# Linear-time substring search over `[u8]`, which std only provides for `str`.
+# Already linked transitively via ruff/fancy-regex; this just names it directly.
+memchr = "2.7"
 # bigint and related crates
 num-bigint = { version = "0.4", features = ["serde"] }
 num-traits = "0.2"
@@ -146,6 +151,7 @@ rustls = { version = "0.23", features = ["aws_lc_rs"] }
 tokio = { version = "1" }
 
 [workspace.lints.rust]
+unsafe_code = "deny"
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(codspeed)', 'cfg(heap_reader_compile_fail_tests)', 'cfg(heap_reader_compile_fail_test_read_while_ref_alive)', 'cfg(heap_reader_compile_fail_test_dec_ref_while_reading)', 'cfg(heap_reader_compile_fail_test_smuggle_heap_read)', 'cfg(heap_reader_compile_fail_test_double_get_mut)', 'cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)', 'cfg(heap_reader_compile_fail_test_mutation_in_map_closure)', 'cfg(heap_reader_compile_fail_test_smuggle_vm)', 'cfg(heap_reader_compile_fail_test_smuggle_and_swap_reader)'] }
 

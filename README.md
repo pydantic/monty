@@ -236,6 +236,18 @@ let result = runner2.run(vec![MontyObject::Int(41)], ResourceTracker::default(),
 assert_eq!(result, MontyObject::Int(42));
 ```
 
+## Memory limits in workers
+
+A session's `max_memory` is enforced in the worker's own allocator as well as by
+the interpreter, so it covers every byte the process asks for. There is nothing
+to configure: set the limit, and a session that exceeds it fails. A worker that
+cannot honour the limit is killed with a `MemoryError` and replaced by the pool,
+rather than growing until the OS OOM killer picks a victim.
+
+See [`limitations/resource_limits.md`](limitations/resource_limits.md) for how
+exceeding a limit surfaces to a host, and `monty-alloc` for the allocator both
+the subprocess and WebAssembly workers run under.
+
 ## PydanticAI Integration
 
 Monty will power code-mode in

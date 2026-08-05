@@ -115,7 +115,7 @@ impl VM<'_> {
         let this = self;
         let test = this.pop();
         defer_drop!(test, this);
-        if test.py_bool(this) {
+        if test.py_bool(this)? {
             Ok(())
         } else if matches!(test, Value::Bool(false)) {
             Err(this.assertion_error(None))

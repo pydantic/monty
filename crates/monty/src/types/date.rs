@@ -215,8 +215,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(CmpOrder::from_total(self.get(vm.heap).partial_cmp(other.get(vm.heap))))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
-        true
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

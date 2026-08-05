@@ -2,6 +2,8 @@
 //! headline scenarios: a worker dying mid-execution (kill, crash, timeout)
 //! must surface as a clean error and never poison the pool.
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{
     env, fs,
     future::ready,
@@ -14,6 +16,9 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
+// only the unix-gated exit-code test snapshots a message
+#[cfg(unix)]
+use insta::assert_snapshot;
 use monty_pool::{
     MountSpec, MountSpecMode, Pool, PoolConfig, PoolError, PrintFuture, ReplConfig, ResumeValue, TurnEvent,
     on_print_sync,
@@ -27,12 +32,13 @@ fn monty_binary() -> PathBuf {
     if let Ok(path) = env::var("MONTY_TEST_BIN") {
         return PathBuf::from(path);
     }
-    // <workspace>/target/debug/monty, derived from this crate's manifest dir
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("workspace root")
-        .join("target/debug/monty");
+        .to_owned();
+    let target = env::var_os("CARGO_TARGET_DIR").map_or_else(|| workspace.join("target"), PathBuf::from);
+    let path = target.join("debug").join(format!("monty{}", env::consts::EXE_SUFFIX));
     BUILD.call_once(|| {
         if !path.exists() {
             let status = Command::new(env!("CARGO"))
@@ -1019,6 +1025,14 @@ async fn hard_child_crash_does_not_harm_the_pool() {
         matches!(err, PoolError::Crashed { .. } | PoolError::Runtime(_)),
         "got {err:?}"
     );
+    // a stack overflow aborts with SIGABRT, which must never be mistaken for the
+    // allocator's dedicated out-of-memory exit — the reason that exit exists
+    if let PoolError::Runtime(exc) = &err {
+        assert_ne!(
+            exc.message(),
+            Some("the worker exceeded its memory limit and was terminated")
+        );
+    }
 
     let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
     assert_eq!(
@@ -1090,6 +1104,97 @@ async fn child_resource_limits_do_not_kill_the_worker() {
     assert_eq!(exc.exc_type().to_string(), "TimeoutError");
     session.finish().await.unwrap();
     assert_eq!(pool.idle_workers(), 1);
+}
+
+/// A session's `max_memory` must not disturb work that stays inside it.
+#[tokio::test]
+async fn max_memory_leaves_normal_work_alone() {
+    let pool = Pool::new(config()).await.unwrap();
+    let repl_config = ReplConfig {
+        limits: Some(ResourceLimits::default().max_memory(1024 * 1024)),
+        ..ReplConfig::default()
+    };
+    let mut session = pool.checkout(&repl_config).await.unwrap();
+    assert_eq!(
+        expect_complete(
+            session
+                .feed("1 + 1", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap()
+        ),
+        MontyObject::Int(2)
+    );
+    session.finish().await.unwrap();
+}
+
+/// Only `OOM_EXIT_CODE` carries a meaning: any other code a worker might return
+/// stays an opaque death rather than being read as a memory outcome.
+#[cfg(unix)]
+#[tokio::test]
+async fn unrecognised_exit_code_stays_an_opaque_death() {
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("monty");
+    // outlives the parent's first write, so the death is always observed while
+    // waiting for the reply rather than racing with `sending a request`
+    fs::write(&fake, "#!/bin/sh\nsleep 0.2\nexit 64\n").unwrap();
+    fs::set_permissions(&fake, PermissionsExt::from_mode(0o755)).unwrap();
+
+    let pool = Pool::new(PoolConfig::subprocess(&fake)).await.unwrap();
+    let err = match pool.checkout(&ReplConfig::default()).await {
+        Ok(mut session) => session
+            .feed("1 + 1", vec![], vec![], false, &mut no_print)
+            .await
+            .expect_err("expected the stand-in binary to fail the turn"),
+        Err(err) => err,
+    };
+    let PoolError::Crashed { cause, .. } = &err else {
+        panic!("expected Crashed, got {err:?}");
+    };
+    assert!(
+        matches!(cause, monty_pool::CrashCause::Vanished { .. }),
+        "an unrecognised exit code must not be classified, got {cause:?}"
+    );
+    // the message says only what the pool was doing and what it reaped — no
+    // memory wording, which is what `OOM_EXIT_CODE` alone earns
+    assert_snapshot!(err.to_string(), @"monty worker crashed while waiting for a reply (exit status: 64)");
+}
+
+/// A refused allocation is the one `Runtime` error whose worker is already
+/// dead: it reports `MemoryError` (the worker's dedicated exit code, not an
+/// unclassifiable `SIGABRT`), the checkout is finished, and the pool recovers.
+/// Needs no limit: 1 EiB dwarfs the usable address space on any 64-bit host,
+/// so the allocator refuses it regardless of overcommit policy.
+#[tokio::test]
+async fn refused_allocation_is_a_memory_error_and_the_pool_recovers() {
+    let pool = Pool::new(config()).await.unwrap();
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    // no `max_memory`, so the sandbox tracker allows this outright
+    let err = session
+        .feed("x = ' ' * (1 << 60)", vec![], vec![], false, &mut no_print)
+        .await
+        .unwrap_err();
+    let PoolError::Runtime(exc) = err else {
+        panic!("expected Runtime, got {err:?}");
+    };
+    assert_eq!(exc.exc_type().to_string(), "MemoryError");
+    assert_eq!(
+        exc.message(),
+        Some("the worker exceeded its memory limit and was terminated")
+    );
+    // unlike an in-sandbox exception, the worker is gone with it
+    assert!(matches!(session.finish().await, Err(PoolError::Finished)));
+
+    let mut session = pool.checkout(&ReplConfig::default()).await.unwrap();
+    assert_eq!(
+        expect_complete(
+            session
+                .feed("3 + 3", vec![], vec![], false, &mut no_print)
+                .await
+                .unwrap()
+        ),
+        MontyObject::Int(6)
+    );
+    session.finish().await.unwrap();
 }
 
 #[cfg(unix)]

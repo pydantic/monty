@@ -4,8 +4,8 @@
 //! for the parent.
 
 use std::{
-    io::Write,
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    io::{Read, Write},
+    process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     thread,
     time::Duration,
 };
@@ -21,11 +21,24 @@ struct ChildProc {
 }
 
 impl ChildProc {
+    /// Spawns the child with its stderr inherited, so diagnostics show up in
+    /// the test output.
     fn spawn() -> Self {
+        Self::spawn_with(Stdio::inherit())
+    }
+
+    /// Spawns the child with its stderr captured, for tests asserting on the
+    /// diagnostics it prints before dying (see [`Self::reap_with_stderr`]).
+    fn spawn_stderr_piped() -> Self {
+        Self::spawn_with(Stdio::piped())
+    }
+
+    fn spawn_with(stderr: Stdio) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
             .arg("subprocess")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(stderr)
             .spawn()
             .expect("failed to spawn monty subprocess");
         let writer = child.stdin.take().expect("child stdin");
@@ -115,6 +128,49 @@ impl ChildProc {
             result: Some(pb::ExtFunctionResult { kind: Some(result) }),
         }));
         self.recv_turn()
+    }
+
+    /// Feeds a snippet expected to kill the child, asserting no turn-ending
+    /// event arrives — EOF (the usual case) or a truncated frame instead.
+    #[track_caller]
+    fn feed_expecting_death(&mut self, code: &str) {
+        self.send(pb::parent_request::Kind::Feed(pb::Feed {
+            code: code.to_owned(),
+            inputs: vec![],
+            skip_type_check: false,
+        }));
+        match self.reader.read::<pb::ChildEvent>() {
+            Ok(None) | Err(_) => {}
+            Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),
+        }
+    }
+
+    /// Writes a bare 200 MiB frame-length prefix — no body — and expects the
+    /// child to die buying the buffer: under the wire cap, over any limit a
+    /// test applies, and four bytes of writing, so the parent cannot block on a
+    /// pipe whose reader has already gone.
+    fn oversized_prefix_expecting_death(&mut self) {
+        self.writer
+            .write_all(&(200u32 * 1024 * 1024).to_le_bytes())
+            .expect("failed to write length prefix");
+        match self.reader.read::<pb::ChildEvent>() {
+            Ok(None) | Err(_) => {}
+            Ok(Some(event)) => panic!("expected the child to die, got {:?}", event.kind),
+        }
+    }
+
+    /// Waits for the child and returns its status with everything it wrote to
+    /// stderr. Only valid for a child spawned by [`Self::spawn_stderr_piped`].
+    fn reap_with_stderr(&mut self) -> (ExitStatus, String) {
+        let mut stderr = String::new();
+        self.child
+            .stderr
+            .take()
+            .expect("child stderr must be piped")
+            .read_to_string(&mut stderr)
+            .expect("failed to read child stderr");
+        let status = self.child.wait().expect("failed to wait for child");
+        (status, stderr)
     }
 
     /// Tells the child to shut down and asserts a clean exit.
@@ -354,6 +410,99 @@ fn child_enforces_time_limit() {
     child.create_repl();
     assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
     child.shutdown();
+}
+
+/// A session's `max_memory` must not disturb work that stays inside it. The
+/// limit here is deliberately tiny: the headroom above it is what keeps a small
+/// limit servable at all.
+#[test]
+fn small_memory_limit_leaves_normal_work_alone() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(configure_with_max_memory(1024));
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
+/// A refused allocation must leave the parent something it can classify: the
+/// dedicated exit code, not the `SIGABRT` Rust's allocation-error handler would
+/// raise (which a stack overflow also produces). Needs no limit: 1 EiB is
+/// thousands of times the usable address space on any 64-bit host, so `mmap`
+/// fails on the address-space check before overcommit policy is consulted —
+/// deterministic, and no page is ever touched.
+#[test]
+fn refused_allocation_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl();
+    // no `max_memory`, so the sandbox tracker permits this outright
+    child.feed_expecting_death("x = ' ' * (1 << 60)");
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 1152921504606846976 bytes failed"),
+        "{stderr}"
+    );
+}
+
+/// The point of enforcing in the allocator: memory the interpreter never
+/// accounts for must still kill the process rather than grow the host without
+/// bound. The allocation here comes from the frame reader — a bare length
+/// prefix, under the wire cap and over the limit, buys a 200 MiB buffer with
+/// four bytes. Same exit code as a refused allocation; the limit only changes
+/// *where* refusal starts.
+#[test]
+fn exceeding_the_memory_limit_exits_with_the_oom_code() {
+    let mut child = ChildProc::spawn_stderr_piped();
+    child.create_repl_with(configure_with_max_memory(1024));
+    child.oversized_prefix_expecting_death();
+    let (status, stderr) = child.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
+        "{stderr}"
+    );
+}
+
+/// A dump carries its own limits, so restoring one must re-apply them: this
+/// `Load` lands on a child that was never configured with a limit, and the
+/// restored session's `max_memory` is all there is to bound it.
+#[test]
+fn loading_a_dump_applies_its_own_memory_limit() {
+    let mut source = ChildProc::spawn();
+    source.create_repl_with(configure_with_max_memory(1024));
+    assert_eq!(source.feed_complete("x = 1"), MontyObject::None);
+    source.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = source.recv() else {
+        panic!("expected DumpResult");
+    };
+    source.shutdown();
+
+    let mut restored = ChildProc::spawn_stderr_piped();
+    restored.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = restored.recv() else {
+        panic!("expected Ok for Load");
+    };
+    restored.oversized_prefix_expecting_death();
+    let (status, stderr) = restored.reap_with_stderr();
+    assert_eq!(status.code(), Some(monty_proto::OOM_EXIT_CODE), "got {status:?}");
+    assert!(
+        stderr.contains("allocation of 209715200 bytes exceeds the memory limit"),
+        "{stderr}"
+    );
+}
+
+/// A `Configure` carrying `max_memory`, which is what limits the worker.
+fn configure_with_max_memory(bytes: u64) -> pb::Configure {
+    pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: Some(pb::ResourceLimits {
+            max_memory_bytes: Some(bytes),
+            ..Default::default()
+        }),
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
+    }
 }
 
 #[test]
@@ -633,7 +782,7 @@ fn version_skew_on_create_is_a_fatal_error() {
 fn garbage_stdin_is_a_fatal_error() {
     let mut child = ChildProc::spawn();
     // valid length prefix followed by a truncated stream: the child reads a
-    // mangled frame and must bail out with FatalError + exit code 2
+    // mangled frame and must bail out with FatalError + EX_PROTOCOL
     let raw = &mut child.writer;
     raw.write_all(&[0xFF, 0xFF, 0xFF, 0x7F]).unwrap();
     raw.flush().unwrap();
@@ -644,7 +793,7 @@ fn garbage_stdin_is_a_fatal_error() {
         other => panic!("expected FatalError, got {other:?}"),
     }
     let status = child.child.wait().expect("wait");
-    assert_eq!(status.code(), Some(2));
+    assert_eq!(status.code(), Some(76)); // EX_PROTOCOL
     // disarm Drop's kill — already exited
     let _ = child.child.kill();
 }

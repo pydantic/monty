@@ -54,7 +54,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
         vm,
     );
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 pub(super) fn call(vm: &mut VM<'_>, functions: AsyncioFunctions, args: ArgValues) -> RunResult<CallResult> {
     match functions {
@@ -125,7 +125,7 @@ pub(crate) fn gather(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
         .map(|arg| arg.into_ref_id().expect("validated gather awaitable is heap-backed"))
         .collect();
     let gather_future = GatherFuture::new(items);
-    let id = vm.heap.allocate(HeapData::GatherFuture(gather_future))?;
+    let id = vm.heap.allocate(HeapData::GatherFuture(Box::new(gather_future)))?;
     Ok(Value::Ref(id))
 }
 

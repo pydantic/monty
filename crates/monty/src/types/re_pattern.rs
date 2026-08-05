@@ -27,6 +27,7 @@ use crate::{
     types::{
         LazyHeapSet, List, PyTrait, ReMatch, Type, allocate_tuple,
         str::{allocate_string, string_repr_fmt},
+        tuple::TupleVec,
     },
     value::{EitherStr, Value},
 };
@@ -188,7 +189,7 @@ impl RePattern {
         heap: &Heap,
     ) -> RunResult<Value> {
         let m = ReMatch::from_captures(caps, subject.clone_with_heap(heap), all_ascii, &self.compiled);
-        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(m))?))
+        Ok(Value::Ref(heap.allocate(HeapData::ReMatch(Box::new(m)))?))
     }
 
     /// `pattern.search(string)` — find first match anywhere in the string.
@@ -263,7 +264,7 @@ impl RePattern {
             _ => {
                 for caps in self.compiled.captures_iter(text) {
                     let caps = caps.map_err(ExcType::re_pattern_error)?;
-                    let mut elements: SmallVec<[Value; 3]> = SmallVec::with_capacity(cap_count - 1);
+                    let mut elements: TupleVec = SmallVec::with_capacity(cap_count - 1);
                     for cap in caps.iter().skip(1) {
                         let val = cap.map_or("", |m| m.as_str());
                         elements.push(allocate_string(val, heap)?);
@@ -380,9 +381,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         Ok(Some(self.get(vm.heap) == other.get(vm.heap)))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Pattern objects are always truthy (matching CPython).
-        true
+        Ok(true)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {

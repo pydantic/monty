@@ -35,7 +35,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
         module.set_attr(*ss, Value::Marker(Marker(*ss)), vm);
     }
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Typing marker attributes exported by this module.

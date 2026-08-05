@@ -80,6 +80,7 @@ message MontyObject {
     // decoder but rejected as an execution input (the class binding cannot be
     // reconstructed from a name).
     string instance_type = 28;
+    Unit not_implemented = 29;
   }
 }
 

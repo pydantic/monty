@@ -1,13 +1,13 @@
 use std::{fmt::Write, mem};
 
-use super::{Dict, LazyHeapSet, PyTrait, Type};
+use super::{Dict, LazyHeapSet, PyTrait, Type, attribute_name_value};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::{HashValue, identity_hash},
-    heap::{BorrowedHeapReadMut, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
+    heap::{BorrowedHeapReadMut, DropGuard, DropWithContext, HeapId, HeapItem, HeapRead, heap_read_ref_as_field_mut},
     types::str::allocate_string,
     value::{EitherStr, Value},
 };
@@ -79,9 +79,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Class> {
         None
     }
 
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        let mut value_guard = DropGuard::new(value, vm);
+        let name = attribute_name_value(name, value_guard.ctx())?;
+        let (value, vm) = value_guard.into_parts();
+        let old_value = self.set_attr(name, value, vm)?;
+        old_value.drop_with(vm);
+        Ok(())
+    }
+
     fn py_eq_impl(&self, _other: &Value, _vm: &mut VM<'h>) -> RunResult<Option<bool>> {
-        // Classes compare by identity, which `Value::py_eq_impl` resolves before
-        // ever reaching here; from this side every class is `NotImplemented`.
+        // Classes return `NotImplemented`; rich equality's final identity
+        // fallback makes a class equal only to itself.
         Ok(None)
     }
 

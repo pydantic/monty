@@ -122,6 +122,48 @@ def test_request_timeout_kills_hung_worker():
             assert session.feed_run('2 + 2') == snapshot(4)
 
 
+def test_max_memory_leaves_normal_work_alone():
+    # a session's limit must not disturb work that stays inside it
+    with Monty() as pool:
+        with pool.checkout(limits={'max_memory': 1024**2}) as session:
+            assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_refused_allocation_raises_memory_error():
+    # no `max_memory`, so the sandbox tracker allows this outright: the
+    # allocation is refused below the interpreter, which kills the worker but
+    # still reports MemoryError rather than an unclassifiable crash
+    with Monty() as pool:
+        with pool.checkout() as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                session.feed_run("x = ' ' * (1 << 60)")
+            assert str(exc_info.value) == snapshot(
+                'MemoryError: the worker exceeded its memory limit and was terminated'
+            )
+            assert isinstance(exc_info.value.exception(), MemoryError)
+        # unlike an in-sandbox exception this took the worker with it, but the
+        # pool replaces it for the next checkout
+        with pool.checkout() as session:
+            assert session.feed_run('1 + 1') == snapshot(2)
+
+
+def test_exceeding_max_memory_in_the_allocator_raises_memory_error():
+    # the fed snippet is memory the interpreter never accounts for — the worker
+    # buys a frame buffer for it before it sees the code — so a snippet far
+    # larger than the limit is caught by the allocator
+    with Monty() as pool:
+        with pool.checkout(limits={'max_memory': 1024}) as session:
+            with pytest.raises(MontyRuntimeError) as exc_info:
+                session.feed_run('# ' + 'a' * (16 * 1024 * 1024))
+            assert str(exc_info.value) == snapshot(
+                'MemoryError: the worker exceeded its memory limit and was terminated'
+            )
+            assert isinstance(exc_info.value.exception(), MemoryError)
+        # this outcome takes the worker with it; the pool replaces it
+        with pool.checkout() as session:
+            assert session.feed_run('1 + 1') == snapshot(2)
+
+
 def test_concurrent_sessions_run_in_parallel(pool: Monty):
     results: list[object] = []
 

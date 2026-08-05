@@ -625,7 +625,9 @@ dependencies = [
  "codspeed",
  "codspeed-criterion-compat-walltime",
  "colored 2.2.0",
+ "futures",
  "regex",
+ "tokio",
 ]
 
 [[package]]
@@ -640,6 +642,7 @@ dependencies = [
  "clap",
  "codspeed",
  "criterion-plot",
+ "futures",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -652,6 +655,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 
@@ -799,6 +803,7 @@ dependencies = [
  "ciborium",
  "clap",
  "criterion-plot",
+ "futures",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -811,6 +816,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "tinytemplate",
+ "tokio",
  "walkdir",
 ]
 
@@ -2312,6 +2318,7 @@ dependencies = [
  "itoa",
  "jiter",
  "libm",
+ "memchr",
  "monty-macros",
  "monty-types",
  "num-bigint",
@@ -2336,12 +2343,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monty-alloc"
+version = "0.0.19"
+dependencies = [
+ "monty-proto",
+]
+
+[[package]]
 name = "monty-bench"
 version = "0.0.19"
 dependencies = [
  "codspeed-criterion-compat",
  "criterion",
  "monty",
+ "monty-alloc",
  "monty-pool",
  "monty-proto",
  "monty-types",
@@ -2420,6 +2435,7 @@ name = "monty-pool"
 version = "0.0.19"
 dependencies = [
  "futures-util",
+ "insta",
  "logfire",
  "monty-fs",
  "monty-proto",
@@ -2459,6 +2475,7 @@ dependencies = [
  "clap",
  "logfire",
  "monty",
+ "monty-alloc",
  "monty-fs",
  "monty-proto",
  "monty-type-checking",
@@ -2515,6 +2532,7 @@ dependencies = [
 name = "monty-wasm-runtime"
 version = "0.0.19"
 dependencies = [
+ "monty-alloc",
  "monty-proto",
  "prost",
  "serde",

@@ -201,7 +201,10 @@ impl<'a, C, V: DropWithContext<C>> DropGuard<'a, C, V> {
     pub fn into_inner(self) -> V {
         let mut this = ManuallyDrop::new(self);
         // SAFETY: [DH] - `ManuallyDrop::new(self)` prevents `Drop` on self, so we can take the value out
-        unsafe { ManuallyDrop::take(&mut this.value) }
+        #[expect(unsafe_code)]
+        unsafe {
+            ManuallyDrop::take(&mut this.value)
+        }
     }
 
     /// Borrows the value (immutably) and context (mutably) out of the guard.
@@ -230,7 +233,10 @@ impl<'a, C, V: DropWithContext<C>> DropGuard<'a, C, V> {
     pub fn into_parts(self) -> (V, &'a mut C) {
         let mut this = ManuallyDrop::new(self);
         // SAFETY: [DH] - `ManuallyDrop` prevents `Drop` on self, so we can recover the parts
-        unsafe { (ManuallyDrop::take(&mut this.value), addr_of!(this.ctx).read()) }
+        #[expect(unsafe_code)]
+        unsafe {
+            (ManuallyDrop::take(&mut this.value), addr_of!(this.ctx).read())
+        }
     }
 
     /// Borrows just the context out of the guard
@@ -243,6 +249,7 @@ impl<'a, C, V: DropWithContext<C>> DropGuard<'a, C, V> {
 impl<C, V: DropWithContext<C>> Drop for DropGuard<'_, C, V> {
     fn drop(&mut self) {
         // SAFETY: [DH] - value is never manually dropped until this point
+        #[expect(unsafe_code)]
         unsafe { ManuallyDrop::take(&mut self.value) }.drop_with(self.ctx);
     }
 }

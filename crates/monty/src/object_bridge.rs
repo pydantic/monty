@@ -78,6 +78,7 @@ impl MontyObjectExt for MontyObject {
     fn to_value(self, vm: &mut VM<'_>) -> Result<Value, InvalidInputError> {
         match self {
             Self::Ellipsis => Ok(Value::Ellipsis),
+            Self::NotImplemented => Ok(Value::NotImplemented),
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
@@ -108,7 +109,7 @@ impl MontyObjectExt for MontyObject {
                 let values = convert_values(values, vm)?;
                 let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
                 let nt = NamedTuple::new(type_name, field_name_strs, values);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(nt))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))?))
             }
             Self::Dict(map) => {
                 let pairs = convert_pairs(map, vm)?;
@@ -195,12 +196,12 @@ impl MontyObjectExt for MontyObject {
                 let dict = Dict::from_pairs(pairs, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(Box::new(dc)))?))
             }
             Self::Path(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(s)))?)),
             Self::FileHandle(handle) => {
                 let file = OpenFile::with_state(handle.path, handle.mode, handle.position);
-                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(file))?))
+                Ok(Value::Ref(vm.heap.allocate(HeapData::OpenFile(Box::new(file)))?))
             }
             Self::Type(t) => match t.to_internal() {
                 Some(ty) => Ok(Value::Builtin(Builtins::Type(ty))),
@@ -249,6 +250,7 @@ impl MontyObjectExt for MontyObject {
         match object {
             Value::Undefined => panic!("Undefined found while converting to MontyObject"),
             Value::Ellipsis => Self::Ellipsis,
+            Value::NotImplemented => Self::NotImplemented,
             Value::None => Self::None,
             Value::Bool(b) => Self::Bool(*b),
             Value::Int(i) => Self::Int(*i),
@@ -537,6 +539,7 @@ impl MontyTypeExt for MontyType {
     fn to_internal(&self) -> Option<Type> {
         match self {
             Self::Ellipsis => Some(Type::Ellipsis),
+            Self::NotImplementedType => Some(Type::NotImplementedType),
             Self::Type => Some(Type::Type),
             Self::NoneType => Some(Type::NoneType),
             Self::Bool => Some(Type::Bool),
@@ -563,6 +566,11 @@ impl MontyTypeExt for MontyType {
             Self::DictValueIterator => Some(Type::DictValueIterator),
             Self::SetIterator => Some(Type::SetIterator),
             Self::CallableIterator => Some(Type::CallableIterator),
+            Self::ItertoolsPairwise => Some(Type::ItertoolsPairwise),
+            Self::ItertoolsCompress => Some(Type::ItertoolsCompress),
+            Self::ItertoolsIslice => Some(Type::ItertoolsIslice),
+            Self::ItertoolsChain => Some(Type::ItertoolsChain),
+            Self::ItertoolsCycle => Some(Type::ItertoolsCycle),
             Self::ItertoolsCount => Some(Type::ItertoolsCount),
             Self::ItertoolsRepeat => Some(Type::ItertoolsRepeat),
             Self::Tuple => Some(Type::Tuple),
@@ -605,6 +613,7 @@ impl MontyTypeExt for MontyType {
     fn from_internal_static(ty: Type) -> Self {
         match ty {
             Type::Ellipsis => Self::Ellipsis,
+            Type::NotImplementedType => Self::NotImplementedType,
             Type::Type => Self::Type,
             Type::NoneType => Self::NoneType,
             Type::Bool => Self::Bool,
@@ -634,6 +643,11 @@ impl MontyTypeExt for MontyType {
             Type::DictValueIterator => Self::DictValueIterator,
             Type::SetIterator => Self::SetIterator,
             Type::CallableIterator => Self::CallableIterator,
+            Type::ItertoolsPairwise => Self::ItertoolsPairwise,
+            Type::ItertoolsCompress => Self::ItertoolsCompress,
+            Type::ItertoolsIslice => Self::ItertoolsIslice,
+            Type::ItertoolsChain => Self::ItertoolsChain,
+            Type::ItertoolsCycle => Self::ItertoolsCycle,
             Type::ItertoolsCount => Self::ItertoolsCount,
             Type::ItertoolsRepeat => Self::ItertoolsRepeat,
             Type::Tuple => Self::Tuple,

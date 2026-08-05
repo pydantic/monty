@@ -71,13 +71,27 @@ impl TryFrom<JsResourceLimits> for ResourceLimits {
 
 /// Converts a JavaScript `number` used for a size/count limit into `usize`.
 ///
+/// Returns `Err` for non-finite, negative, fractional, or out-of-range inputs.
+/// This helper does not panic.
+fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
+    let value = js_number_to_u64(value, name)?;
+    usize::try_from(value).map_err(|_| {
+        Error::new(
+            Status::InvalidArg,
+            format!("{name} must fit in Rust usize on this platform"),
+        )
+    })
+}
+
+/// Converts a JavaScript `number` used for a size/count limit into `u64`.
+///
 /// JavaScript numbers are IEEE-754 doubles, so integers above `2^53 - 1`
 /// cannot be represented exactly. Rejecting values outside the safe integer
 /// range avoids silently rounding resource limits at the napi boundary.
 ///
 /// Returns `Err` for non-finite, negative, fractional, or out-of-range inputs.
 /// This helper does not panic.
-fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
+pub(crate) fn js_number_to_u64(value: f64, name: &str) -> Result<u64> {
     const JS_MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
 
     match value {
@@ -94,12 +108,7 @@ fn js_number_to_usize(value: f64, name: &str) -> Result<usize> {
         v => {
             #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let value = v as u64;
-            usize::try_from(value).map_err(|_| {
-                Error::new(
-                    Status::InvalidArg,
-                    format!("{name} must fit in Rust usize on this platform"),
-                )
-            })
+            Ok(value)
         }
     }
 }

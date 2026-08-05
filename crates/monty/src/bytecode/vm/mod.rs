@@ -1144,9 +1144,12 @@ impl<'h> VM<'h> {
                 // Unary Operations
                 Opcode::UnaryNot => {
                     let value = self.pop();
-                    let result = !value.py_bool(self);
+                    let result = value.py_bool(self);
                     value.drop_with(self);
-                    self.push(Value::Bool(result));
+                    match result {
+                        Ok(value) => self.push(Value::Bool(!value)),
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::UnaryNeg => try_catch_sync!(self, cached_frame, self.unary_neg()),
                 Opcode::UnaryPos => try_catch_sync!(self, cached_frame, self.unary_pos()),
@@ -1313,37 +1316,53 @@ impl<'h> VM<'h> {
                 Opcode::JumpIfTrue => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
-                    }
+                    let result = cond.py_bool(self);
                     cond.drop_with(self);
+                    match result {
+                        Ok(true) => jump_relative!(cached_frame.ip, offset),
+                        Ok(false) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::JumpIfFalse => {
                     let offset = cached_frame.fetch_i16();
                     let cond = self.pop();
-                    if !cond.py_bool(self) {
-                        jump_relative!(cached_frame.ip, offset);
-                    }
+                    let result = cond.py_bool(self);
                     cond.drop_with(self);
+                    match result {
+                        Ok(false) => jump_relative!(cached_frame.ip, offset),
+                        Ok(true) => {}
+                        Err(error) => catch_sync!(self, cached_frame, error),
+                    }
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
-                    } else {
-                        value.drop_with(self);
+                    match value.py_bool(self) {
+                        Ok(true) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Ok(false) => value.drop_with(self),
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = cached_frame.fetch_i16();
                     let value = self.pop();
-                    if value.py_bool(self) {
-                        value.drop_with(self);
-                    } else {
-                        self.push(value);
-                        jump_relative!(cached_frame.ip, offset);
+                    match value.py_bool(self) {
+                        Ok(true) => value.drop_with(self),
+                        Ok(false) => {
+                            self.push(value);
+                            jump_relative!(cached_frame.ip, offset);
+                        }
+                        Err(error) => {
+                            value.drop_with(self);
+                            catch_sync!(self, cached_frame, error);
+                        }
                     }
                 }
                 // Iteration - route through exception handling
@@ -2088,7 +2107,7 @@ impl<'h> VM<'h> {
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
                 return Ok(());
             }
             // A reserved module dunder (e.g. `__name__`) in call position resolves
@@ -2135,9 +2154,8 @@ impl<'h> VM<'h> {
     /// The first call hits `globals[sum_slot] = Undefined` and falls back here to
     /// the builtin; once `def sum` runs, the slot holds the user function and the
     /// fallback isn't taken anymore.
-    fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
-        let name = self.interns.get_str(name_id);
-        name.parse::<Builtins>().ok()
+    fn builtin_for_name(&self, name_id: StringId) -> Option<Value> {
+        Builtins::value_from_name(self.interns.get_str(name_id))
     }
 
     /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
@@ -2204,7 +2222,7 @@ impl<'h> VM<'h> {
                 return Err(self.name_error(slot, None));
             };
             if let Some(builtin) = self.builtin_for_name(name_id) {
-                self.push(Value::Builtin(builtin));
+                self.push(builtin);
                 return Ok(None);
             }
             if let Some(value) = self.module_dunder(name_id)? {

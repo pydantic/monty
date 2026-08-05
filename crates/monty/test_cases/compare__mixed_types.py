@@ -205,6 +205,17 @@ except TypeError as exc:
     assert str(exc) == "'<' not supported between instances of 'float' and 'str'"
 
 # === NaN inside containers ===
+# Direct equality remains non-reflexive, while container operations accept the
+# identical object before invoking equality.
+assert (nan == nan) is False, 'direct NaN equality is non-reflexive'
+assert nan in [nan], 'list membership accepts the identical NaN'
+assert [nan].count(nan) == 1
+assert nan in (nan,), 'tuple membership accepts the identical NaN'
+nan_dict = {nan: 'value'}
+assert nan_dict[nan] == 'value'
+nan_set = {nan}
+assert nan in nan_set, 'set membership accepts the identical NaN'
+
 # The first differing element decides: a NaN element makes the container unordered
 # (False), a type-mismatched element makes it incomparable (raises).
 assert not ([nan] < [1]), 'list with nan element is unordered'

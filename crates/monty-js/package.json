@@ -62,6 +62,7 @@
     "format": "prettier . -w",
     "lint": "oxlint .",
     "test": "vitest run",
+    "test:wasm": "vitest --config vitest.wasm.config.ts run",
     "test:browser": "vitest --config vitest.browser.config.ts run",
     "assemble-packages": "node scripts/assemble-packages.mjs",
     "create-platform-packages": "node scripts/create-platform-packages.mjs"

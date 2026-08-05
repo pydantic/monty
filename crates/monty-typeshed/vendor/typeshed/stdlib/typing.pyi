@@ -457,7 +457,7 @@ OrderedDict = _Alias()
 Annotated: _SpecialForm
 
 # Predefined type variables.
-AnyStr = TypeVar('AnyStr', str, bytes)
+AnyStr = TypeVar('AnyStr', str, bytes)  # noqa: Y001
 
 @type_check_only
 class _Generic:
@@ -959,7 +959,7 @@ ByteString: typing_extensions.TypeAlias = bytes | bytearray | memoryview
 
 # Functions
 
-_get_type_hints_obj_allowed_types: typing_extensions.TypeAlias = (
+_get_type_hints_obj_allowed_types: typing_extensions.TypeAlias = (  # noqa: Y042
     object
     | Callable[..., Any]
     | FunctionType

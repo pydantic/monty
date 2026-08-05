@@ -30,6 +30,8 @@ pub(crate) enum Identity {
     Undefined,
     /// Python's `Ellipsis` singleton.
     Ellipsis,
+    /// Python's `NotImplemented` singleton.
+    NotImplemented,
     /// Python's `None` singleton.
     None,
     /// Boolean singleton identity.
@@ -64,6 +66,7 @@ impl Identity {
         match value {
             Value::Undefined => Self::Undefined,
             Value::Ellipsis => Self::Ellipsis,
+            Value::NotImplemented => Self::NotImplemented,
             Value::None => Self::None,
             Value::Bool(value) => Self::Bool(*value),
             Value::Int(value) => Self::Int(*value),
@@ -87,7 +90,7 @@ impl Identity {
     /// Returns an immediate integer when possible, otherwise allocating a `LongInt`.
     pub(crate) fn into_value(self, heap: &Heap) -> Result<Value, ResourceError> {
         let payload = match &self {
-            Self::Undefined | Self::Ellipsis | Self::None => 0,
+            Self::Undefined | Self::Ellipsis | Self::NotImplemented | Self::None => 0,
             Self::Bool(value) => u128::from(*value),
             Self::Int(value) => u128::from(zigzag_i64(*value)),
             Self::Float(bits) => u128::from(compact_float_bits(*bits)),
@@ -110,6 +113,7 @@ impl Identity {
         match self {
             Self::Undefined => 0,
             Self::Ellipsis => 1,
+            Self::NotImplemented => 2,
             Self::None => 3,
             Self::Bool(_) => 4,
             Self::Int(_) => 5,

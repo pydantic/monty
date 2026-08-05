@@ -1565,6 +1565,101 @@ fn timeout_in_list_constructor() {
     assert_timeout_in_builtin("list(range(10**18))", "list(range(10**18))");
 }
 
+/// Covers all four substring scanners; `index`/`rindex` share theirs with
+/// `find`/`rfind`.
+const BYTES_SEARCH_EXPRS: &[&str] = &[
+    "needle in haystack",
+    "haystack.find(needle)",
+    "haystack.rfind(needle)",
+    "haystack.count(needle)",
+    "haystack.split(needle)",
+    "haystack.rsplit(needle)",
+    "haystack.replace(needle, b'')",
+    "haystack.partition(needle)",
+    "haystack.rpartition(needle)",
+];
+
+/// Runs `expr` with `haystack`/`needle` bound, under `limits`.
+fn run_bytes_search(expr: &str, haystack: Vec<u8>, needle: Vec<u8>, limits: ResourceLimits) -> BytesSearchOutcome {
+    let run = MontyRun::new(
+        expr.to_owned(),
+        "test.py",
+        vec!["haystack".to_owned(), "needle".to_owned()],
+        CompileOptions::default(),
+    )
+    .unwrap();
+
+    let start = Instant::now();
+    let result = run.run(
+        vec![MontyObject::Bytes(haystack), MontyObject::Bytes(needle)],
+        ResourceTracker::new(limits),
+        PrintWriter::Stdout,
+    );
+    BytesSearchOutcome {
+        elapsed: start.elapsed(),
+        result,
+    }
+}
+
+/// What a `bytes` search returned, and how long it took.
+struct BytesSearchOutcome {
+    elapsed: Duration,
+    result: Result<MontyObject, MontyException>,
+}
+
+/// Worst case for a naive `windows()` scan: every offset compares the full
+/// needle before failing on its last byte.
+fn near_match_inputs(haystack_len: usize, needle_len: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut needle = vec![b'a'; needle_len];
+    *needle.last_mut().unwrap() = b'b';
+    (vec![b'a'; haystack_len], needle)
+}
+
+/// Near-matching probes must not blow up quadratically.
+///
+/// A naive scan takes ~800ms on these inputs, a linear one microseconds; the
+/// generous budget keeps the timing assertion robust on loaded CI.
+#[test]
+fn bytes_search_is_not_quadratic() {
+    for expr in BYTES_SEARCH_EXPRS {
+        let (haystack, needle) = near_match_inputs(1_000_000, 50_000);
+        let outcome = run_bytes_search(expr, haystack, needle, ResourceLimits::default());
+
+        assert!(
+            outcome.result.is_ok(),
+            "{expr}: expected success, got {:?}",
+            outcome.result
+        );
+        assert!(
+            outcome.elapsed < Duration::from_millis(300),
+            "{expr}: took {:?}, expected a linear scan",
+            outcome.elapsed
+        );
+    }
+}
+
+/// Bytes searches must remain interruptible by the time limit.
+///
+/// The haystack is large enough that even a linear scan outlives the budget.
+#[test]
+fn timeout_in_bytes_search() {
+    for expr in BYTES_SEARCH_EXPRS {
+        let (haystack, needle) = near_match_inputs(64 * 1024 * 1024, 4096);
+        let limits = ResourceLimits::default().max_duration(Duration::from_millis(1));
+        let outcome = run_bytes_search(expr, haystack, needle, limits);
+
+        let exc = outcome
+            .result
+            .expect_err(&format!("{expr}: expected the time limit to fire"));
+        assert_eq!(exc.exc_type(), ExcType::TimeoutError, "{expr}");
+        assert!(
+            outcome.elapsed < Duration::from_secs(2),
+            "{expr}: should terminate promptly, took {:?}",
+            outcome.elapsed
+        );
+    }
+}
+
 /// Test that a bounded `deque * n` repetition respects the time limit mid-build.
 ///
 /// `repeat_deque` clones into a Rust-side loop that polls `check_time()`. Beyond
@@ -2730,4 +2825,52 @@ P(1, 2, 3) * 10**9
         "repeating a namedtuple 10**9 times should exceed the memory limit"
     );
     assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn cycle_buffer_is_bounded_by_the_memory_limit() {
+    // `cycle` saves every item it yields so it can replay them, and that buffer
+    // has no bound of its own — consuming a long source grew it entirely outside
+    // `max_memory` until each slot was charged with the tracker. Regression for
+    // the missing `track_growth` in `cycle::next`: before the fix this consumed
+    // 20M slots (~600MB RSS) against a 10MB limit without raising.
+    let code = r"
+import itertools
+n = 0
+for _ in itertools.cycle(range(10000000)):
+    n += 1
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(10_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert!(result.is_err(), "an unbounded cycle should exceed the memory limit");
+    assert_eq!(result.unwrap_err().exc_type(), ExcType::MemoryError);
+}
+
+#[test]
+fn cycle_buffer_charge_is_released_on_free() {
+    // The charge is per-slot on the way up but returned in one go by `on_free`,
+    // via `py_estimate_size`. If that estimate omitted the buffer, each discarded
+    // `cycle` would leak budget and this loop — which buffers 600k slots in total,
+    // far more than the limit holds at once — would raise instead of completing.
+    let code = r"
+import itertools
+for _ in range(300):
+    c = itertools.cycle(range(1000))
+    n = 0
+    for _ in c:
+        n += 1
+        if n >= 2000:
+            break
+    c = None
+'done'
+";
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
+
+    let limits = ResourceLimits::default().max_memory(1_000_000);
+    let result = ex.run(vec![], ResourceTracker::new(limits), PrintWriter::Stdout);
+
+    assert_eq!(result.unwrap(), MontyObject::String("done".to_owned()));
 }

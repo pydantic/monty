@@ -401,8 +401,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, LongInt> {
         None
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        !self.get(vm.heap).is_zero()
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).is_zero())
     }
 
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>> {

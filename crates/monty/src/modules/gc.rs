@@ -53,7 +53,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     ] {
         module.set_attr(name, Value::ModuleFunction(ModuleFunctions::Gc(function)), vm);
     }
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a `gc` module function call.

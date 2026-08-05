@@ -668,7 +668,7 @@ else:
         globals: Mapping[str, Any] | None = None,  # value types depend on the key
         locals: Mapping[str, Any] | None = None,  # value types depend on the key
         eval_str: bool = False,
-        format: Format = Format.VALUE,
+        format: Format = Format.VALUE,  # noqa: Y011
     ) -> dict[str, AnnotationForm]: ...
     @overload
     def evaluate_forward_ref(

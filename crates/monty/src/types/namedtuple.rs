@@ -485,8 +485,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        self.get(vm.heap).len() > 0
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(self.get(vm.heap).len() > 0)
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -738,13 +738,9 @@ impl<'h> HeapRead<'h, NamedTuple> {
         let (pos, kwargs) = args.into_parts();
         let n_pos = pos.len();
         if n_pos > 0 {
-            for v in pos {
-                v.drop_with(vm);
-            }
+            pos.drop_with(vm);
             kwargs.drop_with(vm);
-            for v in items {
-                v.drop_with(vm);
-            }
+            items.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "_replace() takes 1 positional argument but {} were given",
                 n_pos + 1
@@ -763,9 +759,7 @@ impl<'h> HeapRead<'h, NamedTuple> {
             }
         }
         if !unexpected.is_empty() {
-            for v in items {
-                v.drop_with(vm);
-            }
+            items.drop_with(vm);
             return Err(ExcType::type_error(format!(
                 "Got unexpected field names: {}",
                 py_list_repr(&unexpected)
@@ -1019,9 +1013,8 @@ pub(crate) fn cmp_item_seqs(a: Vec<Value>, b: Vec<Value>, vm: &mut VM<'_>) -> Ru
             }
         }
     }
-    for value in a.into_iter().chain(b) {
-        value.drop_with(vm);
-    }
+    a.drop_with(vm);
+    b.drop_with(vm);
     // All compared pairs were equal, so the shorter sequence sorts first.
     result.unwrap_or_else(|| Ok(CmpOrder::Ordered(a_len.cmp(&b_len))))
 }
@@ -1112,13 +1105,9 @@ pub(crate) fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgV
     // Too many positionals. `__new__(cls, ...)` counts `cls`, so the limit and
     // the count both include it (the `+ 1`s).
     if n_pos > n {
-        for v in pos {
-            v.drop_with(vm);
-        }
+        pos.drop_with(vm);
         kwargs.drop_with(vm);
-        for v in defaults {
-            v.drop_with(vm);
-        }
+        defaults.drop_with(vm);
         return Err(ExcType::type_error_too_many_positional_range(
             &func_name,
             n + 1,
@@ -1177,12 +1166,9 @@ pub(crate) fn construct_namedtuple(class_id: HeapId, vm: &mut VM<'_>, args: ArgV
     }
 
     if let Some(err) = first_err {
-        for v in leftover {
-            v.drop_with(vm);
-        }
-        for v in slots.into_iter().flatten() {
-            v.drop_with(vm);
-        }
+        leftover.drop_with(vm);
+        // `Vec<Option<Value>>` releases through the `Vec` and `Option` impls.
+        slots.drop_with(vm);
         return Err(err);
     }
 
@@ -1213,9 +1199,7 @@ fn make_from_iterable(
     let items = collect_owned_iterable::<Vec<Value>>(iterable, vm)?;
     if items.len() != n {
         let got = items.len();
-        for v in items {
-            v.drop_with(vm);
-        }
+        items.drop_with(vm);
         return Err(ExcType::type_error(format!("Expected {n} arguments, got {got}")));
     }
     build_namedtuple(name, field_names, items, class_id, vm)
@@ -1231,7 +1215,7 @@ pub(crate) fn build_namedtuple(
     vm: &mut VM<'_>,
 ) -> RunResult<Value> {
     let nt = NamedTuple::with_class(name, field_names, items, class_id);
-    let id = vm.heap.allocate(HeapData::NamedTuple(nt))?;
+    let id = vm.heap.allocate(HeapData::NamedTuple(Box::new(nt)))?;
     // The instance owns a reference to its class object (see `py_dec_ref_ids`).
     if let Some(cid) = class_id {
         vm.heap.inc_ref(cid);

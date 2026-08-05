@@ -161,6 +161,6 @@ fn create_class(
 
     let class_id = vm
         .heap
-        .allocate(HeapData::Class(Class::new(class_name, namespace_dict)))?;
+        .allocate(HeapData::Class(Box::new(Class::new(class_name, namespace_dict))))?;
     Ok(Value::Ref(class_id))
 }

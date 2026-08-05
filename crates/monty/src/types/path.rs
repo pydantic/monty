@@ -469,9 +469,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         Ok(Some(hash))
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> bool {
+    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
         // Paths are always truthy (even empty paths)
-        true
+        Ok(true)
     }
 
     fn py_truediv_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<Value>> {

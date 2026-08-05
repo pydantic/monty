@@ -54,6 +54,8 @@ use crate::{
 pub enum MontyObject {
     /// Python's `Ellipsis` singleton (`...`).
     Ellipsis,
+    /// Python's `NotImplemented` singleton.
+    NotImplemented,
     /// Python's `None` singleton.
     None,
     /// Python boolean (`True` or `False`).
@@ -244,6 +246,7 @@ impl MontyObject {
     fn repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         match self {
             Self::Ellipsis => f.write_str("Ellipsis"),
+            Self::NotImplemented => f.write_str("NotImplemented"),
             Self::None => f.write_str("None"),
             Self::Bool(true) => f.write_str("True"),
             Self::Bool(false) => f.write_str("False"),
@@ -467,7 +470,7 @@ impl MontyObject {
     pub fn is_truthy(&self) -> bool {
         match self {
             Self::None => false,
-            Self::Ellipsis => true,
+            Self::Ellipsis | Self::NotImplemented => true,
             Self::Bool(b) => *b,
             Self::Int(i) => *i != 0,
             Self::BigInt(bi) => !bi.is_zero(),
@@ -502,6 +505,7 @@ impl MontyObject {
         match self {
             Self::None => "NoneType",
             Self::Ellipsis => "ellipsis",
+            Self::NotImplemented => "NotImplementedType",
             Self::Bool(_) => "bool",
             Self::Int(_) | Self::BigInt(_) => "int",
             Self::Float(_) => "float",
@@ -542,7 +546,7 @@ impl Hash for MontyObject {
         }
 
         match self {
-            Self::Ellipsis | Self::None => {}
+            Self::Ellipsis | Self::NotImplemented | Self::None => {}
             Self::Bool(bool) => bool.hash(state),
             Self::Int(i) => i.hash(state),
             Self::BigInt(bi) => {
@@ -578,6 +582,7 @@ impl PartialEq for MontyObject {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Ellipsis, Self::Ellipsis) => true,
+            (Self::NotImplemented, Self::NotImplemented) => true,
             (Self::None, Self::None) => true,
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Int(a), Self::Int(b)) => a == b,
@@ -813,6 +818,18 @@ pub enum MontyType {
     /// as found in a class's `__dataclass_fields__`.
     #[strum(serialize = "Field")]
     Field,
+    #[strum(serialize = "itertools.pairwise")]
+    ItertoolsPairwise,
+    #[strum(serialize = "itertools.compress")]
+    ItertoolsCompress,
+    #[strum(serialize = "itertools.islice")]
+    ItertoolsIslice,
+    #[strum(serialize = "itertools.chain")]
+    ItertoolsChain,
+    #[strum(serialize = "itertools.cycle")]
+    ItertoolsCycle,
+    #[strum(serialize = "NotImplementedType")]
+    NotImplementedType,
 }
 
 impl fmt::Display for MontyType {

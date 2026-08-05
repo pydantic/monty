@@ -1003,10 +1003,10 @@ impl Checkout {
         }
     }
 
-    /// Discards the worker after an I/O failure and classifies it as a crash,
-    /// or — on the WebSocket transport, where the worker is a remote process
-    /// this client cannot reap — a disconnect. Deadline expiry goes through
-    /// [`Self::poison_timeout`] instead.
+    /// Discards the worker after an I/O failure and classifies it as an
+    /// out-of-memory kill, a crash, or — on the WebSocket transport, where the
+    /// worker is a remote process this client cannot reap — a disconnect.
+    /// Deadline expiry goes through [`Self::poison_timeout`] instead.
     async fn poison(&mut self, context: &str) -> PoolError {
         let Some(mut worker) = self.worker.take() else {
             return PoolError::Finished;
@@ -1016,12 +1016,26 @@ impl Checkout {
         // guard, not a trailing release: a caller dropping this future
         // mid-reap must still release the slot
         let _capacity = CapacityGuard::new(&self.pool);
-        let status = worker.kill_and_reap().await;
+        // A worker that exits deliberately (an allocation refused, see
+        // `OOM_EXIT_CODE`) is racing us: SIGKILLing it mid-exit would replace
+        // its code with `signal: 9` and lose the classification. Give it the
+        // same grace `fatal_error` does — a dead child reaps on the first poll,
+        // and only a wedged-alive one pays for it, on an already-failed turn.
+        // A deadline expiry never lands here (see `poison_timeout`), so nothing
+        // is waiting on this grace that should have been killed outright.
+        let status = worker.reap_or_kill(FATAL_EXIT_GRACE).await;
         drop(worker);
         if self.pool.config.transport.is_websocket() {
             PoolError::Disconnected {
                 context: context.to_owned(),
             }
+        } else if status.and_then(|status| status.code()) == Some(monty_proto::OOM_EXIT_CODE) {
+            // the worker is gone, unlike every other `Runtime` error — the
+            // checkout is already finished, so later calls report `Finished`
+            PoolError::Runtime(MontyException::new(
+                ExcType::MemoryError,
+                Some("the worker exceeded its memory limit and was terminated".to_owned()),
+            ))
         } else {
             PoolError::Crashed {
                 status,

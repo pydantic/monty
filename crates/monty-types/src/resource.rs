@@ -239,6 +239,13 @@ impl ResourceTracker {
         self.limits.max_duration
     }
 
+    /// Returns the configured memory budget, if any. Hosts that bound a worker
+    /// process from outside the interpreter size that bound from this.
+    #[must_use]
+    pub fn max_memory(&self) -> Option<usize> {
+        self.limits.max_memory
+    }
+
     /// Sets the maximum execution duration as a fresh budget from now,
     /// resetting the accumulated execution time to zero.
     ///

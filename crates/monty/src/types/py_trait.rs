@@ -176,16 +176,13 @@ pub(crate) trait PyTrait<'h> {
         Ok(None)
     }
 
-    /// One-sided Python equality comparison (`self == other` from `self`'s side).
+    /// One-sided equality normalized for identity-or-equality operations.
     ///
-    /// Mirrors CPython's `__eq__`/`tp_richcompare` protocol: returns
-    /// `Ok(Some(bool))` when `self`'s type knows how to compare itself against
-    /// `other`, or `Ok(None)` for `NotImplemented` — i.e. `self`'s type does not
-    /// recognise `other`, so the caller should try the reflected `other == self`.
-    /// The reflection and the final "unequal" fallback are driven by
-    /// [`Value::py_eq`]; implementations only handle their own side and must
-    /// not attempt reflection themselves. This mirrors the `NotImplemented`
-    /// half of [`py_cmp`](Self::py_cmp)'s [`CmpOrder::Incomparable`].
+    /// Returns `Some(bool)` when this type handles `other`, or `None` for
+    /// `NotImplemented`. User instances truth-test arbitrary `__eq__` results
+    /// here, while [`Value::py_rich_eq`] uses a separate path to preserve them.
+    /// This mirrors the `NotImplemented` half of [`py_cmp`](Self::py_cmp)'s
+    /// [`CmpOrder::Incomparable`].
     ///
     /// Cross-type equality (e.g. `int`/`float`, `namedtuple`/`tuple`,
     /// `dict_keys`/`set`) is handled here in-situ: each type inspects `other`
@@ -193,7 +190,8 @@ pub(crate) trait PyTrait<'h> {
     /// heap to resolve nested references; `&mut VM` allows lazy hash computation
     /// for dict key lookups and access to interned string content.
     ///
-    /// Recursion depth is tracked via `vm.recursion_guard()`; returns
+    /// Heap-backed implementations receive `self_id`; immediate values receive
+    /// `None`. Recursion depth is tracked via `vm.recursion_guard()`; returns
     /// `Err(ResourceError::Recursion)` if maximum depth is exceeded.
     fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h>) -> RunResult<Option<bool>>;
 
@@ -238,9 +236,10 @@ pub(crate) trait PyTrait<'h> {
 
     /// Returns the truthiness of the value following Python semantics.
     ///
-    /// Container types should typically report `false` when empty.
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        self.py_len(vm) != Some(0)
+    /// Container types should typically report `false` when empty. Truth
+    /// testing may raise, notably for Python 3.14's `NotImplemented` singleton.
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(self.py_len(vm) != Some(0))
     }
 
     /// Writes the Python `repr()` string for this value to a formatter.
@@ -617,6 +616,16 @@ pub(crate) trait PyTrait<'h> {
         .into())
     }
 
+    /// Python attribute assignment, consuming `value` on both success and error.
+    ///
+    /// The default rejects assignment. Mutable attribute-bearing types override
+    /// this method and are responsible for releasing any replaced value.
+    fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
+        value.drop_with(vm);
+        let type_name = self.py_type(vm).name(vm.heap, vm.interns);
+        Err(ExcType::attribute_error_no_setattr(&type_name, name.as_str(vm.interns)))
+    }
+
     /// Python attribute get operation (`__getattr__`), e.g., `obj.attr`.
     ///
     /// Returns the value associated with the attribute (owned), or `Ok(None)` if the type
@@ -682,6 +691,14 @@ pub(crate) trait PyTrait<'h> {
             &self.py_type(vm).name(vm.heap, vm.interns),
         ))
     }
+}
+
+/// Converts an attribute name into an owned dict key, preserving interned names.
+pub(crate) fn attribute_name_value(name: &EitherStr, vm: &VM<'_>) -> RunResult<Value> {
+    Ok(match name {
+        EitherStr::Interned(string_id) => Value::InternString(*string_id),
+        EitherStr::Heap(s) => allocate_string(s.as_str(), vm.heap)?,
+    })
 }
 
 /// Lazy wrapper around [`AHashSet`] that only allocates the set when needed.

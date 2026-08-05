@@ -15,7 +15,7 @@ pub fn builtin_all(vm: &mut VM<'_>, args: ArgValues) -> RunResult<Value> {
 
     while let Some(item) = iter.py_next(vm)? {
         defer_drop!(item, vm);
-        if !item.py_bool(vm) {
+        if !item.py_bool(vm)? {
             return Ok(Value::Bool(false));
         }
     }

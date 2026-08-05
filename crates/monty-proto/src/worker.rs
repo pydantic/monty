@@ -167,6 +167,17 @@ fn dispatch_into(child: &mut Child, request_frame: &[u8], sink: &mut VecEventSin
     }
 }
 
+/// The sandbox budget of the child's current session, as a host outside the
+/// interpreter sees it. Both fields describe how much memory the session may
+/// need: the tracked budget, and whether type checking's untracked caches load.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SessionBudget {
+    /// `max_memory` in bytes; `None` when unlimited, or when no session exists.
+    pub max_memory: Option<u64>,
+    /// Whether the session type checks each fed snippet.
+    pub type_check: bool,
+}
+
 /// REPL session state of the child.
 enum SessionState {
     /// No repl materialized yet. `Some` once `Configure` has stored the config
@@ -301,6 +312,34 @@ impl Child {
             self.recover_send_error(&event, err, sink)?;
         }
         Ok(HandleOutcome::Continue)
+    }
+
+    /// What the session the child is *currently* holding would run under.
+    ///
+    /// A host that bounds the worker process from outside the interpreter (the
+    /// subprocess shell caps its own allocator) sizes that bound from this,
+    /// after every request: the budget changes when a session is configured,
+    /// restored from a dump — which brings its own limits, not the
+    /// `Configure`'s — or ended by `Reset`.
+    #[must_use]
+    pub fn session_budget(&self) -> SessionBudget {
+        match &self.state {
+            SessionState::Configured(Some(config)) => SessionBudget {
+                max_memory: config.limits.as_ref().and_then(|limits| limits.max_memory_bytes),
+                type_check: config.type_check,
+            },
+            SessionState::Configured(None) => SessionBudget::default(),
+            SessionState::Ready(repl) => self.tracker_budget(repl.tracker()),
+            SessionState::Suspended(progress) => self.tracker_budget(progress.tracker()),
+        }
+    }
+
+    /// The budget of a materialized session, whose limits live in its tracker.
+    fn tracker_budget(&self, tracker: &ResourceTracker) -> SessionBudget {
+        SessionBudget {
+            max_memory: tracker.max_memory().map(|bytes| bytes as u64),
+            type_check: self.type_check.is_some(),
+        }
     }
 
     /// Builds a timing-stamped `FatalError` event for an unrecoverable

@@ -85,7 +85,7 @@ pub fn create_module(vm: &mut VM<'_>) -> Result<HeapId, ResourceError> {
     let version = allocate_string(UNIDATA_VERSION, vm.heap)?;
     module.set_attr(StaticStrings::UnidataVersion, version, vm);
 
-    vm.heap.allocate(HeapData::Module(module))
+    vm.heap.allocate(HeapData::Module(Box::new(module)))
 }
 
 /// Dispatches a call to a `unicodedata` module function.

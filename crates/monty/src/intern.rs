@@ -913,6 +913,28 @@ pub enum StaticStrings {
     /// `__qualname__` — the qualified class name, exposed on namedtuple classes.
     #[strum(serialize = "__qualname__")]
     DunderQualname,
+
+    // ==========================
+    // More itertools module strings. Appended at the enum end rather than
+    // beside the earlier itertools block: discriminants are serialized
+    // `StringId`s, so inserting there would shift every later id.
+    /// `itertools.pairwise()` function.
+    Pairwise,
+    /// `itertools.compress()` function.
+    Compress,
+    /// `data` keyword argument of `itertools.compress()`.
+    Data,
+    /// `selectors` keyword argument of `itertools.compress()`.
+    Selectors,
+    /// `itertools.islice()` function.
+    Islice,
+    /// `itertools.chain()` function.
+    Chain,
+    /// `itertools.cycle()` function.
+    Cycle,
+    /// Python's `NotImplemented` singleton representation.
+    #[strum(serialize = "NotImplemented")]
+    NotImplementedRepr,
 }
 
 /// Computes an FNV-1a hash over static-string identities and serialization.

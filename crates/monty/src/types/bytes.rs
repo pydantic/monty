@@ -67,6 +67,7 @@ use std::{cell::Cell, ffi::c_int, fmt::Write, mem, ops, str};
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
+use memchr::memmem::{Finder, FinderRev};
 use monty_types::ResourceError;
 pub use monty_types::{bytes_repr, bytes_repr_fmt};
 use smallvec::smallvec;
@@ -342,8 +343,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
-    fn py_bool(&self, vm: &mut VM<'h>) -> bool {
-        !self.get(vm.heap).0.is_empty()
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(!self.get(vm.heap).0.is_empty())
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, _heap_ids: &mut LazyHeapSet) -> RunResult<()> {
@@ -557,6 +558,120 @@ struct BytesDecodeArgs {
     errors: Option<StrArg>,
 }
 
+// =============================================================================
+// Substring scanning
+// =============================================================================
+//
+// Every `bytes` substring operation funnels through the scanners below. A scan
+// runs inside one bytecode instruction, so the VM's per-instruction
+// `check_time()` cannot preempt it — hence the chunked polling.
+
+/// Bytes scanned between `check_time()` polls.
+const SCAN_CHUNK: usize = 64 * 1024;
+
+/// Finds the first occurrence of `needle` in `haystack`.
+///
+/// Callers must handle the empty needle: it would spin [`count_non_overlapping`].
+/// Repeated scans for the same needle should build one [`Finder`] via
+/// [`finder_for`] and call [`find_with`] instead — see their docstrings.
+fn find_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    match finder_for(needle, haystack) {
+        Some(finder) => find_with(&finder, haystack, heap),
+        None => Ok(None),
+    }
+}
+
+/// Builds a forward finder, or `None` when `needle` cannot fit in `haystack`.
+///
+/// [`Finder::new`] runs Two-Way preprocessing over the whole needle *before*
+/// [`find_with`] reaches its first `check_time()`, so a host-supplied needle
+/// longer than the haystack would burn unpolled time on a search that provably
+/// cannot match. Every finder must be built through this or [`rfinder_for`].
+fn finder_for<'n>(needle: &'n [u8], haystack: &[u8]) -> Option<Finder<'n>> {
+    (needle.len() <= haystack.len()).then(|| Finder::new(needle))
+}
+
+/// Builds a reverse finder, or `None` when `needle` cannot fit in `haystack`.
+///
+/// The mirror of [`finder_for`], with the same preprocessing rationale.
+fn rfinder_for<'n>(needle: &'n [u8], haystack: &[u8]) -> Option<FinderRev<'n>> {
+    (needle.len() <= haystack.len()).then(|| FinderRev::new(needle))
+}
+
+/// Finds the first occurrence of `finder`'s needle in `haystack`.
+///
+/// Chunks overlap by `needle.len() - 1` so boundary-straddling matches are
+/// found; the stride never drops below the needle length so that overlap cannot
+/// dominate. Above that floor a chunk spans up to `2 * needle.len()`, so a long
+/// needle widens the `max_duration` overshoot — unavoidable, since a window
+/// shorter than the needle cannot hold a match. See
+/// `limitations/resource_limits.md`.
+///
+/// Takes the [`Finder`] by reference because constructing one runs Two-Way
+/// preprocessing over the needle; callers scanning in a loop (counting,
+/// splitting, replacing) build it once rather than per match.
+fn find_with(finder: &Finder<'_>, haystack: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    let needle_len = finder.needle().len();
+    debug_assert!(needle_len > 0, "callers must handle the empty needle");
+    let stride = SCAN_CHUNK.max(needle_len);
+    let mut start = 0;
+    while start < haystack.len() {
+        heap.check_time()?;
+        let end = start
+            .saturating_add(stride + needle_len.saturating_sub(1))
+            .min(haystack.len());
+        if let Some(pos) = finder.find(&haystack[start..end]) {
+            return Ok(Some(start + pos));
+        }
+        start += stride;
+    }
+    Ok(None)
+}
+
+/// Finds the last occurrence of `needle` in `haystack`.
+///
+/// The mirror of [`find_subsequence`]; [`rfind_with`] is the reusable form.
+fn rfind_subsequence(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    match rfinder_for(needle, haystack) {
+        Some(finder) => rfind_with(&finder, haystack, heap),
+        None => Ok(None),
+    }
+}
+
+/// Finds the last occurrence of `finder`'s needle in `haystack`.
+///
+/// The mirror of [`find_with`], walking chunks from the end; the same
+/// preprocessing-reuse rationale applies.
+fn rfind_with(finder: &FinderRev<'_>, haystack: &[u8], heap: &Heap) -> Result<Option<usize>, ResourceError> {
+    let needle_len = finder.needle().len();
+    debug_assert!(needle_len > 0, "callers must handle the empty needle");
+    let stride = SCAN_CHUNK.max(needle_len);
+    let mut end = haystack.len();
+    while end > 0 {
+        heap.check_time()?;
+        let start = end.saturating_sub(stride + needle_len.saturating_sub(1));
+        if let Some(pos) = finder.rfind(&haystack[start..end]) {
+            return Ok(Some(start + pos));
+        }
+        end = end.saturating_sub(stride);
+    }
+    Ok(None)
+}
+
+/// Counts non-overlapping occurrences of `needle` in `haystack`.
+fn count_non_overlapping(haystack: &[u8], needle: &[u8], heap: &Heap) -> Result<usize, ResourceError> {
+    let Some(finder) = finder_for(needle, haystack) else {
+        return Ok(0);
+    };
+    let mut count = 0;
+    let mut pos = 0;
+    while let Some(found) = find_with(&finder, &haystack[pos..], heap)? {
+        count += 1;
+        pos += found + needle.len();
+    }
+    Ok(count)
+}
+
 /// Implements Python's `bytes.count(sub[, start[, end]])` method.
 ///
 /// Returns the number of non-overlapping occurrences of the subsequence.
@@ -569,26 +684,11 @@ fn bytes_count<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         // Empty subsequence: count positions between each byte plus 1
         slice.len() + 1
     } else {
-        count_non_overlapping(slice, &sub)
+        count_non_overlapping(slice, &sub, vm.heap)?
     };
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Counts non-overlapping occurrences of needle in haystack.
-fn count_non_overlapping(haystack: &[u8], needle: &[u8]) -> usize {
-    let mut count = 0;
-    let mut pos = 0;
-    while pos + needle.len() <= haystack.len() {
-        if &haystack[pos..pos + needle.len()] == needle {
-            count += 1;
-            pos += needle.len();
-        } else {
-            pos += 1;
-        }
-    }
-    count
 }
 
 /// Implements Python's `bytes.find(sub[, start[, end]])` method.
@@ -603,7 +703,7 @@ fn bytes_find<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) 
         // Empty subsequence: always found at start position
         Some(0)
     } else {
-        find_subsequence(slice, &sub)
+        find_subsequence(slice, &sub, vm.heap)?
     };
 
     let idx = match result {
@@ -611,11 +711,6 @@ fn bytes_find<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>) 
         None => -1,
     };
     Ok(Value::Int(idx))
-}
-
-/// Finds the first occurrence of needle in haystack.
-fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 /// Implements Python's `bytes.index(sub[, start[, end]])` method.
@@ -630,7 +725,7 @@ fn bytes_index<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         // Empty subsequence: always found at start position
         Some(0)
     } else {
-        find_subsequence(slice, &sub)
+        find_subsequence(slice, &sub, vm.heap)?
     };
 
     match result {
@@ -1030,7 +1125,7 @@ fn bytes_rfind<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         // Empty subsequence: always found at end position
         Some(slice.len())
     } else {
-        rfind_subsequence(slice, &sub)
+        rfind_subsequence(slice, &sub, vm.heap)?
     };
 
     let idx = match result {
@@ -1038,14 +1133,6 @@ fn bytes_rfind<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
         None => -1,
     };
     Ok(Value::Int(idx))
-}
-
-/// Finds the last occurrence of needle in haystack.
-fn rfind_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.len() > haystack.len() {
-        return None;
-    }
-    haystack.windows(needle.len()).rposition(|window| window == needle)
 }
 
 /// Implements Python's `bytes.rindex(sub[, start[, end]])` method.
@@ -1059,7 +1146,7 @@ fn bytes_rindex<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
     let result = if sub.is_empty() {
         Some(slice.len())
     } else {
-        rfind_subsequence(slice, &sub)
+        rfind_subsequence(slice, &sub, vm.heap)?
     };
 
     match result {
@@ -1216,10 +1303,10 @@ fn bytes_split<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>)
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                bytes_split_by_seq(bytes, sep)
+                bytes_split_by_seq(bytes, sep, vm.heap)?
             } else {
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_splitn_by_seq(bytes, sep, max + 1)
+                bytes_splitn_by_seq(bytes, sep, max + 1, vm.heap)?
             }
         }
         None => {
@@ -1257,10 +1344,10 @@ fn bytes_rsplit<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h>
                 return Err(ExcType::value_error_empty_separator());
             }
             if maxsplit < 0 {
-                bytes_split_by_seq(bytes, sep)
+                bytes_split_by_seq(bytes, sep, vm.heap)?
             } else {
                 let max = usize::try_from(maxsplit).unwrap_or(usize::MAX);
-                bytes_rsplitn_by_seq(bytes, sep, max + 1)
+                bytes_rsplitn_by_seq(bytes, sep, max + 1, vm.heap)?
             }
         }
         None => {
@@ -1323,27 +1410,38 @@ struct BytesRsplitArgs {
 }
 
 /// Splits bytes by a separator sequence.
-fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8]) -> Vec<&'a [u8]> {
+fn bytes_split_by_seq<'a>(bytes: &'a [u8], sep: &[u8], heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
+    let Some(finder) = finder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut start = 0;
 
-    while let Some(pos) = find_subsequence(&bytes[start..], sep) {
+    while let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
         parts.push(&bytes[start..start + pos]);
         start = start + pos + sep.len();
     }
     parts.push(&bytes[start..]);
 
-    parts
+    Ok(parts)
 }
 
 /// Splits bytes by a separator sequence, returning at most n parts.
-fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize) -> Vec<&'a [u8]> {
+fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize, heap: &Heap) -> Result<Vec<&'a [u8]>, ResourceError> {
+    // `maxsplit=0` (`n == 1`) permits no splits, so return before `finder_for`
+    // preprocesses the separator — that runs ahead of any `check_time()`.
+    if n <= 1 {
+        return Ok(vec![bytes]);
+    }
+    let Some(finder) = finder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut start = 0;
     let mut count = 0;
 
     while count + 1 < n {
-        if let Some(pos) = find_subsequence(&bytes[start..], sep) {
+        if let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
             parts.push(&bytes[start..start + pos]);
             start = start + pos + sep.len();
             count += 1;
@@ -1353,17 +1451,30 @@ fn bytes_splitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize) -> Vec<&'a [u8
     }
     parts.push(&bytes[start..]);
 
-    parts
+    Ok(parts)
 }
 
 /// Splits bytes by a separator sequence from the right, returning at most n parts.
-fn bytes_rsplitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize) -> Vec<&'a [u8]> {
+fn bytes_rsplitn_by_seq<'a>(
+    bytes: &'a [u8],
+    sep: &[u8],
+    n: usize,
+    heap: &Heap,
+) -> Result<Vec<&'a [u8]>, ResourceError> {
+    // `maxsplit=0` (`n == 1`) permits no splits, so return before `rfinder_for`
+    // preprocesses the separator — that runs ahead of any `check_time()`.
+    if n <= 1 {
+        return Ok(vec![bytes]);
+    }
+    let Some(finder) = rfinder_for(sep, bytes) else {
+        return Ok(vec![bytes]);
+    };
     let mut parts = Vec::new();
     let mut end = bytes.len();
     let mut count = 0;
 
     while count + 1 < n {
-        if let Some(pos) = rfind_subsequence(&bytes[..end], sep) {
+        if let Some(pos) = rfind_with(&finder, &bytes[..end], heap)? {
             parts.push(&bytes[pos + sep.len()..end]);
             end = pos;
             count += 1;
@@ -1374,7 +1485,7 @@ fn bytes_rsplitn_by_seq<'a>(bytes: &'a [u8], sep: &[u8], n: usize) -> Vec<&'a [u
     parts.push(&bytes[..end]);
     parts.reverse();
 
-    parts
+    Ok(parts)
 }
 
 /// Splits bytes by ASCII whitespace, filtering empty parts.
@@ -1523,9 +1634,9 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_>) -> RunResult<bo
     let result = match keepends {
         None => false,
         Some(v) => {
-            let r = v.py_bool(vm);
+            let result = v.py_bool(vm);
             v.drop_with(vm.heap);
-            r
+            result?
         }
     };
     Ok(result)
@@ -1554,7 +1665,7 @@ fn bytes_partition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<
     }
 
     let bytes = bytes.get(vm.heap);
-    let (before, sep_found, after) = match find_subsequence(bytes, sep) {
+    let (before, sep_found, after) = match find_subsequence(bytes, sep, vm.heap)? {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (bytes.to_vec(), Vec::new(), Vec::new()),
     };
@@ -1582,7 +1693,7 @@ fn bytes_rpartition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
     }
 
     let bytes = bytes.get(vm.heap);
-    let (before, sep_found, after) = match rfind_subsequence(bytes, sep) {
+    let (before, sep_found, after) = match rfind_subsequence(bytes, sep, vm.heap)? {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (Vec::new(), Vec::new(), bytes.to_vec()),
     };
@@ -1659,10 +1770,10 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         }
         result.extend_from_slice(new);
         Ok(result)
-    } else {
+    } else if let Some(finder) = finder_for(old, bytes) {
         let mut result = Vec::new();
         let mut start = 0;
-        while let Some(pos) = find_subsequence(&bytes[start..], old) {
+        while let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
             heap.check_time()?;
             result.extend_from_slice(&bytes[start..start + pos]);
             result.extend_from_slice(new);
@@ -1670,7 +1781,19 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
         }
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
+    } else {
+        replace_nothing(bytes, heap)
     }
+}
+
+/// Copies `bytes` unchanged, for a `replace` that cannot match anything.
+///
+/// Polls before copying: the callers reaching here skip the scan loop, and
+/// with it the `check_time()` it would have run first, so without this a
+/// no-match `replace` over a large input would never touch the clock.
+fn replace_nothing(bytes: &[u8], heap: &Heap) -> Result<Vec<u8>, ResourceError> {
+    heap.check_time()?;
+    Ok(bytes.to_vec())
 }
 
 /// Replaces at most n occurrences of `old` with `new` in bytes.
@@ -1678,6 +1801,11 @@ fn bytes_replace_all(bytes: &[u8], old: &[u8], new: &[u8], heap: &Heap) -> Resul
 /// Checks the time limit periodically to enforce `max_duration` during
 /// potentially long replacement operations on large byte sequences.
 fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) -> Result<Vec<u8>, ResourceError> {
+    // `count=0` permits no replacements, so return before `finder_for`
+    // preprocesses `old` — that runs ahead of any `check_time()`.
+    if n == 0 {
+        return replace_nothing(bytes, heap);
+    }
     if old.is_empty() {
         // Empty pattern: insert new before each byte (up to n times)
         let mut result = Vec::new();
@@ -1694,13 +1822,13 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
             result.extend_from_slice(new);
         }
         Ok(result)
-    } else {
+    } else if let Some(finder) = finder_for(old, bytes) {
         let mut result = Vec::new();
         let mut start = 0;
         let mut count = 0;
         while count < n {
             heap.check_time()?;
-            if let Some(pos) = find_subsequence(&bytes[start..], old) {
+            if let Some(pos) = find_with(&finder, &bytes[start..], heap)? {
                 result.extend_from_slice(&bytes[start..start + pos]);
                 result.extend_from_slice(new);
                 start = start + pos + old.len();
@@ -1711,6 +1839,8 @@ fn bytes_replace_n(bytes: &[u8], old: &[u8], new: &[u8], n: usize, heap: &Heap) 
         }
         result.extend_from_slice(&bytes[start..]);
         Ok(result)
+    } else {
+        replace_nothing(bytes, heap)
     }
 }
 
@@ -2293,7 +2423,8 @@ pub(crate) fn bytes_contains(container: &[u8], item: &Value, vm: &VM<'_>) -> Run
         // A bytes-like probe is a substring test.
         Value::InternBytes(_) | Value::Ref(_) => {
             let needle = extract_bytes_only(item, vm)?;
-            return Ok(container.windows(needle.len().max(1)).any(|w| w == needle) || needle.is_empty());
+            // An empty needle is in everything, and `find_subsequence` rejects it.
+            return Ok(needle.is_empty() || find_subsequence(container, needle, vm.heap)?.is_some());
         }
         other => {
             return Err(ExcType::type_error(format!(

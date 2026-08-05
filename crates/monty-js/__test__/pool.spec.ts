@@ -61,6 +61,47 @@ test('maxCheckoutsPerWorker recycles the worker', async (ctx) => {
   await second.close()
 })
 
+test('maxMemory leaves normal work alone', async (ctx) => {
+  skipIfBrowser(ctx)
+  // a session's limit must not disturb work that stays inside it
+  await using pool = await Monty.create()
+  const session = await pool.checkout({ limits: { maxMemory: 1024 ** 2 } })
+  t.is(await session.feedRun('1 + 1'), 2)
+  await session.close()
+})
+
+test('a refused allocation raises MemoryError and the pool recovers', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  const session = await pool.checkout()
+  // no maxMemory, so the sandbox tracker allows this outright: the allocation is
+  // refused below the interpreter, killing the worker but still reporting
+  // MemoryError rather than an unclassifiable crash
+  const error = await t.throwsAsync(() => session.feedRun("x = ' ' * (1 << 60)"), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, 'MemoryError: the worker exceeded its memory limit and was terminated')
+  const next = await pool.checkout()
+  t.is(await next.feedRun('1 + 1'), 2)
+  await next.close()
+})
+
+test('exceeding maxMemory in the allocator raises MemoryError and the pool recovers', async (ctx) => {
+  skipIfBrowser(ctx)
+  await using pool = await Monty.create()
+  const session = await pool.checkout({ limits: { maxMemory: 1024 } })
+  // the fed snippet is memory the interpreter never accounts for — the worker
+  // buys a frame buffer for it before it sees the code — so a snippet far
+  // larger than the limit is caught by the allocator
+  const error = await t.throwsAsync(() => session.feedRun('# ' + 'a'.repeat(16 * 1024 * 1024)), {
+    instanceOf: MontyRuntimeError,
+  })
+  t.is(error.message, 'MemoryError: the worker exceeded its memory limit and was terminated')
+  const next = await pool.checkout()
+  t.is(await next.feedRun('1 + 1'), 2)
+  await next.close()
+})
+
 test('concurrent sessions run in distinct workers', async (ctx) => {
   skipIfBrowser(ctx)
   await using pool = await Monty.create()

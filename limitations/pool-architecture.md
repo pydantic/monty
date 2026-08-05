@@ -111,6 +111,27 @@ properties that real CPython does not provide, per the caveat above.
   bounded, and `request_timeout` applies independently. Both deadlines fire
   between the turn's polls, so decoding one maximal reply frame (~1s worst
   case) can delay enforcement by that long.
+- **`max_memory` is also enforced in the worker's allocator.** It caps the live
+  bytes the worker's allocator will hand out (plus headroom — see
+  `limitations/resource_limits.md`, which covers how exceeding it surfaces); a
+  session without a limit is uncapped. The worker derives it from the session it
+  holds, so nothing travels outside the protocol, and the wasm worker applies it
+  to its linear memory. Ignored by the WebSocket transport (whose exit codes do
+  not travel, so a remote failure degrades to `Disconnected`). The exit code
+  borrows [`sysexits.h`](https://man.freebsd.org/sysexits) so a bare status is
+  legible in a log.
+- **A refused allocation is the one `MemoryError` that kills the session.** The
+  worker's allocator exits 65 (`EX_DATAERR` — the fed snippet asked for more than
+  it may have) rather than letting Rust abort (`SIGABRT`, which a stack overflow
+  also produces and which would be unclassifiable), so the host gets
+  `MontyRuntimeError`/`MemoryError` with a
+  distinct message instead of `MontyCrashedError` — but the worker is already
+  dead and later calls on that checkout report `Finished`. An ordinary in-sandbox
+  exception leaves the session usable; a failed `load_session` / `load_snapshot`
+  is the other `MontyRuntimeError` that does not (see below). Applies on all
+  platforms, with or without a session budget — except in the wasm worker, which
+  has no exit status to carry the distinction and so reports `MontyCrashedError`
+  for both.
 - **Workers are spawned with an empty environment** (on Windows only
   `SystemRoot` is kept, which CRT/WinAPI lookups need): host secrets are
   never in a worker's memory, where a sandbox escape or memory disclosure

@@ -8,16 +8,22 @@ authors = { workspace = true }
 description = "Benchmarks for the Monty interpreter — compares Monty vs CPython"
 publish = false
 
+[features]
+# Runs the `main` bench under the worker's global allocator (`monty-alloc`)
+# instead of `System`, to price the hard memory ceiling on real workloads.
+worker-alloc = ["dep:monty-alloc"]
+
 [dependencies]
 monty = { workspace = true, features = ["test-hooks"] }
 monty-types = { workspace = true }
+monty-alloc = { workspace = true, optional = true }
 monty-pool = { workspace = true }
 monty-proto = { workspace = true }
-# The pool is async: benchmarks drive it via `Runtime::block_on`.
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+# The pool benchmarks use Criterion's Tokio async executor.
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 pyo3 = { workspace = true, features = ["auto-initialize"] }
-codspeed-criterion-compat = "4.2.1"
-criterion = "0.5"
+codspeed-criterion-compat = { version = "4.2.1", features = ["async_tokio"] }
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 [target.'cfg(unix)'.dependencies]
 pprof = { version = "0.15", features = ["flamegraph", "criterion"] }

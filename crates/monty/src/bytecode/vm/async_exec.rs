@@ -889,7 +889,7 @@ impl<'h> VM<'h> {
     pub fn add_pending_call(&mut self, call_id: CallId) -> RunResult<()> {
         let future_id = self
             .heap
-            .allocate(HeapData::ExternalFuture(ExternalFuture::new_pending(call_id)))?;
+            .allocate(HeapData::ExternalFuture(Box::new(ExternalFuture::new_pending(call_id))))?;
         self.scheduler.add_pending_external(call_id, future_id, self.heap);
         self.push(Value::Ref(future_id));
         Ok(())

@@ -1,8 +1,9 @@
-# === repr of None, True, False, Ellipsis ===
+# === repr of None, True, False, Ellipsis, NotImplemented ===
 assert repr(None) == 'None'
 assert repr(True) == 'True'
 assert repr(False) == 'False'
 assert repr(...) == 'Ellipsis'
+assert repr(NotImplemented) == 'NotImplemented'
 
 # === repr of ints (Value::Int) ===
 assert repr(0) == '0'

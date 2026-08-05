@@ -203,6 +203,7 @@ mod tag {
     pub const REPR: u32 = 26;
     pub const CYCLE: u32 = 27;
     pub const INSTANCE_TYPE: u32 = 28;
+    pub const NOT_IMPLEMENTED: u32 = 29;
 }
 
 // ============================================================================
@@ -218,6 +219,7 @@ mod tag {
 fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
     match obj {
         MontyObject::Ellipsis => encoding::message::encode(tag::ELLIPSIS, &pb::Unit {}, buf),
+        MontyObject::NotImplemented => encoding::message::encode(tag::NOT_IMPLEMENTED, &pb::Unit {}, buf),
         MontyObject::None => encoding::message::encode(tag::NONE, &pb::Unit {}, buf),
         MontyObject::Bool(b) => encoding::bool::encode(tag::BOOLEAN, b, buf),
         MontyObject::Int(i) => encoding::sint64::encode(tag::INT, i, buf),
@@ -333,6 +335,7 @@ fn encode_object(obj: &MontyObject, buf: &mut impl BufMut) {
 fn object_len(obj: &MontyObject) -> usize {
     match obj {
         MontyObject::Ellipsis => encoding::message::encoded_len(tag::ELLIPSIS, &pb::Unit {}),
+        MontyObject::NotImplemented => encoding::message::encoded_len(tag::NOT_IMPLEMENTED, &pb::Unit {}),
         MontyObject::None => encoding::message::encoded_len(tag::NONE, &pb::Unit {}),
         MontyObject::Bool(b) => encoding::bool::encoded_len(tag::BOOLEAN, b),
         MontyObject::Int(i) => encoding::sint64::encoded_len(tag::INT, i),
@@ -612,6 +615,10 @@ fn decode_field(
         tag::ELLIPSIS => {
             merge_message::<pb::Unit>(wire_type, buf, ctx)?;
             MontyObject::Ellipsis
+        }
+        tag::NOT_IMPLEMENTED => {
+            merge_message::<pb::Unit>(wire_type, buf, ctx)?;
+            MontyObject::NotImplemented
         }
         tag::NONE => {
             merge_message::<pb::Unit>(wire_type, buf, ctx)?;

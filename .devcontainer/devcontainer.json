@@ -1,0 +1,35 @@
+{
+  // Codespaces / devcontainer setup for monty. The default images ship no Rust
+  // and a statically-linked CPython, neither of which works here — see setup.sh.
+  "name": "monty",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+
+  "features": {
+    // `rust-toolchain.toml` is absent, so stable is what the repo expects.
+    "ghcr.io/devcontainers/features/rust:1": {},
+    // for `make install-js` / `make test-js`
+    "ghcr.io/devcontainers/features/node:1": {},
+    // required by `gh cs ssh` (and so by Zed): unlike the default Codespaces
+    // image, devcontainers/base ships no SSH server.
+    "ghcr.io/devcontainers/features/sshd:1": {}
+  },
+
+  // A 2-core machine builds this workspace painfully slowly.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "64gb"
+  },
+
+  "postCreateCommand": "./.devcontainer/setup.sh",
+
+  // Putting .venv on PATH is what lets pyo3's build script find the uv-managed
+  // CPython (shared libpython) instead of the image's static /usr/bin/python3.
+  // ~/.local/bin (where uv installs itself) belongs here rather than only in
+  // ~/.bashrc so non-interactive processes — VS Code tasks, the debugger — can
+  // run the `make` targets too.
+  "remoteEnv": {
+    "VIRTUAL_ENV": "${containerWorkspaceFolder}/.venv",
+    "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:HOME}/.local/bin:${containerEnv:PATH}"
+  }
+}

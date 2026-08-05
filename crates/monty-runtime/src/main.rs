@@ -9,18 +9,22 @@ use std::{
 use clap::{Parser, Subcommand};
 use monty::{MontyRepl, MontyRun, ReplContinuationMode, ReplProgress, RunProgress, detect_repl_continuation_mode};
 use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
+use monty_type_checking::{SourceFile, type_check};
 use monty_types::{
     CompileOptions, ExtFunctionResult, MontyObject, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits,
     ResourceTracker,
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tracing::field::Empty;
-// disabled due to format failing on https://github.com/pydantic/monty/pull/75 where CI and local wanted imports ordered differently
-// TODO re-enabled soon!
-#[rustfmt::skip]
-use monty_type_checking::{SourceFile, type_check};
 
 mod subprocess;
+
+/// Bounds worker memory and classifies allocation failure as an exit code
+/// rather than an abort, so the pool can report `MemoryError`. Declared here
+/// because only a binary may; see the `monty-alloc` crate. Applies to every
+/// mode, `subprocess` and CLI alike.
+#[global_allocator]
+static ALLOC: monty_alloc::LimitedAllocator = monty_alloc::LimitedAllocator;
 
 /// ANSI escape code for dim/gray text.
 const DIM: &str = "\x1b[2m";
