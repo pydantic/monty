@@ -1053,6 +1053,10 @@ jobs:
           name: wasm-bindings
           path: crates/monty-js/dist/worker
 
+      - name: Test Node wasm bindings
+        run: npm run test:wasm
+        working-directory: crates/monty-js
+
       - name: Test browser bindings
         run: npx playwright install --with-deps chromium && npm run test:browser
         working-directory: crates/monty-js

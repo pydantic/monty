@@ -2,8 +2,7 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    include: ['__test__/*.spec.ts'],
-    exclude: ['__test__/wasm_pool.spec.ts'],
+    include: ['__test__/wasm_pool.spec.ts'],
     testTimeout: 120_000,
     hookTimeout: 120_000,
     fileParallelism: false,

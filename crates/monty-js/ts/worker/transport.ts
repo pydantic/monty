@@ -13,9 +13,16 @@
 // `traceback` strings are not yet rendered (frames are decoded; the rendered
 // string is a follow-up); mounts are rejected (no host filesystem in a worker).
 
-import type { NativeException, NativeFrame, NativeFutureResult, NativeTurn, NotMountedTurn } from '../native.js'
+import type {
+  CrashedTurn,
+  NativeException,
+  NativeFrame,
+  NativeFutureResult,
+  NativeTurn,
+  NotMountedTurn,
+} from '../native.js'
 import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from '../options.js'
-import type { Dispatcher } from './host.js'
+import { DispatchError, type Dispatcher } from './host.js'
 import { Reader, Wire, Writer, deframe, frame } from './proto.js'
 import { decodeMontyObject, decodeTimeZone, encodeMontyObject } from './value.js'
 
@@ -41,6 +48,16 @@ export interface WorkerSessionConfig {
    * off, an integer >= 1 customizes the truncation length.
    */
   assertMessageAnnotations?: AssertMessageAnnotations
+}
+
+/** Pool-owned worker metadata and duration-backstop configuration. */
+export interface WorkerTransportOptions {
+  /** Parent-side grace added to the worker's remaining duration budget. */
+  durationLimitGraceMs?: number
+  /** Pool-local identity retained across the session. */
+  workerId: number
+  /** OS process id for process-backed custom factories. */
+  workerPid?: number
 }
 
 // ParentRequest oneof field numbers (see proto/monty/v1/monty.proto). Note
@@ -77,28 +94,35 @@ export class WorkerTransport {
   /** The id/name of the suspension awaiting an answer, for the `resume*` family. */
   private pendingCallId = 0
   private pendingFunctionName = ''
-
-  /** No OS process backs a wasm worker. */
-  readonly workerPid: number | null = null
-
-  /**
-   * Set once a turn reveals the worker is dead (crash/channel error): `finish`
-   * then skips `Reset` and the owner reclaims via `onFinish(false)`.
-   */
   private dead = false
+  private released = false
+  private durationBudgetMicros: bigint | null
+  private reportedExecutionMicros = 0n
 
-  /**
-   * Invoked when the session ends, telling the owner (a pool) whether the
-   * worker may be reused. `true` after a clean `Reset`; `false` if the worker
-   * died and must be discarded.
-   */
+  readonly workerPid: number | null
+  readonly workerId: number
+
+  /** Reports clean reuse or terminal disposal to the owning pool exactly once. */
   onFinish?: (reusable: boolean) => void
 
-  private constructor(private readonly dispatcher: Dispatcher) {}
+  private constructor(
+    private readonly dispatcher: Dispatcher,
+    private readonly durationLimitGraceMs: number | undefined,
+    config: WorkerSessionConfig,
+    options: WorkerTransportOptions,
+  ) {
+    this.workerPid = options.workerPid ?? null
+    this.workerId = options.workerId
+    this.durationBudgetMicros = maxDurationMicros(config.limits)
+  }
 
   /** Creates the REPL session (`ReplCreate`) and returns the ready transport. */
-  static async create(dispatcher: Dispatcher, config: WorkerSessionConfig = {}): Promise<WorkerTransport> {
-    const transport = new WorkerTransport(dispatcher)
+  static async create(
+    dispatcher: Dispatcher,
+    config: WorkerSessionConfig = {},
+    options: WorkerTransportOptions = { workerId: 0 },
+  ): Promise<WorkerTransport> {
+    const transport = new WorkerTransport(dispatcher, options.durationLimitGraceMs, config, options)
     const create = new Writer()
     create.string(1, config.scriptName ?? 'main.py') // ReplCreate.script_name
     if (config.limits) create.lengthDelimited(2, encodeLimits(config.limits)) // ReplCreate.limits
@@ -231,12 +255,17 @@ export class WorkerTransport {
     if (mounts.length > 0) {
       throw new Error('the wasm worker does not support filesystem mounts (browser has no host filesystem)')
     }
+    // The dump carries its own budget and consumed time; adopt both from the
+    // Load reply rather than retaining the fresh checkout's configuration.
+    this.durationBudgetMicros = null
+    this.reportedExecutionMicros = 0n
     const load = new Writer()
     load.bytes(1, state) // Load.state
-    const event = await this.run(Req.Load, load.finish(), onPrint)
-    if (!event) return crashed('worker exited without a turn-ending event')
-    if (event.kind === Ev.Ok) return { kind: 'loaded' }
-    return this.toTurn(event)
+    const outcome = await this.run(Req.Load, load.finish(), onPrint)
+    if (outcome.crash) return outcome.crash
+    if (!outcome.event) return crashed('worker exited without a turn-ending event', false, outcome.exitStatus)
+    if (outcome.event.kind === Ev.Ok) return { kind: 'loaded' }
+    return this.toTurn(outcome.event, outcome.exitStatus)
   }
 
   /**
@@ -246,15 +275,14 @@ export class WorkerTransport {
    */
   async finish(): Promise<void> {
     if (this.dead) {
-      this.onFinish?.(false)
+      this.release(false)
       return
     }
     try {
       await this.control(Req.Reset, EMPTY, Ev.Ok, 'Reset')
-      this.onFinish?.(true)
+      this.release(true)
     } catch {
-      this.dead = true
-      this.onFinish?.(false)
+      this.markDead()
     }
   }
 
@@ -267,39 +295,56 @@ export class WorkerTransport {
     return this.turn(Req.ResumeCall, call.finish(), onPrint)
   }
 
-  /** Sends a request and decodes the terminating event into a `NativeTurn`. */
+  /** Sends an execution request and decodes its terminating event. */
   private async turn(field: number, payload: Uint8Array, onPrint: OnPrint): Promise<NativeTurn> {
-    const event = await this.run(field, payload, onPrint)
-    const turn = event ? this.toTurn(event) : crashed('worker exited without a turn-ending event')
-    if (turn.kind === 'crashed') this.dead = true
+    const outcome = await this.run(field, payload, onPrint, this.backstopTimeoutMs())
+    const turn = outcome.crash
+      ? outcome.crash
+      : outcome.event
+        ? this.toTurn(outcome.event, outcome.exitStatus)
+        : crashed('worker exited without a turn-ending event', false, outcome.exitStatus)
+    if (turn.kind === 'crashed' || turn.kind === 'protocol') this.markDead()
     return turn
   }
 
   /** Sends a control request (ReplCreate/Reset/Dump) and asserts its event kind. */
   private async control(field: number, payload: Uint8Array, kind: number, what: string): Promise<ChildEventFrame> {
-    const event = await this.run(field, payload, undefined)
+    const outcome = await this.run(field, payload, undefined)
+    if (outcome.crash) {
+      throw new DispatchError(outcome.crash.message, outcome.crash.timedOut, outcome.crash.exitStatus)
+    }
+    const event = outcome.event
     if (!event) throw new Error(`${what} produced no turn-ending event (worker crashed)`)
     if (event.kind !== kind) throw new Error(`${what} expected event ${kind}, got ${event.kind}`)
     return event
   }
 
-  /** Runs one turn, streaming `Print`s, and returns the single terminating event. */
-  private async run(field: number, payload: Uint8Array, onPrint: OnPrint | undefined): Promise<ChildEventFrame | null> {
+  /** Runs one turn, streams `Print`s, and retains worker crash metadata. */
+  private async run(
+    field: number,
+    payload: Uint8Array,
+    onPrint: OnPrint | undefined,
+    timeoutMs?: number,
+  ): Promise<RunOutcome> {
     const request = new Writer()
     request.lengthDelimited(field, payload) // ParentRequest oneof
     let reply: Uint8Array
-    let decodedEvents: ChildEventFrame[] | undefined
+    let exitStatus: string | null = null
     try {
-      const dispatched = await this.dispatcher(frame(request.finish()))
+      const dispatched = await this.dispatcher(frame(request.finish()), { timeoutMs })
       reply = dispatched.reply
-      decodedEvents = dispatched.events?.map((event) => ({ kind: event.kind, bytes: Uint8Array.from(event.bytes) }))
-    } catch {
-      // the dispatcher rejects when the worker died or the channel broke; the
-      // caller treats a missing terminating event as a crash
-      return null
+      exitStatus = dispatched.exitStatus ?? null
+      if (dispatched.status !== 0) this.markDead()
+    } catch (err) {
+      const failure =
+        err instanceof DispatchError
+          ? crashed(err.message, err.timedOut, err.exitStatus)
+          : crashed(errorMessage(err), false, null)
+      this.markDead()
+      return { event: null, crash: failure, exitStatus: failure.exitStatus ?? null }
     }
     let terminating: ChildEventFrame | null = null
-    for (const event of decodedEvents ?? decodeChildEvents(reply)) {
+    for (const event of decodeChildEvents(reply)) {
       if (event.kind === Ev.Print) {
         if (onPrint) {
           const [stream, text] = decodePrint(event.bytes)
@@ -309,10 +354,11 @@ export class WorkerTransport {
         terminating = event
       }
     }
-    return terminating
+    if (terminating) this.noteReportedTime(terminating)
+    return { event: terminating, crash: null, exitStatus }
   }
 
-  private toTurn(event: ChildEventFrame): NativeTurn {
+  private toTurn(event: ChildEventFrame, exitStatus: string | null = null): NativeTurn {
     switch (event.kind) {
       case Ev.Complete:
         return { kind: 'complete', value: decodeComplete(event.bytes) }
@@ -350,44 +396,83 @@ export class WorkerTransport {
       case Ev.ResolveFutures:
         return { kind: 'resolveFutures', pendingCallIds: decodeResolveFutures(event.bytes) }
       case Ev.FatalError:
-        return crashed(decodeSingleString(event.bytes))
+        return crashed(decodeSingleString(event.bytes), false, exitStatus)
       default:
         return { kind: 'protocol', message: `unexpected event kind ${event.kind}` }
     }
+  }
+
+  /** Remaining duration budget plus grace, derived solely from worker reports. */
+  private backstopTimeoutMs(): number | undefined {
+    if (this.durationLimitGraceMs === undefined || this.durationBudgetMicros === null) return undefined
+    const remaining = this.durationBudgetMicros - this.reportedExecutionMicros
+    return Number(remaining > 0n ? remaining : 0n) / 1000 + this.durationLimitGraceMs
+  }
+
+  /** Ratchets execution time and adopts a restored session's duration budget. */
+  private noteReportedTime(event: ChildEventFrame): void {
+    if (event.totalExecutionMicros > this.reportedExecutionMicros) {
+      this.reportedExecutionMicros = event.totalExecutionMicros
+    }
+    if (this.durationBudgetMicros === null && event.maxDurationMicros !== null) {
+      this.durationBudgetMicros = event.maxDurationMicros
+    }
+  }
+
+  /** Retires a failed worker and immediately frees its pool capacity. */
+  private markDead(): void {
+    this.dead = true
+    this.release(false)
+  }
+
+  /** Reports this transport's disposition to its pool at most once. */
+  private release(reusable: boolean): void {
+    if (this.released) return
+    this.released = true
+    this.onFinish?.(reusable)
   }
 }
 
 // === ChildEvent / value decoding ===
 
+interface RunOutcome {
+  readonly event: ChildEventFrame | null
+  readonly crash: CrashedTurn | null
+  readonly exitStatus: string | null
+}
+
 interface ChildEventFrame {
   readonly kind: number
   readonly bytes: Uint8Array
+  readonly totalExecutionMicros: bigint
+  readonly maxDurationMicros: bigint | null
 }
 
 function decodeChildEvents(reply: Uint8Array): ChildEventFrame[] {
   return [...deframe(reply)].map(readChildEvent)
 }
 
-/**
- * Extracts the oneof kind from a `ChildEvent`, ignoring the message-level
- * timing/name fields. Tags 1-19 are reserved for oneof arms and the message's
- * own fields start at 20 (see `monty.proto`), so this range needs no change
- * when an arm is added. Mirrors prost's decode: the last arm wins, and an arm
- * that is not a length-delimited message is rejected rather than surfaced
- * with an empty payload.
- */
+/** Decodes a `ChildEvent` envelope, including duration-backstop fields. */
 function readChildEvent(frameBytes: Uint8Array): ChildEventFrame {
   const reader = new Reader(frameBytes)
-  let event: ChildEventFrame | null = null
+  let kind = 0
+  let bytes: Uint8Array = EMPTY
+  let totalExecutionMicros = 0n
+  let maxDurationMicros: bigint | null = null
   while (!reader.done) {
     const f = reader.next()
     if (f.field >= 1 && f.field <= 19) {
       if (f.wire !== Wire.LengthDelimited) throw new Error(`ChildEvent kind ${f.field} is not a message`)
-      event = { kind: f.field, bytes: f.bytes }
+      kind = f.field
+      bytes = f.bytes
+    } else if (f.field === 20 && f.wire === Wire.Varint) {
+      totalExecutionMicros = f.value
+    } else if (f.field === 21 && f.wire === Wire.Varint) {
+      maxDurationMicros = f.value
     }
   }
-  if (!event) throw new Error('ChildEvent carried no kind')
-  return event
+  if (kind === 0) throw new Error('ChildEvent carried no kind')
+  return { kind, bytes, totalExecutionMicros, maxDurationMicros }
 }
 
 function decodeComplete(bytes: Uint8Array): unknown {
@@ -759,11 +844,24 @@ function decodeSingleString(bytes: Uint8Array): string {
 /** Encodes a `ResourceLimits` message (durations are seconds -> microseconds). */
 function encodeLimits(limits: ResourceLimits): Uint8Array {
   const w = new Writer()
-  if (limits.maxDurationSecs !== undefined) w.uint(1, Math.round(limits.maxDurationSecs * 1_000_000)) // max_duration_micros
+  const durationMicros = maxDurationMicros(limits)
+  if (durationMicros !== null) w.uint(1, durationMicros) // max_duration_micros
   if (limits.maxMemory !== undefined) w.uint(2, limits.maxMemory) // max_memory_bytes
   if (limits.gcInterval !== undefined) w.uint(3, limits.gcInterval) // gc_interval
   if (limits.maxRecursionDepth !== undefined) w.uint(4, limits.maxRecursionDepth) // max_recursion_depth
   return w.finish()
+}
+
+/** Normalizes a duration limit to the protocol's saturating u64 micros. */
+function maxDurationMicros(limits: ResourceLimits | undefined): bigint | null {
+  if (limits?.maxDurationSecs === undefined) return null
+  const seconds = limits.maxDurationSecs
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new Error('maxDurationSecs must be a finite non-negative number')
+  }
+  const micros = seconds * 1_000_000
+  const maxU64 = (1n << 64n) - 1n
+  return !Number.isFinite(micros) || micros >= Number(maxU64) ? maxU64 : BigInt(Math.round(micros))
 }
 
 /** Wraps a payload as one `ExtFunctionResult` oneof field. */
@@ -798,8 +896,13 @@ function functionValue(name: string): Uint8Array {
   return obj.finish()
 }
 
-function crashed(message: string): NativeTurn {
-  return { kind: 'crashed', message, timedOut: false }
+function crashed(message: string, timedOut = false, exitStatus: string | null = null): CrashedTurn {
+  return { kind: 'crashed', message, timedOut, ...(exitStatus === null ? {} : { exitStatus }) }
+}
+
+/** Extracts a useful message from an arbitrary dispatcher rejection. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 function decodeString(bytes: Uint8Array): string {

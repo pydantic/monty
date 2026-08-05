@@ -4,27 +4,27 @@
 // `createWorkerPool(module, options)` when they need to supply a compiled
 // `WebAssembly.Module` themselves.
 //
-// `createWorkerPool` picks the backend: a browser Web Worker where
-// `Worker` exists (off-thread + a hard-kill watchdog), else in-process wasm as
-// a degrade (same API, no crash isolation or preemption). Node users wanting
-// real threads import `nodeWorkerFactory` from `./nodeFactory.js` directly
-// (separate so browser bundles never pull in `node:worker_threads`).
+// `createWorkerPool` picks a browser Web Worker where `Worker` exists, else an
+// in-process degrade. The Node export condition has its own `Monty.create`
+// wired to `nodeWorkerFactory`; keeping that import in `index.node.ts` prevents
+// browser bundles from pulling in `node:worker_threads`.
 
 import { browserWorkerFactory } from './browserFactory.js'
 import { type WorkerFactory, WorkerPool, inProcessFactory } from './pool.js'
+import { createWorkerPoolFromFactory, workerChannelOptions } from './poolOptions.js'
 
 export interface WasmPoolOptions {
   /** Accepted for parity with the native API; wasm always loads the bundled asset. */
   binaryPath?: string
   /** Workers spawned up front by `create()` (default 1). */
   minProcesses?: number
-  /** Worker cap; checkouts beyond it wait (default 4). */
+  /** Worker cap; checkouts beyond it wait (default: host concurrency, or 4). */
   maxProcesses?: number
-  /** Accepted for parity with the native API; wasm currently waits forever. */
+  /** Seconds to wait for a free worker; omitted waits forever. */
   checkoutTimeout?: number
   /** Hard per-turn deadline in seconds; on expiry the worker is terminated. */
   requestTimeout?: number
-  /** Accepted for parity with the native API; wasm uses in-sandbox limits only. */
+  /** Grace in seconds for the `maxDurationSecs` hard backstop; `null` disables it. */
   durationLimitGrace?: number | null
   /** Recycle a worker after serving this many sessions. */
   maxCheckoutsPerWorker?: number
@@ -34,16 +34,12 @@ export interface WasmPoolOptions {
 
 /** Creates a pool over the best backend for this environment. */
 export async function createWorkerPool(module: WebAssembly.Module, options: WasmPoolOptions = {}): Promise<WorkerPool> {
-  const requestTimeoutMs = options.requestTimeout === undefined ? undefined : options.requestTimeout * 1000
   const factory: WorkerFactory =
     'Worker' in globalThis
-      ? browserWorkerFactory(module, { requestTimeoutMs }, options.workerUrl)
+      ? browserWorkerFactory(module, workerChannelOptions(options), options.workerUrl)
       : inProcessFactory(module)
-  return WorkerPool.create(factory, {
-    minWorkers: options.minProcesses,
-    maxWorkers: options.maxProcesses,
-    maxCheckoutsPerWorker: options.maxCheckoutsPerWorker,
-  })
+  const browserConcurrency = typeof navigator === 'undefined' ? undefined : navigator.hardwareConcurrency
+  return createWorkerPoolFromFactory(factory, options, browserConcurrency)
 }
 
 /** Loads the bundled wasm module and creates a browser/worker-backed pool. */

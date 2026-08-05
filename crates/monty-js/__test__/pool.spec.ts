@@ -5,9 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { t } from './assertions.js'
-import { skipIfBrowser } from './env.js'
+import { kind, skipIfBrowser } from './env.js'
+import { runPoolConformanceTests } from './poolConformance.js'
 
 import { Monty, MontyCrashedError, MontyRuntimeError, MountDir } from '@pydantic/monty/node'
+
+if (kind === 'node') {
+  runPoolConformanceTests('native pool', (options) => Monty.create(options), { timeoutExitStatus: false })
+}
 
 // =============================================================================
 // Pool lifecycle

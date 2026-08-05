@@ -133,6 +133,9 @@ export type Snapshot = FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | 
 /** A settled future outcome passed to [`FutureSnapshot.resume`]. */
 export type FutureResolution = { callId: number; value: unknown } | { callId: number; error: unknown }
 
+/** Native-session contract extended with a backend-neutral worker identity. */
+type SessionNative = NativeSession & { readonly workerId?: number | null }
+
 /** A promise-returning external call registered as a sandbox future. */
 interface PendingFuture {
   readonly callId: number
@@ -143,13 +146,13 @@ interface PendingFuture {
 }
 
 /**
- * One worker process dedicated to one REPL session; created by
+ * One worker dedicated to one REPL session; created by
  * [`Monty.checkout`]. Session state (globals, functions) persists across
  * `feedRun` calls. Close it (or `await using`) to return the worker to the
  * pool.
  */
 export class MontySession {
-  private readonly native: NativeSession
+  private readonly native: SessionNative
   /** Set once the session is unusable: crashed worker or protocol error. */
   private broken: Error | null = null
   private closed = false
@@ -158,7 +161,7 @@ export class MontySession {
   private driven = false
 
   /** @internal — sessions are created by `Monty.checkout`. */
-  constructor(native: NativeSession) {
+  constructor(native: SessionNative) {
     this.native = native
   }
 
@@ -389,9 +392,15 @@ export class MontySession {
     }
   }
 
+  /** Stable identity of the worker serving this session. Native sessions use
+   * their PID; WASM pools assign an identity without pretending it is a PID. */
+  get workerId(): number | undefined {
+    return this.native.workerId ?? this.native.workerPid ?? undefined
+  }
+
   /**
-   * OS process id of this session's worker, or `undefined` when no worker is
-   * attached or a turn is in flight on this session (diagnostics/tests).
+   * OS process id of this session's worker, or `undefined` for non-process
+   * backends and while a native turn is in flight (diagnostics/tests).
    */
   get workerPid(): number | undefined {
     return this.native.workerPid ?? undefined

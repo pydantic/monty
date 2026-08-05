@@ -368,3 +368,15 @@ same protocol in TypeScript over a WASM worker. Everything above applies, plus:
   `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.
+- **WASM workers have no process identity.** `session.workerId` is stable for
+  reuse/recycling diagnostics, but `session.workerPid` is unset. Node `/wasm`
+  uses a `worker_threads` worker and can report its thread exit code on a
+  crash; browsers expose neither a PID nor an exit status.
+- **Node `/wasm` isolation is a worker thread, not a subprocess.** A trapped or
+  timed-out WASM instance is terminated without taking down other sessions,
+  but a whole-process failure such as a JavaScript heap OOM can still terminate
+  the host. The low-level in-process factory has no hard-preemption guarantee.
+- **WASM transports do not implement `MountDir`.** Browser workers have no host
+  path namespace, and Node `/wasm` does not duplicate the security-sensitive
+  `monty-fs` service in TypeScript. Filesystem OS calls can still be handled
+  explicitly through the `os` callback.

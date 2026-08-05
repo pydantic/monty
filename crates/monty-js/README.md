@@ -5,11 +5,10 @@ crash-isolated `monty` interpreter subprocesses; browser bundlers resolve the
 same public API to a Web Worker pool backed by a lean wasm build.
 
 [Monty](https://github.com/pydantic/monty) is a sandboxed Python interpreter
-written in Rust. A sandbox process can never be made fully crash-proof against
-memory errors (stack overflow, allocator aborts), so this package _only_ runs
-the interpreter in worker subprocesses: a worker that crashes raises
-`MontyCrashedError`, is replaced by the pool, and your Node.js process is
-never at risk.
+written in Rust. The Node default runs it in worker subprocesses; browser and
+explicit `/wasm` imports use dedicated Web Workers or Node worker threads. A
+worker that crashes raises `MontyCrashedError`, is retired by the pool, and
+future checkouts use a fresh worker.
 
 The native binding and the `monty` binary ship together via platform-specific
 npm packages installed automatically (like esbuild). Browser builds use the
@@ -304,8 +303,10 @@ try {
 }
 ```
 
-`MontyError` is the base class; `MontyCrashedError` means the worker process
-died (the session is lost, the pool recovers).
+`MontyError` is the base class; `MontyCrashedError` means the worker died (the
+session is lost, the pool recovers). `session.workerId` identifies a worker
+across checkout/recycling backends; `session.workerPid` is set only for native
+subprocess workers.
 
 ## Pool Configuration
 

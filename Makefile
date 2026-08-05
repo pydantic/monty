@@ -55,6 +55,10 @@ dev-py-release: ## Install the python package for development with a release bui
 build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
 
+.PHONY: test-wasm
+test-wasm: install-js ## Test the Node worker-thread wasm pool and transport
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npm run test:wasm
+
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
 	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser

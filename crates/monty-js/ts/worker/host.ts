@@ -23,15 +23,41 @@ interface WasmExports {
   monty_decode_child_events(): number
 }
 
+/** Per-turn deadline supplied by the transport in addition to a channel's
+ * configured `requestTimeout`. */
+export interface DispatchOptions {
+  timeoutMs?: number
+}
+
+/** The reply to one protocol turn, including terminal worker metadata. */
+export interface DispatchResult {
+  /** Concatenated framed `ChildEvent`s emitted during the turn. */
+  reply: Uint8Array
+  /** `monty_dispatch_turn` status, nonzero when the instance must be retired. */
+  status: number
+  /** Optional Rust-decoded event payloads produced by `WasmHost`. */
+  events?: DecodedChildEvent[]
+  /** Runtime exit description after a terminal turn, when available. */
+  exitStatus?: string | null
+}
+
+/** A worker-channel failure with the crash metadata exposed by the runtime. */
+export class DispatchError extends Error {
+  constructor(
+    message: string,
+    readonly timedOut = false,
+    readonly exitStatus: string | null = null,
+  ) {
+    super(message)
+    this.name = 'DispatchError'
+  }
+}
+
 /**
- * Sends one framed request and resolves to the turn's framed reply. The
- * abstraction `WorkerTransport` drives, so the same transport works over an
- * in-process [`WasmHost`] (see [`inProcessDispatcher`]) and over a Web Worker
- * `postMessage` channel.
+ * Sends one framed request and resolves to its reply. Implemented by both an
+ * in-process [`WasmHost`] and message-channel workers.
  */
-export type Dispatcher = (
-  requestFrame: Uint8Array,
-) => Promise<{ reply: Uint8Array; status: number; events?: DecodedChildEvent[] }>
+export type Dispatcher = (requestFrame: Uint8Array, options?: DispatchOptions) => Promise<DispatchResult>
 
 /** Adapts a synchronous in-process [`WasmHost`] to the async [`Dispatcher`]. */
 export function inProcessDispatcher(host: WasmHost): Dispatcher {
